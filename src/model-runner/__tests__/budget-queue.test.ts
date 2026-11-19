@@ -67,6 +67,20 @@ describe("durable model admissions", () => {
     expect(claimModelBatch(writer, denied, NOW)).toBe("cap");
     expect(modelBudgetSnapshot(reader(), NOW).ownUsageReadable).toBe(true);
   });
+  it("requires measured room for a weekly batch and keeps its interrupted reservation charged", () => {
+    const weekly = request({ automatic: { estimate: { ...REFERENCE_BATCH }, measuredUsageOnly: true } });
+    const batch = enqueueModelBatch(writer, weekly, NOW);
+    expect(claimModelBatch(writer, batch, NOW)).toBe("cap");
+    setting("own-usage", "status.claude", JSON.stringify({ agent: "claude", status: "readable" }));
+    writer.db.prepare("INSERT INTO own_usage VALUES(?,?,?,?,?,?,0)").run("2026-11-14", "claude", 1, 0, 0, 0);
+    expect(claimModelBatch(writer, batch, NOW)).toBe("cap");
+    writer.db.exec("UPDATE own_usage SET input=10000000");
+    writer.db.prepare("INSERT INTO usage_windows VALUES('claude','primary',?,75,?,'allowed')").run(iso(NOW), iso(NOW + 60_000));
+    expect(claimModelBatch(writer, batch, NOW)).toBe("usage-window");
+    expect(claimModelBatch(writer, batch, NOW + 60_000)).toBeUndefined();
+    recoverModelBatches(writer, NOW + 61_000, () => false);
+    expect(entry(batch.id)).toMatchObject({ automatic: 1, state: "interrupted", charged_units: batch.reserved_units });
+  });
   it("uses the larger historical base, excludes future own usage and subtracts MEX conservatively", () => {
     writer.db.prepare("INSERT INTO own_usage VALUES(?,?,?,?,?,?,0)").run("2026-11-14", "claude", 10_000_000, 0, 0, 0);
     writer.db.prepare("INSERT INTO own_usage VALUES(?,?,?,?,?,?,0)").run("2026-10-25", "claude", 30_000_000, 0, 0, 0);

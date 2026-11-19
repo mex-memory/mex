@@ -202,6 +202,26 @@ func TestBackgroundStartsOnlyWhereMexIsOnAndWorkWaits(t *testing.T) {
 	}
 }
 
+func TestWeeklyBackgroundWakesOnDueTimestamp(t *testing.T) {
+	h, _ := fakeHome(t, true)
+	wake := filepath.Join(h.mex, "learning-refresh-due")
+	write(t, wake, "")
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(wake, future, future); err != nil {
+		t.Fatal(err)
+	}
+	if workWaiting(h, h.mex) {
+		t.Fatal("a future refresh woke the worker")
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(wake, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if !workWaiting(h, h.mex) {
+		t.Fatal("a due refresh did not wake the worker")
+	}
+}
+
 // TestMain doubles as the fake `node` the background start runs: with
 // MEX_HOOK_FAKE_NODE set it records its arguments and exits.
 func TestMain(m *testing.M) {

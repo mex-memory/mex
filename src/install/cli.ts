@@ -1,4 +1,4 @@
-import { excludeChanges, installAgents, installationChanges, uninstallAgents, type InstallResult } from "./index.js";
+import { additionalUninstallPaths, installAgents, installationChanges, uninstallAgents, type InstallResult } from "./index.js";
 import { recordLocation } from "../record/location.js";
 
 function summary(result: InstallResult) {
@@ -20,9 +20,9 @@ export async function runInstall(options: { dryRun?: boolean; json?: boolean } =
 
 export async function runUninstall(options: { dryRun?: boolean; json?: boolean; purge?: boolean } = {}): Promise<void> {
   const changes = installationChanges();
-  const paths = [...new Set([...changes.map(change => change.path), ...excludeChanges()])];
+  const paths = [...new Set([...changes.map(change => change.path), ...additionalUninstallPaths()])];
   if (!options.json) {
-    console.log(paths.length ? "MEX will restore (hooks first, shim last):" : "No recorded installation changes.");
+    console.log(paths.length ? "MEX will restore the following files. The shim is removed last." : "No recorded installation changes.");
     for (const path of paths) console.log(`  ${path}`);
     if (!options.purge) console.log("MEX data will be kept. Use --purge to delete it.");
   }
@@ -33,7 +33,7 @@ export async function runUninstall(options: { dryRun?: boolean; json?: boolean; 
   const result = await uninstallAgents(options);
   if (options.json) console.log(JSON.stringify({ paths, ...result }));
   else if (result.conflicts.length) {
-    console.error("Some changed files need review. Their installation records and required runtime files were kept:");
+    console.error("Review these uninstall conflicts.");
     for (const path of result.conflicts) console.error(`  ${path}`);
   } else console.log(result.purged ? "MEX is off on this machine. Hooks, runtime and data removed. Run mex install to install again."
     : `MEX is off on this machine. Your notes are kept in ${recordLocation().home}; mex uninstall --purge removes them.`);

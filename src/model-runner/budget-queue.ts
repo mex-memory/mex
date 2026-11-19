@@ -5,9 +5,10 @@ import { openRecord, type RecordWriter, type RecordReader } from "../record/inde
 import { ownUsageStatus, decodeUsageWindows, saveUsageWindow, type UsageWindowObservation } from "../record/own-usage.js";
 import { automaticWorkEnabled } from "../controls/index.js";
 import { ZERO, warnUsageFailure, type Tokens } from "../record/usage.js";
-import { decideAdmission, subtractHeadless, weightedTokens, type BudgetSnapshot, type PlanWindow } from "./budget-policy.js";
+import { decideAdmission, planWindow, subtractHeadless, weightedTokens, type BudgetSnapshot, type PlanWindow } from "./budget-policy.js";
 import { knownPrice, modelWeights, OWN_REFERENCE, PRICE_PROFILE, REFERENCE_BATCH_UNITS } from "./budget-prices.js";
 import { ModelRunError } from "./errors.js";
+import { CEILING_WAIT, recordedModelSpend, tokenCount, tokenReservation, type ConsentedModelBatch } from "./consent.js";
 
 export type ModelWaitReason = "cap" | "fallback" | "usage-window" | "off" | "queue" | "storage" | "pricing";
 const REASONS: Record<ModelWaitReason, string> = {
@@ -19,15 +20,16 @@ const REASONS: Record<ModelWaitReason, string> = {
   pricing: "Waiting: the selected model needs a reference-price entry",
 };
 export class ModelWaitError extends Error {
-  constructor(readonly reason: ModelWaitReason) { super(REASONS[reason]); this.name = "ModelWaitError"; }
+  constructor(readonly reason: ModelWaitReason, message = REASONS[reason]) { super(message); this.name = "ModelWaitError"; }
 }
 export interface ModelJobContext { jobId: string; batch: number; projectId: string | null; recordHome?: string; }
 const context = new AsyncLocalStorage<ModelJobContext>();
 export function withModelJob<T>(job: ModelJobContext, work: () => T): T { return context.run(job, work); }
-export interface AutomaticModelBatch { estimate: Tokens; }
+export interface AutomaticModelBatch { estimate: Tokens; measuredUsageOnly?: boolean; }
 export interface BatchRequest {
   agent: string; model: string; projectPath: string;
   automatic?: AutomaticModelBatch;
+  consented?: ConsentedModelBatch;
   job?: ModelJobContext;
 }
 export interface ModelBatchRow {
@@ -97,7 +99,20 @@ function eligibility(writer: RecordWriter, entry: ModelBatchRow, snapshot: Budge
   if (!entry.automatic) return { allowed: true, nextReset: undefined as string | undefined };
   if (!Object.hasOwn(OWN_REFERENCE, entry.agent) || !knownPrice(entry.requested_model)) return { allowed: false, reason: "pricing" as ModelWaitReason };
   if (!automaticWorkEnabled(writer, entry.project_id, now)) return { allowed: false, reason: "off" as ModelWaitReason };
-  return decideAdmission(snapshot, entry.reserved_units, PARAMETERS, windows(read(writer), entry.agent, now), now);
+  const measured = JSON.parse(entry.pricing).measuredUsageOnly === true;
+  if (measured && !snapshot.ownUsageReadable) return { allowed: false, reason: "cap" as ModelWaitReason, nextReset: undefined };
+  const parameters = measured ? { ...PARAMETERS, floorBatches: 0 } : PARAMETERS;
+  return decideAdmission(snapshot, entry.reserved_units, parameters, windows(read(writer), entry.agent, now), now);
+}
+
+function consentHold(writer: RecordWriter, entry: ModelBatchRow, now: number): ModelWaitReason | undefined {
+  const reservation = tokenReservation(entry.pricing);
+  if (!reservation) return undefined;
+  if (!entry.job_id || !entry.project_id) return "storage";
+  if (!automaticWorkEnabled(writer, entry.project_id, now)) return "off";
+  if (planWindow(windows(read(writer), entry.agent, now), now).blocked) return "usage-window";
+  if (recordedModelSpend(writer, entry.job_id) > reservation.ceiling - reservation.tokens) return "cap";
+  return undefined;
 }
 
 /** Must run in a transaction. Never steals from a live owner on a timed lease. */
@@ -123,14 +138,17 @@ export function enqueueModelBatch(writer: RecordWriter, request: BatchRequest, n
   const job = request.job ?? context.getStore();
   const projectId = job?.projectId ?? writer.checkout(request.projectPath)?.project_id ?? null;
   if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(request.agent) || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/.test(request.model)) throw new ModelWaitError("pricing");
-  const estimate = request.automatic?.estimate;
+  if (request.consented && (request.automatic || !job?.jobId || !job.projectId
+    || !Number.isSafeInteger(request.consented.ceiling) || request.consented.ceiling < 1)) throw new ModelWaitError("storage");
+  const estimate = request.automatic?.estimate ?? request.consented?.estimate;
   if (request.automatic && !projectId && !job) throw new ModelWaitError("off");
   if (estimate) {
     for (const key of ["input", "cache_write", "cache_read", "output"] as const) if (!Number.isSafeInteger(estimate[key]) || estimate[key] < 0 || estimate[key] > 10_000_000) throw new ModelWaitError("pricing");
   }
   const weights = modelWeights(request.model, estimate ?? ZERO);
   const reserved = estimate ? weightedTokens(estimate, weights) : 0;
-  if (request.automatic && reserved === 0) throw new ModelWaitError("pricing");
+  if ((request.automatic || request.consented) && reserved === 0) throw new ModelWaitError("pricing");
+  const reservation = request.consented && { tokens: tokenCount(request.consented.estimate), ceiling: request.consented.ceiling };
   return transaction(writer, () => {
     recover(writer, now, alive);
     if (Number(writer.db.prepare("SELECT count(*) n FROM model_batches WHERE state IN ('queued','running')").get()!.n) >= MAX_PENDING) throw new ModelWaitError("queue");
@@ -138,7 +156,8 @@ export function enqueueModelBatch(writer: RecordWriter, request: BatchRequest, n
     const result = writer.db.prepare(`INSERT INTO model_batches(agent,requested_model,automatic,state,owner,pid,project_id,job_id,job_batch,created_at,reserved_units,pricing)
       VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?)`).run(request.agent, request.model, Number(!!request.automatic), owner, process.pid,
         projectId, job?.jobId ?? null, job?.batch ?? null, new Date(now).toISOString(), reserved,
-        JSON.stringify({ profile: PRICE_PROFILE, weights, estimated: true }));
+        JSON.stringify({ profile: PRICE_PROFILE, weights, estimated: true, ...(reservation ? { tokenReservation: reservation } : {}),
+          ...(request.automatic?.measuredUsageOnly ? { measuredUsageOnly: true, automaticTokens: tokenCount(request.automatic.estimate) } : {}) }));
     return row(writer, Number(result.lastInsertRowid))!;
   });
 }
@@ -149,6 +168,8 @@ export function claimModelBatch(writer: RecordWriter, entry: ModelBatchRow, now 
     const current = row(writer, entry.id);
     if (!current || current.owner !== entry.owner || current.state !== "queued") throw new ModelWaitError("storage");
     if (!current.automatic) {
+      const hold = consentHold(writer, current, now);
+      if (hold) return hold;
       if (writer.db.prepare("SELECT 1 FROM model_batches WHERE state='running'").get()) return "queue";
       const first = writer.db.prepare("SELECT id FROM model_batches WHERE state='queued' AND automatic=0 ORDER BY id LIMIT 1").get();
       if (first?.id !== entry.id) return "queue";
@@ -195,9 +216,10 @@ export function settleModelBatch(writer: RecordWriter, entry: ModelBatchRow, usa
 export function modelJobReady(writer: RecordWriter, jobId: string, batch: number, reason?: string | null, projectId?: string | null): boolean {
   if (reason === REASONS.off && !automaticWorkEnabled(writer, projectId)) return false;
   const entry = writer.db.prepare("SELECT * FROM model_batches WHERE job_id=? AND job_batch=? ORDER BY id DESC LIMIT 1").get(jobId, batch) as unknown as ModelBatchRow | undefined;
+  if (reason === CEILING_WAIT) return false;
   if (!entry?.wait_reason) return reason !== REASONS.pricing;
   if (entry.wait_reason === "queue" && writer.db.prepare("SELECT 1 FROM model_batches WHERE state='running'").get()) return false;
-  if (!entry.automatic) return true;
+  if (!entry.automatic) return !consentHold(writer, entry, Date.now());
   return eligibility(writer, entry, modelBudgetSnapshot(read(writer)), Date.now()).allowed;
 }
 export interface ModelAdmission {
@@ -213,7 +235,7 @@ export async function acquireModelAdmission(request: BatchRequest, signal?: Abor
   let writer: RecordWriter;
   try { writer = openRecord({ home: context.getStore()?.recordHome, projectPath: request.projectPath }); }
   catch {
-    if (request.automatic) throw new ModelWaitError("storage");
+    if (request.automatic || request.consented) throw new ModelWaitError("storage");
     // Retain the existing explicit-command accounting failure contract.
     warnUsageFailure(); return undefined;
   }
@@ -225,8 +247,9 @@ export async function acquireModelAdmission(request: BatchRequest, signal?: Abor
       if (signal?.aborted) throw new ModelRunError("cancelled", request.agent);
       const reason = claimModelBatch(writer, entry);
       if (!reason) break;
-      if (reason !== "queue" || request.automatic || Date.now() >= deadline) {
-        cancelModelBatch(writer, entry, reason); throw new ModelWaitError(reason);
+      if (reason !== "queue" || request.automatic || request.consented || Date.now() >= deadline) {
+        cancelModelBatch(writer, entry, reason);
+        throw new ModelWaitError(reason, reason === "cap" && request.consented ? CEILING_WAIT : undefined);
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     }

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { writeHookCheckout } from "../record/hook-checkouts.js";
 import { publishControlMirrors } from "./mirrors.js";
@@ -77,11 +78,17 @@ export function setDeliverySurface(writer: RecordWriter, surface: string, value:
   return scope;
 }
 
-function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string): void {
+export function setLedgerHoldout(writer: RecordWriter, enabled: boolean): void {
+  setPolicy(writer, "global", "ledger.holdout", previous =>
+    enabled ? (previous && /^[0-9a-f]{32}$/u.test(previous) ? previous : randomBytes(16).toString("hex")) : "");
+}
+
+function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string | ((previous: string | undefined) => string)): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {
+    const value = typeof enabled === "function" ? enabled(writer.setting(scope, key)) : String(enabled);
     writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
-      .run(scope, key, String(enabled));
+      .run(scope, key, value);
     publishControlMirrors(writer.db, writer.location, scope);
     writer.db.exec("COMMIT");
   } catch (error) {
@@ -100,5 +107,9 @@ export function automaticWorkEnabled(writer: Pick<RecordWriter, "setting" | "db"
   if (process.env.MEX_OFF === "1" || writer.setting("global", "enabled") === "false") return false;
   if (!projectId) return true;
   const rows = writer.db.prepare("SELECT state,off_until FROM checkouts WHERE project_id=?").all(projectId);
-  return rows.some(row => row.state === "on" || (row.state === "off until" && Number.isFinite(Date.parse(String(row.off_until))) && Date.parse(String(row.off_until)) <= now));
+  return rows.some(row => checkoutOn(row, now));
+}
+
+export function checkoutOn(row: { state?: unknown; off_until?: unknown }, now = Date.now()): boolean {
+  return row.state === "on" || row.state === "off until" && Date.parse(String(row.off_until)) <= now;
 }

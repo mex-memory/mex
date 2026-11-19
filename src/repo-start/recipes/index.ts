@@ -45,6 +45,7 @@ export interface ScanOptions {
   projectId?: string;
   recordDirectory?: string;
   now?: Date;
+  disabledWorkflows?: ReadonlySet<string>;
 }
 
 const VERBS: Record<Purpose, string> = { test: "Test", build: "Build", lint: "Lint", typecheck: "Type-check", format: "Check formatting of" };
@@ -141,7 +142,7 @@ export function scanRecipes(options: ScanOptions): RecipesFile {
   const node = readNode(files);
   const make = readMake(files), python = readPython(files), cargo = readCargo(files), gradle = readGradle(files);
   const packages: Package[] = [...node.packages, ...cargo.packages, ...python.packages, ...gradle.packages, ...make.packages];
-  const ci = [...readGitHub(files, packages), ...readGitLab(files, packages)];
+  const ci = [...readGitHub(files, packages, options.disabledWorkflows), ...readGitLab(files, packages)];
   const merged = merge([...node.found, ...make.found, ...python.found, ...cargo.found, ...gradle.found, ...ci])
     .filter(item => item.command.length <= MAX_COMMAND && !hasSecret(item.command) && !/[\x00-\x1f\x7f]/u.test(item.command))
     .slice(0, SCAN_LIMITS.recipes);

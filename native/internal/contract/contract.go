@@ -78,6 +78,8 @@ type Tool struct {
 	// RawInput is the agent's own tool input, kept so a profile can rebuild
 	// it when a reply replaces part of the input. Not part of the contract.
 	RawInput json.RawMessage `json:"-"`
+	// UseID deduplicates native receipts when the host identifies a tool use.
+	UseID string `json:"-"`
 }
 
 // ToolInput is a union: which fields are set depends on Tool.Name.

@@ -1,5 +1,8 @@
 /** Node alone owns these numbered, forward-only record.db migrations. */
 export const RECORD_SCHEMA_VERSION = 6;
+/** The hooks.db migrations are owned by Go. */
+export const HOOKS_SCHEMA_VERSION = 13;
+export const LEDGER_REPORT_SCHEMA_VERSION = 13;
 export interface Migration { version: number; sql: string; }
 export const recordMigrations: readonly Migration[] = [{ version: 1, sql: `
 CREATE TABLE IF NOT EXISTS projects (

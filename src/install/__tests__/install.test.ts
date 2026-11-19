@@ -11,9 +11,10 @@ import { readSnapshot } from "../files.js";
 import { EVENTS, installSettings, parseSettings } from "../settings.js";
 import { openRecord } from "../../record/index.js";
 import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
+import { acceptCompact, prepareCompact, type CompactSelection } from "../../compaction/control.js";
 
 const temps: string[] = [];
-afterEach(() => { vi.restoreAllMocks(); for (const path of temps.splice(0)) rmSync(path, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const path of temps.splice(0)) rmSync(path, { recursive: true, force: true }); });
 function write(path: string, value: string | Buffer) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, value); }
 function fixture() {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), "mex-install-"))); temps.push(base);
@@ -111,6 +112,33 @@ describe("machine-wide hook installation", () => {
     const result = await uninstallAgents({ home: f.home });
     expect(result.conflicts).toEqual([]);
     expect(JSON.parse(readFileSync(f.claude, "utf8"))).toEqual({ env: { OLD: "kept", NEW: "user-added" }, hooks: { SessionStart: [{ hooks: [{ type: "command", command: "user-added-hook" }] }] } });
+  });
+
+  it("removes hooks and the runtime when a compaction setting in the same file was edited", async () => {
+    const f = fixture();
+    await installAgents(f.options);
+    vi.stubEnv("CLAUDE_CONFIG_DIR", dirname(f.claude));
+    const selected: CompactSelection = { agent: "claude-code", model: "claude-opus-4-6", scope: "user",
+      choice: "window", checkout: f.repo, value: 240_000 };
+    const writer = openRecord({ home: f.home });
+    try { await acceptCompact(writer, selected, prepareCompact(selected).offer); }
+    finally { writer.close(); }
+    const settings = JSON.parse(readFileSync(f.claude, "utf8"));
+    settings.modelSettings[selected.model].autoCompactWindow = 260_000;
+    write(f.claude, JSON.stringify(settings));
+
+    const result = await uninstallAgents({ home: f.home, purge: true });
+    expect(result.conflicts).toEqual([f.claude]);
+    expect(result.purged).toBe(false);
+    expect(JSON.parse(readFileSync(f.claude, "utf8"))).toEqual({
+      modelSettings: { [selected.model]: { autoCompactWindow: 260_000 } },
+    });
+    expect(existsSync(f.codex)).toBe(false);
+    expect(existsSync(join(f.home, "bin", process.platform === "win32" ? "mex-hook.exe" : "mex-hook"))).toBe(false);
+    expect(installationChanges({ home: f.home })).toEqual([]);
+    const record = openRecord({ home: f.home });
+    try { expect(record.db.prepare("SELECT 1 FROM settings WHERE scope='compaction'").get()).toBeDefined(); }
+    finally { record.close(); }
   });
 
   it("retains runtime and data when a hook was changed and needs manual recovery", async () => {

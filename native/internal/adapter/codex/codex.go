@@ -70,6 +70,7 @@ type payload struct {
 	AgentType      string          `json:"agent_type"`
 	Prompt         string          `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
+	ToolUseID      string          `json:"tool_use_id"`
 	ToolInput      json.RawMessage `json:"tool_input"`
 	ToolResponse   json.RawMessage `json:"tool_response"`
 }
@@ -115,6 +116,9 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		if !out.OK {
 			ev.Kind = contract.PostToolFailure
 		}
+	}
+	if ev.Tool != nil {
+		ev.Tool.UseID = p.ToolUseID
 	}
 	return ev, nil
 }

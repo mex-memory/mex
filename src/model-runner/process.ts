@@ -1,8 +1,9 @@
 import crossSpawn from "cross-spawn";
-import type { ChildProcess } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type { AgentCommand, BackgroundAgentTool } from "../agent-command.js";
 import { createCallUsage, recordModelCall, warnUsageFailure } from "../record/usage.js";
 import { acquireModelAdmission, type AutomaticModelBatch, type ModelAdmission } from "./budget-queue.js";
+import type { ConsentedModelBatch } from "./consent.js";
 import { createPopulationActivityDecoder, USAGE_LIMIT_PATTERN, usageLimitResetTime, type PopulationActivitySignal, type PopulationAgentUsage } from "./activity.js";
 import { createPopulationTranscriptDecoder, type PopulationTranscriptSignal } from "./transcript.js";
 import { ModelRunError, type ModelFailure } from "./errors.js";
@@ -21,12 +22,14 @@ export interface ModelProcessOptions {
   maxLineBytes?: number;
   requestedModel?: string;
   automatic?: AutomaticModelBatch;
+  consented?: ConsentedModelBatch;
+  executionDirectory?: string;
   queueTimeoutMs?: number;
   onStdoutChunk?: (chunk: Buffer) => void;
   onActivity?: (activity: PopulationActivitySignal & { tool: BackgroundAgentTool }) => void;
   onTranscript?: (entry: PopulationTranscriptSignal & { tool: BackgroundAgentTool }) => void;
   onUsage?: (usage: PopulationAgentUsage) => void;
-  __internal?: { spawn?: typeof crossSpawn; onSpawn?: (pid: number) => void };
+  __internal?: { spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess; onSpawn?: (pid: number) => void };
 }
 export interface ModelProcessResult { usage: ReturnType<ReturnType<typeof createCallUsage>["finish"]>; }
 
@@ -38,7 +41,8 @@ export async function runModelProcess(
 ): Promise<ModelProcessResult> {
   const modelIndex = invocation.args.indexOf("--model");
   const model = options.requestedModel ?? (modelIndex >= 0 ? invocation.args[modelIndex + 1] : undefined) ?? "unknown";
-  const admission = await acquireModelAdmission({ agent: tool, model, projectPath: cwd, automatic: options.automatic }, options.signal, options.queueTimeoutMs);
+  const admission = await acquireModelAdmission({ agent: tool, model, projectPath: cwd, automatic: options.automatic,
+    consented: options.consented }, options.signal, options.queueTimeoutMs);
   try { return await runOwnedProcess(tool, invocation, cwd, options, admission); }
   finally { admission?.close(); }
 }
@@ -58,9 +62,11 @@ function runOwnedProcess(
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
+      const env: NodeJS.ProcessEnv = { ...process.env, ...invocation.env, MEX_BACKGROUND: "1" };
+      if (options.consented) for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN"]) delete env[name];
       child = (options.__internal?.spawn ?? crossSpawn)(invocation.command, invocation.args, {
-        cwd,
-        env: { ...process.env, ...invocation.env, MEX_BACKGROUND: "1" },
+        cwd: options.executionDirectory ?? cwd,
+        env,
         stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         windowsHide: true,
         // POSIX process groups include agent-created shell/worker descendants.
@@ -144,12 +150,13 @@ function runOwnedProcess(
         try { options.onUsage?.(decoder.usage); } catch { /* observation only */ }
       }
       const measured = accounting.finish();
+      const incomplete = !!options.consented && (!!failure || code !== 0 || !!signal || decoder.failed || !decoder.completed);
       let recorded = true;
       for (const usage of measured.byModel ?? [measured]) {
-        const saved = recordModelCall({ ...usage, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.purpose, projectPath: cwd, batchId: admission?.id }, admission ? { home: admission.home } : {});
+        const saved = recordModelCall({ ...usage, estimated: usage.estimated || incomplete, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.purpose, projectPath: cwd, batchId: admission?.id }, admission ? { home: admission.home } : {});
         recorded = saved && recorded;
       }
-      try { admission?.finish(measured, recorded); } catch { warnUsageFailure(); }
+      try { admission?.finish({ ...measured, estimated: measured.estimated || incomplete }, recorded); } catch { warnUsageFailure(); }
       if (options.signal?.aborted) reject(new ModelRunError("cancelled", tool));
       else if (failure) reject(failure);
       // A limit notice in a session that still finished cleanly is advisory.

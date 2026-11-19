@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"syscall"
+	"time"
 	"unicode/utf16"
 )
 
@@ -25,6 +26,8 @@ type RunOptions struct {
 	// Save saves the full output and returns its number; nil, or an error,
 	// means nothing is saved and so nothing is trimmed.
 	Save func(text string, exitCode int) (int, error)
+	// Observe receives only the sizes before and after this wrapper's view.
+	Observe func(before, after int, elapsed time.Duration)
 }
 
 // Run is `mex-hook run --shell <shell> -- <command>` (plan sheet 35, L4): it
@@ -32,7 +35,8 @@ type RunOptions struct {
 // output (trimmed like the hook trims Claude Code's, on success only) and
 // returns its exit code.
 func Run(o RunOptions) int {
-	fmt.Fprintf(o.Stdout, "$ %s\n", o.Command)
+	started := time.Now()
+	prefix, prefixErr := fmt.Fprintf(o.Stdout, "$ %s\n", o.Command)
 	cmd, err := shellCommand(o.Shell, o.Command)
 	if err != nil {
 		fmt.Fprintf(o.Stderr, "mex run: %v\n", err)
@@ -41,7 +45,9 @@ func Run(o RunOptions) int {
 	cmd.Stdin = o.Stdin
 	capture := &capped{limit: MaxSaved, pass: o.Stdout}
 	cmd.Stdout, cmd.Stderr = capture, capture
+	setup := time.Since(started)
 	err = cmd.Run()
+	finished := time.Now()
 	code := exitCode(cmd, err)
 	if code == 127 && cmd.ProcessState == nil {
 		fmt.Fprintf(o.Stderr, "mex run: %v\n", err)
@@ -52,10 +58,13 @@ func Run(o RunOptions) int {
 		return code
 	}
 	text := capture.buf.String()
+	original := len(text)
 	if code == 0 && !o.Raw && o.Save != nil && len(text) > MinChars && Noisy(o.Command) {
 		text, _ = TrimAndSave(text, code, func() (int, error) { return o.Save(text, code) })
 	}
-	_, _ = io.WriteString(o.Stdout, text)
+	if n, err := io.WriteString(o.Stdout, text); err == nil && n == len(text) && prefixErr == nil && o.Observe != nil {
+		o.Observe(original, prefix+len(text), setup+time.Since(finished))
+	}
 	return code
 }
 

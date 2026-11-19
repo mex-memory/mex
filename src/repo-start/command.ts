@@ -73,11 +73,6 @@ function killAt(point: KillPoint, env: NodeJS.ProcessEnv): void {
   if (env[KILL_AT_VARIABLE] === point) process.kill(process.pid, "SIGKILL");
 }
 
-function checkoutOn(row: CheckoutRow, now = Date.now()): boolean {
-  if (row.state === "on") return true;
-  return row.state === "off until" && Number.isFinite(Date.parse(String(row.off_until))) && Date.parse(String(row.off_until)) <= now;
-}
-
 const MEMORY_NAMES = { "claude-code": "Claude Code", codex: "Codex" } as const;
 function list(names: string[]): string {
   return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
@@ -156,11 +151,11 @@ export async function readRules(root: string, listing?: Promise<string[] | undef
 /** Read recipes and save recipes.json; a failure leaves the line out rather than stopping the screen. */
 export async function readRecipes(root: string, projectId: string, env: NodeJS.ProcessEnv) {
   try {
-    const [{ scanRecipes }, { nativeBinary }, { recordLocation }, { writeFactFile }] = await Promise.all([
-      import("./recipes/index.js"), import("../knowledge/check.js"), import("../record/location.js"), import("./facts.js"),
+    const [{ scanRecipes }, { nativeBinary }, { recordLocation }, { writeFactFile }, { disabledWorkflows }] = await Promise.all([
+      import("./recipes/index.js"), import("../knowledge/check.js"), import("../record/location.js"), import("./facts.js"), import("../learn-deeper/workflows.js"),
     ]);
     const location = recordLocation();
-    const file = scanRecipes({ root, binary: nativeBinary(env), projectId, recordDirectory: location.directory });
+    const file = scanRecipes({ root, binary: nativeBinary(env), projectId, recordDirectory: location.directory, disabledWorkflows: await disabledWorkflows(root, projectId) });
     writeFactFile(location, projectId, "recipes.json", file);
     return file;
   } catch { return undefined; }
@@ -252,6 +247,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     }
     killAt("registered", env);
     learning = writer.setting("global", "learning.statements");
+    const { checkoutOn } = await import("../controls/index.js");
     if (!checkoutOn(checkout)) {
       write(`MEX is off for this ${git ? "repo" : "folder"}${checkout.state === "off until" ? ` until ${checkout.off_until}` : ""}. Run \`mex on\` to turn it back on.`);
       return { exitCode: 0, place: place.kind, projectId, turnedOn: false };
@@ -435,11 +431,17 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   }
   const ended = exitNow ? { exitNow: true as const } : {};
 
-  // The offer slot: empty in beta.1; learning-03 registers its question.
+  // One offer after the free results. A test offer can occupy the same slot.
   const { dueOffer } = await import("./offers.js");
   const context = { projectId, root: checkout.path };
   const offer = dueOffer(context);
-  if (!offer || exitCode) return { exitCode, place: place.kind, projectId, turnedOn: true, ...ended };
+  if (!offer || exitCode) {
+    if (!exitCode && !exitNow && git) {
+      const { offerLearning } = await import("../learn-deeper/offer.js");
+      await offerLearning({ root: checkout.path, projectId, write, interactive, confirm: options.ask });
+    }
+    return { exitCode, place: place.kind, projectId, turnedOn: true, ...ended };
+  }
   const summary = { question: offer.question, estimate: offer.estimate, command: offer.command };
   if (!interactive) {
     write(`${offer.question} (${offer.estimate}). Nothing paid was started; to start it, run: ${offer.command}`);

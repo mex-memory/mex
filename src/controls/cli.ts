@@ -1,13 +1,25 @@
 import { openRecord } from "../record/index.js";
+import { toolLevers } from "../ledger/accounting.js";
+import { reenableLever } from "../ledger/view.js";
 import { offDeadline, setCheckoutEnabled, setGlobalEnabled, setCaptureEnabled } from "./index.js";
 import { rebuildNative } from "../knowledge/native.js";
 
-export function runCheckoutSwitch(enabled: boolean, options: { for?: string; all?: boolean; json?: boolean }): void {
+export function runCheckoutSwitch(enabled: boolean, options: { for?: string; all?: boolean; lever?: string; json?: boolean }): void {
   const until = options.for === undefined ? null : offDeadline(options.for);
   if (enabled && until) throw new Error("Use --for with `mex off`.");
   if (options.all && until) throw new Error("Use --for for a repo; global off is undone with `mex on --all`.");
+  const lever = toolLevers.find(name => name === options.lever);
+  if (options.lever !== undefined && (!enabled || options.all || !lever)) {
+    throw new Error("Use `mex on --lever` with outline, shell-trim or codex-wrapper.");
+  }
   const writer = openRecord();
   try {
+    if (lever) {
+      reenableLever(writer, lever);
+      if (options.json) console.log(JSON.stringify({ scope: "user", lever, state: "on" }));
+      else console.log(`MEX will evaluate ${lever} over the next 10 new sessions that use it.`);
+      return;
+    }
     if (options.all) {
       setGlobalEnabled(writer, enabled);
       if (options.json) console.log(JSON.stringify({ scope: "global", state: enabled ? "on" : "off" }));

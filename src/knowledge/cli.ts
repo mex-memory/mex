@@ -3,9 +3,29 @@ import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
 import { buildReviewCommand } from "../review/cli.js";
 
 export function buildKnowledgeCommands(): Command[] {
-  const adviceReport = new Command("report").description("Read local advisories about advice already used on this branch")
-    .option("--json", "Print local advisories as JSON")
+  const adviceReport = new Command("report").description("Read local advisories or session cost estimates")
+    .option("--json", "Print the report as JSON")
+    .option("--ledger", "Show session cost, context footprint and holdout comparisons")
+    .addOption(new Option("--holdout <on|off>", "Set the local randomized holdout study").choices(["on", "off"]))
     .action(async opts => run(opts.json, async () => {
+      if (opts.ledger && opts.holdout) throw new KnowledgeError("INVALID_OPTION", "Set the holdout study and read the ledger in separate commands.");
+      if (opts.holdout) {
+        const { setLedgerHoldout } = await import("../controls/index.js");
+        const { openRecord } = await import("../record/index.js");
+        const writer = openRecord();
+        const enabled = opts.holdout === "on";
+        try { setLedgerHoldout(writer, enabled); } finally { writer.close(); }
+        if (opts.json) console.log(JSON.stringify({ ok: true, holdoutEnabled: enabled }));
+        else console.log(enabled ? "MEX holdout study is on. About 10% of new eligible sessions will run without MEX hooks." : "MEX holdout study is off.");
+        return;
+      }
+      if (opts.ledger) {
+        const { ledgerReport, formatLedgerReport } = await import("../ledger/report.js");
+        const result = ledgerReport(process.cwd());
+        if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
+        else console.log(formatLedgerReport(result));
+        return;
+      }
       const { adviceReport, formatAdvice } = await import("../judge/advice.js");
       const result = await adviceReport({ projectPath: process.cwd() });
       if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
@@ -290,6 +310,8 @@ export function buildKnowledgeCommands(): Command[] {
       if (opts.json) { const { entries: _entries, ...shown } = plan; console.log(JSON.stringify({ ok: true, applied: false, ...shown })); return; }
       const lines = [plan.share.length ? `Share ${plan.share.length} with the team, on a new branch ${plan.branch} from ${plan.baseName}:` : "Nothing to share yet."];
       for (const item of plan.share) lines.push(`  ${item.id}  ${item.one_line}`);
+      const covered = plan.coverage.filter(item => item.sources.length).length;
+      if (covered) lines.push(`Source IDs, hashes, and links for ${covered} selected ${covered === 1 ? "entry go" : "entries go"} in .mex/sources.json. Use --json to review them.`);
       if (plan.blocked.length) { lines.push("", "Held back:"); for (const b of plan.blocked) lines.push(`  ${b.id}  ${b.reason}`); }
       if (plan.skipped.length) { lines.push("", "Not offered:"); for (const s of plan.skipped) lines.push(`  ${s.id}  ${s.reason}`); }
       if (plan.share.length) lines.push("", "Leave one out with --skip <id>. To share exactly this:", `  mex share --apply --expect ${plan.revision}    (add --pr to open a pull request)`);

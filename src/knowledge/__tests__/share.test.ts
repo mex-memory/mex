@@ -133,7 +133,9 @@ describe("mex share", () => {
     expect(git("rev-parse", `${result.branch}~1`)).toBe(git("rev-parse", "main"));
     expect(result.files.sort()).toEqual([".claude/rules/mex.md", ".mex/config.json", `.mex/learned/${id}.md`, ".mex/native.json", ".mex/sources.json"]);
     expect(JSON.parse(git("show", `${result.branch}:.mex/config.json`))).toEqual({ scaffold_id: "keep-me", knowledge: { version: 1, shared: true } });
-    expect(JSON.parse(git("show", `${result.branch}:.mex/sources.json`)).rule_files.map((f: { path: string }) => f.path)).toEqual(["CLAUDE.md"]);
+    const manifest = JSON.parse(git("show", `${result.branch}:.mex/sources.json`));
+    expect(manifest.rule_files.map((f: { path: string }) => f.path)).toEqual(["CLAUDE.md"]);
+    expect(manifest.learn_deeper).toEqual(plan.coverage);
     expect(git("show", `${result.branch}:.claude/rules/mex.md`)).toContain(id);
     // Nothing left to share now that main... still lacks it: the branch isn't merged.
     expect(code(() => runShare({ projectPath: root }, plan.revision, { now }))).toBe("STALE_PREVIEW");

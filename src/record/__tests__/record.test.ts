@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { buildSync } from "esbuild";
 import { openRecord, openRecordReadOnly, openHooksReadOnly, migrateRecord, schemaVersion, projectIdentity, recordLocation, projectDataDirectory, JOB_STATES } from "../index.js";
 import { absolutePath, realPath, shortHash } from "../project.js";
+import { HOOKS_SCHEMA_VERSION } from "../schema.js";
 import { mexHomeDir } from "../../global-config.js";
 import { darwinNetworkMount, windowsNetworkHome, WINDOWS_NETWORK_QUERY_TIMEOUT_MS } from "../location.js";
 
@@ -86,9 +87,9 @@ describe("record schema and ownership", () => {
   });
   it("refuses a future hooks version independently of record.db", () => {
     const home = temp(); const db = new DatabaseSync(join(home, "hooks.db"));
-    db.exec("PRAGMA user_version=11"); db.close();
+    db.exec(`PRAGMA user_version=${HOOKS_SCHEMA_VERSION + 1}`); db.close();
     const reader = openHooksReadOnly({ home, isNetwork: () => false })!; closes.push(() => reader.close());
-    expect(reader.diagnostic).toContain("hooks.db schema version 11 is newer than supported version 10");
+    expect(reader.diagnostic).toContain(`hooks.db schema version ${HOOKS_SCHEMA_VERSION + 1} is newer than supported version ${HOOKS_SCHEMA_VERSION}`);
   });
 });
 

@@ -28,7 +28,9 @@ type Continuity struct {
 	Agent       string    `json:"agent"`
 	Updated     string    `json:"updated"`
 	LastAsk     string    `json:"last_ask,omitempty"`
+	TypedAskAt  string    `json:"typed_ask_at,omitempty"`
 	LastFailure *Failure  `json:"last_failure,omitempty"`
+	FailureAt   string    `json:"failure_at,omitempty"`
 	NextSession []string  `json:"next_session,omitempty"` // items the filter labels next-session (learning-02)
 	updatedAt   time.Time `json:"-"`
 }
@@ -122,18 +124,25 @@ func keepContinuity(ev contract.Event, env Env) error {
 		}
 		c = Continuity{Version: 1, ProjectID: ev.ProjectID, Checkout: ev.Checkout, Branch: branch, Session: ev.SessionID, Agent: ev.Agent}
 	}
+	at := now(env).UTC()
 	switch {
 	case ask != "":
 		c.LastAsk = ask
+		c.TypedAskAt = ""
+		if Marks(ev, env.getenv) == "" {
+			c.TypedAskAt = at.Format(time.RFC3339Nano)
+		}
 	case failure != nil:
 		c.LastFailure = failure
+		c.FailureAt = at.Format(time.RFC3339Nano)
 	case c.LastFailure != nil && c.LastFailure.Command == passed:
 		c.LastFailure = nil
+		c.FailureAt = ""
 	default:
 		return nil
 	}
 	c.Head = Head(ev.Checkout, branch)
-	c.Updated = now(env).UTC().Format(time.RFC3339)
+	c.Updated = at.Format(time.RFC3339)
 	return writeJSON(ContinuityPath(env.RecordDirectory, ev.Checkout, branch), c)
 }
 

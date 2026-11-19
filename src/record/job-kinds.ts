@@ -9,6 +9,7 @@ import "../knowledge/native-job.js";
 import "../repo-start/history/job.js";
 import "../judge/job.js";
 import "../filter/job.js";
+import "../learn-deeper/job.js";
 import "../repo-start/refresh.js";
 
 /**

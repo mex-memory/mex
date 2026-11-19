@@ -17,7 +17,8 @@ export function evidenceHolds(evidence: Evidence): boolean {
   }
   if (evidence.source === "observed" || evidence.source === "agent-memory") return !!evidence.corroboration && ["ci", "script", "docs"].includes(evidence.corroboration.kind) && evidence.corroboration.verified === true && evidence.corroboration.sameClaim === true;
   if (!["docs", "ci", "review"].includes(evidence.source)) return false;
-  const pulls = (evidence.pullRequests ?? []).filter(p => p.merged && p.authorized && Number.isSafeInteger(p.number) && p.number > 0 && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(p.repository));
+  const pulls = (evidence.pullRequests ?? []).filter(p => p.merged && p.authorized && Number.isSafeInteger(p.number) && p.number > 0
+    && p.repository.length <= 240 && /^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)+$/u.test(p.repository));
   // Two PR numbers from unrelated repositories do not corroborate one project.
   return pulls.some(p => new Set(pulls.filter(other => other.repository.toLowerCase() === p.repository.toLowerCase()).map(other => other.number)).size >= 2);
 }

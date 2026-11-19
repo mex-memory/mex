@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { MANIFEST_BYTES, MANIFEST_PATH, parseManifest, type SharedCoverage } from "../learn-deeper/coverage.js";
 import { absolutePath } from "../record/project.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
@@ -54,16 +55,21 @@ function writeConfig(worktree: string): void {
 }
 
 /** What was read to build the team's knowledge, so teammates don't pay to read it again. */
-function writeSources(worktree: string): void {
+function writeSources(worktree: string, approved: SharedCoverage[]): void {
   const scan = scanRuleFiles(worktree);
-  const sources = { version: 1, rule_files: scan.files.map(f => ({ path: f.path, hash: f.hash, agents: f.agents })) };
-  writeMetadata(join(worktree, ".mex", "sources.json"), sources);
+  const path = join(worktree, MANIFEST_PATH);
+  const existing = parseManifest(readBoundedTextFile(path, MANIFEST_BYTES));
+  const coverage = [...new Map([...(existing?.learn_deeper ?? []), ...approved].map(item => [item.id, item])).values()];
+  const sources = { ...existing, version: 1, rule_files: scan.files.map(f => ({ path: f.path, hash: f.hash, agents: f.agents })),
+    ...(coverage.length ? { learn_deeper: coverage } : {}) };
+  parseManifest(`${JSON.stringify(sources, null, 2)}\n`);
+  writeMetadata(path, sources);
 }
 
 /** Shared metadata and native files, also used by upgrade's reviewed worktree. */
-export function writeSharedKnowledgeFiles(options: KnowledgeOptions): string[] {
+export function writeSharedKnowledgeFiles(options: KnowledgeOptions, approved: SharedCoverage[] = []): string[] {
   writeConfig(options.projectPath);
-  writeSources(options.projectPath);
+  writeSources(options.projectPath, approved);
   const native = rebuildNative(options, { sharedOnly: true, force: true });
   return [".mex/config.json", ".mex/sources.json", ...(existsSync(join(options.projectPath, ".mex/native.json")) ? [".mex/native.json"] : []), ...native.written ?? [], ...native.removed ?? [], ...native.unchanged ?? []];
 }
@@ -94,7 +100,7 @@ function writeShare(worktree: string, plan: SharePlan, originalOptions: Knowledg
     applyTeamWrite(preview, preview.revision, options, c.entry.mex.source.quote);
     paths.add(preview.path);
   }
-  for (const path of writeSharedKnowledgeFiles(options)) paths.add(path);
+  for (const path of writeSharedKnowledgeFiles(options, plan.coverage)) paths.add(path);
   return Object.fromEntries([...paths].map(path => [path, existsSync(join(worktree, path)) ? digest(readFileSync(join(worktree, path))) : null]));
 }
 
@@ -142,6 +148,7 @@ export function runShare(options: KnowledgeOptions, expected: string, run: Share
     version: 1, branch: plan.branch, base: plan.base, step: "started", ids: plan.entries.map(e => e.entry.mex.id),
     worktree: join(dir, `share-${randomBytes(4).toString("hex")}`), started: (run.now ?? new Date()).toISOString().slice(0, 10),
     baseName: plan.baseName, entryHashes: Object.fromEntries(plan.entries.map(e => [e.entry.mex.id, digest(serializeEntry(e.entry))])),
+    coverageHash: digest(JSON.stringify(plan.coverage)),
   };
   saveShareState(dir, state);
   if (run.stopAfter === "started") throw new KnowledgeError("SHARE_STOPPED", "Stopped after started.");
@@ -196,7 +203,9 @@ export function finishShare(options: KnowledgeOptions, run: ShareRun = {}): Shar
   if (ORDER.indexOf(state.step) < ORDER.indexOf("written")) {
     plan = prepareShare(options, { now: run.now });
     plan.entries = plan.entries.filter(e => state.ids.includes(e.entry.mex.id));
+    plan.coverage = state.coverageHash ? plan.coverage.filter(item => state.ids.includes(item.id)) : [];
     if (plan.base !== state.base || plan.entries.length !== state.ids.length || !state.entryHashes
+      || state.coverageHash && state.coverageHash !== digest(JSON.stringify(plan.coverage))
       || plan.entries.some(e => state.entryHashes![e.entry.mex.id] !== digest(serializeEntry(e.entry)))) plan = undefined;
   }
   return complete(dir, root, state, plan, run, options);
