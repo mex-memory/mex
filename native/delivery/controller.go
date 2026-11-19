@@ -489,6 +489,9 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 			}
 		}
 	}
+	for _, g := range order {
+		monitorGroup(env, g)
+	}
 	var out []*group
 	_, ledgerErr := os.Stat(filepath.Join(env.RecordDirectory, "hooks.db"))
 	for _, g := range order {

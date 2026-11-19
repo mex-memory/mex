@@ -83,6 +83,7 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		if state.save(file) != nil {
 			return contract.Reply{} // without a record it could stop twice
 		}
+		noteViolation(env.RecordDirectory, b.project, id, env.Now)
 		return contract.Reply{Decision: contract.Deny, Reason: bumpReason(b, fullText(env, b))}
 	}
 	return contract.Reply{}
