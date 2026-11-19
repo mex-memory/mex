@@ -47,6 +47,7 @@ describe.skipIf(!enabled)("pattern self-check with the native binary", () => {
       "apps/api/b.ts": "export const b = 1\n",
       "apps/api/c.ts": "console.log('debug')\n",
       "apps/api/d.ts": "console.log('more')\n",
+      "apps/api/e.ts": "console.log('again')\n",
     };
     for (const [path, text] of Object.entries(files)) writeFileSync(join(root, path), text);
     const options = { projectPath: root, env: { ...process.env, MEX_HOME: join(base, "home"), MEX_HOOK_BINARY: binary } };
@@ -54,7 +55,7 @@ describe.skipIf(!enabled)("pattern self-check with the native binary", () => {
     await buildIndex({ root, projectId: project.projectId, recordDirectory: project.location.directory, workers: 0 });
 
     const verdicts = checkPatterns([moment, logging], ["apps/api/**"], options);
-    expect(verdicts?.map(v => [v.keep, v.files, v.matched])).toEqual([[true, 4, 0], [false, 4, 2]]);
+    expect(verdicts?.map(v => [v.keep, v.files, v.matched])).toEqual([[true, 5, 0], [false, 5, 3]]);
     expect(keptPatterns([moment, logging], verdicts)).toEqual([{ type: "anti", match: "literal", pattern: "from 'moment'" }]);
   }, 60_000);
 });
