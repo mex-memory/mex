@@ -69,6 +69,15 @@ func CompileStructural(p string) (*Structural, error) {
 	return s, nil
 }
 
+// Words is the number of words the pattern names; a pattern of wildcards
+// and punctuation alone matches too much to stop an edit.
+func (s *Structural) Words() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.needles)
+}
+
 // Match reports whether the pattern occurs anywhere in code.
 func (s *Structural) Match(code string) bool {
 	if s == nil {
