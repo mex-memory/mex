@@ -1226,31 +1226,43 @@ export function buildTypeScriptExtraction(
 }
 
 /**
- * The warm path (graph-02): one project's program request, built exactly as
- * an extraction builds it. `ownedElsewhere` are the corpus files more specific
- * projects own, which this project's program must not root.
- * @internal
+ * The warm path (graph-02): what every project's program request shares, built
+ * once as an extraction builds it: one input ledger, the corpus, the parsed
+ * projects. @internal
  */
-export function warmProjectRequest(
-  rootDir: string,
-  compilerPaths: readonly string[],
-  projectId: string,
-  ownedElsewhere: ReadonlySet<string>,
-  options: CompilerExtractionOptions = {},
-): ProjectOpenRequest | undefined {
+export interface WarmCompilerContext {
+  root: string;
+  inputs: CompilerInputLedger;
+  candidates: ReadonlySet<string>;
+  projects: readonly ParsedProject[];
+}
+
+/** @internal */
+export function warmCompilerContext(rootDir: string, compilerPaths: readonly string[], options: CompilerExtractionOptions = {}): WarmCompilerContext {
   const root = resolve(rootDir);
   const inputs = new CompilerInputLedger(root, options);
   const candidates = collectCandidates(root, compilerPaths, inputs);
   inputs.setCandidateFiles(candidates);
   const candidateSet = new Set(candidates);
-  const project = parseProjects(root, candidateSet, inputs).find((candidate) => candidate.id === projectId);
+  return { root, inputs, candidates: candidateSet, projects: parseProjects(root, candidateSet, inputs) };
+}
+
+/**
+ * One project's program request, rooted as an extraction roots it.
+ * `ownedElsewhere` are the corpus files other projects own. @internal
+ */
+export function warmProjectRequest(context: WarmCompilerContext, projectId: string, ownedElsewhere: ReadonlySet<string>): ProjectOpenRequest | undefined {
+  const project = context.projects.find((candidate) => candidate.id === projectId);
   if (!project) return undefined;
   const rootNames = project.parsed.fileNames.filter((file) => {
     if (DECLARATION_FILE.test(file)) return true;
     const absolute = normalizedAbsolute(file);
-    return candidateSet.has(absolute) && !ownedElsewhere.has(absolute);
+    return context.candidates.has(absolute) && !ownedElsewhere.has(absolute);
   });
-  return { root, project, rootNames, options: { ...project.parsed.options, skipLibCheck: true, noEmit: true }, candidates: candidateSet, inputs };
+  return {
+    root: context.root, project, rootNames, options: { ...project.parsed.options, skipLibCheck: true, noEmit: true },
+    candidates: context.candidates, inputs: context.inputs,
+  };
 }
 
 /** What finishing one warm capture needs from the rest of the corpus. @internal */

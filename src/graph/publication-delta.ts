@@ -250,6 +250,8 @@ export function applyRowDelta(
   delta: RowDelta,
   records: ReadonlyMap<string, FileRecord>,
   readSource: (path: string) => string,
+  /** The warm path passes only the files it rewrites; every other file row stays as it is. */
+  options: { partialRecords?: boolean } = {},
 ): void {
   const touched = [...delta.rewritten.map((group) => group.path), ...delta.removed];
 
@@ -306,7 +308,7 @@ export function applyRowDelta(
     }
     if (!before || fileRecordChanged(before, record)) store.upsertFile(record);
   }
-  for (const before of store.getAllFileRecords()) {
+  for (const before of options.partialRecords ? [] : store.getAllFileRecords()) {
     if (records.has(before.path)) continue;
     store.deleteSourceChunks(before.path);
     store.deleteFileRecord(before.path);

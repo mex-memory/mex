@@ -281,76 +281,90 @@ export class ApiProjectCompiler implements ProjectCompiler {
 }
 
 /**
- * One project's program kept alive between edits (the warm path, graph-02).
- * It is built exactly as an extraction builds the project, in its own
- * snapshot; an edit replaces the file's text in a new snapshot layer, and the
- * server re-checks only what the change reaches.
+ * The programs of a warm checkout's projects, kept alive between edits in one
+ * server and one snapshot (graph-02). Each is built exactly as an extraction
+ * builds its project; an edit replaces the file's text in a new snapshot
+ * layer, and the server re-checks only what the change reaches.
  */
-export class WarmApiProject {
+export class WarmApiServer {
   private api: API7 | undefined;
-  private snapshot: { dispose(): void; update(params: unknown): unknown; getProgram(id: unknown): Program | undefined } | undefined;
-  private program: Program | undefined;
-  private readonly translation: CompilerOptionsTranslation;
+  private snapshot: WarmSnapshot | undefined;
+  private readonly programs = new Map<string, { request: ProjectOpenRequest; program: Program; changes: string[] }>();
 
-  constructor(readonly server: TypeScriptApiServer, readonly request: ProjectOpenRequest) {
-    this.translation = translateCompilerOptions(request.options);
-    this.api = server.start({
-      cwd: request.root,
-      fs: ledgerFileSystem(request.root, request.inputs, server.libraryDirectories, server.serverFS),
-    });
-    const createSnapshot = this.api.createSnapshot as unknown as (params: unknown) => {
-      dispose(): void; update(params: unknown): unknown; getProgram(id: unknown): Program | undefined;
-      operation: { createdPrograms?: readonly Program[] };
-    };
-    const snapshot = createSnapshot.call(this.api, {
-      fileSystem: stagedLayer(request.inputs),
-      createPrograms: [{
-        rootFiles: request.rootNames.map(helpers.normalizedAbsolute),
-        compilerOptions: this.translation.options,
-        options: programOptions(request),
-      }],
-    });
-    this.snapshot = snapshot;
-    this.program = snapshot.operation.createdPrograms?.[0];
-    if (!this.program) {
-      this.close();
-      throw new CompilerFallback("the server built no program for the project");
-    }
+  constructor(readonly server: TypeScriptApiServer, readonly root: string, readonly inputs: CompilerInputLedger) {
+    this.api = server.start({ cwd: root, fs: ledgerFileSystem(root, inputs, server.libraryDirectories, server.serverFS) });
   }
 
   get name(): string {
     return `${this.server.name}-${this.server.version}`;
   }
 
-  /** Replace files' text; absolute paths. */
-  update(texts: ReadonlyMap<string, string>): void {
-    if (!this.snapshot || !this.program) throw new Error("The warm project is closed.");
-    const files: Record<string, string> = {};
-    for (const [absolute, text] of texts) {
-      this.request.inputs.restage(absolute, text);
-      files[helpers.normalizedAbsolute(absolute)] = text;
-    }
-    const next = this.snapshot.update({ fileSystem: { kind: "layer", files }, ensurePrograms: true }) as NonNullable<WarmApiProject["snapshot"]>;
-    const program = next.getProgram((this.program as unknown as { id: unknown }).id);
-    if (!program) {
-      try { next.dispose(); } catch { /* released with the server */ }
-      throw new CompilerFallback("the updated snapshot lost the project's program");
-    }
-    try { this.snapshot.dispose(); } catch { /* released with the server */ }
-    this.snapshot = next;
-    this.program = program;
+  has(projectId: string): boolean {
+    return this.programs.has(projectId);
   }
 
-  /** A session over the current program; release it before the next update. */
-  session(): ProjectSession {
-    if (!this.api || !this.program) throw new Error("The warm project is closed.");
-    return new ApiProjectSession(this.name, this.request, this.api, this.program, this.translation.changes);
+  get size(): number {
+    return this.programs.size;
+  }
+
+  /** Build one more project's program in the current snapshot. */
+  add(request: ProjectOpenRequest): void {
+    if (!this.api) throw new Error("The warm compiler is closed.");
+    const translation = translateCompilerOptions(request.options);
+    const params = {
+      createPrograms: [{
+        rootFiles: request.rootNames.map(helpers.normalizedAbsolute),
+        compilerOptions: translation.options,
+        options: programOptions(request),
+      }],
+    };
+    const next = (this.snapshot
+      ? this.snapshot.update(params)
+      : (this.api.createSnapshot as unknown as (value: unknown) => WarmSnapshot).call(this.api, { ...params, fileSystem: stagedLayer(this.inputs) })) as WarmSnapshot;
+    const program = next.operation.createdPrograms?.[0];
+    if (!program) {
+      try { next.dispose(); } catch { /* released with the server */ }
+      throw new CompilerFallback("the server built no program for the project");
+    }
+    this.adopt(next);
+    this.programs.set(request.project.id, { request, program, changes: translation.changes });
+  }
+
+  /** Replace files' text (absolute paths) in every program. */
+  update(texts: ReadonlyMap<string, string>): void {
+    if (!this.snapshot) return;
+    const files: Record<string, string> = {};
+    for (const [absolute, text] of texts) {
+      this.inputs.restage(absolute, text);
+      files[helpers.normalizedAbsolute(absolute)] = text;
+    }
+    this.adopt(this.snapshot.update({ fileSystem: { kind: "layer", files }, ensurePrograms: true }) as WarmSnapshot);
+  }
+
+  private adopt(next: WarmSnapshot): void {
+    for (const [projectId, entry] of this.programs) {
+      const program = next.getProgram((entry.program as unknown as { id: unknown }).id);
+      if (!program) {
+        try { next.dispose(); } catch { /* released with the server */ }
+        throw new CompilerFallback(`the updated snapshot lost the program of ${projectId}`);
+      }
+      entry.program = program;
+    }
+    try { this.snapshot?.dispose(); } catch { /* released with the server */ }
+    this.snapshot = next;
+  }
+
+  /** A session over one project's current program; release it before the next update. */
+  session(projectId: string): ProjectSession {
+    const entry = this.programs.get(projectId);
+    if (!this.api || !entry) throw new Error(`The warm compiler has no program for ${projectId}.`);
+    return new ApiProjectSession(this.name, entry.request, this.api, entry.program, entry.changes);
   }
 
   close(): void {
     try { this.snapshot?.dispose(); } catch { /* released with the server */ }
     this.snapshot = undefined;
-    this.program = undefined;
+    this.programs.clear();
     const api = this.api;
     this.api = undefined;
     if (!api) return;
@@ -359,6 +373,13 @@ export class WarmApiProject {
     else shut();
   }
 }
+
+type WarmSnapshot = {
+  dispose(): void;
+  update(params: unknown): unknown;
+  getProgram(id: unknown): Program | undefined;
+  operation: { createdPrograms?: readonly Program[] };
+};
 
 /**
  * The server reads the repository through MEX's input ledger, so staged

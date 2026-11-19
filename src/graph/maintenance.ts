@@ -1,3 +1,4 @@
+import { materializeOverlay } from "./overlay-materialize.js";
 import { openRecord } from "../record/index.js";
 import { recordBuildUsage } from "../record/build-usage.js";
 import type { GraphCandidateUsage } from "./candidate-protocol.js";
@@ -503,7 +504,17 @@ async function rebuildGraphWithLease(
     let continuityFallback = false;
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     if (priorIdentity && cloneForContinuity) {
-      copyExactDatabase(paths, paths.database, candidatePath, priorIdentity, false);
+      // Continuity needs the whole graph: an overlay alone holds only the
+      // files it changed, so its base is copied and the overlay applied.
+      const pointer = readGraphPointer(paths.location);
+      if (pointer?.overlay && paths.database === join(paths.location.directory, pointer.overlay)) {
+        const base = join(paths.location.directory, pointer.base);
+        copyExactDatabase(paths, base, candidatePath, captureDatabaseIdentity(base), false);
+        const clone = openSqlite(candidatePath);
+        try { materializeOverlay(clone, paths.database); } finally { clone.close(); }
+      } else {
+        copyExactDatabase(paths, paths.database, candidatePath, priorIdentity, false);
+      }
     }
     let buildResult: BuildResult;
     try {

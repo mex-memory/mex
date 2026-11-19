@@ -131,6 +131,25 @@ describe("warm edits", () => {
     }
   }, 240_000);
 
+  it("rebuilds a checkout whose pointer has an overlay from base plus overlay", async () => {
+    const root = repository();
+    const home = mkdtempSync(join(tmpdir(), "mex-warm-rebuild-"));
+    const fresh = mkdtempSync(join(tmpdir(), "mex-warm-fresh-"));
+    roots.push(home, fresh);
+    await inHome(home, () => rebuildGraph(root));
+    const warm = await inHome(home, () => WarmCheckout.open(root));
+    checkouts.push(warm);
+    put(root, "src/app.ts", "import { sum } from \"./math\";\nimport { mul } from \"./util\";\n\nexport function run(): number {\n  return mul(sum([1, 2, 3]), 2);\n}\n\nexport const twice = (value: number): number => mul(value, 2);\n");
+    expect((await inHome(home, () => warm.edit(["src/app.ts"]))).status).toBe("published");
+    warm.close();
+    expect((await inHome(home, () => readGraphPointer(graphLocation(root))))?.overlay).toBeTruthy();
+    await inHome(home, () => rebuildGraph(root));
+    await inHome(fresh, () => rebuildGraph(root));
+    const rebuilt = await inHome(home, () => images(root));
+    const expected = await inHome(fresh, () => images(root));
+    for (const table of Object.keys(IMAGES)) expect(rebuilt[table], table).toEqual(expected[table]);
+  }, 120_000);
+
   it("answers a caller query from the overlay it just published", async () => {
     const root = repository();
     const home = mkdtempSync(join(tmpdir(), "mex-warm-read-"));
