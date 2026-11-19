@@ -177,7 +177,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 		var vocabulary []answerCard
 		var vocabularyOut *[]answerCard
-		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-anchor") != "off" {
+		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-vocabulary") != "off" {
 			vocabularyOut = &vocabulary
 		}
 		groups = collect(ev, env, anchors, vocabularyOut)

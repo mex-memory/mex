@@ -262,7 +262,7 @@ func vocabularyPointers(ev contract.Event, env Environment, snap *entries.Snapsh
 		if len(globs) > 0 && len(globs) <= 32 {
 			target.Scopes = globs
 		}
-		card := answerCard{surface: "prompt-anchor", text: text, id: "mex:vocabulary:" + contentHash(hit.item.Entry.ID + "\n" + text)[7:31], target: target}
+		card := answerCard{surface: "prompt-vocabulary", text: text, id: "mex:vocabulary:" + contentHash(hit.item.Entry.ID + "\n" + text)[7:31], target: target}
 		out = append(out, vocabularyPointer{card: card, entry: hit.item.Entry.ID, phrase: hit.alias})
 	}
 	return out

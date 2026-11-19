@@ -20,7 +20,7 @@ import (
 // SurfaceIDs is the closed vocabulary used by receipts, controls and reports.
 // New ids must declare a default and an acted definition before they can send.
 func SurfaceIDs() []string {
-	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "area-digest", "unknown"}
+	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "area-digest", "prompt-vocabulary", "unknown"}
 }
 func ValidSurface(s string) bool {
 	for _, id := range SurfaceIDs() {
@@ -31,12 +31,16 @@ func ValidSurface(s string) bool {
 	return false
 }
 
-// SurfaceDefault: surfaces that sent before the ledger existed stay on. New ones
-// start in trial: shadow until the base rate is measured, then a randomized
-// share of sessions, until the gate turns them on or off.
+// SurfaceDefault: surfaces that fire on an exact anchor are on: a pitfall at
+// the first read, a rule at the edit that breaks it, the recipe at its command,
+// the fix at its failure, a prompt pointer, a symbol the prompt names, a graph
+// card. Speculative ones (the area digest, the working-set brief, rescues, bug
+// history, vocabulary pointers) start in trial: shadow until the base rate is
+// measured, then a randomized share of sessions, until the gate turns them on
+// or off. Any surface, on or in trial, is turned off after its gate fails twice.
 func SurfaceDefault(s string) string {
 	switch s {
-	case "read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "start-brief", "recovery", "carry":
+	case "read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "graph-card", "start-brief", "recovery", "carry":
 		return "on"
 	case "unknown":
 		// A delivery path the ledger doesn't know yet keeps sending: the
@@ -206,7 +210,7 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 	}
 	touch := func() bool { return namedTouch() || scopeTouch() }
 	switch surface {
-	case "prompt-anchor":
+	case "prompt-anchor", "prompt-vocabulary":
 		return (tool.Open || tool.Edit) && namedTouch()
 	case "read-pitfall", "read-risk", "edit", "area-digest":
 		if !tool.Edit || !touch() {
