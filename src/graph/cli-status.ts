@@ -5,6 +5,7 @@ import type { GraphCommandOptions } from "./cli-graph.js";
 import { inspectGraphStatus } from "./status.js";
 import { openRecordReadOnly } from "../record/index.js";
 import { latestBuildUsage } from "../record/build-usage.js";
+import { readGraphState } from "./jobs.js";
 /** Graph health and freshness. Reads only, apart from collecting unreferenced graph files. */
 export async function runGraphStatus(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
@@ -13,8 +14,15 @@ export async function runGraphStatus(options: GraphCommandOptions = {}): Promise
   const stores = whatMexStores(location.recordDirectory);
   const status = await inspectGraphStatus({ projectRoot: rootDir });
   const usage = lastUsage(location.projectId, location.root);
-  if (options.json) console.log(JSON.stringify({ ...status, stores, ...(usage ? { usage } : {}) }, null, 2));
-  else { printStatus(status); printStores(stores, location.projectId); }
+  const warm = readGraphState(location.directory);
+  if (options.json) console.log(JSON.stringify({ ...status, stores, ...(usage ? { usage } : {}), ...(warm ? { warm } : {}) }, null, 2));
+  else {
+    printStatus(status);
+    if (warm?.warm === "off") {
+      console.log(`WARNING GRAPH_WARM_PATH_OFF: on ${warm.checkedAt.slice(0, 10)} a full rebuild differed from the graph in ${warm.differing?.length ?? 0} file(s); edits refresh cold until a weekly check matches.`);
+    } else if (warm) console.log(`Full-rebuild check: matched on ${warm.checkedAt.slice(0, 10)}`);
+    printStores(stores, location.projectId);
+  }
 }
 
 /** The last build and refresh in the usage log, when the record has them. */
