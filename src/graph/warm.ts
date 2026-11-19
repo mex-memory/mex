@@ -252,7 +252,9 @@ export class WarmCheckout {
     const [name] = [...names];
     if (!name!.startsWith("tsrs-") && !name!.startsWith("tsgo-")) throw new Cold("the project is not built by a TypeScript 7 server");
     if (!this.compiler) {
-      this.compilerContext = warmCompilerContext(this.root, [...this.facts.keys()]);
+      this.compilerContext = warmCompilerContext(this.root, [...this.facts.keys()], {
+        readProjectFile: (absolute) => warmStaging.readProjectFile(this.root, absolute),
+      });
       const server = name!.startsWith("tsrs-") ? await loadTsrsServer() : tsgoServer();
       this.compiler = new WarmApiServer(server, this.compilerContext.root, this.compilerContext.inputs);
     }

@@ -1139,7 +1139,7 @@ async function stageCorpus(
         ...(spoolCaptures(compilerPaths.length) ? { captureSpoolDirectory: internal.sourceSpoolDirectory ?? tmpdir() } : {}),
         stagedInputs: compilerInputs,
         readProjectFile: (absolutePath) => {
-          const source = readSecureCompilerInput(root, absolutePath);
+          const source = readCompilerProjectFile(root, absolutePath);
           const relPath = toPosix(relative(resolve(root), resolve(absolutePath)));
           try {
             addGraphSemanticInput(
@@ -2542,7 +2542,19 @@ function sourceContainmentError(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: "GRAPH_SOURCE_PATH_ESCAPE" });
 }
 
-function readSecureCompilerInput(root: string, absolutePath: string): string | undefined {
+/**
+ * A project file as the compiler reads it. A source file over the per-file
+ * bound is skipped by the corpus, and the compiler sees it as absent too: its
+ * importers' references to it stay unresolved, and every other file keeps its
+ * compiler extraction. (Reading it failed the whole project before, on every
+ * compiler.) An absent source file the corpus covers is no recorded input, so
+ * readers check it through the corpus, as they check every skipped file.
+ */
+function readCompilerProjectFile(root: string, absolutePath: string): string | undefined {
+  return readSecureCompilerInput(root, absolutePath, true);
+}
+
+function readSecureCompilerInput(root: string, absolutePath: string, oversizedSourceAbsent = false): string | undefined {
   const lexicalRoot = resolve(root);
   const resolvedPath = resolve(absolutePath);
   const relPath = toPosix(relative(lexicalRoot, resolvedPath));
@@ -2558,6 +2570,9 @@ function readSecureCompilerInput(root: string, absolutePath: string): string | u
     const canonicalPath = resolveContainedRepoFile(lexicalRoot, canonicalRoot, relPath);
     return readStableUtf8File(canonicalPath, resolvedPath).source;
   } catch (error) {
+    if (oversizedSourceAbsent && error instanceof GraphCorpusLimitError && error.limit === "maxSourceFileBytes" && isSupportedSourceFile(relPath)) {
+      return undefined;
+    }
     if (isMissingPathError(error)) {
       try {
         assertContainedMissingCompilerInput(lexicalRoot, relPath);
@@ -2802,5 +2817,7 @@ export const warmStaging = {
     stageFingerprints(files, spool, stored),
   spool: (directory?: string): GraphSourceSpool => new GraphSourceSpool(directory),
   isCompilerPath: (path: string): boolean => COMPILER_LANGUAGES.has(detectLanguage(path)),
+  /** Project files as a build's compiler reads them: contained, and absent over the per-file bound. */
+  readProjectFile: (root: string, absolutePath: string): string | undefined => readCompilerProjectFile(root, absolutePath),
 };
 export type { StagedFile as WarmStagedFile, DiscoveredFile as WarmDiscoveredFile };

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { currentGraphPath, graphLocation, readGraphPointer, graphPointerFile, collectGraphGarbage, graphTemporary, whatMexStores, enforceIndexCap, acquireGraphWriter, openCurrentGraph } from "../storage.js";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
 import { createGraphEngine } from "../engine-impl.js";
+import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "graph-pointer-"));
@@ -90,7 +91,7 @@ describe("per-file graph coverage", () => {
   it("keeps good-file answers beside oversized, binary, ignored and broken sources", async () => {
     const root = fixture();
     writeFileSync(join(root,"good.py"), "def good():\n    return 1\n");
-    writeFileSync(join(root,"large.py"), " ".repeat(2*1024*1024+1));
+    writeFileSync(join(root,"large.py"), " ".repeat(GRAPH_CORPUS_LIMITS.maxSourceFileBytes+1));
     writeFileSync(join(root,"binary.py"), Buffer.from([0,1,2,0,3]));
     const garbage = "def broken(:\n  ((( ]] }} :: ,, \n  ))) [[ {{ ;; ..\n";
     writeFileSync(join(root,"broken.py"), garbage);
