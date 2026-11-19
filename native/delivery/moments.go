@@ -285,15 +285,6 @@ func triggers(item *entries.Item, kind string) []entries.Trigger {
 	return out
 }
 
-func containsAny(text string, ts []entries.Trigger) bool {
-	for _, t := range ts {
-		if strings.Contains(text, t.Pattern) {
-			return true
-		}
-	}
-	return false
-}
-
 // recipeCommands are the commands a recipe runs: its command checks first,
 // then commands quoted in backticks in its one-line form.
 func recipeCommands(e *entries.Entry) []string {
@@ -360,7 +351,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			case "pitfall":
 				add(momentRead, scopeTier(it, v.rel), true, false)
 			case "rule":
-				if ts := triggers(it, "anti"); len(ts) > 0 && readText != "" && containsAny(readText, ts) {
+				if snap.Literals().Has(readText, it, "anti") {
 					add(momentReadRisk, tierPattern, true, false)
 				}
 			}
@@ -374,7 +365,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 					add(momentEdit, scopeTier(it, v.rel), false, false)
 				}
 			case "decision":
-				if ts := triggers(it, "rejected"); len(ts) > 0 && v.added != "" && containsAny(v.added, ts) && (inScope(it, v.rel) || isManifest(v.rel)) {
+				if snap.Literals().Has(v.added, it, "rejected") && (inScope(it, v.rel) || isManifest(v.rel)) {
 					add(momentRejected, tierPattern, true, false)
 				}
 			case "procedure":

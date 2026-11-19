@@ -678,7 +678,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		}
 		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "changing" {
 			for _, v := range g.views {
-				if isEdit(v) && inScope(s.item, v.rel) && containsAny(v.removed, triggers(s.item, "anti")) && !containsAny(v.added, triggers(s.item, "anti")) {
+				if isEdit(v) && inScope(s.item, v.rel) && g.snap.Literals().Has(v.removed, s.item, "anti") && !g.snap.Literals().Has(v.added, s.item, "anti") {
 					s.full = "Current convention: " + s.oneLine
 					s.oneLine = s.full
 					s.fullTok = entries.EstimateTokens(s.full)

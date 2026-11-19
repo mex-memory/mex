@@ -56,7 +56,7 @@ func holdbackObservations(h *record.Hooks, ev contract.Event, g *group) ([]recor
 			if work > 10000 {
 				return out, nil
 			}
-			if isEdit(v) && inScope(it, v.rel) && containsAny(boundedText(v.added, 32768), triggers(it, "anti")) {
+			if isEdit(v) && inScope(it, v.rel) && g.snap.Literals().Has(boundedText(v.added, 32768), it, "anti") {
 				kinds["missed"] = true
 			}
 			if v.name != contract.ToolShell || !folderInScope(it, v.rel) {

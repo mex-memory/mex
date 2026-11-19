@@ -41,7 +41,7 @@ func observeIntent(previous string, ev contract.Event, g *group) string {
 		}
 		for i := range g.snap.Items {
 			it := &g.snap.Items[i]
-			if inScope(it, v.rel) && containsAny(boundedText(v.removed, 32768), triggers(it, "anti")) && !containsAny(boundedText(v.added, 32768), triggers(it, "anti")) {
+			if inScope(it, v.rel) && g.snap.Literals().Has(boundedText(v.removed, 32768), it, "anti") && !g.snap.Literals().Has(boundedText(v.added, 32768), it, "anti") {
 				return "changing"
 			}
 		}
@@ -140,7 +140,7 @@ func deliveredObservations(h *record.Hooks, ev contract.Event, g *group) ([]reco
 				if v.rel != "" && inScope(it, v.rel) && (v.name == contract.ToolRead || isEdit(v)) {
 					touched = true
 				}
-				if isEdit(v) && inScope(it, v.rel) && containsAny(boundedText(v.added, 32768), triggers(it, "anti")) {
+				if isEdit(v) && inScope(it, v.rel) && g.snap.Literals().Has(boundedText(v.added, 32768), it, "anti") {
 					kinds["missed"] = true
 				}
 				if v.name == contract.ToolShell && folderInScope(it, v.rel) {

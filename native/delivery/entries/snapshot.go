@@ -43,6 +43,8 @@ type Snapshot struct {
 	Items          []Item
 	Retired        []string
 	Parsed, Reused int
+
+	literals *Literals // built on first use by Literals()
 }
 type fileCache struct {
 	Size  int64
