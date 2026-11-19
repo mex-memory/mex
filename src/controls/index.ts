@@ -69,7 +69,7 @@ export function setDeliveryAliases(writer: RecordWriter, value: string): void {
 }
 
 export function setDeliverySurface(writer: RecordWriter, surface: string, value: string, directory?: string): string {
-  if (!["read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry"].includes(surface)) throw new Error("Unknown delivery surface.");
+  if (!["read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "area-digest"].includes(surface)) throw new Error("Unknown delivery surface.");
   if (!["on", "shadow", "trial", "off"].includes(value)) throw new Error("Use on, shadow, trial or off for a delivery surface.");
   const scope = directory === undefined ? "global" : writer.checkout(directory)?.project_id;
   if (!scope) throw new Error("MEX is not registered here. Run mex first.");

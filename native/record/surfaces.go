@@ -20,7 +20,7 @@ import (
 // SurfaceIDs is the closed vocabulary used by receipts, controls and reports.
 // New ids must declare a default and an acted definition before they can send.
 func SurfaceIDs() []string {
-	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "unknown"}
+	return []string{"read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "area-digest", "unknown"}
 }
 func ValidSurface(s string) bool {
 	for _, id := range SurfaceIDs() {
@@ -97,6 +97,8 @@ func SurfaceForMoment(s string) string {
 		return "read-risk"
 	case "edit", "rejected", "create":
 		return "edit"
+	case "digest":
+		return "area-digest"
 	case "command":
 		return "command-recipe"
 	case "failure":
@@ -206,7 +208,7 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 	switch surface {
 	case "prompt-anchor":
 		return (tool.Open || tool.Edit) && namedTouch()
-	case "read-pitfall", "read-risk", "edit":
+	case "read-pitfall", "read-risk", "edit", "area-digest":
 		if !tool.Edit || !touch() {
 			return false
 		}
