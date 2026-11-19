@@ -83,7 +83,7 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		if state.save(file) != nil {
 			return contract.Reply{} // without a record it could stop twice
 		}
-		return contract.Reply{Decision: contract.Deny, Reason: bumpReason(b)}
+		return contract.Reply{Decision: contract.Deny, Reason: bumpReason(b, fullText(env, b))}
 	}
 	return contract.Reply{}
 }
@@ -110,7 +110,9 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 		key := v.project + "\x00" + v.checkout
 		snap, ok := snaps[key]
 		if !ok {
-			loaded, err := entries.Load(env.RecordDirectory, env.Home, v.project, v.checkout)
+			// Light: scopes, patterns and evidence, no text. Text is loaded
+			// only for an edit that is stopped.
+			loaded, err := entries.LoadLight(env.RecordDirectory, env.Home, v.project, v.checkout)
 			if err == nil {
 				snap = &loaded
 			}
@@ -176,10 +178,23 @@ func currentText(path string) string {
 	return string(data)
 }
 
-func bumpReason(b bump) string {
-	// The full form carries the label and the reason; a light snapshot has
-	// only the one line.
-	why := strings.TrimSpace(b.item.Full)
+// fullText is the stopped rule's full form, with its label and reason.
+func fullText(env Environment, b bump) string {
+	snap, err := entries.Load(env.RecordDirectory, env.Home, b.project, b.check)
+	if err != nil {
+		return ""
+	}
+	for i := range snap.Items {
+		if snap.Items[i].Entry.ID == b.item.Entry.ID {
+			return snap.Items[i].Full
+		}
+	}
+	return ""
+}
+
+func bumpReason(b bump, full string) string {
+	// The full form carries the label and the reason; without it, the one line.
+	why := strings.TrimSpace(full)
 	if why == "" {
 		why = strings.TrimSpace(b.item.Entry.OneLine)
 	}
