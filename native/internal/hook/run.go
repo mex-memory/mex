@@ -282,8 +282,6 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	if ev.Kind == contract.SessionEnd {
 		h.endBeat(agent, ev.SessionID, now)
 	}
-	captureOn := state == switchedOn && captureEnabled(recordDirectory, ev.ProjectID, global)
-	holdout := state == switchedOn && ledgerHoldout(ev, h, recordDirectory, global.LedgerHoldout, captureOn, now)
 	if h.capture != nil {
 		h.capture(ev, recordDirectory, global)
 	}
@@ -300,12 +298,13 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 
-	if !holdout {
-		if reply, handled := typedNote(ev, h); handled {
-			out, _ := profile.Render(ev, reply)
-			return out
-		}
+	// Explicit note commands apply in both study arms.
+	if reply, handled := typedNote(ev, h); handled {
+		out, _ := profile.Render(ev, reply)
+		return out
 	}
+	captureOn := captureEnabled(recordDirectory, ev.ProjectID, global)
+	holdout := ledgerHoldout(ev, h, recordDirectory, global.LedgerHoldout, captureOn, now)
 	// Both study arms keep the local capture and filter inputs.
 	captureEnv := capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env}
 	captureLifecycle := ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact

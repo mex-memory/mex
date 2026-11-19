@@ -1008,7 +1008,8 @@ Claude Code or Codex session gets a stable assignment at startup. A random
 study seed and the session ID assign about 10% to the holdout. A holdout
 suppresses automatic MEX hook delivery, tool rewriting and compaction
 interventions. Local journaling and capture-filter work continue under the
-existing capture settings in both arms. MEX records the assignment,
+existing capture settings in both arms. Explicit `mex note:` commands still
+save the note and show the person a confirmation. MEX records the assignment,
 transcript location and settlement metadata locally so it can measure the
 session. Both arms use the host's current settings, native compaction and
 already installed rules. Opting out with `mex report --holdout off` stops the

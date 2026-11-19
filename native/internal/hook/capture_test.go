@@ -154,3 +154,61 @@ func TestTypedNoteSavesAtOnceWithoutAI(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+func TestHeldOutTypedNoteSavesAndConsumesPrompt(t *testing.T) {
+	const trial = "0123456789abcdef0123456789abcdef"
+	const note = "integration tests need Docker running"
+	const noteID = "mx_abc123def"
+	for _, fixture := range []struct{ agent, session string }{
+		{"claude-code", "holdout-note-6"},
+		{"codex", "holdout-note-12"},
+	} {
+		t.Run(fixture.agent, func(t *testing.T) {
+			h, env := fakeHome(t, true)
+			root := repo(t, t.TempDir())
+			register(t, h, root, projectID, "on", "")
+			write(t, filepath.Join(h.mex, "controls.json"), `{"version":1,"off":false,"capture":true,"ledger_holdout":"`+trial+`"}`)
+			prepareStore(t, h)
+
+			start, _ := json.Marshal(map[string]string{
+				"session_id": fixture.session, "cwd": root, "hook_event_name": "SessionStart", "source": "startup",
+			})
+			code, out := run(t, []string{fixture.agent, "SessionStart"}, bytes.NewReader(start), env)
+			assertEmptyReply(t, code, out)
+			held, err := localrecord.ReadLedgerHoldout(filepath.Join(h.mex, "hooks.db"), fixture.session, fixture.agent, trial)
+			if err != nil || !held {
+				t.Fatalf("expected a holdout assignment, got %t (%v)", held, err)
+			}
+
+			checkout, err := place.RealPath(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			savedNote := filepath.Join(h.mex, "fixture-notes", noteID)
+			prior := runNote
+			runNote = func(_ home, path, text string) noteResult {
+				if path != checkout {
+					t.Fatalf("note checkout = %q, want %q", path, checkout)
+				}
+				write(t, savedNote, text)
+				return noteResult{OK: true, ID: noteID}
+			}
+			t.Cleanup(func() { runNote = prior })
+
+			code, out = run(t, []string{fixture.agent, "UserPromptSubmit"}, promptPayload(fixture.session, root, "mex note: "+note), env)
+			var reply map[string]string
+			const confirmation = "Saved personal note " + noteID + ". It stays on this machine; `mex share` offers it to the team."
+			if err := json.Unmarshal([]byte(out), &reply); code != 0 || err != nil || len(reply) != 2 ||
+				reply["decision"] != "block" || reply["reason"] != confirmation {
+				t.Fatalf("note hook exit %d, reply %q, error %v", code, out, err)
+			}
+			body, err := os.ReadFile(savedNote)
+			if err != nil || string(body) != note {
+				t.Fatalf("saved note = %q, error %v", body, err)
+			}
+			if rows := journalOf(t, h, fixture.session); len(rows) != 0 {
+				t.Fatalf("consumed command also reached the journal: %+v", rows)
+			}
+		})
+	}
+}
