@@ -22,6 +22,7 @@ import { GraphStore, type FileRecord } from "./db/store.js";
 import { warmStaging, type WarmResolutionCorpus, type WarmStagedFile } from "./engine-impl.js";
 import { decodeCachedExtraction, encodeCachedExtraction } from "./extraction-cache.js";
 import {
+  captureLocations,
   finishWarmCapture,
   movedLocations,
   remapCapture,
@@ -80,6 +81,15 @@ interface FileFacts {
   nodeIds: string[];
   /** Absolute declaration locations this file contributes. */
   locations: string[];
+  /** Repository files whose declarations this file's references point at. */
+  referenced: string[];
+}
+
+/** The repository file a portable location is in, or undefined outside the repository. */
+function locationFile(location: string): string | undefined {
+  if (!location.startsWith("./")) return undefined;
+  const kind = location.lastIndexOf(":");
+  return location.slice(2, location.lastIndexOf(":", kind - 1));
 }
 
 const CONFIG_FILE = /(^|\/)(tsconfig[^/]*\.json|jsconfig[^/]*\.json|package\.json)$/u;
@@ -105,6 +115,8 @@ export class WarmCheckout {
   private readonly store: GraphStore;
   private readonly facts = new Map<string, FileFacts>();
   private readonly importers = new Map<string, Set<string>>();
+  /** File → the files whose stored captures refer to its declarations. */
+  private readonly referrers = new Map<string, Set<string>>();
   private readonly locationIds = new Map<string, string>();
   private readonly nodeNames = new Map<string, { name: string; qualifiedName: string }>();
   private readonly fileDraftIds = new Map<string, string>();
@@ -179,6 +191,17 @@ export class WarmCheckout {
       for (const location of previous.locations) this.locationIds.delete(location);
       for (const id of previous.nodeIds) this.nodeNames.delete(id);
       for (const dependency of previous.dependencies) this.importers.get(dependency)?.delete(capture.filePath);
+      for (const file of previous.referenced) this.referrers.get(file)?.delete(capture.filePath);
+    }
+    const referenced = new Set<string>();
+    for (const location of captureLocations(capture)) {
+      const file = locationFile(location);
+      if (file !== undefined && file !== capture.filePath) referenced.add(file);
+    }
+    for (const file of referenced) {
+      let set = this.referrers.get(file);
+      if (!set) this.referrers.set(file, set = new Set());
+      set.add(capture.filePath);
     }
     const locations: string[] = [];
     for (const [location, id] of capture.locations) {
@@ -202,6 +225,7 @@ export class WarmCheckout {
       signatures: new Map(capture.dependencySignatures ?? []),
       nodeIds: capture.nodes.map((node) => node.id),
       locations,
+      referenced: [...referenced],
     });
   }
 
@@ -415,6 +439,25 @@ export class WarmCheckout {
           if (remapped) payloads.set(path, { hash: record.contentHash, payload: encodeCachedExtraction({ kind: "compiler", capture: remapped }) });
         }
         const touched = new Set([...edited, ...neighbours]);
+        // Files that only point at declarations the edit moved: their rows stay
+        // the same, and their stored captures move as a refresh moves the
+        // captures it reuses.
+        const repointed: string[] = [];
+        for (const path of edited) {
+          for (const referrer of this.referrers.get(path) ?? []) {
+            if (touched.has(referrer) || repointed.includes(referrer)) continue;
+            const stored = this.storedCapture(referrer);
+            if (!stored) continue;
+            const remapped = remapCapture(stored, moved);
+            if (remapped === undefined) continue;
+            const record = this.store.getFileRecord(referrer);
+            const text = this.readText(referrer);
+            if (!record || text === undefined || sha256(text) !== record.contentHash) throw new Cold(`${referrer} changed since the last refresh`);
+            if (remapped === null) throw new Cold(`${referrer} refers to a declaration the edit removed`);
+            payloads.set(referrer, { hash: record.contentHash, payload: encodeCachedExtraction({ kind: "compiler", capture: remapped }) });
+            repointed.push(referrer);
+          }
+        }
         if (restaged.length > 0) {
           warmStaging.resolve(this.root, restaged, this.configSources, spool, this.corpus(touched, staged.flatMap((file) => file.nodes)));
           staged.push(...restaged);
@@ -474,7 +517,7 @@ export class WarmCheckout {
           if (this.corpusNodes) {
             this.corpusNodes = [...this.corpusNodes.filter((node) => !touched.has(node.filePath)), ...staged.flatMap((file) => file.nodes)].sort(byPath);
           }
-          const rewritten = [...edited, ...neighbours];
+          const rewritten = [...edited, ...neighbours, ...repointed];
           for (const path of rewritten) this.overlayFiles.add(path);
           this.publish(writer, phase, rewritten);
           return done("published", rewritten);
