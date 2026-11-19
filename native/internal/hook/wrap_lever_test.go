@@ -114,6 +114,10 @@ func TestCodexNeverWraps(t *testing.T) {
 			run(t, []string{"codex", "PostToolUse"}, bytes.NewReader(b), homeEnv(h))
 		}},
 	}
+	if runtime.GOOS == "windows" {
+		// Codex runs PowerShell on Windows whatever SHELL says.
+		delete(cases, "a shell MEX can't quote")
+	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			h, env, root := codexSetup(t)
