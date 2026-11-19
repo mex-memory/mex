@@ -3,16 +3,19 @@ import { ENTRY_KINDS, KnowledgeError } from "./contract.js";
 import { buildReviewCommand } from "../review/cli.js";
 
 export function buildKnowledgeCommands(): Command[] {
-  const adviceReport = new Command("report").description("Read local advisories about advice already used on this branch")
+  const adviceReport = new Command("report").description("Read local advisories about advice already used on this branch, and patterns that never fire")
     .option("--json", "Print local advisories as JSON")
     .action(async opts => run(opts.json, async () => {
       const { adviceReport, formatAdvice } = await import("../judge/advice.js");
+      const { patternReport, formatPatternReport } = await import("./pattern-report.js");
       const result = await adviceReport({ projectPath: process.cwd() });
-      if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
+      const patterns = patternReport({ projectPath: process.cwd() });
+      if (opts.json) console.log(JSON.stringify({ ok: true, ...result, patterns }));
       else {
         if (!result.advisories.length) console.log("No local advice advisories on this branch.");
         for (const item of result.advisories) console.log(formatAdvice(item)+"\n");
         if (result.partial) console.log("More advisories exist; this view reached its limit.");
+        for (const line of formatPatternReport(patterns)) console.log(line);
       }
     }));
   const sessionWhat = new Command("what").description("Read what MEX gave or withheld this session")
