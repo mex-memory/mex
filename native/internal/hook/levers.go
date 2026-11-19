@@ -18,9 +18,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/capture"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/outline"
 	"github.com/mex-memory/mex/native/output"
+	localrecord "github.com/mex-memory/mex/native/record"
 )
 
 const leverStateMaxAge = 7 * 24 * time.Hour
@@ -41,6 +43,9 @@ type leverState struct {
 	// reproduce, investigate or debug, so output stays whole.
 	Words         []uint64 `json:"words,omitempty"`
 	Investigating bool     `json:"investigating,omitempty"`
+	Topic         []uint64 `json:"topic,omitempty"`
+	TopicCheckout string   `json:"topic_checkout,omitempty"`
+	CompactNudged bool     `json:"compact_nudged,omitempty"`
 }
 
 type outlineMark struct {
@@ -110,28 +115,42 @@ type leverOptions struct {
 
 // levers runs after the checkout is known to be on. Its reply is merged with
 // delivery's; it never fails the call.
-func levers(ev contract.Event, h home, recordDirectory string, now time.Time) (reply contract.Reply) {
+func levers(ev contract.Event, h home, recordDirectory string, now time.Time, captureOn bool) (reply contract.Reply, observation *localrecord.LeverObservation) {
 	defer func() {
 		if recover() != nil {
 			reply = contract.Reply{}
+			observation = nil
 		}
 	}()
 	if recordDirectory == "" || ev.SessionID == "" {
-		return contract.Reply{}
+		return contract.Reply{}, nil
 	}
 	switch ev.Kind {
+	case contract.PostCompact:
+		if ev.AgentID != "" {
+			return contract.Reply{}, nil
+		}
 	case contract.SessionStart, contract.Prompt, contract.PreTool, contract.PostTool, contract.PostToolFailure:
 	default:
-		return contract.Reply{}
+		return contract.Reply{}, nil
 	}
 	file := leverStatePath(recordDirectory, ev)
 	state := loadLeverState(file)
 	changed := false
 	switch ev.Kind {
+	case contract.PostCompact:
+		if state.CompactNudged {
+			state.CompactNudged = false
+			changed = true
+		}
 	case contract.SessionStart:
 		if ev.Source == "compact" || ev.Source == "clear" {
 			state.Context++
 			state.Failed = nil
+			state.CompactNudged = false
+			if ev.Source == "clear" {
+				state.Topic = nil
+			}
 			changed = true
 		}
 		if ev.Source == "" || ev.Source == "startup" {
@@ -140,6 +159,9 @@ func levers(ev contract.Event, h home, recordDirectory string, now time.Time) (r
 	case contract.Prompt:
 		if ev.Prompt != nil {
 			state.Words, state.Investigating = promptWords(ev.Prompt.Text)
+			if captureOn {
+				reply.PersonLine = compactNudge(ev, h, state)
+			}
 			changed = true
 		}
 	case contract.PostToolFailure:
@@ -178,14 +200,19 @@ func levers(ev contract.Event, h home, recordDirectory string, now time.Time) (r
 		case "claude-code":
 			reply, c = outlineGuard(ev, h, recordDirectory, state)
 		case "codex":
-			reply = wrapCodexCommand(ev, h, state)
+			reply = wrapCodexCommand(ev, h, recordDirectory, state)
 		}
 		changed = changed || c
 	}
 	if changed {
 		state.save(file)
 	}
-	return reply
+	if captureOn {
+		if measured := observeLever(ev, recordDirectory, state, reply); measured != nil && !capture.Scripted(ev.Agent, h.env) {
+			observation = measured
+		}
+	}
+	return reply, observation
 }
 
 // trimShell replaces a successful noisy command's output with its trim, after
@@ -195,7 +222,8 @@ func trimShell(ev contract.Event, h home, recordDirectory string, state *leverSt
 		return contract.Reply{}
 	}
 	command, text := ev.Tool.Input.Command, ev.Tool.Output.Text
-	if len(text) <= output.MinChars || state.Failed[commandKey(command)] || !output.Noisy(command) {
+	if len(text) <= output.MinChars || state.Failed[commandKey(command)] || !output.Noisy(command) ||
+		leverOff(recordDirectory, localrecord.LeverShellTrim) {
 		return contract.Reply{}
 	}
 	trimmed, ok := output.TrimAndSave(text, 0, func() (int, error) {

@@ -14,9 +14,10 @@ import (
 )
 
 type controls struct {
-	Version int  `json:"version"`
-	Off     bool `json:"off"`
-	Capture bool `json:"capture"`
+	Version       int    `json:"version"`
+	Off           bool   `json:"off"`
+	Capture       bool   `json:"capture"`
+	LedgerHoldout string `json:"ledger_holdout,omitempty"`
 }
 
 // Control files are bounded and never followed through a replaced/link leaf.
@@ -57,9 +58,10 @@ func (h home) controls() controls {
 		return defaults
 	}
 	var value struct {
-		Version int   `json:"version"`
-		Off     *bool `json:"off"`
-		Capture *bool `json:"capture"`
+		Version       int    `json:"version"`
+		Off           *bool  `json:"off"`
+		Capture       *bool  `json:"capture"`
+		LedgerHoldout string `json:"ledger_holdout"`
 	}
 	err := readControl(filepath.Join(h.mex, "controls.json"), &value)
 	if errors.Is(err, os.ErrNotExist) {
@@ -68,7 +70,10 @@ func (h home) controls() controls {
 	if err != nil || value.Version != 1 || value.Off == nil || value.Capture == nil {
 		return controls{Version: 1, Off: true}
 	}
-	return controls{Version: 1, Off: *value.Off, Capture: *value.Capture}
+	if !localrecord.ValidLedgerTrial(value.LedgerHoldout) {
+		value.LedgerHoldout = ""
+	}
+	return controls{Version: 1, Off: *value.Off, Capture: *value.Capture, LedgerHoldout: value.LedgerHoldout}
 }
 
 func captureEnabled(recordDirectory, projectID string, global controls) bool {

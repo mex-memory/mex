@@ -15,9 +15,12 @@ import (
 // was given; nothing here is a new moment.
 
 const (
-	recoveryBudget = 400
-	subagentBrief  = 600
-	maxIDList      = 20
+	recoveryBudget        = 400
+	recoveryNotesReserve  = 150
+	recoverySeparatorCost = 1
+	checkedRecoveryBudget = recoveryBudget - recoveryNotesReserve - recoverySeparatorCost
+	subagentBrief         = 600
+	maxIDList             = 20
 )
 
 // readOnlyAgents are subagent types that only look: they get moment items,
@@ -31,8 +34,30 @@ func lifecycleBlock(h *record.Hooks, ev contract.Event, env Environment, reason 
 	switch {
 	case reason == "startup" || reason == "clear" || reason == "fork":
 		return startBlock(h, ev, env)
-	case reason == "compact" && signal == 1 && epoch.Number > 0:
-		return recovery(h, ev, env, epoch.Number-1)
+	case reason == "compact" && signal == 1:
+		var checked string
+		if ev.Agent == "claude-code" {
+			checked = checkedRecovery(h, ev, env, epoch.Number)
+		}
+		if epoch.Number == 0 {
+			return checked, nil
+		}
+		budget := recoveryBudget
+		if checked != "" {
+			budget -= entries.EstimateTokens(checked) + recoverySeparatorCost
+		} else if ev.Agent == "claude-code" && !env.CaptureDisabled && epoch.CompactSignals&2 == 0 {
+			// PostCompact can arrive after SessionStart. Leave the same room
+			// for its checked items even when the blocks use separate replies.
+			budget = recoveryNotesReserve
+		}
+		notes, err := recovery(h, ev, env, epoch.Number-1, budget)
+		if checked == "" {
+			return notes, err
+		}
+		if notes == "" || err != nil {
+			return checked, nil
+		}
+		return checked + "\n\n" + notes, nil
 	case reason == "resume":
 		return resumeCorrections(h, ev, env)
 	case reason == "subagent" && !readOnlyAgents[strings.ToLower(ev.AgentType)]:
@@ -121,7 +146,12 @@ func commit(h *record.Hooks, ev contract.Event, env Environment, header string, 
 // previous epoch whose scope covers a file edited in it, verdicts re-checked,
 // within 400 tokens, plus the ids of the rest. Everything else comes back at
 // its next moment.
-func recovery(h *record.Hooks, ev contract.Event, env Environment, previous int) (string, error) {
+func recovery(h *record.Hooks, ev contract.Event, env Environment, previous, budget int) (string, error) {
+	const header = brief.Priority + "\nMEX notes for the files you were editing:"
+	used := entries.EstimateTokens("[mex 000000000000000000000000]\n" + header)
+	if used >= budget {
+		return "", nil
+	}
 	given, _, err := h.EpochSelected(ev.SessionID, ev.AgentID, ev.ProjectID, ev.Checkout, previous, surfaceSetting(env, ev.ProjectID, "recovery") == "shadow")
 	if err != nil || len(given) == 0 {
 		return "", err
@@ -137,7 +167,6 @@ func recovery(h *record.Hooks, ev contract.Event, env Environment, previous int)
 	defer k.senv.close()
 	var plan []planned
 	var rest []string
-	used := 0
 	for i := len(given) - 1; i >= 0; i-- { // newest first
 		g := given[i]
 		it := k.byID[g.EntryID]
@@ -151,21 +180,23 @@ func recovery(h *record.Hooks, ev contract.Event, env Environment, previous int)
 		if !ok {
 			continue
 		}
-		if used+s.lineTok > recoveryBudget {
+		lineCost := entries.EstimateTokens("\n" + strings.TrimSpace(s.oneLine) + " (" + g.EntryID + ")")
+		if used+lineCost > budget {
 			rest = append(rest, g.EntryID)
 			continue
 		}
-		used += s.lineTok
+		used += lineCost
 		plan = append(plan, planned{shaped: s, form: "one-line", text: s.oneLine, tokens: s.lineTok})
 	}
 	tail := ""
-	if len(rest) > 0 {
-		if len(rest) > maxIDList {
-			rest = rest[:maxIDList]
+	for count := min(len(rest), maxIDList); count > 0; count-- {
+		candidate := "Also given before compaction, back when they apply: " + strings.Join(rest[:count], ", ") + "."
+		if used+entries.EstimateTokens("\n"+candidate) <= budget {
+			tail = candidate
+			break
 		}
-		tail = "Also given before compaction, back when they apply: " + strings.Join(rest, ", ") + "."
 	}
-	return commit(h, ev, env, brief.Priority+"\nMEX notes for the files you were editing:", plan, tail)
+	return commit(h, ev, env, header, plan, tail)
 }
 
 func coversAny(it *entries.Item, files []string) bool {

@@ -787,6 +787,8 @@ describe("no unscoped scaffold writes", () => {
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-prompt.ts": "writes and removes one private prompt file for an oversized agent brief (interactive setup, sync)",
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
+      "src/compaction/notices.ts": "consumes offer requests and publishes bounded notice markers inside the machine record directory",
+      "src/ledger/background.ts": "claims and removes bounded session-ledger requests inside the contained machine record directory",
       "src/graph/audit-record.ts": "writes only the local audited-digest record beside the graph index it describes",
       "src/graph/candidate-entry.ts": "writes bounded worker failure diagnostics only to stderr (fd 2), never scaffold files",
       "src/graph/candidate-process.ts": "removes only the identity-bound parent-owned temporary workspace after the candidate child closes",
@@ -804,6 +806,8 @@ describe("no unscoped scaffold writes", () => {
       "src/events.ts": "appends to events/decisions.jsonl",
       "src/knowledge/files.ts": "publishes and replaces bounded personal notes and hints through exclusive staging, revision checks and contained local publication under the MEX project-data home; never edits a repository file",
       "src/knowledge/personal-store.ts": "copies and swaps only the bounded personal notes directory under the contained MEX project-data home; recovers through a writer-locked receipt and removes only proved flat saved copies; never a repository file",
+      "src/learn-deeper/git.ts": "stages bounded, checked-in files from an approved commit in an owned directory under the MEX home for native checks, and removes that directory after the checks; never writes the checkout",
+      "src/learn-deeper/weekly-schedule.ts": "publishes a timestamp-only wake marker in the machine MEX home through an exclusive temporary file",
       "src/review/daily-receipt.ts": "claims one private UTC-day receipt per project in existing local record storage; prunes only bounded, proved regular receipts; never writes repository files or opens a record writer",
       "src/knowledge/native-write.ts": "writes and removes only MEX-generated agent rule files (marked generated, hash-checked against its manifest, never a person's file or CLAUDE.md), its .mex/native.json manifest, and its own block in git's exclude file",
       "src/knowledge/native-pending.ts": "removes only the hook's bounded rule-file rebuild requests under the record directory's native-pending folder after queueing them; never a repository file",

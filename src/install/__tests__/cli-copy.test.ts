@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("../index.js", () => ({
   installAgents: vi.fn(async () => ({ agents: ["codex"], changes: [], notices: ["In Codex, review and trust MEX's hooks once: /hooks in the CLI, or Review hooks beside the message box in the app. Until then Codex skips them."], legacyTracked: [] })),
-  installationChanges: () => [], excludeChanges: () => [],
+  installationChanges: () => [], additionalUninstallPaths: () => [],
   uninstallAgents: vi.fn(async () => ({ conflicts: [], purged: false })),
 }));
 vi.mock("../../record/location.js", () => ({ recordLocation: () => ({ home: "<MEX home>" }) }));

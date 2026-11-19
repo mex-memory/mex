@@ -87,6 +87,9 @@ export interface JobKind<P = unknown, C = unknown> {
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
   ready?(job: JobRow, writer: RecordWriter): boolean;
+  /** Optional owned recovery metadata for a batch whose runner died. */
+  interrupted?(job: JobRow, writer: RecordWriter): Pick<Partial<JobRow>, "checkpoint" | "progress">;
+  display?(job: JobRow, reader: Pick<RecordReader, "all">): { used?: number; ceiling?: number; summary?: string };
   /**
    * Whether this unfinished job already serves a new request, so no second
    * one is queued. Default: any unfinished job of the kind serves it.
@@ -152,14 +155,19 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
 }
 
 /** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
-export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params">): JobRow {
+export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params"> & Partial<Pick<JobRow, "reason">>, approvedParams?: string): JobRow {
   return inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
-    if (expected && (job.state !== expected.state || job.params !== expected.params)) return job;
+    if (expected && (job.state !== expected.state || job.params !== expected.params || "reason" in expected && job.reason !== expected.reason)) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.
+        if (approvedParams !== undefined) {
+          if (!expected) throw new Error("Updated job parameters require the approved snapshot.");
+          writer.db.prepare("UPDATE jobs SET params=? WHERE id=?").run(approvedParams, id);
+          job.params = approvedParams;
+        }
         return setState(writer.db, job, "queued", { failures: 0, reason: null, request: null });
       }
       if (job.state === "running" && job.request === "pause") return setState(writer.db, job, "running", { request: null });
@@ -200,7 +208,7 @@ export function recoverInterruptedJobs(writer: RecordWriter, self: string, alive
       if (pid !== undefined && pid !== process.pid && alive(pid)) continue;
       if (job.request === "cancel") setState(writer.db, job, "cancelled", { reason: null });
       else if (job.request === "pause") setState(writer.db, job, "paused", { request: null });
-      else setState(writer.db, job, "queued");
+      else setState(writer.db, job, "queued", kinds.get(job.kind)?.interrupted?.(job, writer));
       recovered++;
     }
     return recovered;
@@ -391,7 +399,8 @@ export interface JobListItem {
   /** What it's doing; only for queued, running, paused and waiting jobs. */
   doing: string | null;
   batches: number; results: number;
-  tokens: { used: number; estimate: number | null };
+  tokens: { used: number; estimate: number | null; ceiling?: number };
+  summary?: string;
   createdAt: string; updatedAt: string; finishedAt: string | null;
   /** Pause or cancel asked and not yet applied (the job stops after its current batch). */
   pending: "pause" | "cancel" | null;
@@ -414,6 +423,8 @@ export function listJobs(reader: Pick<RecordReader, "all">, limit = 50): Array<J
   return rows.map((row, index) => {
     const kind = kinds.get(row.kind);
     const active = !TERMINAL_STATES.includes(row.state);
+    let detail: ReturnType<NonNullable<JobKind["display"]>> | undefined;
+    try { detail = kind?.display?.(row, reader); } catch { /* the base state remains readable */ }
     return {
       id: row.id,
       position: index + 1,
@@ -425,7 +436,8 @@ export function listJobs(reader: Pick<RecordReader, "all">, limit = 50): Array<J
       doing: !active ? null : row.state === "running" && runnerGone(row.owner)
         ? "interrupted; resumes from its last batch when the background process starts again" : row.progress,
       batches: row.batch, results: row.results,
-      tokens: { used: row.tokens_used, estimate: row.tokens_estimate },
+      tokens: { used: detail?.used ?? row.tokens_used, estimate: row.tokens_estimate, ...(detail?.ceiling === undefined ? {} : { ceiling: detail.ceiling }) },
+      ...(detail?.summary ? { summary: detail.summary } : {}),
       createdAt: row.created_at, updatedAt: row.updated_at, finishedAt: row.finished_at,
       pending: row.state === "running" ? row.request : null,
     };
@@ -446,6 +458,8 @@ export function describeJob(item: JobListItem): string {
   parts.push(`${count(item.results)} result${item.results === 1 ? "" : "s"}${finished ? "" : " so far"}`);
   if (item.tokens.estimate) parts.push(`${count(item.tokens.used)} of about ${count(item.tokens.estimate)} tokens`);
   else if (item.tokens.used) parts.push(`${count(item.tokens.used)} tokens`);
+  if (item.tokens.ceiling !== undefined) parts.push(`${count(item.tokens.ceiling)} token ceiling`);
+  if (item.summary) parts.push(item.summary);
   return `${String(item.position).padStart(2)}  ${item.label} · ${where}\n    ${parts.join(" · ")}`;
 }
 

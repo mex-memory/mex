@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { openHooksReadOnly, openRecord, projectIdentity, recordLocation } from "../index.js";
+import { HOOKS_SCHEMA_VERSION } from "../schema.js";
 import { fixtureRepos, git } from "./fixtures/repos.js";
 
 const goAvailable = spawnSync("go", ["version"], { windowsHide: true }).status === 0;
@@ -82,7 +83,7 @@ describe.skipIf(!goAvailable)("real Node/Go interoperability", () => {
       }
       await run.done;
       expect(observed.has(150)).toBe(true); expect([...observed].some((n) => n > 0 && n < 150)).toBe(true);
-      expect(reader!.get<{ user_version: number }>("PRAGMA user_version")?.user_version).toBe(10);
+      expect(reader!.get<{ user_version: number }>("PRAGMA user_version")?.user_version).toBe(HOOKS_SCHEMA_VERSION);
       expect(() => reader!.all("DELETE FROM sessions RETURNING *")).toThrow(/readonly/i);
     } finally { reader?.close(); run.child.kill(); }
   }, 30000);

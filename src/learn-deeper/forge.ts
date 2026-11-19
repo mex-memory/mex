@@ -1,0 +1,124 @@
+import { setTimeout as sleep } from "node:timers/promises";
+import { command, type PinnedTree } from "./git.js";
+import type { Reviewers } from "./reviewers.js";
+import type { Repository, ReviewSource, SourceWindow } from "./source.js";
+
+const MAX_RESPONSE = 2 << 20;
+const MAX_TOKEN_LENGTH = 4096;
+
+export type FetchProblem = "login" | "offline" | "rate-limit" | "unavailable";
+export class SourceError extends Error {
+  constructor(readonly problem: FetchProblem, readonly retryAt?: number) {
+    super({ login: "Sign in to the source host before learning can continue.", offline: "The source host could not be reached.",
+      "rate-limit": "The source host's request limit needs to reset.", unavailable: "The source host returned incomplete repository data." }[problem]);
+  }
+}
+
+export interface Pull { number: number; at: string; }
+export interface Inventory { source: Repository; visibility: "public" | "private"; pulls: Pull[]; more: boolean; anonymous: boolean; }
+export interface ReviewBatch { reviews: ReviewSource[]; reviewers: Reviewers; gaps: string[]; }
+export type RepositoryAccess = Pick<Inventory, "source" | "visibility">;
+export interface ReviewRequest extends SourceWindow {
+  source: Repository; pulls: readonly Pull[]; tree: PinnedTree; preferred: readonly string[];
+}
+export interface SourceHost {
+  access(client: ForgeClient): Promise<RepositoryAccess>;
+  inventory(client: ForgeClient, window: SourceWindow, limit: number): Promise<Inventory>;
+  reviews(client: ForgeClient, request: ReviewRequest): Promise<ReviewBatch>;
+}
+
+export function object(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+export function rows(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value) || value.length > 100 || value.some(row => !object(row))) throw new SourceError("unavailable");
+  return value as Record<string, unknown>[];
+}
+export function positive(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function validToken(value: string | undefined): string | undefined {
+  const token = value?.trim();
+  return token && token.length <= MAX_TOKEN_LENGTH && /^[\x21-\x7e]+$/u.test(token) ? token : undefined;
+}
+
+export async function hostToken(root: string, repo: Repository, env = process.env): Promise<string | undefined> {
+  const github = repo.host === "github.com";
+  const explicit = github ? validToken(env.GH_TOKEN) ?? validToken(env.GITHUB_TOKEN)
+    : validToken(env.GITLAB_TOKEN) ?? validToken(env.GL_TOKEN);
+  if (explicit) return explicit;
+  const cli = github ? await command(root, "gh", ["auth", "token", "--hostname", repo.host])
+    : await command(root, "glab", ["config", "get", "token", "--host", repo.host]);
+  const token = validToken(cli);
+  if (token) return token;
+  const credential = await command(root, "git", ["credential", "fill"], `protocol=https\nhost=${repo.host}\npath=${repo.slug}.git\n\n`);
+  return validToken(/^password=(.+)$/mu.exec(credential ?? "")?.[1]);
+}
+
+export interface Page { value: unknown; more: boolean; }
+
+/** Only fixed HTTPS origins. No redirects or provider text in errors or job records. */
+export class ForgeClient {
+  private nextRequest = 0;
+  readonly anonymous: boolean;
+  constructor(readonly repo: Repository, private readonly token?: string, private readonly request = fetch,
+    private readonly anonymousDelayMs = 1100) { this.anonymous = !token; }
+
+  async get(path: string, optional = false): Promise<Page | undefined> {
+    return this.read(path, optional);
+  }
+
+  async graphql(query: string, variables: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.anonymous || this.repo.host !== "github.com") throw new SourceError("login");
+    const response = object((await this.read("/graphql", false, JSON.stringify({ query, variables })))?.value);
+    const data = object(response?.data);
+    if (!data || Array.isArray(response?.errors) && response.errors.length > 0) throw new SourceError("unavailable");
+    return data;
+  }
+
+  private async read(path: string, optional: boolean, body?: string): Promise<Page | undefined> {
+    if (!path.startsWith("/") || path.startsWith("//")) throw new SourceError("unavailable");
+    const github = this.repo.host === "github.com";
+    const base = github ? "https://api.github.com" : "https://gitlab.com/api/v4";
+    if (!this.token) await sleep(Math.max(0, this.nextRequest - Date.now()));
+    this.nextRequest = Date.now() + this.anonymousDelayMs;
+    const headers: Record<string, string> = github
+      ? { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" }
+      : { Accept: "application/json" };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    let response: Response;
+    try { response = await this.request(base + path, { headers, ...(body === undefined ? {} : { method: "POST", body }), redirect: "error", signal: AbortSignal.timeout(8000) }); }
+    catch { throw new SourceError("offline"); }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      const retry = Number(response.headers.get("retry-after"));
+      const reset = Number(response.headers.get("x-ratelimit-reset")) * 1000;
+      if (response.status === 429 || response.headers.get("x-ratelimit-remaining") === "0"
+        || response.status === 403 && retry > 0) {
+        throw new SourceError("rate-limit", Math.max(Date.now() + (retry > 0 ? retry * 1000 : 60_000), reset));
+      }
+      if (optional && (response.status === 403 || response.status === 404 || this.anonymous && response.status === 401)) return undefined;
+      if (response.status === 401 || response.status === 403 || response.status === 404) throw new SourceError("login");
+      throw new SourceError(response.status >= 500 ? "offline" : "unavailable");
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new SourceError("unavailable");
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.length;
+        if (bytes > MAX_RESPONSE) { await reader.cancel(); throw new SourceError("unavailable"); }
+        chunks.push(Buffer.from(value));
+      }
+    } catch (error) { throw error instanceof SourceError ? error : new SourceError("offline"); }
+    finally { reader.releaseLock(); }
+    let value: unknown;
+    try { value = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new SourceError("unavailable"); }
+    return { value, more: /\brel="next"/u.test(response.headers.get("link") ?? "") || Number(response.headers.get("x-next-page")) > 0 };
+  }
+}

@@ -68,6 +68,8 @@ type DeliveryRequest struct {
 	// CompactSignal is 1 for SessionStart and 2 for PostCompact. Different
 	// signals confirm a transition; a repeated signal starts the next cycle.
 	CompactSignal int
+	// ExpectedEpoch binds a follow-up observation to the lifecycle that produced it.
+	ExpectedEpoch *int
 	Budget        int
 	Now           time.Time
 	Candidates    []DeliveryCandidate
@@ -212,6 +214,9 @@ func (hooks *Hooks) CheckAndMark(req DeliveryRequest) (result DeliveryResult, er
 	missing := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !missing {
 		return result, err
+	}
+	if req.ExpectedEpoch != nil && (missing || e.Number != *req.ExpectedEpoch || e.Closed) {
+		return result, errors.New("delivery epoch changed")
 	}
 	if req.Budget <= 0 {
 		req.Budget = 2000
@@ -746,6 +751,7 @@ func pruneDelivery(ctx context.Context, c *sql.Conn, cutoff string, keep func(st
 	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := append(ids, cutoff)
 	for _, q := range []string{
+		`DELETE FROM ledger_context WHERE rowid IN (SELECT l.rowid FROM ledger_context l JOIN sessions s USING(session_id) WHERE l.session_id IN (` + marks + `) AND s.last_seen_at<? LIMIT 256)`,
 		`DELETE FROM lane_offers WHERE rowid IN (SELECT o.rowid FROM lane_offers o JOIN epochs e ON e.session_id=o.session_id AND e.agent_id=o.agent_id AND e.epoch=o.epoch WHERE o.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
 		`DELETE FROM surface_cost_checks WHERE rowid IN (SELECT o.rowid FROM surface_cost_checks o JOIN sessions s ON s.session_id=o.session_id WHERE o.session_id IN (` + marks + `) AND s.last_seen_at<? LIMIT 256)`,
 		`DELETE FROM epoch_offers WHERE rowid IN (SELECT o.rowid FROM epoch_offers o JOIN epochs e ON e.session_id=o.session_id AND e.agent_id=o.agent_id AND e.epoch=o.epoch WHERE o.session_id IN (` + marks + `) AND e.started_at<? LIMIT 256)`,
@@ -887,8 +893,8 @@ func (hooks *Hooks) EpochFiles(sessionID, agentID, projectID, checkout string, e
 }
 
 // NoteEdits records files edited in the current epoch, for the recovery block
-// after compaction. Callers pass only files some entry's scope covers. At most
-// 64 paths per call and 512 per epoch; with no epoch yet, nothing is written.
+// after compaction. At most 64 paths per call and 512 per epoch; with no
+// epoch yet, nothing is written.
 func (hooks *Hooks) NoteEdits(session Session, agentID string, paths []string) error {
 	if hooks.counterOnly || len(paths) == 0 {
 		return nil

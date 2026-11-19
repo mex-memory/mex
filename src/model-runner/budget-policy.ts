@@ -39,6 +39,20 @@ export interface AdmissionDecision {
   nextReset?: string;
 }
 
+export function planWindow(windows: readonly PlanWindow[], now: number, pause = DEFAULT_PAUSE_PERCENT): { blocked: boolean; nextReset?: string } {
+  if (!Number.isFinite(pause) || pause < 0 || pause > 100) throw new Error("Invalid usage-window threshold.");
+  let blocked = false, nearest: number | undefined;
+  for (const window of windows) {
+    const reset = window.resetsAt === null ? NaN : Date.parse(window.resetsAt);
+    if (Number.isFinite(reset) && reset <= now) continue;
+    if (Number.isFinite(reset) && (nearest === undefined || reset < nearest)) nearest = reset;
+    const visible = window.usedPercent !== null && Number.isFinite(window.usedPercent)
+      && window.usedPercent >= 0 && window.usedPercent <= 100;
+    if (window.status === "rejected" || (visible && window.usedPercent! >= pause)) blocked = true;
+  }
+  return { blocked, ...(nearest === undefined ? {} : { nextReset: new Date(nearest).toISOString() }) };
+}
+
 function integer(value: number): bigint {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid budget quantity.");
   return BigInt(value);
@@ -87,22 +101,12 @@ export function decideAdmission(
   const estimate = integer(estimateUnits), attempts = integer(snapshot.admittedAttempts);
   if (estimate === 0n) throw new Error("A model batch estimate must be positive.");
   const floor = integer(parameters.floorBatches ?? DEFAULT_FLOOR_BATCHES);
-  const pause = parameters.pausePercent ?? DEFAULT_PAUSE_PERCENT;
-  if (!Number.isFinite(pause) || pause < 0 || pause > 100) throw new Error("Invalid usage-window threshold.");
-  let blocked = false, nearest: number | undefined;
-  for (const window of windows) {
-    const reset = window.resetsAt === null ? NaN : Date.parse(window.resetsAt);
-    if (Number.isFinite(reset) && reset <= now) continue;
-    if (Number.isFinite(reset) && (nearest === undefined || reset < nearest)) nearest = reset;
-    const visible = window.usedPercent !== null && Number.isFinite(window.usedPercent)
-      && window.usedPercent >= 0 && window.usedPercent <= 100;
-    if (window.status === "rejected" || (visible && window.usedPercent! >= pause)) blocked = true;
-  }
+  const { blocked, nextReset } = planWindow(windows, now, parameters.pausePercent);
   const result: AdmissionDecision = {
     allowed: true, limitUnits,
     remainingUnits: safe(max(0n, BigInt(limitUnits) - spent - reserved)),
     remainingAttempts: safe(max(0n, floor - attempts)),
-    ...(nearest === undefined ? {} : { nextReset: new Date(nearest).toISOString() }),
+    ...(nextReset === undefined ? {} : { nextReset }),
   };
   if (blocked) return { ...result, allowed: false, reason: "usage-window" };
   if (!snapshot.ownUsageReadable) {

@@ -145,40 +145,19 @@ func prepareTimingHooks(t *testing.T, location localrecord.Location) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	db.SetMaxOpenConns(1)
-	schema, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0001_init.sql"))
-	if err != nil {
-		t.Fatal(err)
+	names, err := filepath.Glob(filepath.Join("..", "..", "record", "schema", "hooks", "*.sql"))
+	if err != nil || len(names) != localrecord.SchemaVersion {
+		t.Fatalf("expected %d hooks migrations: %v %v", localrecord.SchemaVersion, names, err)
 	}
-	second, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0002_delivery.sql"))
-	if err != nil {
-		t.Fatal(err)
+	var schema []byte
+	for _, name := range names {
+		step, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		schema = append(schema, step...)
+		schema = append(schema, '\n')
 	}
-	schema = append(schema, second...)
-	third, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0003_followups.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema = append(schema, third...)
-	fourth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0004_rendering.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema = append(schema, fourth...)
-	fifth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0005_probes.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema = append(schema, fifth...)
-	sixth, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0006_intent.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema = append(schema, sixth...)
-	seventh, err := os.ReadFile(filepath.Join("..", "..", "record", "schema", "hooks", "0007_surfaces.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema = append(schema, seventh...)
 	// Fixture preparation is outside the real hook's timed interval and limits.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

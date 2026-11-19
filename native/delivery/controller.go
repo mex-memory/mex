@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mex-memory/mex/native/brief"
+	"github.com/mex-memory/mex/native/capture"
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/delivery/rank"
 	"github.com/mex-memory/mex/native/internal/contract"
@@ -30,6 +31,7 @@ type Environment struct {
 	Scorer                string // environment override, resolved without I/O
 	Surfaces              string // all-surface state or JSON map, test override
 	Offline               bool
+	CaptureDisabled       bool
 	Notices               bool   // adapter supports person-facing output on this event
 	Aids                  string // MEX_DELIVERY_ALIASES override: on or off, no I/O
 	Trace                 func(string, time.Duration)
@@ -127,6 +129,8 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	}
 	reason, signal, isLifecycle := lifecycle(ev)
 	isMoment := momentKind(ev)
+	lateRecovery := ev.Kind == contract.Prompt && ev.Agent == "claude-code" && ev.ProjectID != "" &&
+		env.RecordDirectory != "" && capture.CompactionPending(ev, env.RecordDirectory)
 	isEnd := ev.Kind == contract.SessionEnd
 	isSearch := searchEvent(ev)
 	var adviceIDs []string
@@ -138,7 +142,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, nil
 		}
 	}
-	if !isLifecycle && !isMoment && !isSearch && !isEnd && len(adviceIDs) == 0 {
+	if !isLifecycle && !isMoment && !isSearch && !isEnd && !lateRecovery && len(adviceIDs) == 0 {
 		return contract.Reply{}, nil
 	}
 	if ev.SessionID == "" || env.RecordDirectory == "" {
@@ -197,7 +201,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		stuck = findRescue(ev, env)
 		history = findHistory(ev, env)
 	}
-	if !isLifecycle && !isEnd && len(groups) == 0 && len(cards) == 0 && len(adviceIDs) == 0 && !pending && stuck == nil && len(history) == 0 {
+	if !isLifecycle && !isEnd && !lateRecovery && len(groups) == 0 && len(cards) == 0 && len(adviceIDs) == 0 && !pending && stuck == nil && len(history) == 0 {
 		return contract.Reply{}, nil
 	}
 	// A call that delivers nothing only adds evidence to open acted windows:
@@ -266,6 +270,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		if isEnd {
 			return contract.Reply{PersonLine: strings.Join(res.Notices, " ")}, nil
 		}
+		if ev.Agent == "claude-code" && ev.Kind == contract.PostCompact {
+			checkCompaction(h, ev, env, res.Epoch.Number)
+		}
 		text, err := lifecycleBlock(h, ev, env, reason, signal, res.Epoch)
 		if err != nil {
 			return contract.Reply{}, err
@@ -278,9 +285,22 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			blocks = append(blocks, carryBlocks(h, ev, env)...)
 		}
 	}
+	if lateRecovery {
+		if epoch, ok, err := h.CurrentEpoch(ev.SessionID, ev.AgentID); err == nil && ok {
+			if text := checkedRecovery(h, ev, env, epoch.Number); text != "" {
+				blocks = append(blocks, text)
+			}
+		}
+	}
 
 	adviceHandled := false
 	for _, g := range groups {
+		if g.snap == nil {
+			if err := noteCompactionEdits(h, ev, g); err != nil {
+				return contract.Reply{}, err
+			}
+			continue
+		}
 		if ev.Kind == contract.Prompt && g.project == ev.ProjectID && g.checkout == ev.Checkout {
 			g.cards = cards
 		}
@@ -313,10 +333,8 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 				return contract.Reply{}, err
 			}
 		}
-		if len(g.edits) > 0 {
-			if err := h.NoteEdits(record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: g.project, Checkout: g.checkout}, ev.AgentID, g.edits); err != nil {
-				return contract.Reply{}, err
-			}
+		if err := noteCompactionEdits(h, ev, g); err != nil {
+			return contract.Reply{}, err
 		}
 		if err := releaseHeldRules(h, ev, g); err != nil {
 			return contract.Reply{}, fmt.Errorf("record-holdbacks: %w", err)
@@ -380,6 +398,14 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 	}
 	return contract.Reply{Context: strings.Join(blocks, "\n\n"), PersonLine: strings.Join(notices, " ")}, nil
+}
+
+func noteCompactionEdits(h *record.Hooks, ev contract.Event, g *group) error {
+	if len(g.edits) == 0 {
+		return nil
+	}
+	session := record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: g.project, Checkout: g.checkout}
+	return h.NoteEdits(session, ev.AgentID, g.edits)
 }
 
 func baseRequest(ev contract.Event, env Environment, project, checkout string) record.DeliveryRequest {
@@ -464,7 +490,14 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 		hintGates := map[string]func(*entries.Item) bool{}
 		for _, v := range views(ev, env.Resolve) {
 			g := get(v.project, v.checkout)
-			if g == nil || g.snap == nil {
+			if g == nil {
+				continue
+			}
+			if isEdit(v) && ((ev.Agent == "claude-code" && ev.Kind == contract.PostToolBatch &&
+				v.output != nil && v.output.OK) || (g.snap != nil && covered(g.snap, v.rel))) {
+				g.edits = append(g.edits, v.rel)
+			}
+			if g.snap == nil {
 				continue
 			}
 			gate := hintGates[g.project]
@@ -483,9 +516,6 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				for _, c := range caught {
 					g.shellEdits = append(g.shellEdits, c.rel)
 				}
-			}
-			if isEdit(v) && covered(g.snap, v.rel) {
-				g.edits = append(g.edits, v.rel)
 			}
 		}
 	}

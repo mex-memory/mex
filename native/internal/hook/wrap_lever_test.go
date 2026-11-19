@@ -2,15 +2,18 @@ package hook
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/mex-memory/mex/native/internal/adapter/codex"
 	"github.com/mex-memory/mex/native/output"
+	localrecord "github.com/mex-memory/mex/native/record"
 )
 
 type codexReply struct {
@@ -183,6 +186,10 @@ func TestWrapperThroughRun(t *testing.T) {
 		t.Skip("POSIX shell syntax")
 	}
 	h, env, root := codexSetup(t)
+	env = withEnv(env, map[string]string{"CODEX_THREAD_ID": "wrapper-session"})
+	prepareStore(t, h)
+	start, _ := json.Marshal(map[string]string{"hook_event_name": "SessionStart", "session_id": "wrapper-session", "cwd": root, "source": "startup"})
+	run(t, []string{"codex", "SessionStart"}, bytes.NewReader(start), env)
 	wd, _ := os.Getwd()
 	if err := os.Chdir(root); err != nil {
 		t.Fatal(err)
@@ -205,8 +212,49 @@ func TestWrapperThroughRun(t *testing.T) {
 	if err != nil || !strings.Contains(string(saved), " - case 350 passes") {
 		t.Fatal("full text not saved")
 	}
+	db, err := sql.Open("sqlite", filepath.Join(h.mex, "hooks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var detail string
+	if err := db.QueryRow("SELECT detail FROM deliveries WHERE session_id='wrapper-session' AND moment='lever-observation'").Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var observation localrecord.LeverObservation
+	if json.Unmarshal([]byte(detail), &observation) != nil || observation.Kind != "saving" ||
+		observation.Lever != localrecord.LeverWrapper || observation.TokensRemoved != removedTokens(len(saved), out.Len()) {
+		t.Fatalf("wrong wrapper ledger receipt: %s", detail)
+	}
 	// Bad usage never runs anything.
 	if code := Run([]string{"run", "--shell", "fish", "--", "true"}, nil, &out, &out, env); code != 2 {
 		t.Fatal(code)
+	}
+
+	const trial = "0123456789abcdef0123456789abcdef"
+	write(t, filepath.Join(h.mex, "controls.json"), `{"version":1,"off":false,"capture":true,"ledger_holdout":"`+trial+`"}`)
+	session := "holdout-0"
+	for i := 1; !ledgerHoldoutCandidate(trial, "codex", session); i++ {
+		session = "holdout-" + strconv.Itoa(i)
+	}
+	env = withEnv(env, map[string]string{"CODEX_THREAD_ID": session, "CI": ""})
+	start, _ = json.Marshal(map[string]string{"hook_event_name": "SessionStart", "session_id": session, "cwd": root, "source": "startup"})
+	run(t, []string{"codex", "SessionStart"}, bytes.NewReader(start), env)
+	var held bool
+	if err := db.QueryRow("SELECT holdout FROM ledger_trials WHERE session_id=?", session).Scan(&held); err != nil || !held {
+		t.Fatalf("holdout assignment: %t %v", held, err)
+	}
+	pre, _ := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "session_id": session, "cwd": root,
+		"tool_name": "Bash", "tool_input": map[string]string{"command": "npm test"}})
+	if _, reply := run(t, []string{"codex", "PreToolUse"}, bytes.NewReader(pre), env); strings.TrimSpace(reply) != "{}" {
+		t.Fatalf("holdout rewrote a tool call: %s", reply)
+	}
+	out.Reset()
+	if code := Run([]string{"run", "--shell", "sh", "--", long}, nil, &out, &out, env); code != 0 ||
+		strings.Contains(out.String(), "full text: mex out") || !strings.Contains(out.String(), " - case 350 passes") {
+		t.Fatalf("holdout lost original output: %d (output bytes %d)", code, out.Len())
+	}
+	if _, err := os.Stat(filepath.Join(output.Directory(h.mex, projectID), "2.txt")); !os.IsNotExist(err) {
+		t.Fatal("holdout saved wrapper output", err)
 	}
 }
