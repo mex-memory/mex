@@ -1,0 +1,23 @@
+{
+  "agent": "claude-code",
+  "agent_version": "",
+  "kind": "post_tool",
+  "session_id": "s1",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "tool": {
+    "name": "read",
+    "raw_name": "Read",
+    "input": {
+      "path": "/home/dev/shop/src/cart.ts"
+    },
+    "output": {
+      "text": "{\"type\":\"file_unchanged\",\"file\":{\"filePath\":\"/home/dev/shop/src/cart.ts\"}}",
+      "ok": true
+    }
+  },
+  "transcript": "",
+  "background": false
+}

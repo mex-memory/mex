@@ -62,7 +62,7 @@ func TestHooksSchema(t *testing.T) {
 		names = append(names, name)
 	}
 	rows.Close()
-	if strings.Join(names, ",") != "aliases,counters_go,deliveries,delivery_conflicts,delivery_touches,epoch_files,epoch_offers,epochs,followups,journal,lane_offers,ledger,ledger_context,ledger_session_metrics,ledger_settlements,ledger_trials,notices_shown,outputs,sessions,surface_cost_checks,surface_firings,surface_gates,surface_session_first,surface_stats,surface_windows,verdicts" {
+	if strings.Join(names, ",") != "aliases,compact_nudge_state,counters_go,deliveries,delivery_conflicts,delivery_touches,epoch_files,epoch_offers,epochs,followups,journal,lane_offers,ledger,ledger_context,ledger_session_metrics,ledger_settlements,ledger_trials,lever_state,notices_shown,outline_guard,outputs,sessions,surface_cost_checks,surface_firings,surface_gates,surface_session_first,surface_stats,surface_windows,verdicts" {
 		t.Fatal(names)
 	}
 	session := Session{"s", "test", "f-012345678901234567890123", "/fixture", "now", "later", false}

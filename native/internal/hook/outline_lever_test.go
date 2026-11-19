@@ -6,12 +6,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	localrecord "github.com/mex-memory/mex/native/record"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -95,6 +97,8 @@ func setupRead(t *testing.T) readCase {
 		}
 	}
 	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
 	file := filepath.Join(root, "src", "cli.ts")
@@ -264,8 +268,8 @@ func TestOutlineKillSwitch(t *testing.T) {
 			told++
 		}
 	}
-	if told != 1 || !readOutlineStats(c.h.mex).Off {
-		t.Fatalf("kill switch: told %d, stats %+v", told, readOutlineStats(c.h.mex))
+	if told != 1 || !testOutlineStats(t, c.h.mex).Off {
+		t.Fatalf("kill switch: told %d, stats %+v", told, testOutlineStats(t, c.h.mex))
 	}
 	b, _ := json.Marshal(map[string]any{"session_id": "later", "cwd": c.root, "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": map[string]any{"file_path": c.file}, "tool_response": c.readResponse(t)})
 	if r := c.call(t, "PostToolUse", b); r.HookSpecificOutput.UpdatedToolOutput != nil {
@@ -325,4 +329,19 @@ func TestReplaySavedReadsThroughClaudeProfile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testOutlineStats(t *testing.T, d string) localrecord.OutlineGuard {
+	t.Helper()
+	h, err := localrecord.OpenHooks(place.Location{Directory: d, Hooks: filepath.Join(d, "hooks.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	var result localrecord.OutlineGuard
+	err = h.UpdateLeverState("test", "inspect", "", time.Now(), false, false, func(_ []byte, g *localrecord.OutlineGuard) ([]byte, error) { result = *g; return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }

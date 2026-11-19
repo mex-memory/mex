@@ -64,6 +64,11 @@ export function setLearningSharing(writer: RecordWriter, value: string, director
 }
 
 /** Whether typed-prompt ranking uses entries' written aliases and asks. Machine-wide. */
+export function setOutputLevers(writer: RecordWriter, value: string): void {
+  if (value !== "on" && value !== "off") throw new Error("Use on or off for levers.output.");
+  setPolicy(writer, "global", "levers.output", value);
+}
+
 export function setDeliveryAliases(writer: RecordWriter, value: string): void {
   if (value !== "on" && value !== "off") throw new Error("Use on or off for delivery.aliases.");
   setPolicy(writer, "global", "delivery.aliases", value);

@@ -73,6 +73,8 @@ func parseClaude(t *testing.T, out string) claudeReply {
 // summary intact, and the full text is saved where `mex out` reads it.
 func TestClaudeShellOutputTrimmedAndSaved(t *testing.T) {
 	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
 	full := longTestRun()
@@ -119,11 +121,13 @@ func TestClaudeShellOutputLeftWhole(t *testing.T) {
 		{name: "MEX_RAW in the environment", env: map[string]string{"MEX_RAW": "1"}, command: "npm test"},
 		{name: "MEX_RAW in the command", command: "MEX_RAW=1 npm test"},
 		{name: "reproducing a failure", command: "npm test", before: [][2]string{{"PostToolUseFailure", "npm test"}}},
-		{name: "investigating", command: "npm test", prompt: "Can you reproduce the flaky cart test?"},
+		{name: "explicit whole output", command: "npm test", prompt: "Please show full output"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			h, env := fakeHome(t, true)
+			env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+			h = homeFrom(env)
 			env = withEnv(env, c.env)
 			root := repo(t, t.TempDir())
 			register(t, h, root, projectID, "on", "")
@@ -148,6 +152,8 @@ func TestClaudeShellOutputLeftWhole(t *testing.T) {
 // Failures are left alone, and MEX off in a repo means nothing is trimmed.
 func TestClaudeShellFailureAndOffRepoUntouched(t *testing.T) {
 	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
 	_, out := run(t, []string{"claude-code", "PostToolUseFailure"}, bytes.NewReader(claudeBash(t, "PostToolUseFailure", "s1", root, "npm test", longTestRun())), env)
@@ -158,4 +164,25 @@ func TestClaudeShellFailureAndOffRepoUntouched(t *testing.T) {
 	register(t, h, off, "g-fedcba9876543210fedcba98", "off", "")
 	_, out = run(t, []string{"claude-code", "PostToolUse"}, bytes.NewReader(claudeBash(t, "PostToolUse", "s2", off, "npm test", longTestRun())), env)
 	assertEmptyReply(t, 0, out)
+}
+
+func TestClaudeSearchGroupsAndSavesOriginal(t *testing.T) {
+	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	original, err := os.ReadFile("../../output/testdata/outputs/grep-numbered.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, out := run(t, []string{"claude-code", "PostToolUse"}, bytes.NewReader(claudeBash(t, "PostToolUse", "s1", root, "grep -rn needle src", string(original))), env)
+	r := parseClaude(t, out)
+	if !strings.Contains(string(r.HookSpecificOutput.UpdatedToolOutput), "search output grouped by file") {
+		t.Fatalf("not grouped: %s", out)
+	}
+	saved, err := os.ReadFile(filepath.Join(output.Directory(h.mex, projectID), "1.txt"))
+	if err != nil || !bytes.Equal(saved, original) {
+		t.Fatal("original search output changed", err)
+	}
 }

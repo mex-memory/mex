@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/mex-memory/mex/native/internal/tokens"
 	"io"
 	"path/filepath"
 	"slices"
@@ -47,7 +48,7 @@ func ledgerOff(directory, lever string) (int64, bool) {
 }
 
 func removedTokens(before, after int) int {
-	return max(0, (before+3)/4-(after+3)/4)
+	return max(0, tokens.CodeBytes(before)-tokens.CodeBytes(after))
 }
 
 func observeLever(ev contract.Event, directory string, state *leverState, reply contract.Reply) *localrecord.LeverObservation {
@@ -141,7 +142,7 @@ func hookSession(ev contract.Event) localrecord.Session {
 type ledgerPersonNotice struct{ id, text string }
 
 func ledgerNotice(ev contract.Event, h home, directory string, now time.Time) string {
-	if directory == "" || ev.Kind != contract.SessionStart || ev.AgentID != "" || ev.SessionID == "" || capture.Scripted(ev.Agent, h.env) {
+	if !h.outputLevers() || directory == "" || ev.Kind != contract.SessionStart || ev.AgentID != "" || ev.SessionID == "" || capture.Scripted(ev.Agent, h.env) {
 		return ""
 	}
 	var levers []string

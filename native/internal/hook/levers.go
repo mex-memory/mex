@@ -5,16 +5,13 @@ package hook
 // what runs, and every one of them hides nothing: the full text is always one
 // command away.
 //
-// The levers keep a little state per session in
-// <record directory>/levers/<agent>/<session>[.<subagent>].json:
+// The levers keep transactional state per session and subagent in hooks.db:
 // which files were outlined in this context, which were edited, which
 // commands failed, and hashed words of the last prompt. Prompt text itself is
 // never stored.
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,10 +22,9 @@ import (
 	localrecord "github.com/mex-memory/mex/native/record"
 )
 
-const leverStateMaxAge = 7 * 24 * time.Hour
-
 // leverState is one session's (or subagent's) lever memory.
 type leverState struct {
+	guard *localrecord.OutlineGuard
 	// Context counts compactions and clears: "once per context" rules reset
 	// when it changes.
 	Context  int                     `json:"context"`
@@ -39,73 +35,29 @@ type leverState struct {
 	// one again is reproducing, so its output is left whole.
 	Failed map[string]bool `json:"failed,omitempty"`
 	// Words: hashes of the last prompt's words, for "named in the prompt"
-	// and the outline's slices. Investigating: the last prompt asked to
-	// reproduce, investigate or debug, so output stays whole.
+	// and outline slices. WholeOutput is an explicit presentation instruction.
 	Words         []uint64 `json:"words,omitempty"`
-	Investigating bool     `json:"investigating,omitempty"`
+	WholeOutput   bool     `json:"whole_output,omitempty"`
+	Reproducing   bool     `json:"-"`
 	Topic         []uint64 `json:"topic,omitempty"`
 	TopicCheckout string   `json:"topic_checkout,omitempty"`
 	CompactNudged bool     `json:"compact_nudged,omitempty"`
 }
 
 type outlineMark struct {
-	Context int  `json:"context"`
-	Lines   int  `json:"lines"`
-	Ranged  bool `json:"ranged,omitempty"`  // the agent has read part of it since
-	Stopped bool `json:"stopped,omitempty"` // an edit or full write was stopped once
-	Forced  bool `json:"forced,omitempty"`  // a full read was turned into a range
-}
-
-func leverStatePath(recordDirectory string, ev contract.Event) string {
-	name := safeName(ev.SessionID)
-	if ev.AgentID != "" {
-		name += "." + safeName(ev.AgentID)
-	}
-	return filepath.Join(recordDirectory, "levers", safeName(ev.Agent), name+".json")
-}
-
-func loadLeverState(file string) *leverState {
-	s := &leverState{}
-	if data, err := os.ReadFile(file); err == nil {
-		_ = json.Unmarshal(data, s)
-	}
-	return s
-}
-
-// save replaces the file whole. Parallel hook calls can lose an update; the
-// levers only ever lose a saving that way, never evidence.
-func (s *leverState) save(file string) {
-	data, err := json.Marshal(s)
-	if err != nil || os.MkdirAll(filepath.Dir(file), 0o700) != nil {
-		return
-	}
-	tmp := file + "." + randomSuffix() + ".tmp"
-	if os.WriteFile(tmp, data, 0o600) != nil {
-		return
-	}
-	if os.Rename(tmp, file) != nil {
-		_ = os.Remove(tmp)
-	}
-}
-
-func randomSuffix() string {
-	return strings.ReplaceAll(time.Now().Format("150405.000000000"), ".", "")
-}
-
-func pruneLeverStates(dir string, now time.Time) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > leverStateMaxAge {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
-		}
-	}
+	Hash     string `json:"hash,omitempty"`
+	Full     bool   `json:"full,omitempty"`
+	Original string `json:"original,omitempty"`
+	Context  int    `json:"context"`
+	Lines    int    `json:"lines"`
+	Ranged   bool   `json:"ranged,omitempty"`  // the agent has read part of it since
+	Stopped  bool   `json:"stopped,omitempty"` // an edit or full write was stopped once
+	Forced   bool   `json:"forced,omitempty"`  // a full read was turned into a range
 }
 
 // leverOptions come from the environment of the agent that runs the hook.
 type leverOptions struct {
+	enabled   *bool
 	raw       bool   // MEX_RAW=1: show everything as it is
 	noOutline bool   // MEX_OUTLINE=0: no outlines
 	noBump    bool   // MEX_SPEED_BUMP=0: no speed bump
@@ -134,83 +86,138 @@ func levers(ev contract.Event, h home, recordDirectory string, now time.Time, ca
 	default:
 		return contract.Reply{}, nil
 	}
-	file := leverStatePath(recordDirectory, ev)
-	state := loadLeverState(file)
-	changed := false
-	switch ev.Kind {
-	case contract.PostCompact:
-		if state.CompactNudged {
-			state.CompactNudged = false
-			changed = true
-		}
-	case contract.SessionStart:
-		if ev.Source == "compact" || ev.Source == "clear" {
-			state.Context++
-			state.Failed = nil
-			state.CompactNudged = false
-			if ev.Source == "clear" {
-				state.Topic = nil
+	enabled := h.outputLevers()
+	nudgeEvent := nudgeEligible(ev, h, captureOn)
+	if !enabled && !nudgeEvent {
+		return
+	}
+	hooks, err := localrecord.OpenHooks(hooksLocation(h, recordDirectory))
+	if err != nil {
+		return
+	}
+	defer hooks.Close()
+	prune := ev.Kind == contract.SessionStart && (ev.Source == "" || ev.Source == "startup")
+	// Nudge memory is separate from presentation, including while output is off.
+	if nudgeEvent {
+		err = hooks.UpdateLeverState(ev.Agent, ev.SessionID, ev.AgentID, now, prune, true, func(data []byte, _ *localrecord.OutlineGuard) ([]byte, error) {
+			state := &leverState{}
+			if len(data) > 0 {
+				if err := json.Unmarshal(data, state); err != nil {
+					return nil, err
+				}
 			}
-			changed = true
-		}
-		if ev.Source == "" || ev.Source == "startup" {
-			pruneLeverStates(filepath.Dir(file), now)
-		}
-	case contract.Prompt:
-		if ev.Prompt != nil {
-			state.Words, state.Investigating = promptWords(ev.Prompt.Text)
-			if captureOn {
+			if ev.Kind == contract.PostCompact || ev.Kind == contract.SessionStart && (ev.Source == "compact" || ev.Source == "clear") {
+				state.CompactNudged = false
+				if ev.Source == "clear" {
+					state.Topic = nil
+				}
+			}
+			if ev.Kind == contract.Prompt && captureOn {
 				reply.PersonLine = compactNudge(ev, h, state)
 			}
-			changed = true
+			return json.Marshal(state)
+		})
+		if err != nil {
+			reply.PersonLine = ""
 		}
-	case contract.PostToolFailure:
-		if ev.Tool != nil && ev.Tool.Name == contract.ToolShell && ev.Tool.Input.Command != "" {
-			if state.Failed == nil {
-				state.Failed = map[string]bool{}
+	}
+	if !enabled {
+		return
+	}
+	nudgeLine := reply.PersonLine
+	intent, intentErr := hooks.Intent(ev.SessionID, ev.AgentID)
+	err = hooks.UpdateLeverState(ev.Agent, ev.SessionID, ev.AgentID, now, prune, false, func(data []byte, guard *localrecord.OutlineGuard) ([]byte, error) {
+		state := &leverState{guard: guard, Reproducing: intentErr != nil || intent == "reproducing"}
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, state); err != nil {
+				return nil, err
 			}
-			state.Failed[commandKey(ev.Tool.Input.Command)] = true
-			changed = true
 		}
-	case contract.PostTool:
-		if ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.OK {
-			break
+		rearmed, _ := ledgerOff(recordDirectory, localrecord.LeverOutline)
+		if rearmed > guard.RearmedAt {
+			*guard = localrecord.OutlineGuard{RearmedAt: rearmed}
 		}
-		for _, p := range editedPaths(*ev.Tool) {
-			if state.Edited == nil {
-				state.Edited = map[string]bool{}
+		changed := false
+		switch ev.Kind {
+		case contract.PostCompact:
+			if state.CompactNudged {
+				state.CompactNudged = false
+				changed = true
 			}
-			state.Edited[pathKey(p)] = true
-			changed = true
-		}
-		switch {
-		case ev.Agent == "claude-code" && ev.Tool.Name == contract.ToolShell:
-			reply = trimShell(ev, h, recordDirectory, state, now)
-		case ev.Agent == "claude-code" && ev.Tool.Name == contract.ToolRead:
+		case contract.SessionStart:
+			if ev.Source == "compact" || ev.Source == "clear" {
+				state.Context++
+				state.Outlined = nil
+				state.Failed = nil
+				state.CompactNudged = false
+				if ev.Source == "clear" {
+					state.Topic = nil
+				}
+				changed = true
+			}
+
+		case contract.Prompt:
+			if ev.Prompt != nil && ev.Prompt.Typed {
+				state.Words, state.WholeOutput = promptWords(ev.Prompt.Text)
+
+				changed = true
+			}
+		case contract.PostToolFailure:
+			if ev.Tool != nil && ev.Tool.Name == contract.ToolShell && ev.Tool.Input.Command != "" {
+				if state.Failed == nil {
+					state.Failed = map[string]bool{}
+				}
+				state.Failed[commandKey(ev.Tool.Input.Command)] = true
+				changed = true
+			}
+		case contract.PostTool:
+			if ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.OK {
+				break
+			}
+			for _, p := range editedPaths(*ev.Tool) {
+				if state.Edited == nil {
+					state.Edited = map[string]bool{}
+				}
+				state.Edited[pathKey(p)] = true
+				changed = true
+			}
+			switch {
+			case ev.Agent == "claude-code" && ev.Tool.Name == contract.ToolShell:
+				reply = trimShell(ev, h, recordDirectory, state, now)
+			case ev.Agent == "claude-code" && ev.Tool.Name == contract.ToolRead:
+				var c bool
+				reply, c = outlineRead(ev, h, recordDirectory, state, now)
+				changed = changed || c
+			}
+		case contract.PreTool:
+			if ev.Tool == nil {
+				break
+			}
 			var c bool
-			reply, c = outlineRead(ev, h, recordDirectory, state, now)
+			switch ev.Agent {
+			case "claude-code":
+				reply, c = outlineGuard(ev, h, recordDirectory, state)
+			case "codex":
+				reply = wrapCodexCommand(ev, h, recordDirectory, state)
+			}
 			changed = changed || c
 		}
-	case contract.PreTool:
-		if ev.Tool == nil {
-			break
+
+		if enabled && captureOn {
+			if measured := observeLever(ev, recordDirectory, state, reply); measured != nil && !capture.Scripted(ev.Agent, h.env) {
+				observation = measured
+			}
 		}
-		var c bool
-		switch ev.Agent {
-		case "claude-code":
-			reply, c = outlineGuard(ev, h, recordDirectory, state)
-		case "codex":
-			reply = wrapCodexCommand(ev, h, recordDirectory, state)
+		if changed {
+			return json.Marshal(state)
 		}
-		changed = changed || c
+		return nil, nil
+	})
+	if err != nil {
+		return contract.Reply{PersonLine: nudgeLine}, nil
 	}
-	if changed {
-		state.save(file)
-	}
-	if captureOn {
-		if measured := observeLever(ev, recordDirectory, state, reply); measured != nil && !capture.Scripted(ev.Agent, h.env) {
-			observation = measured
-		}
+	if reply.PersonLine == "" {
+		reply.PersonLine = nudgeLine
 	}
 	return reply, observation
 }
@@ -218,7 +225,7 @@ func levers(ev contract.Event, h home, recordDirectory string, now time.Time, ca
 // trimShell replaces a successful noisy command's output with its trim, after
 // saving the full text. Without a saved copy nothing is trimmed.
 func trimShell(ev contract.Event, h home, recordDirectory string, state *leverState, now time.Time) contract.Reply {
-	if h.levers.raw || state.Investigating || ev.ProjectID == "" {
+	if h.levers.raw || (state.WholeOutput || state.Reproducing) || ev.ProjectID == "" {
 		return contract.Reply{}
 	}
 	command, text := ev.Tool.Input.Command, ev.Tool.Output.Text
@@ -226,7 +233,7 @@ func trimShell(ev contract.Event, h home, recordDirectory string, state *leverSt
 		leverOff(recordDirectory, localrecord.LeverShellTrim) {
 		return contract.Reply{}
 	}
-	trimmed, ok := output.TrimAndSave(text, 0, func() (int, error) {
+	trimmed, ok := output.PresentAndSave(command, text, 0, func() (int, error) {
 		return output.Save(recordDirectory, ev.ProjectID, text, output.SavedMeta{Command: command, Agent: ev.Agent, SessionID: ev.SessionID}, now)
 	})
 	if !ok {
@@ -266,14 +273,14 @@ func commandKey(command string) string {
 
 func wordHash(w string) uint64 { return outline.WordHash(w) }
 
-var investigating = []string{"reproduce", "reproducing", "repro", "investigate", "investigating", "debug", "debugging", "bisect", "flaky", "root cause", "full output", "whole output", "raw output"}
+var wholeOutputRequests = []string{"full output", "whole output", "raw output", "untrimmed"}
 
 // promptWords hashes a prompt's words (three letters or more, and file names
-// whole), and says whether it asks to reproduce or investigate.
+// whole), and says whether it explicitly asks for whole output.
 func promptWords(text string) ([]uint64, bool) {
 	lower := strings.ToLower(text)
 	inv := false
-	for _, w := range investigating {
+	for _, w := range wholeOutputRequests {
 		if strings.Contains(lower, w) {
 			inv = true
 			break

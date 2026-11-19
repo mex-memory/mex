@@ -922,12 +922,54 @@ Anchors, search answers, lanes and measurement (delivery-02, second pass):
 
 Pattern automata,
 the speed bump and edit checks for rules and code facts (delivery-03, which
-drops its prompt symbol pointer: `prompt-anchor` carries it); smaller reads and
-outputs (delivery-04, which groups search output by file, uses the calibrated
-estimates, keeps its state in the record database, runs read-risk on the
-original text before it outlines, and handles the host's re-read stub); the
+drops its prompt symbol pointer: `prompt-anchor` carries it); the
 compaction steer and the single ledger that credits avoided calls and fills
 `surface_cost_checks` (delivery-05); callers and tests cards on the
 `search-span` slot (graph-03). The start brief fills the session-start and recovery
 slots (knowledge-05); capture fills "where we left off" and writes recorded
 fixes (learning-01), which need a check to be sent.
+
+## Output levers
+
+Output levers are off by default. Turn them on with
+`mex config set levers.output on`; use `off` to turn them off. The global
+setting is in Node's record.db settings table and its controls.json mirror.
+`MEX_LEVERS=on|off` overrides it for the current process. `MEX_RAW=1` shows
+whole output; `MEX_OUTLINE=0` skips outlines and their guards. With output
+levers off, hooks skip presentation state, rewriting and lever measurements.
+Already wrapped commands still run exactly, with whole output. Compaction
+topic nudges keep working independently.
+
+Claude Code can see an outline of an indexed, unchanged, unedited file on its
+first unranged read in a context. The cutoff is 10,000 calibrated code tokens,
+about 23,000 UTF-8 bytes, close to the tested size cutoff. Code and tool output
+estimates use 2.3 bytes per token throughout the outline, trim and ledger.
+The outline includes task-relevant slices and says how to read the text.
+Its range never exceeds the host's original returned line count. An edit
+without a follow-up text read is stopped once. The next full read is made an
+explicit range to avoid the host's unchanged-file stub. If a stub still
+arrives, MEX returns bounded file text only when it matches the outline's
+hash; otherwise it asks for an explicit range. Read-risk scans use the
+original returned text, including when a later batch carries an outline and
+the file has changed since that read.
+
+Long successful search output is grouped by file, and path listings by
+directory. No lines are dropped. Blocks retain input order, including context
+lines and separators; a recurring file starts a new block. Ambiguous lines
+leave the whole output alone. Tree output stays whole. A grouped view must
+save at least 25 percent, including its header. Other noisy successful
+commands can be trimmed while preserving warnings, errors and summaries.
+The exact original output is saved locally and remains one command away:
+`mex out <number>`.
+
+Trimming and Codex rewriting pause while delivery's epoch intent is
+`reproducing`. Its `investigating` intent still allows them. An explicit
+request for full, raw, whole or untrimmed output in the last typed prompt also
+keeps output whole. Commands that failed in this context stay whole on rerun.
+Codex commands requesting a terminal are never rewritten.
+
+Go owns hooks.db presentation state. Session/subagent state and machine-wide
+outline guard counters update together in one bounded immediate transaction.
+Startup prunes old session rows after seven days, in bounded batches. Old
+JSON lever files are ignored. `mex on --lever outline` resets the outline
+kill switch through the existing rearm path. Node never writes hooks.db.
