@@ -822,3 +822,24 @@ func TestRootClaudeFileMeansClaudeReadsNoAgentsFile(t *testing.T) {
 	f.session = "s2"
 	mustHave(t, f.send(f.event(contract.PostToolBatch, read(f.file("src/gen/b.ts", "b"), "b"))), "Edit schema.graphql")
 }
+
+// An event whose text can't reach the model (the agent's profile has no
+// channel for it) sends nothing and records nothing as given, so the entry
+// still goes out at the next moment the agent can receive.
+func TestNoChannelSendsAndRecordsNothing(t *testing.T) {
+	f := newFixture(t)
+	f.entry(spec{id: "mx_pitfal", kind: "pitfall", scope: "src/db/**", oneLine: "The pool is shared; never close it here."})
+	p := f.file("src/db/pool.ts", "export const pool = 1\n")
+	ev := f.event(contract.PostToolBatch, read(p, "export const pool = 1"))
+	env := f.env()
+	env.NoContext = true
+	reply, err := Handle(ev, env)
+	if err != nil || reply.Context != "" {
+		t.Fatalf("no channel: %+v %v", reply, err)
+	}
+	if got := f.rows(""); len(got) != 0 {
+		t.Fatalf("nothing may be recorded as given: %v", got)
+	}
+	ctx := f.send(f.event(contract.PostToolBatch, read(p, "export const pool = 1")))
+	mustHave(t, ctx, "never close it here")
+}

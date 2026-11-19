@@ -338,7 +338,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			canNotice = support.PersonLine
 		}
 	}
-	denv := delivery.Environment{Notices: canNotice, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	toModel, known := profile.Capabilities().Support(ev.Kind)
+	denv := delivery.Environment{Notices: canNotice, NoContext: !known || toModel.Context == adapter.ChannelNone, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)

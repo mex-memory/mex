@@ -32,10 +32,13 @@ type Environment struct {
 	Surfaces              string // all-surface state or JSON map, test override
 	Offline               bool
 	CaptureDisabled       bool
-	Notices               bool   // adapter supports person-facing output on this event
-	Aids                  string // MEX_DELIVERY_ALIASES override: on or off, no I/O
-	Trace                 func(string, time.Duration)
-	KeepSession           func(agent, sessionID string) bool
+	Notices               bool // adapter supports person-facing output on this event
+	// NoContext: the agent's profile has no channel to the model for this
+	// event, so moments must not be sent or recorded as given.
+	NoContext   bool
+	Aids        string // MEX_DELIVERY_ALIASES override: on or off, no I/O
+	Trace       func(string, time.Duration)
+	KeepSession func(agent, sessionID string) bool
 	// Resolve finds the registered checkout of a touched path; nil means
 	// every tool uses the event's own checkout.
 	Resolve Resolver
@@ -200,6 +203,25 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isMoment && ev.Kind != contract.Prompt {
 		stuck = findRescue(ev, env)
 		history = findHistory(ev, env)
+	}
+	// The agent's profile says text on this event can't reach the model
+	// (Cursor's and Copilot's prompt hooks, Antigravity's and Kiro's tool
+	// results). Nothing is sent, so nothing is recorded as given, and each
+	// entry stays due for a moment the agent can receive. Edits are still
+	// noted, and a prompt still arms entries for the first read of the files
+	// it names: an armed entry is held back now, not given.
+	if env.NoContext && !isLifecycle {
+		stuck, history = nil, nil
+		var armed []answerCard
+		for _, c := range cards {
+			if c.arm != nil {
+				armed = append(armed, c)
+			}
+		}
+		cards = armed
+		for _, g := range groups {
+			g.cands = nil
+		}
 	}
 	if !isLifecycle && !isEnd && !lateRecovery && len(groups) == 0 && len(cards) == 0 && len(adviceIDs) == 0 && !pending && stuck == nil && len(history) == 0 {
 		return contract.Reply{}, nil
