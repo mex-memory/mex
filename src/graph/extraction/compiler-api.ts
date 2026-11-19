@@ -35,6 +35,7 @@ import {
 } from "typescript-7/sync";
 import { recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
 import { compilerServerProbesEnabled, probeCompilerServers } from "../process-stats.js";
+import { processGraphSizing } from "../sizing.js";
 import {
   CompilerFallback,
   canonicalCompilerIdentity,
@@ -154,11 +155,12 @@ export class ApiProjectCompiler implements ProjectCompiler {
     // Projects are opened in the order given; group neighbours into chunks
     // so one snapshot never holds every program of a large monorepo.
     this.chunks = [];
+    const sizing = processGraphSizing();
     let chunk: ProjectOpenRequest[] = [];
     let files = 0;
     for (const request of requests) {
       const size = request.rootNames.length;
-      if (chunk.length > 0 && (chunk.length >= MAX_CHUNK_PROJECTS || files + size > MAX_CHUNK_ROOT_FILES)) {
+      if (chunk.length > 0 && (chunk.length >= sizing.chunkProjects || files + size > sizing.chunkRootFiles)) {
         this.chunks.push(chunk);
         chunk = [];
         files = 0;
@@ -279,6 +281,86 @@ export class ApiProjectCompiler implements ProjectCompiler {
 }
 
 /**
+ * One project's program kept alive between edits (the warm path, graph-02).
+ * It is built exactly as an extraction builds the project, in its own
+ * snapshot; an edit replaces the file's text in a new snapshot layer, and the
+ * server re-checks only what the change reaches.
+ */
+export class WarmApiProject {
+  private api: API7 | undefined;
+  private snapshot: { dispose(): void; update(params: unknown): unknown; getProgram(id: unknown): Program | undefined } | undefined;
+  private program: Program | undefined;
+  private readonly translation: CompilerOptionsTranslation;
+
+  constructor(readonly server: TypeScriptApiServer, readonly request: ProjectOpenRequest) {
+    this.translation = translateCompilerOptions(request.options);
+    this.api = server.start({
+      cwd: request.root,
+      fs: ledgerFileSystem(request.root, request.inputs, server.libraryDirectories, server.serverFS),
+    });
+    const createSnapshot = this.api.createSnapshot as unknown as (params: unknown) => {
+      dispose(): void; update(params: unknown): unknown; getProgram(id: unknown): Program | undefined;
+      operation: { createdPrograms?: readonly Program[] };
+    };
+    const snapshot = createSnapshot.call(this.api, {
+      fileSystem: stagedLayer(request.inputs),
+      createPrograms: [{
+        rootFiles: request.rootNames.map(helpers.normalizedAbsolute),
+        compilerOptions: this.translation.options,
+        options: programOptions(request),
+      }],
+    });
+    this.snapshot = snapshot;
+    this.program = snapshot.operation.createdPrograms?.[0];
+    if (!this.program) {
+      this.close();
+      throw new CompilerFallback("the server built no program for the project");
+    }
+  }
+
+  get name(): string {
+    return `${this.server.name}-${this.server.version}`;
+  }
+
+  /** Replace files' text; absolute paths. */
+  update(texts: ReadonlyMap<string, string>): void {
+    if (!this.snapshot || !this.program) throw new Error("The warm project is closed.");
+    const files: Record<string, string> = {};
+    for (const [absolute, text] of texts) {
+      this.request.inputs.restage(absolute, text);
+      files[helpers.normalizedAbsolute(absolute)] = text;
+    }
+    const next = this.snapshot.update({ fileSystem: { kind: "layer", files }, ensurePrograms: true }) as NonNullable<WarmApiProject["snapshot"]>;
+    const program = next.getProgram((this.program as unknown as { id: unknown }).id);
+    if (!program) {
+      try { next.dispose(); } catch { /* released with the server */ }
+      throw new CompilerFallback("the updated snapshot lost the project's program");
+    }
+    try { this.snapshot.dispose(); } catch { /* released with the server */ }
+    this.snapshot = next;
+    this.program = program;
+  }
+
+  /** A session over the current program; release it before the next update. */
+  session(): ProjectSession {
+    if (!this.api || !this.program) throw new Error("The warm project is closed.");
+    return new ApiProjectSession(this.name, this.request, this.api, this.program, this.translation.changes);
+  }
+
+  close(): void {
+    try { this.snapshot?.dispose(); } catch { /* released with the server */ }
+    this.snapshot = undefined;
+    this.program = undefined;
+    const api = this.api;
+    this.api = undefined;
+    if (!api) return;
+    const shut = (): void => { try { api.close(); } catch { /* the server may already be gone */ } };
+    if (compilerServerProbesEnabled()) probeCompilerServers(shut);
+    else shut();
+  }
+}
+
+/**
  * The server reads the repository through MEX's input ledger, so staged
  * bytes win, the containment policy holds and every input is recorded, as
  * with the 5.9 compiler host. Dependencies and the server's own libraries
@@ -346,13 +428,10 @@ function programOptions(request: ProjectOpenRequest): { projectReferences: Array
   };
 }
 
-/**
- * How many projects, and how many root files, one snapshot holds. Within a
- * chunk the server parses a shared file once and builds programs in
- * parallel; across chunks memory stays bounded. Starting values.
- */
-const MAX_CHUNK_PROJECTS = 12;
-const MAX_CHUNK_ROOT_FILES = 4_000;
+// How many projects, and how many root files, one snapshot holds comes from
+// the machine sizing (see sizing.ts). Within a chunk the server parses a
+// shared file once and builds programs in parallel; across chunks memory
+// stays bounded.
 
 /** The staged repository bytes as a filesystem layer over the host. */
 function stagedLayer(ledger: CompilerInputLedger): { kind: "layer"; files: Record<string, string> } {

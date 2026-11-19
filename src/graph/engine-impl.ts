@@ -1,3 +1,4 @@
+import { processGraphSizing } from "./sizing.js";
 import { assertTextSource, unavailableFileReason } from "./source-errors.js";
 import { discoverGraphReadPaths } from "./read-discovery.js";
 import { skippedByRule } from "../file-index/discover.js";
@@ -69,6 +70,7 @@ import {
   type CompilerExtractedNode,
   type CompilerExtractionOptions,
   type CompilerIncrementalInput,
+  type CompilerFileCapture,
   type CompilerProjectInputs,
   type CompilerExtractionResult,
   type CompilerFileExtraction,
@@ -1005,6 +1007,17 @@ function loadExtractionReuse(store: GraphStore, root: string): ExtractionReuse |
   };
 }
 
+/**
+ * Large builds keep captures on disk until the finishing pass (see
+ * capture-spool). MEX_GRAPH_SPOOL_CAPTURES=always|never overrides the size rule.
+ */
+function spoolCaptures(compilerFiles: number): boolean {
+  const forced = process.env.MEX_GRAPH_SPOOL_CAPTURES;
+  if (forced === "always") return true;
+  if (forced === "never") return false;
+  return compilerFiles >= processGraphSizing().spoolCapturesFrom;
+}
+
 async function stageCorpus(
   root: string,
   manifest = graphManifest(root),
@@ -1085,6 +1098,28 @@ async function stageCorpus(
         (path) => sourceSpool.read(discoveredByPath.get(path)!),
       ));
 
+    // Cache entries for the next refresh. Compiler captures arrive as the
+    // finishing pass makes them, so the whole corpus's captures are never
+    // held next to its encoded entries.
+    const storedExtraction = "reason" in reuse ? new Map<string, StoredExtraction>() : reuse.stored;
+    const cacheEntries = new Map<string, ExtractionCacheState["entries"][number]>();
+    const setCacheEntry = (path: string, contentHash: string, payload: Uint8Array): void => {
+      const previous = storedExtraction.get(path);
+      const changed = !previous || previous.contentHash !== contentHash
+        || !Buffer.from(previous.payload).equals(Buffer.from(payload));
+      cacheEntries.set(path, { path, contentHash, payload, changed });
+    };
+    const takeCapture = (capture: CompilerFileCapture, reused: boolean): void => {
+      const contentHash = discoveredByPath.get(capture.filePath)?.contentHash;
+      if (!contentHash) return;
+      if (reused) {
+        cacheEntries.set(capture.filePath, {
+          path: capture.filePath, contentHash, payload: storedExtraction.get(capture.filePath)!.payload, changed: false,
+        });
+      } else {
+        setCacheEntry(capture.filePath, contentHash, encodeCachedExtraction({ kind: "compiler", capture }));
+      }
+    };
     let compiler: CompilerExtractionResult;
     // A full extraction reuses nothing, so it must not carry the previous
     // payloads either: that would peak above a plain build. Emptying the map
@@ -1095,10 +1130,13 @@ async function stageCorpus(
     };
     const extractCompilerFiles = (incremental?: CompilerIncrementalInput): CompilerExtractionResult => {
       const semanticInputLedger = createGraphSemanticInputLedger();
+      cacheEntries.clear();
       return timeGraphPhase("compiler.total", () => buildTypeScriptExtraction(root, compilerPaths, {
         ...compilers?.options,
         ...compilerExtraction,
         ...(incremental ? { incremental } : {}),
+        onCapture: takeCapture,
+        ...(spoolCaptures(compilerPaths.length) ? { captureSpoolDirectory: internal.sourceSpoolDirectory ?? tmpdir() } : {}),
         stagedInputs: compilerInputs,
         readProjectFile: (absolutePath) => {
           const source = readSecureCompilerInput(root, absolutePath);
@@ -1166,31 +1204,8 @@ async function stageCorpus(
       .map((file) => detectLanguage(file.relPath)))];
     await timeGraphPhaseAsync("stage.loadGrammars", () => loadGrammars([...treeLanguages, ...fallbackLanguages]));
 
-    // Cache entries for the next refresh, encoded before resolution adds
-    // framework nodes and hydrates bindings in place.
-    const storedExtraction = "reason" in reuse ? new Map<string, StoredExtraction>() : reuse.stored;
-    const cacheEntries = new Map<string, ExtractionCacheState["entries"][number]>();
-    const setCacheEntry = (path: string, contentHash: string, payload: Uint8Array): void => {
-      const previous = storedExtraction.get(path);
-      const changed = !previous || previous.contentHash !== contentHash
-        || !Buffer.from(previous.payload).equals(Buffer.from(payload));
-      cacheEntries.set(path, { path, contentHash, payload, changed });
-    };
-    const reusedCaptures = new Set(compiler.reused);
-    timeGraphPhase("stage.cacheCompiler", () => {
-      for (const capture of compiler.captures) {
-        const contentHash = discoveredByPath.get(capture.filePath)?.contentHash;
-        if (!contentHash) continue;
-        if (reusedCaptures.has(capture.filePath)) {
-          cacheEntries.set(capture.filePath, {
-            path: capture.filePath, contentHash, payload: storedExtraction.get(capture.filePath)!.payload, changed: false,
-          });
-        } else {
-          setCacheEntry(capture.filePath, contentHash, encodeCachedExtraction({ kind: "compiler", capture }));
-        }
-      }
-    });
-    compiler.captures.length = 0;
+    // Compiler cache entries were encoded as captures arrived, before
+    // resolution adds framework nodes and hydrates bindings in place.
     if (!("reason" in plan)) {
       plan.captures.clear();
       plan.affected.clear();
@@ -1202,9 +1217,12 @@ async function stageCorpus(
 
     let parsed = compiler.files.length;
     let treesExtracted = 0;
+    // Each compiler file is released as soon as its staged shape exists.
+    compiler.files.length = 0;
     const files = discovered.map((file) => {
       const compilerFile = compilerByPath.get(file.relPath);
       if (compilerFile) {
+        compilerByPath.delete(file.relPath);
         const source = sourceSpool.read(file);
         return timeGraphPhase("stage.compilerFiles", () => stageCompilerFile(file, source, compilerFile));
       }
@@ -2111,7 +2129,6 @@ function inspectChangedSources(
  * and the freshness inspector all agree about which files exist.
  */
 /** Source files read at once by {@link discoverSourceFilesConcurrently}. */
-const DISCOVERY_READ_CONCURRENCY = 16;
 const DISCOVERY_READ_WINDOW = 512;
 
 /**
@@ -2171,7 +2188,7 @@ async function discoverSourceFilesConcurrently(
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(DISCOVERY_READ_CONCURRENCY, window.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(processGraphSizing().readConcurrency, window.length) }, worker));
     for (const [index, entry] of window.entries()) {
       if (entry.canonical === undefined) {
         failures.push(sourceStagingFailure(entry.relPath, "discover", entry.containment));

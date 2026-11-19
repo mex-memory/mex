@@ -41,7 +41,7 @@ function megabytes(bytes: number): string {
 function printStores(stores: ReturnType<typeof whatMexStores>, current: string): void {
   console.log(`What MEX stores: ${megabytes(stores.bytes)} of ${megabytes(stores.cap)} (least recently used projects are removed first)`);
   for (const project of [...stores.projects].sort((left, right) => right.lastUse - left.lastUse)) {
-    const used = project.lastUse ? new Date(project.lastUse).toISOString().slice(0, 10) : "never";
+    const used = project.lastUse ? new Date(project.lastUse).toISOString().slice(0, 10) : "not recorded";
     console.log(`  ${project.projectId === current ? "* " : "  "}${project.folder}: graph ${megabytes(project.graphBytes)}, file index ${megabytes(project.fileIndexBytes)}, `
       + `${project.checkouts.length} checkout${project.checkouts.length === 1 ? "" : "s"}, last used ${used}`);
   }
