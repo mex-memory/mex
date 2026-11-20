@@ -1387,6 +1387,13 @@ configCmd
         console.log(value === "on"
           ? "MEX now learns lasting statements from what you type, in the background with your agent's smallest model, at most 3% of your usage. Turn off: mex config set learning.statements off"
           : "MEX no longer learns from what you type. Notes you save with mex note still get their checks.");
+      } else if (key === "levers.output") {
+        const { openRecord } = await import("./record/index.js");
+        const { setOutputLevers } = await import("./controls/index.js");
+        if (value !== "on" && value !== "off") throw new Error("Use on or off for levers.output.");
+        const writer = openRecord();
+        try { setOutputLevers(writer, value); } finally { writer.close(); }
+        console.log(`Output levers ${value}.`);
       } else if (key === "delivery.aliases") {
         const { openRecord } = await import("./record/index.js");
         const { setDeliveryAliases } = await import("./controls/index.js");
@@ -1421,7 +1428,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output`);
         process.exitCode = 1;
         return;
       }

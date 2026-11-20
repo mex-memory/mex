@@ -1,0 +1,449 @@
+[
+ {
+  "source": "microsoft/typescript-go pull 4158, review comment 3438402975",
+  "path": "internal/checker/nodebuilderimpl.go",
+  "comment": "@copilot this backdoor seems weird; is this really the best way to achieve this goal?",
+  "objected": "\n\t// set while serializing the members of a reused object/tuple `as const` literal, where negative\n\t// numeric literal types use their canonical form rather than the original source text (see\n\t// reuseNegativeNumericLiteralType).\n\tinReusedLiteralCollection bool",
+  "fixed": "",
+  "anchor": "\t// set while serializing the members of a reused object/tuple `as const` literal, where negative\n\t// numeric literal types use their canonical form rather than the original source text (see\n\t// reuseNegativeNumericLiteralType).\n\tinReusedLiteralCollection bool",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "inReusedLiteralCollection",
+    "good": true,
+    "why": "the backdoor flag the reviewer objected to"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "bool",
+    "good": false,
+    "why": "generic; the objection is the flag, not the type"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4396, review comment 3454087376",
+  "path": "internal/transformers/declarations/transform.go",
+  "comment": "The new constructor-only exception also allows synthesizing a property when the base member is an accessor (get/set). For inherited accessors, `this.prop = ...` in a constructor is still a setter call at runtime and emitting a data property",
+  "objected": "\t\t\tdecls := tx.resolver.GetBaseDeclarationsForPropertyDeclaration(node)\n\t\t\tif len(decls) > 0 && !ast.IsConstructorDeclaration(thisContainer) {\n\t\t\t\tbreak caseBlock // skip non-constructor assignments to base properties",
+  "fixed": "\t\t\tif tx.resolver.IsThisPropertyAssignmentDeclarationRedundant(node) {\n\t\t\t\tbreak caseBlock // skip assignments whose member is already provided by an `extends` base type (an inherited accessor/method, or an identical inherited property)",
+  "anchor": "\t\t\tdecls := tx.resolver.GetBaseDeclarationsForPropertyDeclaration(node)\n\t\t\tif len(decls) > 0 && !ast.IsConstructorDeclaration(thisContainer) {\n\t\t\t\tbreak caseBlock // skip non-constructor assignments to base properties",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "!ast.IsConstructorDeclaration($X)",
+    "good": true,
+    "why": "the constructor-only exception"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "GetBaseDeclarationsForPropertyDeclaration(node)",
+    "good": false,
+    "why": "lookup kept in spirit; incidental"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "break caseBlock",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4396, review comment 3463044471",
+  "path": "internal/transformers/declarations/transform.go",
+  "comment": "I think this does need to include skipping inherited methods, too, though - `this`-expando props have the `SymbolFlagsReplaceableByMethod` tag, so a `this.method = this.method.bind({})` in a subclass shouldn't override the method definition",
+  "objected": "\t\t\tdecls := tx.resolver.GetBaseDeclarationsForPropertyDeclaration(node)\n\t\t\tshouldSkipAssignment := len(decls) > 0 && (!ast.IsConstructorDeclaration(thisContainer) || core.Some(decls, ast.IsAccessor))\n\t\t\tif shouldSkipAssignment {\n\t\t\t\tbreak caseBlock // skip non-constructor assignments to base properties, and any assignment to a base accessor",
+  "fixed": "\t\t\tif tx.resolver.IsThisPropertyAssignmentDeclarationRedundant(node) {\n\t\t\t\tbreak caseBlock // skip assignments whose member is already provided by an `extends` base type (an inherited accessor/method, or an identical inherited property)",
+  "anchor": "\t\t\tshouldSkipAssignment := len(decls) > 0 && (!ast.IsConstructorDeclaration(thisContainer) || core.Some(decls, ast.IsAccessor))",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "core.Some($D, ast.IsAccessor)",
+    "good": true,
+    "why": "accessor-only skip; methods missed"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "shouldSkipAssignment",
+    "good": false,
+    "why": "a local name, not the mistake"
+   },
+   {
+    "type": "required",
+    "match": "literal",
+    "pattern": "IsThisPropertyAssignmentDeclarationRedundant",
+    "good": true,
+    "why": "the resolver check the fix uses"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4407, review comment 3469105281",
+  "path": "internal/compiler/program.go",
+  "comment": "I'm not sure this is quite right (and would need to be mirrored in the incremental program's `Emit`, too) - looking at [strada](https://github.com/microsoft/TypeScript/blob/7816ae6fa7ccfd59b2be3485cc8c108174f2560e/src/compiler/program.ts#L5",
+  "objected": "\tif options.EmitOnly != EmitOnlyForcedDts {\n\t\tif p.Options().NoEmit.IsTrue() {\n\t\t\t// Mirror handleNoEmitOptions: a single-file noEmit is skipped, but a whole-program\n\t\t\t// noEmit is not, so a program with diagnostics reports DiagnosticsPresent_OutputsGenerated.\n\t\t\treturn &EmitResult{EmitSkipped: options.TargetSourceFile != nil}\n\t\t}\n\t\tresult := HandleNoEmitOnError(",
+  "fixed": "\tif !options.ForceEmit && options.EmitOnly != EmitOnlyBuilderSignature {\n\t\tresult := HandleNoEmitOptions(",
+  "anchor": "\t\t\treturn &EmitResult{EmitSkipped: options.TargetSourceFile != nil}",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "if p.Options().NoEmit.IsTrue() { $$$ }",
+    "good": true,
+    "why": "the special-cased noEmit branch"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "EmitOnlyForcedDts",
+    "good": false,
+    "why": "incidental condition"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "options.EmitOnly",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4407, review comment 3545888641",
+  "path": "internal/compiler/program.go",
+  "comment": "This logic should be merged back down into `HandleNoEmitOnError`, instead of being a new function, with the final name `HandleNoEmitOptions` to match strada. Having two different helpers that are always (and need to be) called back-to-back ",
+  "objected": "// HandleNoEmitOptions mirrors tsc's handleNoEmitOptions:\n// single-file noEmit reports emitSkipped, while whole-program noEmit uses the\n// buildInfo emit result when available and otherwise reports emitSkipped=false.\nfunc HandleNoEmitOptions(program ProgramLike, file *ast.SourceFile, emitBuildInfo func() *EmitResult) *EmitResult {",
+  "fixed": "// HandleNoEmitOptions mirrors tsc's handleNoEmitOptions.\nfunc HandleNoEmitOptions(ctx context.Context, program ProgramLike, files []*ast.SourceFile, emitBuildInfo func() *EmitResult) *EmitResult {",
+  "anchor": "func HandleNoEmitOptions(program ProgramLike, file *ast.SourceFile, emitBuildInfo func() *EmitResult) *EmitResult {",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "func HandleNoEmitOptions(program ProgramLike, $$$)",
+    "good": true,
+    "why": "the separate helper without context"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "HandleNoEmitOptions",
+    "good": false,
+    "why": "the name the reviewer asked for; in the fix too"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "buildInfo emit result",
+    "good": false,
+    "why": "comment wording, not the mistake"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4482, review comment 3531069625",
+  "path": "internal/ls/autoimport/aliasresolver_crash_test.go",
+  "comment": "There should be no node builder usage during _alias resolution_. This probably indicates the checker was generating an error message that will be thrown away, wasting allocations and CPU cycles. We have these panics so we can catch these ca",
+  "objected": "// When a file exports a value whose type references a symbol from another module,\n// the checker's node builder calls GetSourceOfProjectReferenceIfOutputIncluded\n// to generate module specifiers. The aliasResolver must not panic.\nfunc TestAliasResolverGetSourceOfProjectReferenceDoesNotPanic(t *testing.T) {",
+  "fixed": "// Auto-import export extraction resolves export aliases with a checker whose\n// compiler options have noCheck enabled. Missing re-exports should not build\n// diagnostics during alias resolution, since doing so calls into node builder\n// just to stringify a diagnostic that will be thrown away.\nfunc TestAliasResolverMissingReexportDoesNotUseNodeBuilder(t *testing.T) {",
+  "anchor": "// When a file exports a value whose type references a symbol from another module,\n// the checker's node builder calls GetSourceOfProjectReferenceIfOutputIncluded",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "GetSourceOfProjectReferenceIfOutputIncluded",
+    "good": true,
+    "why": "the node-builder path that shouldn't run"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "func Test",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4482, review comment 3531331807",
+  "path": "internal/ls/autoimport/aliasresolver_crash_test.go",
+  "comment": "Ugh, I didn't read the rest of the test. This isn't a real repro at all.",
+  "objected": "\n\tgetFooSymbol := indexFile.Symbol.Exports[\"getFoo\"]\n\ttpe := ch.GetTypeOfSymbol(getFooSymbol)\n\n\t// Serializing getFoo's type in a different file has to synthesize a module\n\t// specifier for Foo, which calls GetSourceOfProjectReferenceIfOutputIncluded.\n\t// This must not panic.\n\tch.TypeToTypeNode(tpe, consumerFile.AsNode(), nodebuilder.FlagsNone, nil)",
+  "fixed": "\textractor := newSymbolExtractor(\"\", ch, func(f string) tspath.Path { return tspath.Path(f) }, nil)\n\t_ = (&exportExtractor{symbolExtractor: extractor, moduleResolver: resolver}).extractFromFile(indexFile)",
+  "anchor": "\tch, _ := checker.NewChecker(r, nil)\n\n\tgetFooSymbol := indexFile.Symbol.Exports[\"getFoo\"]\n\ttpe := ch.GetTypeOfSymbol(getFooSymbol)\n\n\t// Serializing getFoo's type in a different file has to synthesize a module\n\t// specifier for Foo, which calls GetSourceOfProjectReferenceIfOutputIncluded.\n\t// This must not panic.\n\tch.TypeToTypeNode(tpe, consumerFile.AsNode(), nodebuilder.FlagsNone, nil)",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "ch.TypeToTypeNode($$$)",
+    "good": true,
+    "why": "calling the node builder directly isn't a repro"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "getFooSymbol",
+    "good": false,
+    "why": "a local name"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "indexFile",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4721, review comment 3640699649",
+  "path": "internal/compiler/program.go",
+  "comment": "@copilot What the heck is this code? I don't recognize it from Strada.",
+  "objected": "\t\tstartLines := []int{scanner.ComputeLineOfPosition(lineStarts, diagnostic.Pos()) - 1}\n\t\tif openingElement := getJsxOpeningElementForDiagnostic(sourceFile, diagnostic.Pos()); openingElement != nil {\n\t\t\topeningElementLine := scanner.ComputeLineOfPosition(lineStarts, openingElement.TagName().Pos()) - 1\n\t\t\tif openingElementLine != startLines[0] {\n\t\t\t\tstartLines = append(startLines, openingElementLine)",
+  "fixed": "\t\tfor line := scanner.ComputeLineOfPosition(lineStarts, diagnostic.Pos()) - 1; line >= 0; line-- {\n\t\t\t// If line contains a @ts-ignore or @ts-expect-error directive, ignore this diagnostic and change\n\t\t\t// the directive kind to @ts-ignore to indicate it was used.\n\t\t\tif directive, ok := directivesByLine[line]; ok {\n\t\t\t\tignoreDiagnostic = true\n\t\t\t\tdirective.Kind = ast.CommentDirectiveKindIgnore\n\t\t\t\tdirectivesByLine[line] = directive\n\t\t\t\tbreak",
+  "anchor": "\t\t\topeningElementLine := scanner.ComputeLineOfPosition(lineStarts, openingElement.TagName().Pos()) - 1",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "getJsxOpeningElementForDiagnostic",
+    "good": true,
+    "why": "the invented helper not in the reference"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "startLines",
+    "good": false,
+    "why": "a local name"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "scanner.ComputeLineOfPosition(lineStarts, diagnostic.Pos()) - 1",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4723, review comment 3641450203",
+  "path": "internal/printer/emitcontext.go",
+  "comment": "This clones the expression's pos to the return statement - which is fine IF you also suppress comments on `updated`. As it is now, there may be duplicated comments in some situations (inline comments, likely).",
+  "objected": "\t\treturnStatement := c.Factory.NewReturnStatement(updated)\n\t\treturnStatement.Loc = updated.Loc\n\t\tstatements := c.MergeEnvironment([]*ast.Statement{returnStatement}, declarations)\n\t\treturn c.Factory.NewBlock(c.Factory.NewNodeList(statements), false /*multiLine*/)",
+  "fixed": "\t\tc.AddEmitFlags(updated, EFNoComments)\n\t\tblock := c.ConvertToFunctionBlock(updated, false /*multiLine*/)\n\t\treturn c.Factory.UpdateBlock(\n\t\t\tblock.AsBlock(),\n\t\t\tc.MergeEnvironmentList(block.StatementList(), declarations),\n\t\t\tblock.AsBlock().MultiLine,\n\t\t)",
+  "anchor": "\t\treturnStatement.Loc = updated.Loc",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "$R.Loc = $U.Loc",
+    "good": true,
+    "why": "cloning the position without suppressing comments"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "NewReturnStatement",
+    "good": false,
+    "why": "the return statement itself is fine"
+   },
+   {
+    "type": "required",
+    "match": "literal",
+    "pattern": "EFNoComments",
+    "good": true,
+    "why": "the fix suppresses comments"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4723, review comment 3751747189",
+  "path": "internal/printer/emitcontext.go",
+  "comment": "@copilot this is some interesting code; what did Strada do?",
+  "objected": "\t\treturnStatement := c.Factory.NewReturnStatement(updated)\n\t\treturnStatement.Loc = updated.Loc\n\t\tparseNode := c.ParseNode(updated)\n\t\tsourceFile := ast.GetSourceFileOfNode(parseNode)\n\t\tif sourceFile != nil {\n\t\t\ttokenPos := scanner.GetTokenPosOfNode(parseNode, sourceFile, false /*includeJSDoc*/)\n\t\t\tif tokenPos > parseNode.Pos() &&\n\t\t\t\tscanner.GetECMALineOfPosition(sourceFile, parseNode.Pos()) == scanner.GetECMALineOfPosition(sourceFile, tokenPos) {\n\t\t\t\tc.AddEmitFlags(returnStatement, EFNoLeadingComments)\n\t\t\t}\n\t\t}",
+  "fixed": "",
+  "anchor": "\t\tif sourceFile != nil {\n\t\t\ttokenPos := scanner.GetTokenPosOfNode(parseNode, sourceFile, false /*includeJSDoc*/)\n\t\t\tif tokenPos > parseNode.Pos() &&\n\t\t\t\tscanner.GetECMALineOfPosition(sourceFile, parseNode.Pos()) == scanner.GetECMALineOfPosition(sourceFile, tokenPos) {\n\t\t\t\tc.AddEmitFlags(returnStatement, EFNoLeadingComments)\n\t\t\t}\n\t\t}",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "EFNoLeadingComments",
+    "good": true,
+    "why": "the hand-rolled comment suppression"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "sourceFile != nil",
+    "good": false,
+    "why": "generic"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4872, review comment 3754781793",
+  "path": "internal/ls/autoimport/registry_test.go",
+  "comment": "This assertion can pass while the reported regression is still present: `index.ts` and `consumer.ts` already account for two files, so `helper.ts` (and therefore `uniqueHelperValueFromHelperA`) may still be absent. Assert all three local fi",
+  "objected": "\t\tassert.Assert(t, projectBucket.FileCount >= 2, \"expected pkg-a project bucket to include local files despite circular workspace symlinks\")",
+  "fixed": "\t\tassert.Equal(t, 3, projectBucket.FileCount, \"expected all pkg-a project files despite circular workspace symlinks\")",
+  "anchor": "\t\tassert.Assert(t, projectBucket.FileCount >= 2, \"expected pkg-a project bucket to include local files despite circular workspace symlinks\")",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "assert.Assert(t, $X >= $N, $$$)",
+    "good": true,
+    "why": "a lower-bound assertion that can't catch the regression"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "projectBucket.FileCount",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4872, review comment 3754781817",
+  "path": "internal/ls/autoimport/registry.go",
+  "comment": "`projectPath` is not always a config-file path: inferred projects are keyed by the synthetic `/dev/null/inferred` path (`internal/project/project.go:23`, `internal/project/projectcollection.go:106-117`). For those projects this computes `/d",
+  "objected": "\tprojectRootPath := projectPath.GetDirectoryPath()",
+  "fixed": "\tprojectRootPath := b.base.toPath(program.GetCurrentDirectory())",
+  "anchor": "\tprojectRootPath := projectPath.GetDirectoryPath()",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "projectPath.GetDirectoryPath()",
+    "good": true,
+    "why": "inferred projects have a synthetic path"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "projectRootPath :=",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4900, review comment 3798719116",
+  "path": "internal/outputpaths/outputpaths.go",
+  "comment": "@copilot how can you be certain that canonicalization preserves rune count?",
+  "objected": "\tcommonDir := tspath.GetCanonicalFileName(commonSourceDirectory, useCaseSensitiveFileNames)\n\tcanonFile := tspath.GetCanonicalFileName(sourceFilePath, useCaseSensitiveFileNames)\n\tisSourceFileInCommonSourceDirectory := strings.HasPrefix(canonFile, commonDir)\n\tif isSourceFileInCommonSourceDirectory {\n\t\t// The reference implementation strips the prefix by slicing on\n\t\t// commonSourceDirectory's length (in UTF-16 code units), relying on the fact that\n\t\t// String.prototype.substring silently clamps out-of-range indices instead of\n\t\t// throwing. Go slice expressions panic on out-of-range indices instead, and\n\t\t// GetCanonicalFileName's case-folding can change a string's UTF-8 byte length\n\t\t// (e.g. the Kelvin sign '\\u212A' folds to the single-byte 'k'), so byte-length\n\t\t// slicing here isn't safe even when the (rune-preserving) canonical prefix\n\t\t// check above succeeds. Trim by the canonicalized prefix's rune count instead\n\t\t// (canonicalization preserves rune count, so this matches the boundary the\n\t\t// prefix check verified), clamping to the end of the string to mirror\n\t\t// substring's behavior.\n\t\tsourceFilePath = trimRunePrefix(sourceFilePath, utf8.RuneCountInString(commonDir))",
+  "fixed": "\tif trimmed, ok := tspath.TrimFilePathPrefix(sourceFilePath, commonSourceDirectory, useCaseSensitiveFileNames); ok {\n\t\tsourceFilePath = trimmed",
+  "anchor": "\t\t// (canonicalization preserves rune count, so this matches the boundary the\n\t\t// prefix check verified), clamping to the end of the string to mirror",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "strings.HasPrefix(canonFile, commonDir)",
+    "good": true,
+    "why": "prefix test on canonicalized text, then a byte slice"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "GetCanonicalFileName",
+    "good": true,
+    "why": "canonicalizing before slicing is the mistake"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "useCaseSensitiveFileNames",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4900, review comment 3807656429",
+  "path": "internal/outputpaths/outputpaths.go",
+  "comment": "Delete this massive overcomplicated comment and replace with just ``` // Use `trimRunePrefix` instead of raw slice to support length mismatches caused by case-folding, eg, of the kelvin sign '\\u212A' (where two runes case fold into one) in ",
+  "objected": "\tcommonDir := tspath.GetCanonicalFileName(commonSourceDirectory, useCaseSensitiveFileNames)\n\tcanonFile := tspath.GetCanonicalFileName(sourceFilePath, useCaseSensitiveFileNames)\n\tisSourceFileInCommonSourceDirectory := strings.HasPrefix(canonFile, commonDir)\n\tif isSourceFileInCommonSourceDirectory {\n\t\t// The reference implementation strips the prefix by slicing on\n\t\t// commonSourceDirectory's length (in UTF-16 code units), relying on the fact that\n\t\t// String.prototype.substring silently clamps out-of-range indices instead of\n\t\t// throwing. Go slice expressions panic on out-of-range indices instead, and\n\t\t// GetCanonicalFileName's case-folding can change a string's UTF-8 byte length\n\t\t// (e.g. the Kelvin sign '\\u212A' folds to the single-byte 'k'), so byte-length\n\t\t// slicing here isn't safe even when the (rune-preserving) canonical prefix\n\t\t// check above succeeds. GetCanonicalFileName preserves rune count: when\n\t\t// useCaseSensitiveFileNames is true it returns its input unchanged, and\n\t\t// otherwise it delegates to ToFileNameLowerCase, which either rewrites ASCII\n\t\t// bytes in place (same length) or maps every rune through unicode.ToLower\n\t\t// via strings.Map — a function that always substitutes exactly one rune for\n\t\t// one rune (it can neither drop nor expand runes, and the one exception,\n\t\t// '\\u0130', is mapped to itself). So trimming by the canonicalized prefix's\n\t\t// rune count matches the boundary the prefix check verified. trimRunePrefix\n\t\t// additionally clamps to the end of the string to mirror substring's\n\t\t// behavior, so this remains panic-safe even if that invariant were ever\n\t\t// violated.\n\t\tsourceFilePath = trimRunePrefix(sourceFilePath, utf8.RuneCountInString(commonDir))",
+  "fixed": "\tif trimmed, ok := tspath.TrimFilePathPrefix(sourceFilePath, commonSourceDirectory, useCaseSensitiveFileNames); ok {\n\t\tsourceFilePath = trimmed",
+  "anchor": "\t\t// The reference implementation strips the prefix by slicing on",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "The reference implementation strips the prefix",
+    "good": true,
+    "why": "the comment the reviewer asked to delete"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "commonDir",
+    "good": false,
+    "why": "a local name"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4900, review comment 3807829054",
+  "path": "internal/outputpaths/outputpaths.go",
+  "comment": "@copilot Is there really no golang builtin method for slicing a string by rune count like this? Or just, like, a case-insensitivity-respecting `strings.CutPrefix` that already handles this? Minimally, reusing existing helpers and operating ",
+  "objected": "}\n\n// trimRunePrefix returns the suffix of s after skipping up to runeCount runes,\n// clamping to the end of s if it has fewer runes than runeCount.\nfunc trimRunePrefix(s string, runeCount int) string {\n\ti := 0\n\tfor range runeCount {\n\t\tif i >= len(s) {\n\t\t\tbreak\n\t\t}\n\t\t_, size := utf8.DecodeRuneInString(s[i:])\n\t\ti += size\n\t}\n\treturn s[i:]",
+  "fixed": "",
+  "anchor": "func trimRunePrefix(s string, runeCount int) string {",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "func trimRunePrefix($$$) string",
+    "good": true,
+    "why": "a hand-written helper where a library one exists"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "utf8.DecodeRuneInString",
+    "good": false,
+    "why": "fine elsewhere; incidental here"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "return s[i:]",
+    "good": false,
+    "why": "generic"
+   }
+  ]
+ },
+ {
+  "source": "microsoft/typescript-go pull 4909, review comment 3799323010",
+  "path": "internal/astnav/tokens.go",
+  "comment": "@copilot why wouldn't we just return `0` if `getIncludedPrecedingToken` is non-nil?",
+  "objected": "\t\t\tif prevSubtree == nil || getIncludedPrecedingToken(prevSubtree) == nil {\n\t\t\t\tprevSubtree = node",
+  "fixed": "\t\t\tif prevSubtree != nil && getIncludedPrecedingToken(prevSubtree) != nil {\n\t\t\t\treturn 0",
+  "anchor": "\t\t\tif prevSubtree == nil || getIncludedPrecedingToken(prevSubtree) == nil {",
+  "candidates": [
+   {
+    "type": "anti",
+    "match": "structural",
+    "pattern": "$P == nil || getIncludedPrecedingToken($P) == nil",
+    "good": true,
+    "why": "the inverted condition"
+   },
+   {
+    "type": "anti",
+    "match": "literal",
+    "pattern": "prevSubtree",
+    "good": false,
+    "why": "in the fix too"
+   }
+  ]
+ }
+]

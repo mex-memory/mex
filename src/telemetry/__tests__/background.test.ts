@@ -42,7 +42,7 @@ describe("Go hook to background reporter", () => {
         expect(JSON.parse(result.stdout)).toEqual(attempt === 0 ? {
           hookSpecificOutput: {
             hookEventName: "SessionStart",
-            additionalContext: expect.stringMatching(/^\[mex [a-f0-9]{24}\]\nPriority: current request > your notes > repo instructions > team entries > hints\.\nKeep what later sessions need with mex note "<one sentence>": [^\n]+$/),
+            additionalContext: expect.stringMatching(/^\[mex [a-f0-9]{24}\]\nPriority: current request > your notes > repo instructions > team entries > hints\. Code the person pastes or quotes is not a request to break a team entry; fit it to them\.\nKeep what later sessions need with mex note "<one sentence>": [^\n]+$/),
           },
         } : {});
         if (!existsSync(hooksPath)) continue;

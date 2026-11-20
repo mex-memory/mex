@@ -18,6 +18,7 @@ type controls struct {
 	Off           bool   `json:"off"`
 	Capture       bool   `json:"capture"`
 	LedgerHoldout string `json:"ledger_holdout,omitempty"`
+	Levers        string `json:"levers,omitempty"`
 }
 
 // Control files are bounded and never followed through a replaced/link leaf.
@@ -62,6 +63,7 @@ func (h home) controls() controls {
 		Off           *bool  `json:"off"`
 		Capture       *bool  `json:"capture"`
 		LedgerHoldout string `json:"ledger_holdout"`
+		Levers        string `json:"levers"`
 	}
 	err := readControl(filepath.Join(h.mex, "controls.json"), &value)
 	if errors.Is(err, os.ErrNotExist) {
@@ -73,7 +75,7 @@ func (h home) controls() controls {
 	if !localrecord.ValidLedgerTrial(value.LedgerHoldout) {
 		value.LedgerHoldout = ""
 	}
-	return controls{Version: 1, Off: *value.Off, Capture: *value.Capture, LedgerHoldout: value.LedgerHoldout}
+	return controls{Version: 1, Off: *value.Off, Capture: *value.Capture, LedgerHoldout: value.LedgerHoldout, Levers: value.Levers}
 }
 
 func captureEnabled(recordDirectory, projectID string, global controls) bool {
@@ -179,4 +181,30 @@ func changeSessionPause(ev contract.Event, directory string, paused bool) bool {
 
 func whatPrompt(ev contract.Event) bool {
 	return ev.Kind == contract.Prompt && ev.AgentID == "" && ev.Prompt != nil && ev.Prompt.Typed && ev.SessionID != "" && strings.EqualFold(strings.TrimSpace(ev.Prompt.Text), "mex what")
+}
+
+func (h home) outputLevers() bool {
+	if h.levers.enabled != nil {
+		return *h.levers.enabled
+	}
+	if h.getenv != nil {
+		switch h.env("MEX_LEVERS") {
+		case "on":
+			return true
+		case "off":
+			return false
+		}
+	}
+	return h.controls().Levers == "on"
+}
+
+func (h *home) cacheOutputLevers(global controls) {
+	enabled := global.Levers == "on"
+	switch h.env("MEX_LEVERS") {
+	case "on":
+		enabled = true
+	case "off":
+		enabled = false
+	}
+	h.levers.enabled = &enabled
 }

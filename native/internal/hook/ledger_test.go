@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mex-memory/mex/native/internal/adapter/claude"
 	"github.com/mex-memory/mex/native/internal/contract"
@@ -95,6 +96,8 @@ func TestLedgerReplayCountsSavedViews(t *testing.T) {
 
 func TestLedgerOffKeepsExistingOutlineGuardsAndStopsNewWork(t *testing.T) {
 	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
 	write(t, filepath.Join(h.mex, "ledger-off.shell-trim"), "1\n")
@@ -108,7 +111,15 @@ func TestLedgerOffKeepsExistingOutlineGuardsAndStopsNewWork(t *testing.T) {
 	write(t, filepath.Join(h.mex, "ledger-off.outline"), "1\n")
 	ev := contract.Event{Agent: "claude-code", SessionID: "s"}
 	state := leverState{Outlined: map[string]*outlineMark{pathKey(path): {Lines: 400}}}
-	state.save(leverStatePath(h.mex, ev))
+	hooks, err := localrecord.OpenHooks(hooksLocation(h, h.mex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = hooks.UpdateLeverState(ev.Agent, ev.SessionID, ev.AgentID, time.Now(), false, false, func([]byte, *localrecord.OutlineGuard) ([]byte, error) { return json.Marshal(state) })
+	hooks.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	edit, _ := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "session_id": "s", "cwd": root,
 		"tool_name": "Edit", "tool_input": map[string]any{"file_path": path, "old_string": "a", "new_string": "b"}})
 	_, out = run(t, []string{"claude-code", "PreToolUse"}, bytes.NewReader(edit), env)
@@ -121,5 +132,11 @@ func TestLedgerOffKeepsExistingOutlineGuardsAndStopsNewWork(t *testing.T) {
 	_, out = run(t, []string{"codex", "PreToolUse"}, bytes.NewReader(codexPre(t, root, map[string]any{"command": "npm test"})), env)
 	if strings.Contains(out, "updatedInput") || strings.Contains(out, "\"allow\"") {
 		t.Fatal("a command was wrapped after the ledger stopped it")
+	}
+}
+
+func TestCalibratedRemovedTokens(t *testing.T) {
+	if removedTokens(230, 23) != 90 || removedTokens(23, 230) != 0 {
+		t.Fatal("uncalibrated estimate")
 	}
 }

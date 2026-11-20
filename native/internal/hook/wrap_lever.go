@@ -30,7 +30,7 @@ import (
 // wrapCodexCommand runs before a Codex tool call.
 func wrapCodexCommand(ev contract.Event, h home, recordDirectory string, state *leverState) contract.Reply {
 	t := ev.Tool
-	if t.Name != contract.ToolShell || h.levers.raw || state.Investigating {
+	if t.Name != contract.ToolShell || h.levers.raw || (state.WholeOutput || state.Reproducing) {
 		return contract.Reply{}
 	}
 	command := t.Input.Command
@@ -100,7 +100,11 @@ func leavesSandbox(raw json.RawMessage) bool {
 	for key, value := range in {
 		v := strings.TrimSpace(string(value))
 		switch key {
-		case "command", "workdir", "cwd", "timeout_ms", "timeout", "description", "login", "yield_time_ms", "max_output_tokens", "shell", "tty":
+		case "command", "workdir", "cwd", "timeout_ms", "timeout", "description", "login", "yield_time_ms", "max_output_tokens", "shell":
+		case "tty":
+			if v != "false" && v != "null" {
+				return true
+			}
 		case "sandbox_permissions":
 			if v != `"use_default"` && v != `""` && v != "null" {
 				return true
@@ -297,7 +301,8 @@ func runWrapped(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	opts := output.RunOptions{Shell: shell, Command: command, Stdin: stdin, Stdout: stdout, Stderr: stderr, Raw: getenv("MEX_RAW") == "1"}
 	if h.mexInstalled() && getenv("MEX_OFF") != "1" {
 		global := h.controls()
-		if global.Off {
+		h.cacheOutputLevers(global)
+		if global.Off || !h.outputLevers() {
 			return output.Run(opts)
 		}
 		if cwd, err := os.Getwd(); err == nil {
@@ -306,6 +311,24 @@ func runWrapped(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			if checkout, where := findCheckout(recordDirectory, cwd, false, now); where == switchedOn && recordDirectory != "" &&
 				!leverOff(recordDirectory, localrecord.LeverWrapper) {
 				session := getenv("CODEX_THREAD_ID")
+				if session != "" {
+					hooks, err := localrecord.OpenHooks(hooksLocation(h, recordDirectory))
+					if err != nil {
+						return output.Run(opts)
+					}
+					intent, intentErr := hooks.Intent(session, "")
+					data, stateErr := hooks.LeverState("codex", session, "")
+					hooks.Close()
+					var state leverState
+					if len(data) > 0 {
+						if err := json.Unmarshal(data, &state); err != nil {
+							stateErr = err
+						}
+					}
+					if intentErr != nil || stateErr != nil || intent == "reproducing" || state.WholeOutput || state.Failed[commandKey(command)] {
+						return output.Run(opts)
+					}
+				}
 				ev := contract.Event{Agent: "codex", SessionID: session, ProjectID: checkout.ProjectID, Checkout: checkout.Root}
 				if ledgerHoldout(ev, h, recordDirectory, global.LedgerHoldout, false, now) {
 					return output.Run(opts)

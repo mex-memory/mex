@@ -64,13 +64,18 @@ export function setLearningSharing(writer: RecordWriter, value: string, director
 }
 
 /** Whether typed-prompt ranking uses entries' written aliases and asks. Machine-wide. */
+export function setOutputLevers(writer: RecordWriter, value: string): void {
+  if (value !== "on" && value !== "off") throw new Error("Use on or off for levers.output.");
+  setPolicy(writer, "global", "levers.output", value);
+}
+
 export function setDeliveryAliases(writer: RecordWriter, value: string): void {
   if (value !== "on" && value !== "off") throw new Error("Use on or off for delivery.aliases.");
   setPolicy(writer, "global", "delivery.aliases", value);
 }
 
 export function setDeliverySurface(writer: RecordWriter, surface: string, value: string, directory?: string): string {
-  if (!["read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry"].includes(surface)) throw new Error("Unknown delivery surface.");
+  if (!["read-pitfall", "read-risk", "edit", "command-recipe", "failure-fix", "prompt", "prompt-anchor", "search-span", "start-brief", "recovery", "rescue-wrong-path", "rescue-search", "rescue-wide", "rescue-glob-timeout", "bug-history", "start-brief-working-set", "graph-card", "carry", "area-digest", "prompt-vocabulary", "create-sibling"].includes(surface)) throw new Error("Unknown delivery surface.");
   if (!["on", "shadow", "trial", "off"].includes(value)) throw new Error("Use on, shadow, trial or off for a delivery surface.");
   const scope = directory === undefined ? "global" : writer.checkout(directory)?.project_id;
   if (!scope) throw new Error("MEX is not registered here. Run mex first.");

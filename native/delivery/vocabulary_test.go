@@ -38,7 +38,7 @@ func vocabularyFixture(t *testing.T, aliases ...string) (*fixture, contract.Even
 func TestVocabularyPointerCarriesAnchorsNeverTheBody(t *testing.T) {
 	f, ev := vocabularyFixture(t, "payout run")
 	env := f.env()
-	env.Surfaces = `{"prompt-anchor":"on"}`
+	env.Surfaces = `{"prompt-vocabulary":"on"}`
 	// The ranker setting is independent: the aliases aid stays off.
 	env.Aids = "off"
 	ev.Prompt = &contract.PromptIn{Typed: true, Text: "Why is the Payout  Run late?"}
@@ -70,7 +70,7 @@ func TestVocabularySilentWithoutAliasMatchOrVerifiedAnchor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, ev := vocabularyFixture(t, "payout run", "pool")
 			env := f.env()
-			env.Surfaces = `{"prompt-anchor":"on"}`
+			env.Surfaces = `{"prompt-vocabulary":"on"}`
 			ev.Prompt = &contract.PromptIn{Typed: true, Text: tc.prompt}
 			reply, err := Handle(ev, env)
 			if err != nil || strings.Contains(reply.Context, "in this repo:") {
@@ -81,7 +81,7 @@ func TestVocabularySilentWithoutAliasMatchOrVerifiedAnchor(t *testing.T) {
 	t.Run("machine prompt", func(t *testing.T) {
 		f, ev := vocabularyFixture(t, "payout run")
 		env := f.env()
-		env.Surfaces = `{"prompt-anchor":"on"}`
+		env.Surfaces = `{"prompt-vocabulary":"on"}`
 		ev.Prompt = &contract.PromptIn{Typed: false, Text: "payout run"}
 		reply, err := Handle(ev, env)
 		if err != nil || !reply.Empty() {
@@ -94,7 +94,7 @@ func TestVocabularySilentWithoutAliasMatchOrVerifiedAnchor(t *testing.T) {
 		plantIndex(t, f, map[string][]plantedSymbol{"src/pool.ts": {}})
 		indexedSource(t, f, "src/pool.ts", "x\n")
 		env := f.env()
-		env.Surfaces = `{"prompt-anchor":"on"}`
+		env.Surfaces = `{"prompt-vocabulary":"on"}`
 		ev := f.event(contract.Prompt)
 		ev.Prompt = &contract.PromptIn{Typed: true, Text: "payout run"}
 		reply, err := Handle(ev, env)
@@ -105,7 +105,7 @@ func TestVocabularySilentWithoutAliasMatchOrVerifiedAnchor(t *testing.T) {
 	t.Run("surface off", func(t *testing.T) {
 		f, ev := vocabularyFixture(t, "payout run")
 		env := f.env()
-		env.Surfaces = `{"prompt-anchor":"off"}`
+		env.Surfaces = `{"prompt-vocabulary":"off"}`
 		ev.Prompt = &contract.PromptIn{Typed: true, Text: "payout run"}
 		reply, err := Handle(ev, env)
 		if err != nil || !reply.Empty() {
@@ -122,7 +122,7 @@ func TestVocabularyGlobScopeAndLimit(t *testing.T) {
 	plantIndex(t, f, map[string][]plantedSymbol{"src/ledger.ts": {}})
 	indexedSource(t, f, "src/ledger.ts", "x\n")
 	env := f.env()
-	env.Surfaces = `{"prompt-anchor":"on"}`
+	env.Surfaces = `{"prompt-vocabulary":"on"}`
 	ev := f.event(contract.Prompt)
 	ev.Prompt = &contract.PromptIn{Typed: true, Text: "Compare the alpha ledger, beta ledger and gamma ledger"}
 	reply, err := Handle(ev, env)
@@ -145,7 +145,7 @@ func TestVocabularyPointerIsTrialByDefaultAndActedByTouchingItsPaths(t *testing.
 		t.Fatal("trial surface must not send before its gate qualifies", reply.Context)
 	}
 	target := record.SurfaceTarget{Paths: []string{"src/payout.ts"}}
-	if !record.Acted("prompt-anchor", target, record.SurfaceTool{Paths: []string{"src/payout.ts"}, Open: true, Success: true}) {
+	if !record.Acted("prompt-vocabulary", target, record.SurfaceTool{Paths: []string{"src/payout.ts"}, Open: true, Success: true}) {
 		t.Fatal("acted")
 	}
 }

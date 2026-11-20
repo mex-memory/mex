@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/mex-memory/mex/native/internal/tokens"
 )
 
 // Parameters start at the plan's values (sheet 35, L3).
@@ -72,8 +74,8 @@ type Result struct {
 	OriginalChars int
 }
 
-// DroppedTokens is an estimate: characters / 4, the rule the file index uses.
-func (r Result) DroppedTokens() int { return (r.DroppedChars + 3) / 4 }
+// DroppedTokens uses the shared calibrated code/output estimate.
+func (r Result) DroppedTokens() int { return tokens.CodeBytes(r.DroppedChars) }
 
 // Important reports whether a line must survive any trim: an error, warning,
 // failure or assertion, a path:line location, or a test summary.

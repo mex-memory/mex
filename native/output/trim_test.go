@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/mex-memory/mex/native/internal/tokens"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/outputs-report.txt")
@@ -43,11 +45,11 @@ func savedOutputs(t *testing.T) []savedOutput {
 
 // Replay over saved outputs: not one error, warning or file:line line is
 // dropped, the last lines survive, counts add up, and the exact cut is
-// reported in testdata/outputs-report.txt (characters counted, tokens estimated as chars/4).
+// reported in testdata/outputs-report.txt (characters counted, tokens estimated at 2.3 bytes each).
 func TestReplaySavedOutputs(t *testing.T) {
 	var report strings.Builder
 	report.WriteString("# Replay of saved outputs through the trimmer (go test ./output -run TestReplaySavedOutputs -update)\n")
-	report.WriteString("# name | command | noisy | lines | chars | trimmed | kept lines | dropped lines | dropped chars (counted) | dropped tokens (estimated, chars/4)\n")
+	report.WriteString("# name | command | noisy | lines | chars | trimmed | kept lines | dropped lines | dropped chars (counted) | dropped tokens (estimated, bytes/2.3)\n")
 	totalChars, totalDropped := 0, 0
 	for _, s := range savedOutputs(t) {
 		t.Run(s.name, func(t *testing.T) {
@@ -97,7 +99,7 @@ func TestReplaySavedOutputs(t *testing.T) {
 			totalDropped += res.DroppedChars
 		})
 	}
-	fmt.Fprintf(&report, "# total: %d of %d characters dropped (counted), about %d tokens (estimated)\n", totalDropped, totalChars, (totalDropped+3)/4)
+	fmt.Fprintf(&report, "# total: %d of %d characters dropped (counted), about %d tokens (estimated)\n", totalDropped, totalChars, tokens.CodeBytes(totalDropped))
 	golden := filepath.Join("testdata", "outputs-report.txt")
 	if *update {
 		if err := os.WriteFile(golden, []byte(report.String()), 0o644); err != nil {
@@ -183,5 +185,11 @@ func TestNoisy(t *testing.T) {
 		if Noisy(c) {
 			t.Errorf("Noisy(%q) = true", c)
 		}
+	}
+}
+
+func TestCalibratedDroppedTokens(t *testing.T) {
+	if got := (Result{DroppedChars: 230}).DroppedTokens(); got != 100 {
+		t.Fatalf("got %d", got)
 	}
 }

@@ -32,6 +32,8 @@ func codexPre(t *testing.T, root string, input map[string]any) []byte {
 func codexSetup(t *testing.T) (home, Env, string) {
 	t.Helper()
 	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
 	env = withEnv(env, map[string]string{"SHELL": "/bin/bash"})
 	h = homeFrom(env)
 	root := repo(t, t.TempDir())
@@ -97,6 +99,7 @@ func TestCodexNeverWraps(t *testing.T) {
 		"leaving the sandbox":     {input: map[string]any{"command": "npm install", "sandbox_permissions": "require_escalated", "justification": "network"}},
 		"escalated (older form)":  {input: map[string]any{"command": "npm install", "with_escalated_permissions": true}},
 		"an unknown input field":  {input: map[string]any{"command": "npm test", "prefix_rule": []string{"npm"}}},
+		"terminal requested":      {input: map[string]any{"command": "npm test", "tty": true}},
 		"already wrapped":         {input: map[string]any{"command": output.Wrap("/x/mex-hook", "bash", "npm test")}},
 		"MEX_RAW":                 {input: map[string]any{"command": "npm test"}, env: map[string]string{"MEX_RAW": "1"}},
 		"a shell MEX can't quote": {input: map[string]any{"command": "npm test"}, env: map[string]string{"SHELL": "/usr/bin/fish"}},
@@ -147,6 +150,8 @@ func homeEnv(h home) Env {
 		switch k {
 		case "HOME", "USERPROFILE":
 			return h.user
+		case "MEX_LEVERS":
+			return "on"
 		case "SHELL":
 			return "/bin/bash"
 		}
@@ -157,6 +162,8 @@ func homeEnv(h home) Env {
 // Claude Code's commands are never rewritten.
 func TestClaudeCommandsNeverRewritten(t *testing.T) {
 	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
 	b, _ := json.Marshal(map[string]any{"session_id": "s1", "cwd": root, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": map[string]any{"command": "npm test"}})
@@ -201,7 +208,7 @@ func TestWrapperThroughRun(t *testing.T) {
 		t.Fatalf("%d %q", code, out.String())
 	}
 	out.Reset()
-	long := `find . -name no-such-file; i=0; while [ $i -lt 700 ]; do echo " - case $i passes"; i=$((i+1)); done; echo "src/a.test.ts:3 warning"`
+	long := `npm() { :; }; npm test; i=0; while [ $i -lt 700 ]; do echo " - case $i passes"; i=$((i+1)); done; echo "src/a.test.ts:3 warning"`
 	if code := Run([]string{"run", "--shell", "sh", "--", long}, nil, &out, &out, env); code != 0 {
 		t.Fatalf("%d %s", code, out.String())
 	}

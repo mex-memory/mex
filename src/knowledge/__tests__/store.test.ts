@@ -2,9 +2,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openRecord, openRecordReadOnly, projectIdentity } from "../../record/index.js";
-import { expand, note, recall } from "../store.js";
+import { recordLocation } from "../../record/location.js";
+import { knowledgeProject } from "../context.js";
+import { entryVerdict, expand, note, recall } from "../store.js";
 import { KNOWLEDGE_LIMITS, parseEntry, serializeEntry } from "../entry.js";
 import { createEntryFile, readEntryFile } from "../files.js";
 
@@ -151,5 +154,31 @@ describe.skipIf(!realRanker)("recall through the real ranker", () => {
     const found = recall("staging", options());
     expect(found.entries.map(e => e.id).sort()).toEqual([password.entry.mex.id, payments.entry.mex.id].sort());
     expect(recall("Razorpay", options())).toMatchObject({ entries: [{ id: payments.entry.mex.id }], ranking: { engine: "native" } });
+  });
+});
+
+describe("the truth gate on pulled knowledge", () => {
+  it("leaves out what the code no longer matches and marks what changed", () => {
+    const at = new Date("2026-11-20T10:00:00Z");
+    const broken = note({ text: "Deploys run from the release branch because QA signs it off there.", kind: "rule", scope: ["**"] }, options(), at);
+    const changed = note({ text: "Deploys need the staging smoke test because production broke once.", kind: "rule", scope: ["**"] }, options(), at);
+    const held = note({ text: "Deploys tag the commit because rollbacks need the tag.", kind: "rule", scope: ["**"] }, options(), at);
+    const project = knowledgeProject(options());
+    const hooks = recordLocation({ home }).hooks;
+    mkdirSync(dirname(hooks), { recursive: true });
+    const db = new DatabaseSync(hooks);
+    db.exec("CREATE TABLE verdicts(project_id TEXT, checkout TEXT, entry_id TEXT, verdict TEXT, inputs_hash TEXT, checked_at TEXT, PRIMARY KEY(project_id,checkout,entry_id))");
+    const put = db.prepare("INSERT INTO verdicts VALUES(?,?,?,?,'x','2026-11-20T10:00:00Z')");
+    put.run(project.projectId, project.root, broken.entry.mex.id, "broken");
+    put.run(project.projectId, project.root, changed.entry.mex.id, "changed");
+    put.run(project.projectId, project.root, held.entry.mex.id, "held");
+    db.close();
+
+    const found = recall("deploys", options());
+    expect(found.entries.map(e => e.id).sort()).toEqual([changed.entry.mex.id, held.entry.mex.id].sort());
+    expect(found.entries.find(e => e.id === changed.entry.mex.id)?.verdict).toBe("changed");
+    expect(found.entries.find(e => e.id === held.entry.mex.id)?.verdict).toBeUndefined();
+    expect(found.stale).toBe(1);
+    expect(entryVerdict(broken.entry.mex.id, options())).toBe("broken");
   });
 });

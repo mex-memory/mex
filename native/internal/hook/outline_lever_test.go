@@ -6,12 +6,15 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	localrecord "github.com/mex-memory/mex/native/record"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -95,6 +98,8 @@ func setupRead(t *testing.T) readCase {
 		}
 	}
 	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
 	root := repo(t, t.TempDir())
 	register(t, h, root, projectID, "on", "")
 	file := filepath.Join(root, "src", "cli.ts")
@@ -264,8 +269,8 @@ func TestOutlineKillSwitch(t *testing.T) {
 			told++
 		}
 	}
-	if told != 1 || !readOutlineStats(c.h.mex).Off {
-		t.Fatalf("kill switch: told %d, stats %+v", told, readOutlineStats(c.h.mex))
+	if told != 1 || !testOutlineStats(t, c.h.mex).Off {
+		t.Fatalf("kill switch: told %d, stats %+v", told, testOutlineStats(t, c.h.mex))
 	}
 	b, _ := json.Marshal(map[string]any{"session_id": "later", "cwd": c.root, "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": map[string]any{"file_path": c.file}, "tool_response": c.readResponse(t)})
 	if r := c.call(t, "PostToolUse", b); r.HookSpecificOutput.UpdatedToolOutput != nil {
@@ -324,5 +329,104 @@ func TestReplaySavedReadsThroughClaudeProfile(t *testing.T) {
 				t.Fatalf("file fields: %v", file)
 			}
 		})
+	}
+}
+
+func testOutlineStats(t *testing.T, d string) localrecord.OutlineGuard {
+	t.Helper()
+	h, err := localrecord.OpenHooks(place.Location{Directory: d, Hooks: filepath.Join(d, "hooks.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	var result localrecord.OutlineGuard
+	err = h.UpdateLeverState("test", "inspect", "", time.Now(), false, false, func(_ []byte, g *localrecord.OutlineGuard) ([]byte, error) { result = *g; return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestOutlineStateRemainsSmallAndClearsOriginals(t *testing.T) {
+	c := setupRead(t)
+	data, err := os.ReadFile(c.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		file := filepath.Join(c.root, "src", fmt.Sprintf("large%d.ts", i))
+		write(t, file, string(data))
+		info, _ := os.Stat(file)
+		dir := index.Directory(c.h.mex, projectID)
+		db, err := sql.Open("sqlite", filepath.Join(dir, "c-1.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.Exec("INSERT INTO paths SELECT ?,hash,lang,is_test,size,?,reason,? FROM paths LIMIT 1", fmt.Sprintf("src/large%d.ts", i), strconv.FormatInt(info.ModTime().UnixNano(), 10), filepath.Base(file))
+		db.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := c.call(t, "PostToolUse", c.payload(t, "PostToolUse", "Read", map[string]any{"file_path": file}, c.readResponse(t)))
+		if len(r.HookSpecificOutput.UpdatedToolOutput) == 0 {
+			t.Fatal("not outlined", i)
+		}
+	}
+	db, err := sql.Open("sqlite", filepath.Join(c.h.mex, "hooks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var size, count int
+	if err := db.QueryRow("SELECT length(state) FROM lever_state WHERE session_id='s1'").Scan(&size); err != nil || size > 2048 {
+		t.Fatal("large hot row", size, err)
+	}
+	if err := db.QueryRow("SELECT count(*) FROM outline_originals").Scan(&count); err != nil || count != 5 {
+		t.Fatal(count, err)
+	}
+	for _, source := range []string{"compact", "clear"} {
+		body, _ := json.Marshal(map[string]any{"session_id": "s1", "cwd": c.root, "hook_event_name": "SessionStart", "source": source})
+		c.call(t, "SessionStart", body)
+		if err := db.QueryRow("SELECT count(*) FROM outline_originals").Scan(&count); err != nil || count != 0 {
+			t.Fatal(source, count, err)
+		}
+		if source == "compact" {
+			r := c.call(t, "PostToolUse", c.payload(t, "PostToolUse", "Read", map[string]any{"file_path": c.file}, c.readResponse(t)))
+			if len(r.HookSpecificOutput.UpdatedToolOutput) == 0 {
+				t.Fatal("new context did not outline")
+			}
+		}
+	}
+}
+
+// On Windows checkouts with CRLF files, the host returns the read with LF
+// line endings; the outline must still fire.
+func TestOutlineOnCRLFCheckout(t *testing.T) {
+	reads, err := outlinetest.SavedReads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r outlinetest.SavedRead
+	for _, x := range reads {
+		if x.Name == "cli.ts" {
+			r = x
+		}
+	}
+	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	file := filepath.Join(root, "src", "cli.ts")
+	crlf := strings.ReplaceAll(r.Content, "\n", "\r\n")
+	write(t, file, crlf)
+	fakeIndex(t, h.mex, projectID, root, "src/cli.ts", []byte(crlf), r.Symbols)
+	c := readCase{h, env, root, file, strings.Count(r.Content, "\n")}
+	c.prompt(t, "Add an option to buildCompletion for the out command")
+	response := map[string]any{"type": "text", "file": map[string]any{"filePath": file, "content": r.Content, "numLines": c.lines, "startLine": 1, "totalLines": c.lines}}
+	reply := c.call(t, "PostToolUse", c.payload(t, "PostToolUse", "Read", map[string]any{"file_path": file}, response))
+	var replaced readResponse
+	if err := json.Unmarshal(reply.HookSpecificOutput.UpdatedToolOutput, &replaced); err != nil || !outlineHeader.MatchString(replaced.File.Content) {
+		t.Fatalf("CRLF file not outlined: %+v", reply)
 	}
 }

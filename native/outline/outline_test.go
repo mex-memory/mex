@@ -124,3 +124,14 @@ func TestRenderDeclines(t *testing.T) {
 		t.Error("outlined when the outline is not much smaller")
 	}
 }
+
+func TestCalibratedSizeBoundary(t *testing.T) {
+	for _, size := range []int{23000, 23001} {
+		// Exactly 23000 bytes is 10000 estimated tokens.
+		content := strings.Repeat("x", size)
+		_, ok := Render(Input{Path: "file.ts", Content: content, Symbols: []shift.Symbol{{Start: 1, End: 1, Kind: "function", Name: "work"}}})
+		if ok != (size > 23000) {
+			t.Fatalf("size %d outlined=%t", size, ok)
+		}
+	}
+}

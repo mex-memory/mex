@@ -12,6 +12,7 @@ import { expandTeam, teamEntries, type TeamEntry } from "./team.js";
 import { readHints, type HintEntry } from "./hints.js";
 import { aidsEnabled, rankNative } from "./native-rank.js";
 import { deriveNoteChecks } from "./note-checks.js";
+import { cachedVerdicts } from "./check.js";
 export type { KnowledgeOptions } from "./context.js";
 
 export interface PersonalEntry { level: "personal"; label: string; entry: KnowledgeEntry; }
@@ -173,8 +174,40 @@ export interface RecallItem {
   branch?: TeamEntry["branch"];
   score?: number;
   why?: { matched: string[]; exact: boolean };
+  /** "changed": the code it names changed since it was written; it's being checked. */
+  verdict?: "changed";
 }
-export interface RecallResult { entries: RecallItem[]; truncated: boolean; withheld?: number; hintsPartial?: boolean; ranking?: { engine: "native" | "legacy"; reason?: string }; }
+export interface RecallResult {
+  entries: RecallItem[]; truncated: boolean; withheld?: number;
+  /** Entries left out because the code no longer matches them (their check fails). */
+  stale?: number;
+  hintsPartial?: boolean; ranking?: { engine: "native" | "legacy"; reason?: string };
+}
+
+/**
+ * The truth gate for pulled knowledge, the same as for pushed: an entry whose
+ * check fails on today's code (broken) is left out, one whose code changed is
+ * marked. Verdicts come from the evaluator's cache; without it nothing is
+ * filtered, as delivery does.
+ */
+export function gateRecall(items: RecallItem[], options: KnowledgeOptions, project: KnowledgeProject): { kept: RecallItem[]; stale: number } {
+  const verdicts = cachedVerdicts(options, project.projectId, project.root);
+  if (!verdicts?.size) return { kept: items, stale: 0 };
+  let stale = 0;
+  const kept: RecallItem[] = [];
+  for (const item of items) {
+    const verdict = verdicts.get(item.id);
+    if (verdict === "broken") { stale++; continue; }
+    kept.push(verdict === "changed" ? { ...item, verdict: "changed" } : item);
+  }
+  return { kept, stale };
+}
+
+/** The cached verdict of one entry in this checkout, if the evaluator has one. */
+export function entryVerdict(id: string, options: KnowledgeOptions): string | undefined {
+  const project = knowledgeProject(options);
+  return cachedVerdicts(options, project.projectId, project.root)?.get(id);
+}
 export function recallItem(item: { level: KnowledgeLevel; label: string; entry: KnowledgeEntry; branch?: TeamEntry["branch"] }): RecallItem {
   const { id, kind, one_line, scope, source, evidence, created } = item.entry.mex;
   return { id, level: item.level, label: item.label, kind, one_line, scope, source: { type: source.type, ref: source.ref }, evidence, created, ...(item.branch ? { branch: item.branch } : {}) };
@@ -243,14 +276,15 @@ export function recall(query: string, options: KnowledgeOptions, limit = 20): Re
   // The ranker leaves out words most entries share, so with a few notes a word
   // they all use ("staging") finds nothing; the literal match then answers.
   if (ranked.hits?.length) {
-    const found = ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } }));
-    return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };
+    const { kept: found, stale } = gateRecall(ranked.hits.map(hit => ({ ...recallItem(byId.get(hit.id)!), score: hit.score, why: { matched: hit.matched, exact: hit.exact } })), options, project);
+    return { entries: found.slice(0, limit), truncated: found.length > limit, withheld: team.withheld + hints.withheld, ...(stale ? { stale } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "native" } };
   }
   const items = [...personal.entries, ...[...team.entries, ...hints.entries].filter(item => !project.retired.has(item.entry.mex.id) && matchesQuery(item.entry, query)).map(recallItem)];
   const seen = new Set<string>();
-  const entries = items.filter(item => !seen.has(item.id) && !!seen.add(item.id));
-  entries.sort((a, b) => KNOWLEDGE_PRIORITY.indexOf(a.level) - KNOWLEDGE_PRIORITY.indexOf(b.level)
+  const unique = items.filter(item => !seen.has(item.id) && !!seen.add(item.id));
+  unique.sort((a, b) => KNOWLEDGE_PRIORITY.indexOf(a.level) - KNOWLEDGE_PRIORITY.indexOf(b.level)
     || b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
+  const { kept: entries, stale } = gateRecall(unique, options, project);
   const withheld = team.withheld + hints.withheld;
-  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason ?? "no-native-hits" } };
+  return { entries: entries.slice(0, limit), truncated: personal.truncated || entries.length > limit, ...(withheld ? { withheld } : {}), ...(stale ? { stale } : {}), ...(hints.partial ? { hintsPartial: true } : {}), ranking: { engine: "legacy", reason: ranked.reason ?? "no-native-hits" } };
 }

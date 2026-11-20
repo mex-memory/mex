@@ -27,12 +27,15 @@ export function buildKnowledgeCommands(): Command[] {
         return;
       }
       const { adviceReport, formatAdvice } = await import("../judge/advice.js");
+      const { patternReport, formatPatternReport } = await import("./pattern-report.js");
       const result = await adviceReport({ projectPath: process.cwd() });
-      if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
+      const patterns = patternReport({ projectPath: process.cwd() });
+      if (opts.json) console.log(JSON.stringify({ ok: true, ...result, patterns }));
       else {
         if (!result.advisories.length) console.log("No local advice advisories on this branch.");
         for (const item of result.advisories) console.log(formatAdvice(item)+"\n");
         if (result.partial) console.log("More advisories exist; this view reached its limit.");
+        for (const line of formatPatternReport(patterns)) console.log(line);
       }
     }));
   const sessionWhat = new Command("what").description("Read what MEX gave or withheld this session")
@@ -111,8 +114,9 @@ export function buildKnowledgeCommands(): Command[] {
         if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
         else {
           if (!result.entries.length) console.log("No matching knowledge entries.");
-          for (const item of result.entries) console.log(`${item.id} ${item.label}${item.branch && item.branch !== "default" ? ` [${item.branch === "branch" ? "not on default branch" : "default branch unverified"}]` : ""}\n${item.one_line}\nmore: mex expand ${item.id}\n`);
+          for (const item of result.entries) console.log(`${item.id} ${item.label}${item.branch && item.branch !== "default" ? ` [${item.branch === "branch" ? "not on default branch" : "default branch unverified"}]` : ""}${item.verdict === "changed" ? " [being checked: the code it names changed]" : ""}\n${item.one_line}\nmore: mex expand ${item.id}\n`);
           if (result.truncated) console.log("More notes matched; narrow the words or increase --limit.");
+          if (result.stale) console.log(`${result.stale} matching ${result.stale === 1 ? "entry was" : "entries were"} left out: the code no longer matches ${result.stale === 1 ? "it" : "them"} (see mex check).`);
           if (result.withheld) console.log(`${result.withheld} entries withheld by storage checks.`);
           if (result.hintsPartial) console.log("Hint source checking reached its work limit; results are partial.");
         }
@@ -125,13 +129,26 @@ export function buildKnowledgeCommands(): Command[] {
     .option("--json", "Print the full entry as JSON")
     .action(async (id, opts) => {
       await run(opts.json, async () => {
-        const { expand } = await import("./store.js");
-        const item = expand(id, { projectPath: process.cwd(), consumerAgent: opts.agent });
+        const { entryVerdict, expand } = await import("./store.js");
+        const options = { projectPath: process.cwd(), consumerAgent: opts.agent };
+        const item = expand(id, options);
  const {noteProbe}=await import("./what.js");noteProbe(id,"opened",{projectPath:process.cwd()});
-        if (opts.json) console.log(JSON.stringify({ ok: true, ...item }));
+        // The truth gate: an agent never reads an entry the code no longer
+        // matches; a person sees it with that status.
+        const verdict = entryVerdict(id, options);
+        const { isAgentCaller } = await import("../repo-start/caller.js");
+        if (verdict === "broken" && (opts.agent || isAgentCaller())) {
+          const message = `MEX withheld ${id}: the code no longer matches it. Read the current code instead; \`mex check\` shows which check fails.`;
+          if (opts.json) console.log(JSON.stringify({ ok: true, id, withheld: true, verdict, message }));
+          else console.log(message);
+          return;
+        }
+        const status = verdict === "broken" ? " [withheld from agents: the code no longer matches it]"
+          : verdict === "changed" ? " [being checked: the code it names changed]" : "";
+        if (opts.json) console.log(JSON.stringify({ ok: true, ...item, ...(verdict ? { verdict } : {}) }));
         else {
           const { serializeEntry } = await import("./entry.js");
-          console.log(`${item.label}${item.entry.mex.status === "proposed" ? " [not yet accepted]" : ""}${item.level === "team" && item.branch !== "default" ? " [not verified on default branch]" : ""}\n${serializeEntry(item.entry)}`);
+          console.log(`${item.label}${item.entry.mex.status === "proposed" ? " [not yet accepted]" : ""}${item.level === "team" && item.branch !== "default" ? " [not verified on default branch]" : ""}${status}\n${serializeEntry(item.entry)}`);
         }
       });
     });

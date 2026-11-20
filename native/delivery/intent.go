@@ -32,6 +32,10 @@ func observeIntent(previous string, ev contract.Event, g *group) string {
 			return "reproducing"
 		}
 	}
+	// A shell command that broke a strong rule edited files: edit risk.
+	if len(g.shellEdits) > 0 && previous == "investigating" {
+		previous = "working"
+	}
 	for _, v := range g.views {
 		if !isEdit(v) {
 			continue
@@ -41,7 +45,12 @@ func observeIntent(previous string, ev contract.Event, g *group) string {
 		}
 		for i := range g.snap.Items {
 			it := &g.snap.Items[i]
-			if inScope(it, v.rel) && containsAny(boundedText(v.removed, 32768), triggers(it, "anti")) && !containsAny(boundedText(v.added, 32768), triggers(it, "anti")) {
+			if inScope(it, v.rel) && g.snap.Patterns().InEdit(boundedText(v.removed, 32768), it, "anti") && !g.snap.Patterns().InEdit(boundedText(v.added, 32768), it, "anti") {
+				return "changing"
+			}
+			// The agent went past a speed bump and made the edit: the rule
+			// is being changed on purpose.
+			if g.deliberate[it.Entry.ID] && inScope(it, v.rel) && g.snap.Patterns().InEdit(boundedText(v.added, 32768), it, "anti") {
 				return "changing"
 			}
 		}
@@ -140,7 +149,7 @@ func deliveredObservations(h *record.Hooks, ev contract.Event, g *group) ([]reco
 				if v.rel != "" && inScope(it, v.rel) && (v.name == contract.ToolRead || isEdit(v)) {
 					touched = true
 				}
-				if isEdit(v) && inScope(it, v.rel) && containsAny(boundedText(v.added, 32768), triggers(it, "anti")) {
+				if isEdit(v) && inScope(it, v.rel) && g.snap.Patterns().InEdit(boundedText(v.added, 32768), it, "anti") {
 					kinds["missed"] = true
 				}
 				if v.name == contract.ToolShell && folderInScope(it, v.rel) {

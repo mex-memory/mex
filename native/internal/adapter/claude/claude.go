@@ -414,14 +414,25 @@ func replaceOutput(support adapter.KindSupport, tool *contract.Tool, out contrac
 		}
 		var kind string
 		var file map[string]any
-		if json.Unmarshal(resp["type"], &kind) != nil || kind != "text" || json.Unmarshal(resp["file"], &file) != nil || file == nil {
+		if json.Unmarshal(resp["type"], &kind) != nil {
 			return nil, false
+		}
+		if kind == "text" {
+			if json.Unmarshal(resp["file"], &file) != nil || file == nil {
+				return nil, false
+			}
+		} else {
+			resp = map[string]json.RawMessage{"type": json.RawMessage(`"text"`)}
+			file = map[string]any{"filePath": tool.Input.Path}
 		}
 		lines := strings.Count(out.Text, "\n")
 		if out.Text != "" && !strings.HasSuffix(out.Text, "\n") {
 			lines++
 		}
 		file["content"], file["numLines"], file["startLine"] = out.Text, lines, 1
+		if kind != "text" {
+			file["totalLines"] = max(lines, out.ReadTotalLines)
+		}
 		encoded, err := json.Marshal(file)
 		if err != nil {
 			return nil, false

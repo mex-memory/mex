@@ -1243,3 +1243,20 @@ there.
   detection failure deliberately caches the home fallback for agreement.
 - Updated to the latest stable driver v1.62.0 and declared Go 1.27, matching the
   tested toolchain; refreshed transitive-license and cross-build evidence.
+
+### Output presentation state (hooks migrations 0014 and 0015)
+
+Go owns `lever_state` in hooks.db, keyed by agent, session_id and subagent.
+Original scan text lives separately in `outline_originals`, keyed by agent,
+session, subagent, path key and context: at most 1 MiB per read and 8 MiB per
+agent/session across subagents. It is written once at outline creation and read
+only by the batch read-risk scan. At capacity, new reads stay whole. The hot
+state contains only marks; its JSON is capped at 4 MiB. Pruning state rows also
+deletes their originals; clear and context-changing compaction delete all
+originals for the agent/session. The JSON state and the machine-wide `outline_guard` counters change in one
+bounded immediate transaction. `compact_nudge_state` holds independent topic
+memory, so the nudge keeps working while output levers are off. Startup prunes
+at most 256 rows older than seven days per table. Node never writes these tables.
+`mex on --lever outline` publishes the existing rearm timestamp; Go consumes it
+under the same lock and resets the guard once. Legacy JSON side files are not imported. Migration 0015 moves existing inline
+scan originals into the separate bounded table and removes them from the marks.

@@ -26,6 +26,7 @@ export interface AgentStatus { agent: Agent; installed: boolean | null; events: 
 export interface KnowledgeStatus { personal: number; team: number; hints: number; checks: Record<Verdict, number> | null; }
 export interface StatusView {
   version: string;
+  outputLevers?: "on" | "off";
   repository: { state: Switch; capture: Switch } | null;
   agents: AgentStatus[];
   binary: { state: "native" | "missing" | "unknown"; version?: string };
@@ -112,6 +113,7 @@ export function readStatus(options: StatusOptions = {}): StatusView {
   const view: StatusView = { version: VERSION, repository: root ? { state: "unknown", capture: "unknown" } : null,
     agents: [], binary: { state: "unknown" }, knowledge: null, background: null, modelUse: null };
   try {
+    view.outputLevers = (env.MEX_LEVERS === "on" || env.MEX_LEVERS !== "off" && reader?.setting("global", "levers.output") === "on") ? "on" : "off";
     const rows = attempt(() => installationChanges(options));
     for (const agent of ["claude-code", "codex"] as const) {
       view.agents.push((rows && attempt(() => installedAgent(agent, rows))) || { agent, installed: null, events: null });
@@ -188,6 +190,7 @@ function ago(at: string, now: number): string {
 export function formatStatus(view: StatusView, options: { doctor?: boolean; now?: number; ascii?: boolean } = {}): string {
   const now = options.now ?? Date.now(), lines: string[] = [];
   if (view.repository) lines.push(`MEX ${view.version} · ${view.repository.state} in this repo · capture ${view.repository.capture}`, "");
+  lines.push(view.outputLevers === "on" ? "Output levers on" : "Output levers off; turn on: mex config set levers.output on", "");
   lines.push("Agents");
   for (const agent of view.agents) lines.push(`  ${agent.installed ? "✓" : "!"} ${NAMES[agent.agent]}: ${agent.installed === null ? "unknown" : agent.installed ? `hooks installed (${agent.events} events)` : `hooks not installed or incomplete (${agent.events} events)`}${agent.lastCall ? ` · last call ${ago(agent.lastCall, now)}` : ""}${agent.agent === "codex" && agent.installed ? " · trust them once in Codex (/hooks, or Review hooks in the app)" : ""}`);
   lines.push(`  ${view.binary.state === "native" ? "✓" : "!"} Hook binary ${view.binary.state === "native" ? `${view.binary.version || "unknown version"} (native)` : view.binary.state}`);

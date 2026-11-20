@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,10 +33,13 @@ type Environment struct {
 	Surfaces              string // all-surface state or JSON map, test override
 	Offline               bool
 	CaptureDisabled       bool
-	Notices               bool   // adapter supports person-facing output on this event
-	Aids                  string // MEX_DELIVERY_ALIASES override: on or off, no I/O
-	Trace                 func(string, time.Duration)
-	KeepSession           func(agent, sessionID string) bool
+	Notices               bool // adapter supports person-facing output on this event
+	// NoContext: the agent's profile has no channel to the model for this
+	// event, so moments must not be sent or recorded as given.
+	NoContext   bool
+	Aids        string // MEX_DELIVERY_ALIASES override: on or off, no I/O
+	Trace       func(string, time.Duration)
+	KeepSession func(agent, sessionID string) bool
 	// Resolve finds the registered checkout of a touched path; nil means
 	// every tool uses the event's own checkout.
 	Resolve Resolver
@@ -114,8 +118,14 @@ type group struct {
 	edits             []string   // files edited in this call that some entry covers
 	cards             []answerCard
 	cardsConsumed     bool
-	reservedUsed      int // correction tokens already sent in this moment
+	reservedUsed      int             // correction tokens already sent in this moment
+	deliberate        map[string]bool // rules the agent went past a speed bump for this epoch
+	shellEdits        []string        // files a shell command changed against a strong rule
 }
+
+// maxPromptPointers bounds what a prompt brings: pointers, never full text,
+// because text injected mid-session is paid again on every later turn.
+const maxPromptPointers = 2
 
 // Handle must be called after checkout, consent and pause resolution. Events
 // with no moment, lifecycle or correction work return before SQLite. A bounded
@@ -177,7 +187,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 		var vocabulary []answerCard
 		var vocabularyOut *[]answerCard
-		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-anchor") != "off" {
+		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-vocabulary") != "off" {
 			vocabularyOut = &vocabulary
 		}
 		groups = collect(ev, env, anchors, vocabularyOut)
@@ -208,6 +218,25 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	if isMoment && ev.Kind != contract.Prompt {
 		stuck = findRescue(ev, env)
 		history = findHistory(ev, env)
+	}
+	// The agent's profile says text on this event can't reach the model
+	// (Cursor's and Copilot's prompt hooks, Antigravity's and Kiro's tool
+	// results). Nothing is sent, so nothing is recorded as given, and each
+	// entry stays due for a moment the agent can receive. Edits are still
+	// noted, and a prompt still arms entries for the first read of the files
+	// it names: an armed entry is held back now, not given.
+	if env.NoContext && !isLifecycle {
+		stuck, history = nil, nil
+		var armed []answerCard
+		for _, c := range cards {
+			if c.arm != nil {
+				armed = append(armed, c)
+			}
+		}
+		cards = armed
+		for _, g := range groups {
+			g.cands = nil
+		}
 	}
 	if !isLifecycle && !isEnd && !lateRecovery && len(groups) == 0 && len(cards) == 0 && len(adviceIDs) == 0 && !pending && stuck == nil && len(history) == 0 {
 		return contract.Reply{}, nil
@@ -326,6 +355,11 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, fmt.Errorf("record-probes: %w", err)
 		}
 		commands, failed := commandObservations(g)
+		if hasEdit(g.views) {
+			if e, _, err := h.CurrentEpoch(ev.SessionID, ev.AgentID); err == nil {
+				g.deliberate = Deliberate(env.RecordDirectory, ev, e.Number)
+			}
+		}
 		if len(commands) > 0 || len(obs) > 0 || len(probes) > 0 || len(touches) > 0 || observeIntent(previous, ev, g) != previous {
 			req := baseRequest(ev, env, g.project, g.checkout)
 			req.Observations = obs
@@ -478,7 +512,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				if possible {
 					for _, r := range g.ranked {
 						if it := byID[r.ID]; it != nil {
-							g.cands = append(g.cands, candidate{item: it, moment: momentPrompt, tier: tierPrompt})
+							g.cands = append(g.cands, candidate{item: it, moment: momentPrompt, tier: tierPrompt, pointer: true})
 						}
 					}
 				}
@@ -514,7 +548,16 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				g.firstRel = v.rel
 			}
 			g.cands = append(g.cands, found...)
+			if caught := shellCaught(v, env, g.snap); len(caught) > 0 {
+				g.cands = append(g.cands, caught...)
+				for _, c := range caught {
+					g.shellEdits = append(g.shellEdits, c.rel)
+				}
+			}
 		}
+	}
+	for _, g := range order {
+		monitorGroup(env, g)
 	}
 	var out []*group
 	_, ledgerErr := os.Stat(filepath.Join(env.RecordDirectory, "hooks.db"))
@@ -533,6 +576,15 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 		}
 	}
 	return out
+}
+
+func hasEdit(vs []toolView) bool {
+	for _, v := range vs {
+		if isEdit(v) {
+			return true
+		}
+	}
+	return false
 }
 
 func isEdit(v toolView) bool {
@@ -659,9 +711,15 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		var kept []string
 		for _, id := range ids {
 			c := best[id]
-			if c.tier != tierPrompt || allowed[id] {
+			// Word overlap filters; only an exact anchor sends.
+			if c.tier != tierPrompt || (allowed[id] && promptAnchored(c.item, g.text)) {
 				kept = append(kept, id)
 			}
+		}
+		// At most two pointers per prompt, the most exact first.
+		sort.SliceStable(kept, func(i, j int) bool { return best[kept[i]].tier < best[kept[j]].tier })
+		if len(kept) > maxPromptPointers {
+			kept = kept[:maxPromptPointers]
 		}
 		ids = kept
 		if len(ids) == 0 {
@@ -710,6 +768,9 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	correctionTokens := 0
 	for _, id := range ids {
 		s := shape(best[id], verdictOf(id), senv)
+		if s.pointer && s.action == "given" && s.oneLine != "" {
+			s.full, s.fullTok = s.oneLine, s.lineTok
+		}
 		if s.action == "given" && s.moment == "prompt-arm" {
 			s.action, s.detail = "held-back", "prompt-anchor"
 		}
@@ -718,7 +779,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		}
 		if s.action == "given" && s.item.Entry.Kind == "rule" && intent == "changing" {
 			for _, v := range g.views {
-				if isEdit(v) && inScope(s.item, v.rel) && containsAny(v.removed, triggers(s.item, "anti")) && !containsAny(v.added, triggers(s.item, "anti")) {
+				if isEdit(v) && inScope(s.item, v.rel) && g.snap.Patterns().InEdit(v.removed, s.item, "anti") && !g.snap.Patterns().InEdit(v.added, s.item, "anti") {
 					s.full = "Current convention: " + s.oneLine
 					s.oneLine = s.full
 					s.fullTok = entries.EstimateTokens(s.full)

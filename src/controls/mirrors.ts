@@ -12,13 +12,13 @@ function publish(file: string, value: unknown): void {
 
 /** Called under the Node record writer lock, including when repairing after a crash. */
 export function publishControlMirrors(db: DatabaseSync, location: RecordLocation, onlyScope?: string): void {
-  const rows = db.prepare("SELECT scope,key,value FROM settings WHERE (scope='global' AND key IN ('enabled','ledger.holdout')) OR key IN ('capture.enabled','delivery.scorer','delivery.aliases') OR key LIKE 'delivery.surface.%'").all();
+  const rows = db.prepare("SELECT scope,key,value FROM settings WHERE (scope='global' AND key IN ('enabled','ledger.holdout','levers.output')) OR key IN ('capture.enabled','delivery.scorer','delivery.aliases') OR key LIKE 'delivery.surface.%'").all();
   const global = new Map(rows.filter(row => row.scope === "global").map(row => [String(row.key), String(row.value)]));
   const file = join(location.home, "controls.json");
   if ((onlyScope === undefined || onlyScope === "global") && (global.size || existsSync(file))) {
     const surfaces = Object.fromEntries([...global].filter(([key]) => key.startsWith("delivery.surface.")).map(([key, value]) => [key.slice(17), value]));
     const trial = global.get("ledger.holdout");
-    publish(file, { version: 1, off: global.get("enabled") === "false", capture: global.get("capture.enabled") !== "false", ...(global.has("delivery.scorer") ? { scorer: global.get("delivery.scorer") } : {}), ...(global.has("delivery.aliases") ? { aliases: global.get("delivery.aliases") } : {}), ...(Object.keys(surfaces).length ? { surfaces } : {}), ...(trial ? { ledger_holdout: trial } : {}) });
+    publish(file, { version: 1, off: global.get("enabled") === "false", capture: global.get("capture.enabled") !== "false", ...(global.has("delivery.scorer") ? { scorer: global.get("delivery.scorer") } : {}), ...(global.has("delivery.aliases") ? { aliases: global.get("delivery.aliases") } : {}), ...(Object.keys(surfaces).length ? { surfaces } : {}), ...(trial ? { ledger_holdout: trial } : {}), ...(global.has("levers.output") ? { levers: global.get("levers.output") } : {}) });
   }
   const deliveryScopes = new Set(rows.filter(row => row.scope !== "global" && (row.key === "delivery.scorer" || String(row.key).startsWith("delivery.surface."))).map(row => String(row.scope)));
   for (const scope of deliveryScopes) {

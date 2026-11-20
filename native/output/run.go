@@ -60,7 +60,7 @@ func Run(o RunOptions) int {
 	text := capture.buf.String()
 	original := len(text)
 	if code == 0 && !o.Raw && o.Save != nil && len(text) > MinChars && Noisy(o.Command) {
-		text, _ = TrimAndSave(text, code, func() (int, error) { return o.Save(text, code) })
+		text, _ = PresentAndSave(o.Command, text, code, func() (int, error) { return o.Save(text, code) })
 	}
 	if n, err := io.WriteString(o.Stdout, text); err == nil && n == len(text) && prefixErr == nil && o.Observe != nil {
 		o.Observe(original, prefix+len(text), setup+time.Since(finished))
