@@ -161,6 +161,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	var anchors []Anchor
 	cards := searchCards(ev, env)
 	if isMoment {
+		cards = append(cards, graphCards(ev, env)...)
+	}
+	if isMoment {
 		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-anchor") != "off" {
 			anchors = VerifyAnchors(ev, env)
 			cards = anchorCard(anchors)
