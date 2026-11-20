@@ -7,7 +7,7 @@ import { recordLocation, type LocationOptions } from "./location.js";
 import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
-import { indexPending, queuePendingRefreshes } from "../file-index/pending.js";
+import { indexPending, queueBehindHead, queuePendingRefreshes } from "../file-index/pending.js";
 import { queueWorkingSetRequests, workingSetPending } from "../working-set/job.js";
 import { queueStaleCodeFacts } from "../repo-start/history/freshness.js";
 import { judgePending, queuePendingJudgements } from "../judge/pending.js";
@@ -292,6 +292,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
         try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
         // Commands that failed and then passed in a session become recipes.
         try { queuePendingFailPass(writer, queueJob); } catch { /* a missed pass waits for the next one */ }
+        // An index built before a commit made outside a session is refreshed, so folder counts settle again.
+        try { queueBehindHead(writer); } catch { /* a missed pass waits for the next one */ }
         // Decisions that cite a commit come into force when it lands; a decision-like commit is offered at the next start.
         try { (await import("../knowledge/decisions.js")).decisionPass(writer); } catch { /* a missed pass waits for the next one */ }
         try { await settlePendingLedger(writer, clock()); } catch { /* retry unacknowledged settlements */ }

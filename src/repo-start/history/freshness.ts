@@ -26,7 +26,41 @@ const readHead: HeadReader = checkout => {
   } catch { return undefined; }
 };
 
-/** Queue a code-facts job for every project whose mined checkout has moved on. Returns how many were queued. */
+/** Bumped when the entries made from the same facts change, so the next run proposes them again. */
+export const ENTRIES_VERSION = 1;
+/** Project setting: `{head, version, complete}` of the last time code facts were proposed as entries. */
+export const ENTRIES_KEY = "code-facts.entries";
+
+export interface EntriesProposed { head?: string; version?: number; complete?: boolean; }
+export function readEntriesProposed(writer: RecordWriter, projectId: string): EntriesProposed | undefined {
+  try {
+    const value = JSON.parse(writer.setting(projectId, ENTRIES_KEY) ?? "null") as Record<string, unknown> | null;
+    if (!value || typeof value !== "object") return undefined;
+    return {
+      head: typeof value.head === "string" ? value.head : undefined,
+      version: typeof value.version === "number" ? value.version : undefined,
+      complete: value.complete !== false,
+    };
+  } catch { return undefined; }
+}
+/** The HEAD whose entries were proposed in full by this version, if any. */
+export function entriesProposedAt(writer: RecordWriter, projectId: string): string | undefined {
+  const value = readEntriesProposed(writer, projectId);
+  return value?.version === ENTRIES_VERSION && value.complete ? value.head : undefined;
+}
+/**
+ * Entries this version has never tried to propose: none yet (facts mined before entries existed)
+ * or an older ENTRIES_VERSION. A run that tried and stayed incomplete is not retried until HEAD moves.
+ */
+function entriesOutdated(writer: RecordWriter, projectId: string): boolean {
+  const value = readEntriesProposed(writer, projectId);
+  return value?.version === undefined || value.version < ENTRIES_VERSION;
+}
+
+/**
+ * Queue a code-facts job for every project whose mined checkout has moved on, or whose facts
+ * this version hasn't yet proposed as entries. Returns how many were queued.
+ */
 export function queueStaleCodeFacts(
   writer: RecordWriter,
   queue: (writer: RecordWriter, options: EnqueueOptions) => EnqueueResult,
@@ -44,7 +78,7 @@ export function queueStaleCodeFacts(
     const checkout = writer.db.prepare("SELECT state FROM checkouts WHERE project_id=? AND path=?").get(projectId, facts.checkout) as { state: string } | undefined;
     if (checkout?.state !== "on" || !automaticWorkEnabled(writer, projectId, now)) continue;
     const current = head(facts.checkout);
-    if (!current || current === facts.head) continue;
+    if (!current || (current === facts.head && !entriesOutdated(writer, projectId))) continue;
     if (!queue(writer, { kind: "code-facts", projectId, params: { checkout: facts.checkout } }).existing) queued++;
   }
   return queued;

@@ -16,6 +16,15 @@ export function skippedByRule(path: string): boolean {
   return NOT_READ.some((pattern) => pattern.test(path));
 }
 
+/** The commit at HEAD, or undefined without git or commits. */
+export async function gitHead(root: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await run("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd: root, windowsHide: true, timeout: 10_000, encoding: "utf8" });
+    const head = stdout.trim();
+    return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(head) ? head : undefined;
+  } catch { return undefined; }
+}
+
 export interface Discovered {
   /** Paths relative to the checkout, `/`-separated, sorted. */
   paths: string[];

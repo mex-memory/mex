@@ -31,6 +31,7 @@ func CurrentInputsHash(checkout, directory, project string, item *entries.Item) 
 			return "", false
 		}
 		defer ix.Close()
+		ev.UseIndex(ix)
 		asOf = ix.AsOf()
 	}
 	return ev.inputsHash(Loaded{Hash: item.Hash, Entry: &Entry{Checks: checks}}, asOf), true
