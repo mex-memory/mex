@@ -295,6 +295,37 @@ func TestEditRowsKeepRepoRelativePathsOnly(t *testing.T) {
 	})
 }
 
+// Fail→pass capture reads the journal only, so a subagent's fail, edit and
+// pass must leave no rows at all; the main agent's same sequence leaves three.
+func TestSubagentFailPassLeavesNoRows(t *testing.T) {
+	h, env := fakeHome(t, true)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	steps := func(session, agent string) {
+		fail := map[string]any{"session_id": session, "hook_event_name": "PostToolUseFailure", "cwd": root, "tool_name": "Bash",
+			"tool_input": map[string]any{"command": "npm test"}, "error": "Exit code 1\nFAIL"}
+		edit := map[string]any{"session_id": session, "hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Write",
+			"tool_input": map[string]any{"file_path": filepath.Join(root, "src", "a.ts"), "content": "x"}, "tool_response": map[string]any{}}
+		pass := map[string]any{"session_id": session, "hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Bash",
+			"tool_input": map[string]any{"command": "npm test"}, "tool_response": map[string]any{"stdout": "ok", "stderr": ""}}
+		for _, p := range []map[string]any{fail, edit, pass} {
+			if agent != "" {
+				p["agent_id"] = agent
+			}
+			send(t, env, "claude-code", p["hook_event_name"].(string), p)
+		}
+	}
+	steps("sub", "sub-1")
+	if rows := journalOf(t, h, "sub"); len(rows) != 0 {
+		t.Fatalf("subagent rows saved: %+v", rows)
+	}
+	steps("main", "")
+	rows := journalOf(t, h, "main")
+	if len(rows) != 3 || rows[0].Kind != "command" || *rows[0].ExitCode != 1 || rows[1].Kind != "edit" || rows[1].Text != "src/a.ts" || *rows[2].ExitCode != 0 {
+		t.Fatalf("%+v", rows)
+	}
+}
+
 func assertEdits(t *testing.T, rows []localrecord.JournalEntry, want ...string) {
 	t.Helper()
 	var got []string

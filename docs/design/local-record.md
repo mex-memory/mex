@@ -1076,6 +1076,14 @@ without session metrics remain available to the per-lever ledger.
   reads only `typed` rows; `edit` rows, like commands, never hold back the
   consumed prefix. Compaction recovery reads typed rows and rows with an exit
   code, so it never sees edit rows.
+- **Fail→pass capture** (`src/knowledge/fail-pass.ts`, job kind `fail-pass`)
+  reads `command` and `edit` rows per checkout after its own cursor
+  (`fail-pass.after.<checkout hash>` in the project's settings, moved in the
+  same transaction as the entries it saves). The background's minute pass
+  queues it for checkouts with new command rows (`fail-pass` /
+  `queued.through`). A session whose typed rows are marked `scripted` never
+  counts. The producer gate verifies a fail-pass command by reading its
+  evidence rows: exit code 0, in this project and checkout, exact text.
 
 Indexes cover active sessions by project/time, deliveries by session/agent/epoch/
 entry/time and by time, followups by delivery/time, journal by session/id, and

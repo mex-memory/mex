@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
+import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
 import { readConflict, stageConflict, type StoredConflict } from "../review/conflicts.js";
 import { REVIEW_DAYS } from "../review/state.js";
@@ -59,8 +59,38 @@ function publication(writer: RecordWriter, project: string, id: string): Publica
   } catch { return undefined; }
 }
 
+/**
+ * Fail-pass evidence is journal row ids. A command that only the journal saw
+ * is verified by having run in this checkout with exit 0: the rows are read
+ * here, never taken from the proposal, and only the exact row text counts.
+ */
+function journalPasses(proposals: readonly Proposal[], project: KnowledgeProject): Map<number, string> {
+  const passes = new Map<number, string>();
+  const ids = [...new Set(proposals.flatMap(p => p?.producer === "fail-pass" && Array.isArray(p.evidence)
+    ? p.evidence.filter((ref): ref is number => Number.isSafeInteger(ref) && (ref as number) > 0) : []))].slice(0, 4096);
+  if (!ids.length) return passes;
+  let hooks: ReturnType<typeof openHooksReadOnly>;
+  try {
+    hooks = openHooksReadOnly({ home: project.location.home });
+    if (!hooks || hooks.diagnostic) return passes;
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      for (const row of hooks.all<{ id: number; text: string }>(`SELECT j.id,j.text FROM journal j JOIN sessions s ON s.session_id=j.session_id
+        WHERE j.id IN (${chunk.map(() => "?").join(",")}) AND j.kind='command' AND j.exit_code=0 AND s.project_id=? AND s.checkout=?`,
+      ...chunk, project.projectId, project.root)) passes.set(Number(row.id), row.text);
+    }
+  } catch { /* An unreadable journal verifies nothing. */ }
+  finally { hooks?.close(); }
+  return passes;
+}
+function observedRuns(p: Proposal, passes: ReadonlyMap<number, string>): ReadonlySet<string> | undefined {
+  if (p?.producer !== "fail-pass" || !Array.isArray(p.evidence)) return undefined;
+  return new Set(p.evidence.flatMap(ref => typeof ref === "number" && passes.has(ref) ? [passes.get(ref)!] : []));
+}
+const backticked = (text: string) => [...text.matchAll(/`([^`\n]+)`/gu)].map(match => match[1]!.trim());
+
 function preflight(p: Proposal, tree: string, date: string, source: () => ReturnType<typeof references>,
-  special?: { entry: KnowledgeEntry; mode: "note" | "judge" | "review" }): Candidate | Dropped {
+  special?: { entry: KnowledgeEntry; mode: "note" | "judge" | "review" }, observed?: ReadonlySet<string>): Candidate | Dropped {
   let entry: KnowledgeEntry, checks: ProposedCheck[], evidence: Candidate["evidence"];
   try {
     if (!PRODUCER_IDS.includes(p.producer)) invalid("Unknown producer.");
@@ -104,7 +134,7 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   catch (error) { return drop("secret", message(error)); }
   let gated: KnowledgeEntry;
   const kept: number[] = [];
-  try { gated = gateEntry(entry, source(), index => kept.push(index)); }
+  try { gated = gateEntry(entry, observed ? { ...source(), exact: observed } : source(), index => kept.push(index)); }
   catch (error) { return drop(error instanceof KnowledgeError && error.code === "SECRET_FOUND" ? "secret" : "undefined-command", message(error)); }
   const sanitized: Candidate["sanitized"] = [];
   if (gated.text !== entry.text) sanitized.push("text");
@@ -115,7 +145,9 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   // A judge rewrite repairs an existing entry; it keeps whatever anchors the original had.
   if (owner.requiresAnchor && special?.mode !== "judge" && !gated.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob)) && !gated.mex.when?.length
     && !p.anchors?.symbols?.length && !gated.mex.checks.some(check => check.kind === "symbol"
-      || (check.kind === "command" && ["recipe", "procedure"].includes(gated.mex.kind)))) return drop("no-anchor");
+      || (check.kind === "command" && ["recipe", "procedure"].includes(gated.mex.kind)))
+    // A fail-pass recipe is anchored to the command moment by its observed command.
+    && !(observed && ["recipe", "procedure"].includes(gated.mex.kind) && backticked(gated.mex.one_line).some(run => observed.has(run)))) return drop("no-anchor");
   const quote = entry.mex.source.quote;
   if (quote !== undefined) {
     try {
@@ -285,7 +317,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
   let refs: ReturnType<typeof references> | undefined;
   let ruleLines: Set<string> | undefined;
   const rules = () => ruleLines ??= ruleClaims(tree);
-  const pending = Array.from(proposals, p => preflight(p, tree, date, () => refs ??= references(tree), special));
+  const passes = journalPasses(proposals, project);
+  const pending = Array.from(proposals, p => preflight(p, tree, date, () => refs ??= references(tree), special, observedRuns(p, passes)));
   if (pending.every(item => "status" in item) && !context.sweep && !context.validate && !context.onAccepted) return pending as Dropped[];
 
   const writer = openRecord({ ...context, create: true });
