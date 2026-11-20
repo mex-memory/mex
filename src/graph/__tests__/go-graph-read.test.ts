@@ -15,6 +15,10 @@ import { buildIndex } from "../../file-index/build.js";
 import { runGraph, runGraphRefresh } from "../cli-graph.js";
 import { graphLocation, readGraphPointer } from "../storage.js";
 import { askGraph, renderGraphAnswer } from "../cli-read.js";
+import { recordCheck } from "../../knowledge/check.js";
+import { parseEntry, serializeEntry, validateEntry, type EntryCheck } from "../../knowledge/entry.js";
+import { containedDirectory, createEntryFile, readEntryFile } from "../../knowledge/files.js";
+import { upgradeEntryChecks } from "../../knowledge/check-upgrade.js";
 
 const enabled = process.env.MEX_TEST_REAL_HOOK_BINARY === "1" && spawnSync("go", ["version"], { encoding: "utf8" }).status === 0;
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -57,7 +61,7 @@ export function checksTwice(): boolean {
 `;
 
 describe.skipIf(!enabled)("graph reads in Go", () => {
-  let root: string, checkout: string, hook: string, projectId: string, records: string;
+  let root: string, checkout: string, hook: string, projectId: string, records: string, home: string;
   const exe = process.platform === "win32" ? ".exe" : "";
   const ask = (question: Parameters<typeof askGraph>[0], name: string) => askGraph(question, name, { root: checkout, binary: hook });
 
@@ -77,6 +81,7 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     const writer = openRecord({ projectPath: checkout });
     projectId = writer.checkout(checkout)!.project_id;
     records = writer.location.directory;
+    home = writer.location.home;
     writer.close();
     await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
 
@@ -129,6 +134,37 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
 
   it("says a name is missing or names several definitions instead of guessing", () => {
     expect(ask("callers", "doesNotExist").verdict).toBe("missing");
+  });
+
+  it("upgrades a note's file-hash check to a fingerprint of the definition it names", () => {
+    const options = { projectPath: checkout, env: { ...process.env, MEX_HOOK_BINARY: hook } };
+    const source = recordCheck(hook, { checkout, project_id: projectId, record_directory: records, kind: "source", role: "supporting", target: { file: "src/shapes.ts" } }) as EntryCheck;
+    const id = "mx_upgrade01";
+    const entry = validateEntry({
+      mex: { id, kind: "fact", scope: ["src/**"], source: { type: "observed", ref: "test" }, evidence: "observed",
+        one_line: "`area` is the circle area.", checks: [source], status: "active", created: "2026-11-20" },
+      text: "`area` returns the area of a circle; `unit` calls it with radius 1.",
+    });
+    const notes = containedDirectory(home, ["projects", projectId, "notes"], true)!;
+    createEntryFile(notes, id, serializeEntry(entry));
+
+    const report = upgradeEntryChecks(options);
+    expect(report).toMatchObject({ upgraded: 1, checks: 1, fingerprints: 2 });
+    const after = parseEntry(readEntryFile(join(notes, `${id}.md`))!);
+    expect(after.mex.checks.map((check) => `${check.kind}:${"symbol" in check.target ? check.target.symbol : ""}`).sort()).toEqual(["symbol:area", "symbol:unit"]);
+    expect(after.text).toBe(entry.text);
+    // Nothing more to do the second time.
+    expect(upgradeEntryChecks(options).upgraded).toBe(0);
+  });
+
+  it("records calls relations from the graph", () => {
+    const calls = recordCheck(hook, { checkout, project_id: projectId, record_directory: records, kind: "relation", role: "complete",
+      target: { query: "calls", from: "test/**", to: "src/**" } }) as { saw: { count: number } };
+    // checksArea calls area; checksTwice calls twice.
+    expect(calls.saw.count).toBe(2);
+    const none = recordCheck(hook, { checkout, project_id: projectId, record_directory: records, kind: "relation", role: "complete",
+      target: { query: "calls", from: "src/**", to: "test/**" } }) as { saw: { count: number } };
+    expect(none.saw.count).toBe(0);
   });
 
   it("reads through an overlay: the edited file's rows replace the base's", async () => {
