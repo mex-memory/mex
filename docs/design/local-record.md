@@ -868,7 +868,7 @@ keys exist. Session keys in this file are protected by foreign keys.
 | `verdicts` | PK (`project_id`,`checkout`,`entry_id`); `verdict` (held/changed/broken/unknown), `inputs_hash`, `checked_at` | Check evaluator |
 | `ledger` | PK (`session_id`,`agent_id`,`lever`), raw `tokens_removed`, `turns_carried`, `cost_tokens`, `refetches` and optional `saved_input_millitokens`, `cost_input_millitokens` | Lever accounting |
 | `ledger_settlements` | PK `session_id`, `ended_at`, optional `price_profile` | Lever accounting |
-| `journal` | AUTOINCREMENT INTEGER PK `id`; `session_id`, `ts`, `kind` (typed/command/edit), `text`, nullable `exit_code`, `marks` | Capture hook |
+| `journal` | AUTOINCREMENT INTEGER PK `id`; `session_id`, `ts`, `kind` (typed/command/edit), `text`, nullable `exit_code`, `marks`, nullable `call_id` | Capture hook |
 | `journal_size` | PK `id` (always 1); `bytes` | Journal triggers (running byte total for retention) |
 | `outputs` | AUTOINCREMENT INTEGER PK `n`; `session_id`, `path`, `bytes` | Output trimmer/wrapper |
 | `notices_shown` | PK `notice_id`; `session_id`, `ts` | Session notice display |
@@ -1059,15 +1059,22 @@ without session metrics remain available to the per-lever ledger.
   Write, MultiEdit and NotebookEdit; Codex `apply_patch` (each added, updated,
   deleted or move-target file); the other agents through the contract's edit,
   write and patch tools.
+- **Call ids.** A `command` row whose hook payload has no exit code keeps
+  the host's call id in `call_id` (Codex only, at most 128 bytes; the CHECK
+  allows it only on a command with a null exit code). Codex shell payloads
+  carry only output, but the session's rollout records each finished command
+  as an `item_completed` event whose `CommandExecution` item has that id and
+  its `exit_code`. Node reads the code from the rollout off the hook path
+  (`src/knowledge/codex-exits.ts`): the fail-pass job and the producer gate.
 - **Migration 15** rebuilds `journal` for the new CHECK in one transaction:
   rows, ids, the `journal_session_id` index and the AUTOINCREMENT allocation
   point are kept, so ids are never reused.
 - **Retention: 90 days or 200 MB, whichever comes first.** Rows are no longer
   deleted when the capture filter consumes them; `journal.consumed` is only
-  its cursor. Size counts each row's text, session id and timestamp plus 16
-  bytes. `journal_size` holds the running total, kept by insert and delete
-  triggers, so nothing sums the table. Session start (main agent) deletes
-  the oldest rows that are past 90 days or keep the journal over 200 MB, in at
+  its cursor. Size counts each row's text, session id, timestamp and call id
+  plus 16 bytes. `journal_size` holds the running total, kept by insert,
+  update and delete triggers, so nothing sums the table. Session start (main
+  agent) deletes the oldest rows that are past 90 days or keep the journal over 200 MB, in at
   most 4 steps of 1,000 rows, each its own short transaction; a longer backlog
   clears over later session starts. Every 32nd insert also reads the total
   and, when over the cap, deletes at most 256 of the oldest rows. Expired rows
@@ -1083,7 +1090,8 @@ without session metrics remain available to the per-lever ledger.
   queues it for checkouts with new command rows (`fail-pass` /
   `queued.through`). A session whose typed rows are marked `scripted` never
   counts. The producer gate verifies a fail-pass command by reading its
-  evidence rows: exit code 0, in this project and checkout, exact text.
+  evidence rows: exit code 0 (for Codex, read from the rollout), in this
+  project and checkout, exact text.
   A command with an absolute or home path, or with an environment assignment
   or text that may hold a credential (a secret-like name such as
   `DB_PASSWORD`, or a password in a URL), never becomes a recipe.

@@ -14,6 +14,7 @@ import { filterAllowed } from "../filter/input.js";
 import { propose, summarizeResults } from "./gate.js";
 import type { Proposal } from "./gate-types.js";
 import { findTransitions, transitionProposal, type JournalRow } from "./fail-pass.js";
+import { codexExitCodes } from "./codex-exits.js";
 
 export const FAIL_PASS_KIND = "fail-pass";
 export const FAIL_PASS_LIMITS = { rows: 4096, sessionRows: 2000, scanIds: 20_000, checkouts: 64 } as const;
@@ -54,9 +55,14 @@ export function readFailPass(writer: RecordWriter, project: string, checkout: st
       const meta = hooks.get<{ agent: string; paused: number }>("SELECT agent,paused FROM sessions WHERE session_id=?", session);
       const scripted = hooks.get("SELECT 1 FROM journal WHERE session_id=? AND kind='typed' AND marks LIKE '%scripted%' LIMIT 1", session);
       if (!meta || meta.paused || scripted) { skipped++; continue; }
-      const rows = hooks.all<JournalRow>(`SELECT id,kind,text,exit_code FROM journal WHERE session_id=? AND id<=? AND kind IN ('command','edit')
-        ORDER BY id DESC LIMIT ?`, session, through, FAIL_PASS_LIMITS.sessionRows).reverse()
-        .map(row => ({ ...row, id: Number(row.id), exit_code: row.exit_code === null ? null : Number(row.exit_code) }));
+      const stored = hooks.all<JournalRow & { call_id: string | null }>(`SELECT id,kind,text,exit_code,call_id FROM journal WHERE session_id=? AND id<=?
+        AND kind IN ('command','edit') ORDER BY id DESC LIMIT ?`, session, through, FAIL_PASS_LIMITS.sessionRows).reverse();
+      // A Codex row keeps a call id instead of an exit code; its rollout has the code.
+      const exits = meta.agent === "codex"
+        ? codexExitCodes(writer.location, project, checkout, session, new Set(stored.flatMap(row => row.exit_code === null && row.call_id ? [row.call_id] : [])))
+        : new Map<string, number>();
+      const rows: JournalRow[] = stored.map(({ call_id, ...row }) => ({ ...row, id: Number(row.id),
+        exit_code: row.exit_code !== null ? Number(row.exit_code) : call_id ? exits.get(call_id) ?? null : null }));
       for (const transition of findTransitions(rows)) {
         if (transition.pass.id <= after) continue;
         const proposal = transitionProposal(transition, meta.agent);

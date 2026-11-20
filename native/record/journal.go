@@ -32,7 +32,10 @@ const (
 var journalCap int64 = JournalCapBytes
 
 // journalRowBytes is a row's size as journal_size counts it (migration 15).
-const journalRowBytes = `length(CAST(text AS BLOB))+length(CAST(session_id AS BLOB))+length(CAST(ts AS BLOB))+16`
+const journalRowBytes = `length(CAST(text AS BLOB))+length(CAST(session_id AS BLOB))+length(CAST(ts AS BLOB))+coalesce(length(CAST(call_id AS BLOB)),0)+16`
+
+// MaxCallID bounds the host call id a command row keeps.
+const MaxCallID = 128
 
 // JournalRow is one capture row: what a person typed, a command and its exit
 // code, or the repo-relative path a main-agent edit changed. Never agent text,
@@ -42,6 +45,9 @@ type JournalRow struct {
 	Text     string
 	ExitCode *int   // commands only
 	Marks    string // "", "pasted", "scripted" or "pasted,scripted"
+	// CallID is the host's id for a command whose exit code the hook payload
+	// doesn't carry (Codex), so a reader can match it in the host transcript.
+	CallID string
 }
 
 // JournalEntry is a stored row.
@@ -55,7 +61,10 @@ type JournalEntry struct {
 var journalMarks = map[string]bool{"": true, "pasted": true, "scripted": true, "pasted,scripted": true}
 
 func validJournalRow(r JournalRow) bool {
-	if !journalMarks[r.Marks] || strings.ContainsRune(r.Text, 0) {
+	if !journalMarks[r.Marks] || strings.ContainsRune(r.Text, 0) || strings.ContainsRune(r.CallID, 0) || len(r.CallID) > MaxCallID {
+		return false
+	}
+	if r.CallID != "" && (r.Kind != "command" || r.ExitCode != nil) {
 		return false
 	}
 	switch r.Kind {
@@ -102,7 +111,11 @@ func (hooks *Hooks) AppendJournal(session Session, ts string, rows []JournalRow)
 		if r.ExitCode != nil {
 			code = *r.ExitCode
 		}
-		res, err := conn.ExecContext(ctx, `INSERT INTO journal(session_id,ts,kind,text,exit_code,marks) VALUES(?,?,?,?,?,?)`, session.SessionID, ts, r.Kind, r.Text, code, r.Marks)
+		var callID any
+		if r.CallID != "" {
+			callID = r.CallID
+		}
+		res, err := conn.ExecContext(ctx, `INSERT INTO journal(session_id,ts,kind,text,exit_code,marks,call_id) VALUES(?,?,?,?,?,?,?)`, session.SessionID, ts, r.Kind, r.Text, code, r.Marks, callID)
 		if err != nil {
 			return err
 		}
@@ -211,7 +224,7 @@ func (hooks *Hooks) trimJournalOnce(ctx context.Context, conn *sql.Conn, cutoff 
 func (hooks *Hooks) JournalRows(sessionID string, limit int) ([]JournalEntry, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
 	defer cancel()
-	rows, err := hooks.db.QueryContext(ctx, `SELECT id,session_id,ts,kind,text,exit_code,marks FROM journal WHERE session_id=? ORDER BY id LIMIT ?`, sessionID, limit)
+	rows, err := hooks.db.QueryContext(ctx, `SELECT id,session_id,ts,kind,text,exit_code,marks,coalesce(call_id,'') FROM journal WHERE session_id=? ORDER BY id LIMIT ?`, sessionID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +233,7 @@ func (hooks *Hooks) JournalRows(sessionID string, limit int) ([]JournalEntry, er
 	for rows.Next() {
 		var e JournalEntry
 		var code sql.NullInt64
-		if err := rows.Scan(&e.ID, &e.SessionID, &e.TS, &e.Kind, &e.Text, &code, &e.Marks); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.TS, &e.Kind, &e.Text, &code, &e.Marks, &e.CallID); err != nil {
 			return nil, err
 		}
 		if code.Valid {

@@ -187,7 +187,13 @@ func commandRow(ev contract.Event, t *contract.Tool) (record.JournalRow, bool) {
 	}
 	// Claude Code sends PostToolUse per call and PostToolBatch per batch;
 	// commands are taken from the per-call events only, never twice.
-	return record.JournalRow{Kind: "command", Text: clip(Redact(strings.TrimSpace(t.Input.Command)), MaxCommand), ExitCode: ExitCode(ev, t)}, true
+	row := record.JournalRow{Kind: "command", Text: clip(Redact(strings.TrimSpace(t.Input.Command)), MaxCommand), ExitCode: ExitCode(ev, t)}
+	// Codex payloads often carry no exit code; its transcript does, under this
+	// call id. A later reader (never the hook) looks it up there.
+	if row.ExitCode == nil && ev.Agent == "codex" && t.UseID != "" && len(t.UseID) <= record.MaxCallID && utf8.ValidString(t.UseID) && !strings.ContainsRune(t.UseID, 0) {
+		row.CallID = t.UseID
+	}
+	return row, true
 }
 
 // ExitCode is the command's exit code when the agent says it, else nil. A

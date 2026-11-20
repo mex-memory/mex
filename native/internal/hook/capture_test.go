@@ -387,4 +387,29 @@ func TestBackgroundCommandsKeepNoExitCode(t *testing.T) {
 	if len(rows) != 3 || rows[0].ExitCode != nil || rows[1].ExitCode != nil || rows[2].ExitCode == nil || *rows[2].ExitCode != 0 {
 		t.Fatalf("%+v", rows)
 	}
+	for _, r := range rows {
+		if r.CallID != "" {
+			t.Fatalf("Claude rows keep no call id: %+v", r)
+		}
+	}
+}
+
+// A recorded Codex shell payload carries no exit code. Its row keeps the
+// call id, which the session's rollout pairs with the code
+// (testdata/payloads/0.165.0/rollout-command-items.jsonl, read by Node).
+func TestCodexCommandKeepsItsCallID(t *testing.T) {
+	h, env := fakeHome(t, true)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	send(t, env, "codex", "PostToolUse", recordedPayload(t, "codex", "0.165.0/PostToolUse-Bash.json", "s1", root))
+	// With an exit code in the payload, the code is kept and the id is not.
+	headed := recordedPayload(t, "codex", "0.165.0/PostToolUse-Bash.json", "s1", root)
+	headed["tool_input"] = map[string]any{"command": "npm test"}
+	headed["tool_response"] = "Exit code: 1\nWall time: 0.4 seconds\nOutput:\nFAIL\n"
+	send(t, env, "codex", "PostToolUse", headed)
+	rows := journalOf(t, h, "s1")
+	if len(rows) != 2 || rows[0].Text != "git status --short" || rows[0].ExitCode != nil || rows[0].CallID != "exec-29081838-57c5-4083-b8e7-2bff43e8bde8" ||
+		rows[1].ExitCode == nil || *rows[1].ExitCode != 1 || rows[1].CallID != "" {
+		t.Fatalf("%+v", rows)
+	}
 }

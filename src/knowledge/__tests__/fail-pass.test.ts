@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { propose, type Proposal } from "../gate.js";
@@ -10,6 +10,8 @@ import { parseEntry, type KnowledgeEntry } from "../entry.js";
 import { readNotes } from "../personal-store.js";
 import { findTransitions, normalizeCommand, readsOnly, replayable, safePrep, splitEnvironment, type JournalRow } from "../fail-pass.js";
 import { cursorKey, FAIL_PASS_KIND, queuePendingFailPass, readFailPass } from "../fail-pass-job.js";
+import { rolloutExitCodes } from "../codex-exits.js";
+import { shortHash } from "../../record/project.js";
 
 let base: string, root: string, checkout: string, home: string, writer: RecordWriter, hooks: DatabaseSync, project: string;
 const at = "2026-11-19T10:00:00.000Z";
@@ -235,5 +237,55 @@ describe("the gate's command verification", () => {
     expect((await propose([recipe({ evidence: [pass!] })], context()))[0]).toMatchObject({ status: "accepted" });
     expect((await propose([recipe({ key: "again", evidence: [pass!] })], context()))[0]).toMatchObject({ status: "dropped", reason: "duplicate-entry" });
     expect(readFailPass(writer, project, checkout)?.proposals).toEqual([]);
+  });
+});
+
+describe("Codex exit codes from the rollout", () => {
+  // Real rollout lines recorded with Codex 0.165.0, beside the recorded hook
+  // payload whose tool_use_id names the first of them.
+  const recorded = readFileSync(resolve("native/internal/adapter/codex/testdata/payloads/0.165.0/rollout-command-items.jsonl"), "utf8");
+  const template = JSON.parse(recorded.split("\n")[0]!);
+  /** A rollout line in the recorded shape, for another command. */
+  const completed = (id: string, command: string, exit: number) => {
+    const line = structuredClone(template);
+    Object.assign(line.payload.item, { id, command: [line.payload.item.command[0], "-Command", command], status: exit ? "failed" : "completed", exit_code: exit,
+      parsed_cmd: [{ type: "unknown", cmd: command }], aggregated_output: "" });
+    return JSON.stringify(line);
+  };
+  let codexHome: string;
+  beforeEach(() => { codexHome = join(base, "codex"); vi.stubEnv("CODEX_HOME", codexHome); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  /** A Codex session as the hook writes it: shell rows keep a call id and no exit code. */
+  function codexSession(session: string, steps: Array<[call: string, text: string] | [kind: "edit", path: string]>, rollout?: string[]): number[] {
+    hooks.prepare("INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,0)").run(session, "codex", project, checkout, at, at);
+    const transcript = join(codexHome, "sessions", "2026", "11", "19", `rollout-${session}.jsonl`);
+    if (rollout) { mkdirSync(join(transcript, ".."), { recursive: true }); writeFileSync(transcript, rollout.join("\n") + "\n"); }
+    const meta = join(writer.location.directory, "filter-sessions");
+    mkdirSync(meta, { recursive: true });
+    writeFileSync(join(meta, `${shortHash(project + "\0" + session)}.json`), JSON.stringify({ version: 1, project_id: project, checkout, agent: "codex",
+      session_id: session, seen_at: at, finished: false, transcript }));
+    return steps.map(step => Number((step[0] === "edit"
+      ? hooks.prepare("INSERT INTO journal(session_id,ts,kind,text) VALUES(?,?,'edit',?)").run(session, at, step[1])
+      : hooks.prepare("INSERT INTO journal(session_id,ts,kind,text,call_id) VALUES(?,?,'command',?,?)").run(session, at, step[1], step[0])).lastInsertRowid));
+  }
+
+  it("reads the recorded rollout's exit codes by call id", () => {
+    expect([...rolloutExitCodes(recorded, new Set(["exec-29081838-57c5-4083-b8e7-2bff43e8bde8", "exec-7e5af6e6-ab8d-449d-be32-d66d1c52e517", "exec-missing"]))])
+      .toEqual([["exec-29081838-57c5-4083-b8e7-2bff43e8bde8", 1], ["exec-7e5af6e6-ab8d-449d-be32-d66d1c52e517", 0]]);
+  });
+
+  it("turns a Codex fail-edit-pass into a recipe, and the gate verifies the pass from the rollout", async () => {
+    codexSession("cx", [["exec-a", "npx tsc --noEmit"], ["edit", "src/api/routes.ts"], ["exec-b", "npx tsc --noEmit"]],
+      [completed("exec-a", "npx tsc --noEmit", 2), completed("exec-b", "npx tsc --noEmit", 0)]);
+    expect(await runJob()).toMatchObject({ state: "done" });
+    expect(entries().map(e => [e.mex.one_line, e.mex.source.label])).toEqual([["After changes in `src/api`, run `npx tsc --noEmit`; it caught a failure here.", "found by Codex"]]);
+  });
+
+  it("finds nothing when the rollout is missing or has no exit codes for the calls", async () => {
+    codexSession("none", [["exec-a", "npm test"], ["exec-b", "TZ=UTC npm test"]]);
+    codexSession("other", [["exec-c", "go test ./..."], ["exec-d", "TZ=UTC go test ./..."]], [completed("exec-x", "go test ./...", 1)]);
+    expect(await runJob()).toMatchObject({ state: "done" });
+    expect(entries()).toEqual([]);
   });
 });

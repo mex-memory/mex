@@ -220,3 +220,43 @@ func TestShowOnceAcrossSessions(t *testing.T) {
 		t.Fatal("nothing was delivered")
 	}
 }
+
+// The byte total follows updates too, and a call id counts toward it. Only a
+// command without an exit code keeps a call id.
+func TestJournalSizeFollowsUpdatesAndCallIDs(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	s := Session{SessionID: "s1", Agent: "codex", ProjectID: "p", Checkout: "/r"}
+	ts := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	one := 1
+	if err := h.AppendJournal(s, ts, []JournalRow{{Kind: "command", Text: "npm test", CallID: "exec-1"}, {Kind: "typed", Text: "short"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []JournalRow{{Kind: "typed", Text: "x", CallID: "exec-2"}, {Kind: "command", Text: "x", ExitCode: &one, CallID: "exec-3"},
+		{Kind: "command", Text: "x", CallID: strings.Repeat("c", MaxCallID+1)}} {
+		if err := h.AppendJournal(s, ts, []JournalRow{bad}); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+	if rows, _ := h.JournalRows("s1", 10); len(rows) != 2 || rows[0].CallID != "exec-1" || rows[1].CallID != "" {
+		t.Fatalf("%+v", rows)
+	}
+	for _, update := range []string{`UPDATE journal SET text=text||? WHERE kind='typed'`, `UPDATE journal SET call_id=substr(?,1,100) WHERE kind='command'`,
+		`UPDATE journal SET ts=ts||? WHERE kind='typed'`} {
+		if _, err := h.db.Exec(update, strings.Repeat("y", 300)); err != nil {
+			t.Fatal(err)
+		}
+		if counted, actual := journalBytes(t, h); counted != actual {
+			t.Fatalf("after %q: counted %d, rows hold %d", update, counted, actual)
+		}
+	}
+	if _, err := h.db.Exec(`UPDATE journal SET call_id=NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if counted, actual := journalBytes(t, h); counted != actual {
+		t.Fatalf("counted %d, rows hold %d", counted, actual)
+	}
+}

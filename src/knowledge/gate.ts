@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
+import { codexExitCodes } from "./codex-exits.js";
 import { readConflict, stageConflict, type StoredConflict } from "../review/conflicts.js";
 import { REVIEW_DAYS } from "../review/state.js";
 import { nativeBinary, runNative, type Verdict } from "./check.js";
@@ -73,11 +74,21 @@ function journalPasses(proposals: readonly Proposal[], project: KnowledgeProject
   try {
     hooks = openHooksReadOnly({ home: project.location.home });
     if (!hooks || hooks.diagnostic) return passes;
+    // A Codex row without an exit code passed only if its rollout says exit 0.
+    const pending = new Map<string, Array<{ id: number; text: string; call: string }>>();
     for (let i = 0; i < ids.length; i += 500) {
       const chunk = ids.slice(i, i + 500);
-      for (const row of hooks.all<{ id: number; text: string }>(`SELECT j.id,j.text FROM journal j JOIN sessions s ON s.session_id=j.session_id
-        WHERE j.id IN (${chunk.map(() => "?").join(",")}) AND j.kind='command' AND j.exit_code=0 AND s.project_id=? AND s.checkout=?`,
-      ...chunk, project.projectId, project.root)) passes.set(Number(row.id), row.text);
+      for (const row of hooks.all<{ id: number; text: string; exit_code: number | null; call_id: string | null; session_id: string; agent: string }>(
+        `SELECT j.id,j.text,j.exit_code,j.call_id,j.session_id,s.agent FROM journal j JOIN sessions s ON s.session_id=j.session_id
+        WHERE j.id IN (${chunk.map(() => "?").join(",")}) AND j.kind='command' AND (j.exit_code=0 OR (j.exit_code IS NULL AND j.call_id IS NOT NULL))
+        AND s.project_id=? AND s.checkout=?`, ...chunk, project.projectId, project.root)) {
+        if (row.exit_code !== null) passes.set(Number(row.id), row.text);
+        else if (row.agent === "codex") pending.set(row.session_id, [...pending.get(row.session_id) ?? [], { id: Number(row.id), text: row.text, call: row.call_id! }]);
+      }
+    }
+    for (const [session, rows] of pending) {
+      const exits = codexExitCodes(project.location, project.projectId, project.root, session, new Set(rows.map(row => row.call)));
+      for (const row of rows) if (exits.get(row.call) === 0) passes.set(row.id, row.text);
     }
   } catch { /* An unreadable journal verifies nothing. */ }
   finally { hooks?.close(); }
