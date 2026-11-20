@@ -42,7 +42,7 @@ arrives in 0.9.0; a 0.9 checkout does not start the 0.8 Hub.
 | Codex | 0.165 (live sessions on Windows 11, 17 Nov 2026) |
 
 Claude Code and Codex are the supported agents in beta.1. More agents are planned
-for 0.9.0. In Codex, open `/hooks` once to review and trust MEX's hooks.
+for 0.9.0. In Codex, review and trust MEX's hooks once: `/hooks` in the CLI, or **Review hooks** beside the message box in the app. Until then Codex skips them.
 A note saved with `mex note` reached a new session on both agents (6 of 6 on each), and a note the code had made false was held back on both. See `docs/design/0.9.0-release-plan.md`.
 
 ## Install and undo

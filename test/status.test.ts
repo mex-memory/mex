@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("../src/hooks/shim/binary.js", async original => ({ ...await original<typeof import("../src/hooks/shim/binary.js")>(), selfTestBinary: () => ({ ok: true, version: "0.9.0-beta.1" }) }));
+vi.mock("../src/hooks/shim/binary.js", async original => ({ ...await original<typeof import("../src/hooks/shim/binary.js")>(), selfTestBinary: () => ({ ok: true, version: "0.9.0-beta.1.1" }) }));
 import { formatStatus, readStatus, statusProblems } from "../src/status.js";
 import { installAgents } from "../src/install/index.js";
 import { openRecord } from "../src/record/index.js";
@@ -25,7 +25,7 @@ function fixture() {
 it("reads installed agents, cached verdicts and last hook call without writing", async () => {
   const f = fixture(), binary = join(f.base, "native"), entry = join(f.base, "cli.js"), fallback = join(f.base, "fallback.cjs");
   writeFileSync(binary, "fixture"); writeFileSync(entry, ""); writeFileSync(fallback, "");
-  await installAgents({ home: f.home, userHome: f.base, cwd: f.root, env: f.env, available: () => true, nativeBinary: binary, entry, fallbackFile: fallback, selfTest: () => ({ ok: true, version: "0.9.0-beta.1" }) });
+  await installAgents({ home: f.home, userHome: f.base, cwd: f.root, env: f.env, available: () => true, nativeBinary: binary, entry, fallbackFile: fallback, selfTest: () => ({ ok: true, version: "0.9.0-beta.1.1" }) });
   const writer = openRecord({ home: f.home, isNetwork: () => false });
   writer.db.prepare("INSERT INTO jobs(id,kind,state,created_at,updated_at,finished_at) VALUES('fixture','memory-filter','done',?,?,?)").run("2026-11-17T08:00:00Z", "2026-11-17T08:00:00Z", "2026-11-17T08:00:00Z");
   writer.close();
@@ -43,7 +43,7 @@ it("reads installed agents, cached verdicts and last hook call without writing",
   expect(view.agents).toEqual([{ agent: "claude-code", installed: true, events: 12, lastCall: "2026-11-17T09:57:00Z" }, { agent: "codex", installed: true, events: 9 }]);
   expect(view.knowledge).toMatchObject({ personal: 1, team: 0, hints: 0, checks: { broken: 1, held: 0 } });
   expect(view.background).toMatchObject({ waiting: 0, running: 0, lastRun: { name: "memory-filter" } });
-  expect(view.binary).toEqual({ state: "native", version: "0.9.0-beta.1" });
+  expect(view.binary).toEqual({ state: "native", version: "0.9.0-beta.1.1" });
   expect(readFileSync(f.location.record)).toEqual(before);
   expect(formatStatus(view, { now })).toContain("last call 3 min ago");
   expect(formatStatus(view, { doctor: true, now })).toContain("Codex hook trust is unknown: open Codex, run /hooks.");

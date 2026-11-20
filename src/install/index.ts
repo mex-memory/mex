@@ -98,6 +98,11 @@ function available(agent: Agent, platform: NodeJS.Platform, env: NodeJS.ProcessE
   return false;
 }
 
+/** Whether the agent's user settings folder (~/.claude, ~/.codex or its override) exists. */
+function configured(settingsFile: string): boolean {
+  try { return statSync(dirname(settingsFile)).isDirectory(); } catch { return false; }
+}
+
 /** npx runs a package from npm's temporary cache; hooks pointing there break when npm clears it. */
 export function fromNpxCache(entry: string | undefined): boolean {
   return !!entry && /[\\/]_npx[\\/]/u.test(entry);
@@ -113,7 +118,10 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
   const location = recordLocation({ home: options.home ?? mexHomeDir(), create: false });
   const platform = options.platform ?? process.platform;
   const paths = agentSettings(user, env);
-  const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? available(agent, platform, env));
+  // The desktop apps and editor extensions run the same hooks from the same
+  // user settings without putting a command on PATH; their settings folder
+  // is the sign they are in use.
+  const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? (available(agent, platform, env) || configured(paths[agent])));
   const result: InstallResult = { agents, changes: [], notices: [], legacyTracked: [] };
   if (!agents.length) return result;
   // Validate every destination before changing any of them.
@@ -164,10 +172,7 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
         const before = readSnapshot(paths[agent], MAX_SETTINGS_BYTES);
         put(paths[agent], installSettings(snapshotBytes(before), agent, command, platform, [nativeCommand, nodeCommand]), agent, "settings", undefined, before);
       }
-      if (agents.includes("codex")) {
-        result.notices.push(CODEX_TRUST_NOTICE);
-        if (platform === "win32") result.notices.push("On Windows, Codex starts each hook through PowerShell, which adds about 0.45 s per hook call (measured on one Windows 11 machine).");
-      }
+      if (agents.includes("codex")) result.notices.push(CODEX_TRUST_NOTICE);
       cleanLegacyProjectSettings(options.cwd ?? process.cwd(), result, writer, options);
       return result;
   };

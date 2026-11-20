@@ -87,6 +87,11 @@ export interface JobKind<P = unknown, C = unknown> {
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
   ready?(job: JobRow, writer: RecordWriter): boolean;
+  /**
+   * Whether this unfinished job already serves a new request, so no second
+   * one is queued. Default: any unfinished job of the kind serves it.
+   */
+  joins?(open: JobRow, params: P): boolean;
 }
 
 const kinds = new Map<string, JobKind<any, any>>();
@@ -124,7 +129,8 @@ export interface EnqueueOptions { kind: string; projectId?: string | null; param
 export type EnqueueResult = { job: JobRow; existing: boolean };
 /**
  * Queue a job. A project job whose kind already has an unfinished job for that project
- * returns that job instead of a second one ("Already running in another window").
+ * returns that job instead of a second one ("Already running in another window"),
+ * unless the kind's `joins` says that job does not serve this request.
  */
 export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): EnqueueResult {
   const kind = kinds.get(options.kind);
@@ -132,8 +138,9 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
   const projectId = kind.scope === "project" ? options.projectId ?? null : null;
   if (kind.scope === "project" && !projectId) throw new Error(`${kind.label} needs a project.`);
   return inTransaction(writer.db, () => {
-    const open = writer.db.prepare(`SELECT * FROM jobs WHERE kind=? AND project_id IS ? AND state NOT IN ('done','done with gaps','failed','cancelled')
-      ORDER BY created_at LIMIT 1`).get(kind.name, projectId) as unknown as JobRow | undefined;
+    const unfinished = writer.db.prepare(`SELECT * FROM jobs WHERE kind=? AND project_id IS ? AND state NOT IN ('done','done with gaps','failed','cancelled')
+      ORDER BY created_at LIMIT 64`).all(kind.name, projectId) as unknown as JobRow[];
+    const open = unfinished.find(row => { try { return kind.joins ? kind.joins(row, options.params) : true; } catch { return true; } });
     if (open) return { job: open, existing: true };
     const ts = now();
     const id = randomUUID();

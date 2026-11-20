@@ -160,19 +160,15 @@ export function renderDone(ms: number, mode: ScreenMode): string[] {
   return mode.color ? ["", MARGIN + paint.dim(text)] : [text];
 }
 
-/** Quote one literal argument without executing command substitutions in the user's shell. */
-export function noteExample(command?: string, pkg = "", env: NodeJS.ProcessEnv = process.env): string {
-  // A workspace command already names its package and runs from the root.
-  const fromRoot = !pkg || /\s(?:--workspace|--filter|-w|--prefix|-C|--cwd|--dir)(?:[\s=]|$)/u.test(` ${command ?? ""}`);
-  const text = command ? `Run the tests with ${command} from ${fromRoot ? "the repo root" : pkg}` : "<a fact about this repo and why>";
-  const shell = env.SHELL ?? "";
-  if (/powershell|pwsh/iu.test(shell) || (!shell && env.PSModulePath)) return `mex note '${text.replace(/'/gu, "''")}'`;
-  if (process.platform !== "win32" || /bash|zsh|fish|sh$/iu.test(shell)) return `mex note '${text.replace(/'/gu, "'\\''")}'`;
-  // cmd.exe expands percent variables even inside quotes. Use the safe fallback for unusual recipes.
-  return `mex note "${/["%\r\n]/u.test(text) ? "<a fact about this repo and why>" : text}"`;
-}
+/**
+ * The first note a person tries. It is their own fact: setup already gives the
+ * agents everything the repo's files say, such as its test command, so a note
+ * repeating one of those would show nothing. Double quotes keep `<` and `>`
+ * literal in every shell, cmd.exe included.
+ */
+export const NOTE_EXAMPLE = 'mex note "<something your agents keep getting wrong here, and why>"';
 
-export function renderNext(options: { short: boolean; learning?: string; example?: string }, mode: ScreenMode): string[] {
+export function renderNext(options: { short: boolean; learning?: string }, mode: ScreenMode): string[] {
   if (options.short) return renderNotes(['Saved notes reach new sessions; mex note "<fact>" adds one.'], mode);
   // Learning from typed statements is opt-in; anything but "on" is off.
   const learning = options.learning === "on"
@@ -181,7 +177,7 @@ export function renderNext(options: { short: boolean; learning?: string; example
   return renderNotes([
     "", "From now on, in Claude Code and Codex",
     "· Notes you save reach every new session. A note the code has made false is held back.", `· ${learning}`,
-    "", "Try it", `  ${options.example ?? noteExample()}`,
+    "", "Try it", `  ${NOTE_EXAMPLE}`,
     "  Then start a new Claude Code or Codex session and ask about it.",
     "", "Undo: mex off (this repo) · mex uninstall (everything)",
   ].map(line => mode.ascii ? line.replace(/·/gu, "-").replace(/…/gu, "...") : line), mode);

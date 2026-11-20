@@ -210,6 +210,17 @@ describe("machine-wide hook installation", () => {
     expect(result.notices.some(line => line.includes("Codex"))).toBe(false);
   });
 
+  it("finds an agent used only through its desktop app or editor: its settings folder, no command on PATH", async () => {
+    const f = fixture();
+    const { available: _available, ...options } = f.options;
+    const bare = { ...options, env: { PATH: join(f.base, "empty-path") } };
+    expect((await installAgents({ ...bare, dryRun: true })).agents).toEqual([]);
+    mkdirSync(join(f.user, ".claude"), { recursive: true });
+    expect((await installAgents({ ...bare, dryRun: true })).agents).toEqual(["claude-code"]);
+    mkdirSync(join(f.user, ".codex"));
+    expect((await installAgents({ ...bare, dryRun: true })).agents).toEqual(["claude-code", "codex"]);
+  });
+
   it("does not create storage when neither agent is installed", async () => {
     const f = fixture();
     expect((await installAgents({ ...f.options, available: () => false })).changes).toEqual([]);
@@ -332,6 +343,22 @@ describe("agent settings format", () => {
     expect(handler.commandWindows).toBe("& 'C:\\Users\\O''Brien $fixture`\\.mex\\bin\\mex-hook.exe' 'codex' 'SessionStart'");
     expect(Object.keys(result.hooks as object)).toHaveLength(9);
     expect((result.hooks as any).SessionEnd[0].hooks[0].timeout).toBe(3);
+  });
+
+  it("leaves a settings file alone on reinstall, and keeps the person's order when something does change", () => {
+    const command = { path: "C:\\home\\.mex\\bin\\mex-hook.exe", args: [] };
+    const mine = { hooks: [{ type: "command", command: "my-hook.exe" }] };
+    // MEX's hooks in the middle of the file, the person's own hook after MEX's for one event.
+    const installed = parseSettings(installSettings(null, "claude-code", command, "win32"));
+    (installed.hooks as any).SessionStart.push(mine);
+    const file = Buffer.from(JSON.stringify({ permissions: { allow: [] }, hooks: installed.hooks, model: "sonnet", theme: "dark" }, null, 4));
+    expect(installSettings(file, "claude-code", command, "win32")).toBe(file);
+    // A real change (the hook moved) keeps the top-level and event order and the person's hook.
+    const moved = parseSettings(installSettings(file, "claude-code", { path: "D:\\mex\\mex-hook.exe", args: [] }, "win32", [command]));
+    expect(Object.keys(moved)).toEqual(["permissions", "hooks", "model", "theme"]);
+    expect(Object.keys(moved.hooks as object)).toEqual(Object.keys(installed.hooks as object));
+    expect((moved.hooks as any).SessionStart).toContainEqual(mine);
+    expect(JSON.stringify(moved)).not.toContain("C:\\\\home");
   });
 });
 

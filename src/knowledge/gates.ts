@@ -91,8 +91,19 @@ export function sanitizeText(value: string, source: References): string {
     // tool, not a command. Its next word is prose or a version, never an argument.
     const next = command.split(/\s+/u)[1]?.toLowerCase().replace(/[^a-z0-9.-]/gu, "") ?? "";
     if (!next || PROSE_AFTER_PROGRAM.has(next) || /^\d/u.test(next)) return prefix + value;
-    return prefix + (commandExists(command, source) ? command : "[unverified command removed]") + gateRest(rest);
+    if (commandExists(command, source)) return prefix + command + gateRest(rest);
+    // "npm run test from the repo root": a repository command, then the
+    // sentence goes on. Keep the command when what follows is plain prose:
+    // no shell syntax and no second program anywhere in it.
+    for (const match of [...command.matchAll(/\s+(\S+)/gu)].slice(1).reverse()) {
+      if (!PROSE_AFTER_PROGRAM.has(match[1].toLowerCase())) continue;
+      const head = command.slice(0, match.index);
+      const tail = command.slice(match.index);
+      if (!/[;&|<>$`]/u.test(tail) && !programWord.test(tail) && commandExists(head, source)) return prefix + head + tail + gateRest(rest);
+    }
+    return prefix + "[unverified command removed]" + gateRest(rest);
   };
+  const programWord = new RegExp(`\\b(?:${programs})\\b`, "iu");
   // After a command, a plain word may lead to another one ("npm test before
   // rm -rf build"): that is checked too, but only a lowercase program name,
   // so prose such as "before Python changes" is left alone.

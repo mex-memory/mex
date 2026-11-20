@@ -33,11 +33,13 @@ test('release artifacts and optional dependencies match the shipped platform res
 });
 
 test('tags must match all seven versions and select exact dist-tags', () => {
-  for (const v of ['0.9.0-beta.1', '0.9.0-beta.2', '0.9.0-rc.3', '0.9.0']) {
+  for (const v of ['0.9.0-beta.1', '0.9.0-beta.1.1', '0.9.0-beta.2', '0.9.0-rc.3', '0.9.0']) {
     const p = makePlan(input({ version: v, event: 'push', refType: 'tag', refName: 'v' + v }));
     assert.equal(p.distTag, v.includes('-') ? 'next' : 'latest'); assert.equal(p.dryRun, false); assert.equal(p.requireGates, true);
     assert.equal(p.packages.length, 7); assert.equal(p.packages.at(-1).name, 'mex-agent');
   }
+  assert.equal(makePlan(input({ version: '0.9.0-beta.1.1', event: 'push', refType: 'tag', refName: 'v0.9.0-beta.1.1' })).release, 'beta.1');
+  for (const v of ['0.9.0-beta.1.0', '0.9.0-beta.1.01', '0.9.0-rc.1.1']) assert.throws(() => makePlan(input({ version: v })), /version/);
   assert.throws(() => makePlan(input({ event: 'push', refType: 'tag', refName: 'v0.9.0' })), /Tag/);
   assert.throws(() => makePlan(input({ platformVersions: [version, version, version, version, version, '0.9.0'] })), /versions/);
   assert.throws(() => makePlan(input({ version: '0.9.0-alpha.1' })), /version/);

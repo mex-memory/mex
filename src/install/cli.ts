@@ -10,7 +10,7 @@ export async function runInstall(options: { dryRun?: boolean; json?: boolean } =
   const result = await installAgents(options);
   const view = summary(result);
   if (options.json) { console.log(JSON.stringify({ dryRun: !!options.dryRun, ...view })); return; }
-  if (!result.agents.length) { console.log("No supported agent found. Install Claude Code or Codex, then run mex install."); return; }
+  if (!result.agents.length) { console.log("No supported agent found. Install Claude Code or Codex (the app, an editor extension or the CLI), open it once, then run mex install."); return; }
   console.log(options.dryRun ? "MEX would change:" : "MEX installation:");
   for (const change of view.changes) console.log(`  ${change.action} ${change.path}`);
   if (!view.changes.length) console.log("  Agent hooks are up to date.");

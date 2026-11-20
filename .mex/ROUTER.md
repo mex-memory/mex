@@ -30,6 +30,12 @@ Then read this file fully before doing anything else in this session.
 ## Current Project State
 
 **Working:**
+- 0.9.0-beta.1.1 is published from `c2e5f55` (PR #402 and the gate pins in
+  #403) to npm `next` for `mex-agent` and all six hook packages, with a GitHub
+  pre-release. `latest` stays on 0.8.5. Tag run `44405857229` and main CI
+  `44405679465` pass; a clean Linux install from the registry passed. The first
+  tag run stopped at the upgrade gate (counts pinned for beta.1), fixed in #403.
+  See `docs/design/0.9.0-release-plan.md`.
 - 0.9.0-beta.1 is published from `a3a536b` (merge of PR #400): npm `next` for
   `mex-agent` and all six `mex-agent-hook-*` packages, with provenance from the
   GitHub trusted publisher, and a GitHub pre-release with tarballs and

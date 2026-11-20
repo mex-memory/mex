@@ -6,7 +6,7 @@
  * TERM=dumb, narrow or legacy consoles) gets the plain screen in screen.ts.
  */
 import type { Finding } from "./screen.js";
-import { formatSeconds } from "./screen.js";
+import { formatSeconds, NOTE_EXAMPLE } from "./screen.js";
 
 export const RICH_MIN_COLUMNS = 72;
 
@@ -116,7 +116,7 @@ export class Rich {
     return { ...(file ? { file } : {}), lines };
   }
 
-  next(options: { learning?: string; example?: string }): string[] {
+  next(options: { learning?: string }): string[] {
     const learning = options.learning === "on"
       ? `${this.dim("Learning from what you type is on: your agent's smallest model, at most 3% of your usage · off: ")}${this.cmd("mex config set learning.statements off")}`
       : `${this.dim("Learning from what you type is off · ")}${this.cmd("mex config set learning.statements on")}`;
@@ -126,7 +126,7 @@ export class Rich {
       `${MARGIN}A note the code has made false is held back, never sent.`,
       `${MARGIN}${learning}`,
       "", this.pill("TRY IT", "paper"), "",
-      `${MARGIN}${this.paint("orange", "1")}  ${this.cmd(options.example ?? 'mex note "<a fact about this repo and why>"')}`,
+      `${MARGIN}${this.paint("orange", "1")}  ${this.cmd(NOTE_EXAMPLE)}`,
       `${MARGIN}${this.paint("orange", "2")}  Open Claude Code or Codex and ask about it`,
     ];
   }

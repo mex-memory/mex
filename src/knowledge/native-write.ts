@@ -107,6 +107,8 @@ export interface WriteOptions {
   root: string;
   /** Where the local manifest lives: the project's folder in the MEX home. */
   projectDirectory?: string;
+  /** Write and clean up only these files; the others' manifest is left alone. */
+  only?: Sharing;
 }
 
 /** Apply a plan. Shared files go to the working tree; local ones too, hidden from git. */
@@ -119,7 +121,7 @@ export function writeNative(plan: NativePlan, options: WriteOptions): NativeWrit
     shared: join(root, SHARED_MANIFEST),
     local: options.projectDirectory ? join(options.projectDirectory, LOCAL_MANIFEST) : undefined,
   };
-  for (const sharing of ["shared", "local"] as const) {
+  for (const sharing of options.only ? [options.only] : ["shared", "local"] as const) {
     const files = plan.files.filter(f => f.sharing === sharing);
     const manifestFile = manifestPath[sharing];
     if (!manifestFile) {

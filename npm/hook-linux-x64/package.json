@@ -1,6 +1,6 @@
 {
   "name": "mex-agent-hook-linux-x64",
-  "version": "0.9.0-beta.1",
+  "version": "0.9.0-beta.1.1",
   "description": "The mex-hook binary for linux x64. Installed by mex-agent; not meant to be used directly.",
   "license": "MIT",
   "repository": {

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { groundings, loadCorpus, project, UPGRADE_CORPUS_SHA256 } from '../upgrade.mjs';
+import { ENTRY_LINE_MAX, groundings, loadCorpus, project, UPGRADE_CORPUS_SHA256 } from '../upgrade.mjs';
 
 const corpus = fileURLToPath(new URL('../upgrade-corpus/', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -76,4 +76,16 @@ test('fixture clones check out main even when the cached bare HEAD names a missi
     assert.equal(readFileSync(join(checkout, 'README.md'), 'utf8'), 'Pinned source\n');
     assert.equal(git(base, 'symbolic-ref', 'HEAD'), 'refs/heads/master');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the groundings an entry line cannot hold are pinned: compact already, and as many as the scenarios allow to be left out', () => {
+  const { manifest, bundles } = loadCorpus();
+  const tooLong = (bundle) => Object.values(groundings(bundles[bundle].files)).flat().map((pair) => pair.split(' ')[1]).filter((f) => f.length > ENTRY_LINE_MAX);
+  for (const [bundle, subject] of [['hono.json', 'hono'], ['novu.json', 'novu']]) {
+    const long = tooLong(bundle);
+    assert.ok(long.every((f) => f.startsWith('mh2:')), `${bundle}: only compact fingerprints may be left out`);
+    for (const scenario of manifest.scenarios.filter((s) => s.subject === subject && s.expect.ready)) {
+      assert.equal(scenario.expect.groundingsLeftOut, long.length, scenario.id);
+    }
+  }
 });

@@ -33,6 +33,8 @@ export interface RebuildOptions {
   force?: boolean;
   /** Only the shared files: the same working-tree change as a team entry. */
   sharedOnly?: boolean;
+  /** Only the person's hidden local files: their own notes changed. */
+  localOnly?: boolean;
   now?: number;
 }
 
@@ -81,8 +83,9 @@ export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions
   const unchecked = candidates.filter(c => c.entry.mex.checks.length && verdicts.get(`${c.level}/${c.entry.mex.id}`) !== "held").length;
   if (unchecked) plan.notes.push(`${unchecked} checked entries withheld until their current checks hold.`);
   if (rebuild.sharedOnly) plan.files = plan.files.filter(f => f.sharing === "shared");
+  if (rebuild.localOnly) plan.files = plan.files.filter(f => f.sharing === "local");
   const projectDirectory = home && !rebuild.sharedOnly ? containedDirectory(home, ["projects", project.projectId], true) : undefined;
-  return { ...writeNative(plan, { root: project.root, projectDirectory }), agents, selected: selected.length };
+  return { ...writeNative(plan, { root: project.root, projectDirectory, ...(rebuild.localOnly ? { only: "local" as const } : {}) }), agents, selected: selected.length };
 }
 
 export function formatRebuild(result: NativeRebuild): string {

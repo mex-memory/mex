@@ -13,6 +13,34 @@ All notable changes to this project will be documented in this file.
 
 - Dependency and version claims can carry optional `ecosystem: "npm" | "python"` evidence. Existing unlabelled claims remain valid; generic headings and familiar package names do not establish an ecosystem. This is an additive change to the exported `Claim` type.
 
+## [0.9.0-beta.1.1] - 2026-11-18
+
+A fix release on the `next` tag; 0.8.5 stays on `latest`.
+
+### Fixed
+
+- `mex note` kept only `[unverified command removed]` when a real repository command was followed by more words, as in "Run the tests with npm run test from the repo root". The command is kept now; shell syntax or another program after it is still removed.
+- `mex upgrade` dropped whole entries whose 0.8 grounding fingerprints were longer than an entry line. They are re-encoded in the compact format with nothing lost.
+- A new session often got none of your notes. The session-start brief had 100 ms to put them together; on a machine busy starting the agent it ran out before the first note and sent an almost empty brief. Your own notes are now always considered (at most 8 are checked after the time runs out); team entries and commands still wait for the moments.
+- A note you saved while a session was open reached the rule files only after every session in that repo had been closed for 10 minutes. Your hidden local rule files are now rewritten within seconds of `mex note`, `mex edit`, `mex forget` or `mex wrong`; the shared files still wait for sessions to end.
+- A request to drop a note the code had made false was folded into a rule-file rebuild already waiting for a session, so it waited too. Rebuilds are now kept apart by checkout and by whether they must run at once; a second worktree of the same repo no longer loses its rebuild.
+- In a repository whose `AGENTS.md` is the team's own, Codex got one of your notes at session start: MEX never writes into that file, and the start brief let one note through. Your notes that no rule file carries now have their own room (up to 1,000 bytes) and are not held back by the start lane's budget.
+- A note whose words named a file, such as "never cache it in .env files", was given that file as its scope by the memory filter. It then left the always-loaded rule file and the start brief sent it only while that file was being worked on, so new sessions answered "not told". Your own notes now reach every new session whatever their scope; a scope only ranks them and still brings a note back when its files are touched.
+- `mex recall` found nothing for a word most of your notes share ("staging" in two of three notes), because the ranker leaves such words out. When it finds nothing, recall now falls back to notes that contain every word you typed.
+- `mex forget <id>`, the command MEX prints after an agent saves a note, failed with "missing required argument 'reason'". The reason is optional now.
+- A note change rewrote the local rule files of the current checkout only; every worktree of the project that is on is rewritten now.
+- Running `mex install` again (setup does it too) rewrote `~/.claude/settings.json` with the `hooks` block moved to the end, though nothing had changed. A reinstall now leaves the file alone, and a real change keeps your key order and your own hooks.
+- `mex install` and the first run found Claude Code and Codex only through their command on PATH, so people using only the desktop app or an editor extension got "No supported agent found". An agent's user settings folder (`~/.claude`, `~/.codex`, or `CLAUDE_CONFIG_DIR` / `CODEX_HOME`) now counts too.
+
+### Changed
+
+- The first screen's "Try it" suggests a note only you can write, instead of repeating the test command setup already gave your agents.
+- The install screen no longer prints the Codex-on-Windows hook timing line.
+- The Codex trust step now names the Codex app's **Review hooks** button as well as `/hooks`, and says that Codex skips MEX's hooks until they are trusted (install screen, `mex status`, README, COMPATIBILITY.md).
+- The `mex upgrade` preview lists kept files as a short list, explains files with parts that could not become notes, and says that applying pushes nothing unless `--pr` is given.
+- The README is rewritten for the 0.9 beta: install, what you get, a recorded first run and a stale-note session, everyday commands, team sharing, privacy and known limits. The Chinese, Spanish and Portuguese READMEs are translations of it, each linking to its 0.8.5 version.
+- Release scripts accept a fix release on a beta (`0.9.0-beta.1.1`), which passes that beta's gates.
+
 ## [0.9.0-beta.1] - 2026-11-18
 
 Pre-release on npm's `next` tag; 0.8.5 stays on `latest`.

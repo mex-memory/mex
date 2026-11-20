@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSeconds, LiveLine, progressLine, renderDone, renderScreen, renderNext, noteExample, screenMode, wrap, type ScreenModel } from "../screen.js";
+import { formatSeconds, LiveLine, progressLine, renderDone, renderScreen, renderNext, NOTE_EXAMPLE, screenMode, wrap, type ScreenModel } from "../screen.js";
 import { resultFindings } from "../finish.js";
 import type { JobRow } from "../../record/jobs.js";
 import { detectCaller, isAgentCaller } from "../caller.js";
@@ -162,13 +162,10 @@ describe("what happens next", () => {
     const lines = [...renderScreen({ ...model, findings: [{ state: "attention", text: "4 lines need review", details: ["CLAUDE.md:14  Names a command the repo doesn't define.", "… and 1 more: mex rules"] }] }, mode), ...renderNext({ short: false }, mode)];
     for (const line of lines) expect(line.replace(/\x1b\[[0-9;]*m/gu, "").length).toBeLessThanOrEqual(columns);
   });
-  it("preserves a test command as a literal shell argument", () => {
-    expect(noteExample("pnpm test", "", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with pnpm test from the repo root'");
-    expect(noteExample("npm test -- --grep 'one'", "packages/api", { PSModulePath: "fixture" })).toBe("mex note 'Run the tests with npm test -- --grep ''one'' from packages/api'");
-    expect(noteExample("echo $(whoami)", "", { SHELL: "/bin/bash" })).toContain("'Run the tests with echo $(whoami)");
-    // A workspace command runs from the root even though it names a package.
-    expect(noteExample("npm run test --workspace packages/code-graph", "packages/code-graph", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with npm run test --workspace packages/code-graph from the repo root'");
-    expect(noteExample("pnpm --filter @a/api test", "apps/api", { SHELL: "/bin/bash" })).toBe("mex note 'Run the tests with pnpm --filter @a/api test from the repo root'");
-    expect(noteExample("npm test -- --grep 'one'", "", { SHELL: "/bin/bash", PSModulePath: "inherited" })).toBe("mex note 'Run the tests with npm test -- --grep '\\''one'\\'' from the repo root'");
+  it("suggests the person's own fact, not one setup already gave the agents", () => {
+    const text = renderNext({ short: false }, screenMode({ stdoutTTY: false, columns: 120, env: {}, platform: "linux" })).join("\n");
+    expect(text).toContain(NOTE_EXAMPLE);
+    expect(NOTE_EXAMPLE).toBe('mex note "<something your agents keep getting wrong here, and why>"');
+    expect(text).not.toMatch(/Run the tests with/u);
   });
 });
