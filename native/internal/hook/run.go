@@ -321,7 +321,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 	noteJudgeEdits(ev, recordDirectory)
-	noteEdit(ev, recordDirectory)
+	noteChanged(ev, recordDirectory, noteEdit(ev, recordDirectory))
 	freeStage(ev, h, recordDirectory)
 	judgeReady := false
 	if ev.Kind == contract.Stop {
@@ -338,7 +338,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			canNotice = support.PersonLine
 		}
 	}
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, Changed: sessionChanged(ev, recordDirectory), KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)

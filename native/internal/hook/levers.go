@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mex-memory/mex/native/capture"
+	"github.com/mex-memory/mex/native/delivery"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/outline"
 	"github.com/mex-memory/mex/native/output"
@@ -46,6 +47,9 @@ type leverState struct {
 	Topic         []uint64 `json:"topic,omitempty"`
 	TopicCheckout string   `json:"topic_checkout,omitempty"`
 	CompactNudged bool     `json:"compact_nudged,omitempty"`
+	// Changed: the lines this session's edits changed, by file, for the card
+	// before a full test run.
+	Changed delivery.ChangedLines `json:"changed,omitempty"`
 }
 
 type outlineMark struct {
@@ -343,4 +347,30 @@ func mergeReplies(a, b contract.Reply) contract.Reply {
 		a.ReplaceInput = nil
 	}
 	return a
+}
+
+// noteChanged adds placed edits to the session's changed lines. Only edits
+// in an indexed checkout arrive here, so nothing else is kept.
+func noteChanged(ev contract.Event, recordDirectory string, edits []fileEdit) {
+	if len(edits) == 0 || recordDirectory == "" || ev.SessionID == "" {
+		return
+	}
+	file := leverStatePath(recordDirectory, ev)
+	state := loadLeverState(file)
+	if state.Changed == nil {
+		state.Changed = delivery.ChangedLines{}
+	}
+	for _, edit := range edits {
+		state.Changed.Apply(edit.path, edit.ranges, edit.placed)
+	}
+	state.save(file)
+}
+
+// sessionChanged is what delivery needs before a shell command: the lines
+// this session changed. Nil for anything else, so no state is read.
+func sessionChanged(ev contract.Event, recordDirectory string) delivery.ChangedLines {
+	if ev.Kind != contract.PreTool || ev.Tool == nil || ev.Tool.Name != contract.ToolShell || recordDirectory == "" || ev.SessionID == "" {
+		return nil
+	}
+	return loadLeverState(leverStatePath(recordDirectory, ev)).Changed
 }
