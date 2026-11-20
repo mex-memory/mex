@@ -343,3 +343,35 @@ func itoa(n int) string {
 }
 
 var _ Reader = (*Store)(nil)
+
+// CallsBetween counts resolved calls from code in files from accepts into
+// code in files to accepts, with the first one found (in path and line
+// order) for the reason. Complete reports that every file is indexed, so a
+// count lower than expected is proof and not a gap.
+func (s *Store) CallsBetween(from, to func(path string) bool) (n int, fromPath, toPath string, line int, complete bool, err error) {
+	rows, err := s.db.Query(`SELECT s.file_path, t.file_path, e.line FROM edges e
+		JOIN nodes s ON s.id=e.source JOIN nodes t ON t.id=e.target
+		WHERE e.kind='calls' ORDER BY s.file_path, e.line`)
+	if err != nil {
+		return 0, "", "", 0, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var src, dst string
+		var at sql.NullInt64
+		if err := rows.Scan(&src, &dst, &at); err != nil {
+			return 0, "", "", 0, false, err
+		}
+		if !from(src) || !to(dst) {
+			continue
+		}
+		if n == 0 {
+			fromPath, toPath, line = src, dst, int(at.Int64)
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, "", "", 0, false, err
+	}
+	return n, fromPath, toPath, line, s.Complete(), nil
+}

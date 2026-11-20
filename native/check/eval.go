@@ -67,6 +67,7 @@ type Result struct {
 type Evaluator struct {
 	files *files
 	index Index
+	graph Graph
 }
 
 // NewEvaluator opens a checkout for reading. Reads never leave it.
