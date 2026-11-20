@@ -229,7 +229,9 @@ func recordedPayload(t *testing.T, agent, name, session, root string) map[string
 		t.Fatal(err)
 	}
 	recorded := p["cwd"].(string)
-	moved := strings.NewReplacer(recorded, root, filepath.ToSlash(recorded), filepath.ToSlash(root))
+	// The payloads were recorded on Windows; their slash form is rewritten
+	// explicitly, since filepath.ToSlash leaves backslashes alone elsewhere.
+	moved := strings.NewReplacer(recorded, root, strings.ReplaceAll(recorded, `\`, "/"), filepath.ToSlash(root))
 	input := p["tool_input"].(map[string]any)
 	for k, v := range input {
 		if s, ok := v.(string); ok {

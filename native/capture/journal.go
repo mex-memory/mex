@@ -148,12 +148,19 @@ func checkoutRelative(checkout, p string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	native := filepath.FromSlash(p)
-	if resolved, err := place.RealPath(native); err == nil {
-		return plainRelative(real, resolved)
-	}
-	if parent, err := place.RealPath(filepath.Dir(native)); err == nil {
-		return plainRelative(real, filepath.Join(parent, filepath.Base(native)))
+	// Resolve the nearest existing ancestor: a deleted or moved file, or one
+	// in a folder that no longer exists, still maps through OS aliases.
+	dir, rest := filepath.FromSlash(p), []string{}
+	for {
+		if resolved, err := place.RealPath(dir); err == nil {
+			return plainRelative(real, filepath.Join(append([]string{resolved}, rest...)...))
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		rest = append([]string{filepath.Base(dir)}, rest...)
+		dir = parent
 	}
 	return "", false
 }
