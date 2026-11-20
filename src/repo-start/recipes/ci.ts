@@ -27,6 +27,16 @@ export function linePurpose(line: string): Purpose | undefined {
   return LINE_PURPOSES.find(([, pattern]) => pattern.test(text))?.[0];
 }
 
+const GENERATE = word("generate|codegen");
+/**
+ * A line that regenerates code (`npm run generate`, `make codegen`). Kept apart from
+ * the recipe purposes: recipes.json stays as it is, and only CI obligations read it.
+ */
+export function isGenerateLine(line: string): boolean {
+  const text = line.trim();
+  return !!text && !text.startsWith("#") && !IGNORED.test(text) && GENERATE.test(text);
+}
+
 /** The first line of a step that has a purpose. */
 export function firstPurposeLine(run: string): { line: string; purpose: Purpose } | undefined {
   for (const raw of run.replace(/\r\n/gu, "\n").split("\n")) {
@@ -93,8 +103,12 @@ function neverOnPush(on: unknown): boolean {
 /** A background process (`cmd &`) or containers started for later steps. */
 const STARTS_SERVICES = /&\s*(?:$|\n)|\bdocker(?:-compose|\s+compose)\s+up\b|\bdocker\s+run\b/mu;
 const DISABLED_IF = /^\s*(?:\$\{\{\s*)?false(?:\s*\}\})?\s*$/u;
+/** A job's or step's `if:` that turns it off. */
+export function disabledIf(value: unknown): boolean {
+  return value !== undefined && (value === false || (typeof value === "string" && DISABLED_IF.test(value)));
+}
 
-function packageFor(directory: unknown, packages: Package[]): string {
+export function packageFor(directory: unknown, packages: Package[]): string {
   if (typeof directory !== "string") return "";
   const path = directory.replace(/^\.\//u, "").replace(/\/+$/u, "");
   return packages.some(pkg => pkg.path === path) ? path : "";

@@ -165,20 +165,22 @@ export function storeGates(files: Array<{ path: string; level: Level }>, source:
 
 /** List the literal patterns entries count, so the file index counts them. */
 export function registerPatterns(recordDirectory: string, projectId: string, entries: KnowledgeEntry[]): boolean {
+  return registerLiterals(recordDirectory, projectId, entries.flatMap(entry => [
+    ...entry.mex.checks.flatMap(c => c.kind === "pattern" && (c.target.match ?? "literal") === "literal" ? [c.target.pattern] : []),
+    ...(entry.mex.when ?? []).flatMap(w => w.match === "literal" ? [w.pattern] : []),
+  ]));
+}
+
+/** Add literal patterns for the file index to count. True when the set grew (the next refresh counts them). */
+export function registerLiterals(recordDirectory: string, projectId: string, literals: readonly string[]): boolean {
   const directory = indexDirectory(recordDirectory, projectId);
   if (!existsSync(directory)) return false;
   const known = readPatterns(directory);
   const ids = new Set(known.map(p => p.id));
   const add = [...known];
-  for (const entry of entries) {
-    const patterns = [
-      ...entry.mex.checks.flatMap(c => c.kind === "pattern" && (c.target.match ?? "literal") === "literal" ? [c.target.pattern] : []),
-      ...(entry.mex.when ?? []).flatMap(w => w.match === "literal" ? [w.pattern] : []),
-    ];
-    for (const pattern of patterns) {
-      const id = patternId(pattern);
-      if (!ids.has(id)) { ids.add(id); add.push({ id, match: "literal", pattern }); }
-    }
+  for (const pattern of literals) {
+    const id = patternId(pattern);
+    if (!ids.has(id)) { ids.add(id); add.push({ id, match: "literal", pattern }); }
   }
   return add.length !== known.length && writePatterns(directory, add);
 }

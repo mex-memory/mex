@@ -72,8 +72,10 @@ export async function buildIndex(options: BuildOptions): Promise<BuildResult> {
   const others = checkoutSnapshots(directory).filter((name) => name !== pointer?.snapshot).slice(0, 8);
   const sources = [...new Set([base, pointer?.snapshot, pointer?.base, ...others].filter((name): name is string => name !== undefined))].map((name) => join(directory, name));
   const previousRows = previous && reuse ? previous.paths : new Map<string, PathRow>();
+  // Only the counted patterns changed: this checkout's parses stay valid and just the counts are redone.
+  const recount = !reuse && pointer && previous?.extractor === String(EXTRACTOR_VERSION) ? [pointer.snapshot, pointer.base].map((name) => join(directory, name)) : undefined;
   const outputs = await runBatches(discovered.paths, (paths) => ({
-    root, paths, sources, patterns, reuse,
+    root, paths, sources, patterns, reuse, recount,
     previous: Object.fromEntries(paths.flatMap((path) => { const row = previousRows.get(path); return row ? [[path, row]] : []; })),
   }), options);
   const afterProcess = performance.now();

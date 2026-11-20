@@ -1,13 +1,15 @@
 /**
  * The `code-facts` job: one `git log` pass over the newest 2,000 commits,
- * then code-facts.json under the machine record. One batch, idempotent: a run
- * killed at any point leaves the previous file (written atomically) and the
- * runner redoes the batch.
+ * then code-facts.json under the machine record, then those facts as entries
+ * through the producer gate (entries.ts). One batch, idempotent: a run killed
+ * at any point leaves the previous file (written atomically) and the runner
+ * redoes the batch; the gate leaves unchanged entries as they are.
  */
 import { closeSync, openSync, readSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { registerJobKind } from "../../record/jobs.js";
+import type { RecordWriter } from "../../record/index.js";
+import { registerJobKind, type JobRow } from "../../record/jobs.js";
 import type { RecordLocation } from "../../record/location.js";
 
 export interface CodeFactsParams { checkout: string; }
@@ -147,28 +149,73 @@ registerJobKind<CodeFactsParams, { builds: number }>({
   sideEffects: "idempotent",
   async runBatch({ job, params, checkpoint, writer, progress }) {
     const { readFactFile, writeFactFile } = await import("../facts.js");
-    // HEAD hasn't moved since these facts were read from this checkout: nothing to re-read.
-    const previous = readFactFile<CodeFactsFile>(writer.location, job.project_id!, "code-facts.json");
+    const projectId = job.project_id!;
+    // HEAD hasn't moved since these facts were read from this checkout, and their entries were
+    // proposed at that HEAD: nothing to re-read.
+    const previous = readFactFile<CodeFactsFile>(writer.location, projectId, "code-facts.json");
     if (previous && !previous.skipped && previous.head && previous.checkout === params.checkout) {
       let head: string | undefined;
       try { head = git(params.checkout, ["rev-parse", "--verify", "-q", "HEAD"]).trim(); } catch { head = undefined; }
-      if (head === previous.head) {
+      if (head === previous.head && entriesProposedAt(writer, projectId) === head) {
         return { checkpoint: { builds: checkpoint?.builds ?? 0 }, done: true, results: 0, summary: `unchanged since ${head.slice(0, 7)}` };
       }
     }
     const { writeFixTable } = await import("../../working-set/compute.js");
-    const facts = await buildCodeFacts(params.checkout, job.project_id!, writer.location, progress,
-      commits => { try { writeFixTable(writer.location.directory, job.project_id!, params.checkout, commits); } catch { /* history notices wait for the next pass */ } });
+    let read: Array<{ files: string[] }> | undefined;
+    const facts = await buildCodeFacts(params.checkout, projectId, writer.location, progress, commits => {
+      read = commits;
+      try { writeFixTable(writer.location.directory, projectId, params.checkout, commits); } catch { /* history notices wait for the next pass */ }
+    });
     // Test-only: prove a run killed mid-batch is redone and leaves no half-written file.
     if (process.env.MEX_REPO_START_KILL_AT === "code-facts") process.kill(process.pid, "SIGKILL");
-    writeFactFile(writer.location, job.project_id!, "code-facts.json", facts);
+    writeFactFile(writer.location, projectId, "code-facts.json", facts);
+    const entries = await proposeFactEntries(writer, job, params.checkout, facts, read, progress);
     return {
       checkpoint: { builds: (checkpoint?.builds ?? 0) + 1 },
       done: true,
       results: facts.change_together.length + facts.layer_rules.length + facts.generated.length,
       summary: facts.skipped
         ? `skipped: ${facts.skipped}`
-        : `${facts.commits_read} commits read: ${facts.change_together.length} change-together pairs, ${facts.layer_rules.length} layer rules, ${facts.generated.length} generated files`,
+        : `${facts.commits_read} commits read: ${facts.change_together.length} change-together pairs, ${facts.layer_rules.length} layer rules, ${facts.generated.length} generated files${entries ? `; ${entries}` : ""}`,
     };
   },
 });
+
+/** Bumped when the entries made from the same facts change, so the next run proposes them again. */
+const ENTRIES_VERSION = 1;
+const ENTRIES_KEY = "code-facts.entries";
+
+function entriesProposedAt(writer: RecordWriter, projectId: string): string | undefined {
+  try {
+    const value = JSON.parse(writer.setting(projectId, ENTRIES_KEY) ?? "null") as { head?: unknown; version?: unknown } | null;
+    return value?.version === ENTRIES_VERSION && typeof value.head === "string" ? value.head : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * The facts as entries, through the producer gate, in the same run. The facts file is
+ * already written: a failure here is reported in the summary and retried on the next run,
+ * never a failed history read.
+ */
+async function proposeFactEntries(writer: RecordWriter, job: JobRow, checkout: string, facts: CodeFactsFile,
+  commits: Array<{ files: string[] }> | undefined, progress?: (text: string) => void): Promise<string> {
+  if (facts.skipped) return "";
+  try {
+    const { proposeCodeFacts } = await import("./entries.js");
+    const result = await proposeCodeFacts({ checkout, projectId: job.project_id!, location: writer.location, facts, commits }, {
+      progress,
+      // The gate saves under the record's write lock; a job taken over meanwhile saves nothing.
+      validate: gateWriter => {
+        const row = gateWriter.db.prepare("SELECT state, owner FROM jobs WHERE id=?").get(job.id) as { state?: string; owner?: string | null } | undefined;
+        if (row?.state !== "running" || row.owner !== job.owner) throw new Error("The code-facts job was taken over before its entries were saved.");
+      },
+    });
+    if (result.complete && facts.head) {
+      writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+        .run(job.project_id!, ENTRIES_KEY, JSON.stringify({ head: facts.head, version: ENTRIES_VERSION }));
+    }
+    return result.summary;
+  } catch (error) {
+    return `entries not saved: ${(error instanceof Error ? error.message : String(error)).split(/\r?\n/u)[0]!.slice(0, 200)}`;
+  }
+}

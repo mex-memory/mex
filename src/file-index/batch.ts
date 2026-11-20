@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { contentHash, isTestFile, langOf, looksBinary } from "./classify.js";
 import { skippedByRule } from "./discover.js";
-import { extractFile } from "./extract.js";
+import { countPatterns, decodeText, extractFile } from "./extract.js";
 import { prepareTreeSitter } from "./parse-tree-sitter.js";
 import { RecordSource, type PathRow } from "./store.js";
 import { MAX_FILE_BYTES, type FileRecord, type IndexPattern, type Lang } from "./types.js";
@@ -18,6 +18,11 @@ export interface BatchInput {
   patterns: IndexPattern[];
   /** False when the previous records are stale (new patterns or extractor). */
   reuse: boolean;
+  /**
+   * Snapshot files whose records are current except for their pattern counts (only the
+   * counted patterns changed). Their parses are kept and the patterns counted again.
+   */
+  recount?: string[];
 }
 
 export interface BatchRow extends PathRow {
@@ -44,14 +49,15 @@ function prepareFor(paths: readonly string[]): Promise<void> {
 export async function processBatch(input: BatchInput): Promise<BatchOutput> {
   await prepareFor(input.paths);
   const source = input.reuse ? new RecordSource(input.sources) : undefined;
+  const recount = !input.reuse && input.recount?.length ? new RecordSource(input.recount) : undefined;
   const out: BatchOutput = { rows: [], read: 0, parsed: 0, reused: 0, unchanged: 0 };
   try {
-    for (const path of input.paths) out.rows.push(processPath(input, path, source, out));
-  } finally { source?.close(); }
+    for (const path of input.paths) out.rows.push(processPath(input, path, source, out, recount));
+  } finally { source?.close(); recount?.close(); }
   return out;
 }
 
-function processPath(input: BatchInput, path: string, source: RecordSource | undefined, out: BatchOutput): BatchRow {
+function processPath(input: BatchInput, path: string, source: RecordSource | undefined, out: BatchOutput, recount?: RecordSource): BatchRow {
   const lang: Lang = langOf(path);
   const empty: BatchRow = { path, hash: null, lang: null, is_test: isTestFile(path), size: 0, mtime_ns: "0", reason: null };
   if (skippedByRule(path)) return { ...empty, reason: "ignored" };
@@ -75,6 +81,13 @@ function processPath(input: BatchInput, path: string, source: RecordSource | und
   if (known) {
     out.reused++;
     return { ...row, hash, lang, is_test: isTestFile(path, known.imports.map((item) => item.from)), reason: known.parse_error ? "parse failed" : null };
+  }
+  const parsedBefore = recount?.get(hash, lang);
+  if (parsedBefore) {
+    // Only the counted patterns changed: keep the parse and count them again.
+    out.reused++;
+    const record: FileRecord = { ...parsedBefore, patterns: countPatterns(decodeText(bytes), input.patterns) };
+    return { ...row, hash, lang, record, is_test: isTestFile(path, record.imports.map((item) => item.from)), reason: record.parse_error ? "parse failed" : null };
   }
   const extracted = extractFile(path, bytes, input.patterns);
   if ("reason" in extracted) return { ...row, reason: extracted.reason };

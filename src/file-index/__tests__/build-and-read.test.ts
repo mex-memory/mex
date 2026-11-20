@@ -371,4 +371,25 @@ describe("discovery and refresh", () => {
     // f3.ts changes back: read again, but its content is already indexed.
     expect(back).toMatchObject({ files: 20, read: 1, parsed: 0, reused: 1 });
   });
+
+  it("counts newly listed literals on the next refresh without parsing again", async () => {
+    const repo = join(root, "recount");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    writeFileSync(join(repo, "a.ts"), "// DO NOT EDIT\nexport function a() { return 1; }\n");
+    writeFileSync(join(repo, "b.py"), "# DO NOT EDIT\n# DO NOT EDIT\ndef b():\n    return 2\n");
+    writeFileSync(join(repo, "c.ts"), "export const c = 3;\n");
+    const first = await buildIndex({ root: repo, projectId: "g-recount", recordDirectory: records, workers: 0 });
+    expect(first).toMatchObject({ files: 3, parsed: 3 });
+    const marker = literalPattern("DO NOT EDIT");
+    writePatterns(indexDirectory(records, "g-recount"), [marker]);
+    const again = await buildIndex({ root: repo, projectId: "g-recount", recordDirectory: records, workers: 0 });
+    expect(again).toMatchObject({ files: 3, read: 3, parsed: 0, reused: 3 });
+    const index = openIndex({ recordDirectory: records, projectId: "g-recount", checkout: repo })!;
+    try {
+      expect(index.patternCounts("**", [marker.id])).toEqual({ [marker.id]: 3 });
+      expect(index.patternCounts("*.ts", [marker.id])).toEqual({ [marker.id]: 1 });
+      expect(index.symbolsNamed("a")).toEqual([{ path: "a.ts", start: 2, end: 2, kind: "function" }]);
+    } finally { index.close(); }
+  });
 });
