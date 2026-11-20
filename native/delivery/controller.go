@@ -134,6 +134,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		env.RecordDirectory != "" && capture.CompactionPending(ev, env.RecordDirectory)
 	isEnd := ev.Kind == contract.SessionEnd
 	isSearch := searchEvent(ev)
+	isTestRun := len(env.Changed) > 0 && fullTestRun(ev)
 	var adviceIDs []string
 	if isMoment || ev.Kind == contract.SessionStart || ev.Kind == contract.SubagentStart || (ev.Kind == contract.Stop && ev.Agent == "claude-code") {
 		adviceIDs = record.AdviceIDs(env.RecordDirectory, ev.Checkout)
@@ -143,7 +144,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, nil
 		}
 	}
-	if !isLifecycle && !isMoment && !isSearch && !isEnd && !lateRecovery && len(adviceIDs) == 0 {
+	if !isLifecycle && !isMoment && !isSearch && !isTestRun && !isEnd && !lateRecovery && len(adviceIDs) == 0 {
 		return contract.Reply{}, nil
 	}
 	if ev.SessionID == "" || env.RecordDirectory == "" {
@@ -165,6 +166,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	cards := searchCards(ev, env)
 	if isMoment {
 		cards = append(cards, graphCards(ev, env)...)
+	}
+	if isTestRun {
+		cards = append(cards, testRunCards(ev, env)...)
 	}
 	if isMoment {
 		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-anchor") != "off" {
