@@ -39,9 +39,16 @@ var legacyNodeRE = lazy(`^[A-Za-z_]+:[0-9a-fA-F]{8,}$`)
 var legacyFingerprintRE = lazy(`^(?:[mM][hH]:\d+:(?:[0-9a-fA-F]{2})+|mh2:\d+:[A-Za-z0-9_-]+)$`)
 
 type Source struct {
-	Type  string `json:"type"`
-	Ref   string `json:"ref"`
-	Quote string `json:"quote,omitempty"`
+	Type     string `json:"type"`
+	Ref      string `json:"ref"`
+	Quote    string `json:"quote,omitempty"`
+	Producer string `json:"producer,omitempty"`
+	Model    *Model `json:"model,omitempty"`
+	Label    string `json:"label,omitempty"`
+}
+type Model struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
 }
 type Trigger struct {
 	Type    string `json:"type"`
@@ -449,7 +456,15 @@ func metadata(v any) bool {
 	required := map[string]rule{
 		"id": ident, "kind": choice(Kinds...), "scope": func(v any) bool { return list(v, 1, 32, relative) },
 		"source": func(v any) bool {
-			return object(v, map[string]rule{"type": choice("person", "docs", "review", "ci", "config", "rule-file", "mined", "observed", "agent-memory"), "ref": line}, map[string]rule{"quote": func(v any) bool { s, ok := v.(string); return ok && length(s) >= 1 && length(s) <= 8192 }})
+			return object(v, map[string]rule{"type": choice("person", "docs", "review", "ci", "config", "rule-file", "mined", "observed", "agent-memory"), "ref": line}, map[string]rule{
+				"quote":    func(v any) bool { s, ok := v.(string); return ok && length(s) >= 1 && length(s) <= 8192 },
+				"producer": choice("note", "setup-recipe", "setup-question", "code-facts", "fail-pass", "learn-deeper", "judge", "session-import", "session-ongoing"),
+				"model": func(v any) bool {
+					name := func(v any) bool { return trimmedLine(v, 128) }
+					return object(v, map[string]rule{"id": name, "version": name}, nil)
+				},
+				"label": func(v any) bool { return trimmedLine(v, 80) },
+			})
 		},
 		"evidence": choice("person", "docs", "review", "ci", "mined", "observed"), "one_line": func(v any) bool { return line(v) && str(v, 1024) },
 		"checks": func(v any) bool { return list(v, 0, 32, validCheck) }, "status": choice("active", "proposed", "retired"), "created": date,

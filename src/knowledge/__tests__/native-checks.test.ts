@@ -74,7 +74,7 @@ describe.skipIf(!enabled)("current checks before publication", () => {
   });
 
   function checkedNote(f: ReturnType<typeof fixture>) {
-    const saved = note({ text: "The test script uses vitest." }, f.options).entry;
+    const saved = note({ text: "Tests here run through the vitest script." }, f.options).entry;
     const project = knowledgeProject(f.options);
     writeFileSync(join(project.location.home, "projects", project.projectId, "notes", `${saved.mex.id}.md`),
       serializeEntry({ ...saved, mex: { ...saved.mex, checks: [f.check] } }));

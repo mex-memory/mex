@@ -1,5 +1,6 @@
 import { join, relative, sep } from "node:path";
 import { reviewReason } from "./reasons.js";
+import { readConflict, type StoredConflict } from "./conflicts.js";
 import { openRecordReadOnly } from "../record/index.js";
 import { knowledgeProject, type KnowledgeOptions } from "../knowledge/context.js";
 import { containedDirectory, readEntryFile } from "../knowledge/files.js";
@@ -14,8 +15,8 @@ import { repoVocabulary, type RepoVocabulary } from "../filter/privacy.js";
 import { rows, storedItems, groupId, reviewEligible, legacyJudge, ReviewOffer, REVIEW_DAYS, REVIEW_VISIBLE, type ReviewRow, type StoredReview, type ReviewReader } from "./state.js";
 
 export interface ReviewMember { row: ReviewRow; item: StoredReview; revision: string; }
-export interface ReviewCard { id: string; entry: KnowledgeEntry; reason: string; sources: number; createdAt: string; expiresAt: string; checkedByModel: boolean; }
-export interface ReviewGroup extends ReviewCard { members: ReviewMember[]; }
+export interface ReviewCard { id: string; entry: KnowledgeEntry; reason: string; sources: number; createdAt: string; expiresAt: string; checkedByModel: boolean; conflictsWith?: string[]; }
+export interface ReviewGroup extends ReviewCard { members: ReviewMember[]; conflict?: StoredConflict; }
 export function memberRevision(row: ReviewRow, item: StoredReview): string { return hash(JSON.stringify([row, item])); }
 export function canonicalBytes(home: string, project: string, item: StoredReview): string | undefined {
   const source = item.source;
@@ -30,9 +31,19 @@ export function canonicalBytes(home: string, project: string, item: StoredReview
   return raw;
 }
 export function snapshotReview(reader: ReviewReader, project: string, home: string, root: string, now = Date.now()): ReviewGroup[] {
-  if (!sharingEnabled(reader, project, root)) return [];
-  const stored = storedItems(reader, project), pending = rows(reader, project), all = new Map<string, ReviewMember>();
-  for (const row of pending) { const item = stored.get(row.id) ?? legacyJudge(reader, row); if (item) all.set(row.id, { row, item, revision: memberRevision(row, item) }); }
+  const pending = rows(reader, project);
+  const conflicts = pending.flatMap((row): ReviewGroup[] => {
+    const created = Date.parse(row.created_at), expires = created + REVIEW_DAYS * 86400000;
+    if (row.reason !== "contradiction" || !Number.isFinite(created) || created > now || now >= expires) return [];
+    const conflict = readConflict(reader, project, row.id);
+    if (!conflict || conflict.checkout !== root || !conflict.entry.mex.source.producer || conflict.entry.mex.id !== row.entry_id) return [];
+    return [{ id: row.id, entry: conflict.entry, reason: row.reason, sources: 1, createdAt: row.created_at,
+      expiresAt: new Date(expires).toISOString(), checkedByModel: !!conflict.entry.mex.source.model,
+      conflictsWith: [...new Set(conflict.conflicts.map(other => other.id))], conflict, members: [] }];
+  });
+  if (!sharingEnabled(reader, project, root)) return conflicts;
+  const stored = storedItems(reader, project), all = new Map<string, ReviewMember>();
+  for (const row of pending.filter(row => row.reason !== "contradiction")) { const item = stored.get(row.id) ?? legacyJudge(reader, row); if (item) all.set(row.id, { row, item, revision: memberRevision(row, item) }); }
   // Compatibility for offers created before the Review writer was installed.
   for (const value of localSettings(reader, project, "learning.offer.", 128 << 10)) {
     let offer; try { offer = ReviewOffer.parse(JSON.parse(value.value)); } catch { continue; }
@@ -76,12 +87,13 @@ export function snapshotReview(reader: ReviewReader, project: string, home: stri
     if (!group) { group = { id, entry, reason: row.reason, sources: 0, createdAt: row.created_at, expiresAt: "", checkedByModel: item.source.producer === "judge", members: [] }; groups.set(id, group); }
     group.members.push(member); group.sources++; group.checkedByModel ||= item.source.producer === "judge";
   }
-  return [...groups.values()].flatMap(group => {
+  const shareable = [...groups.values()].flatMap(group => {
     const created = firstSeen.get(group.id)!;
     if (now - created >= REVIEW_DAYS * 86400000) return [];
     group.createdAt = new Date(created).toISOString(); group.expiresAt = new Date(created + REVIEW_DAYS * 86400000).toISOString();
     return [group];
   }).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return [...conflicts, ...shareable];
 }
 export function reviewQueue(options: KnowledgeOptions, now = Date.now()): { items: ReviewCard[]; waiting: number; hidden: number } {
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
@@ -89,6 +101,6 @@ export function reviewQueue(options: KnowledgeOptions, now = Date.now()): { item
   try {
     if (reader.diagnostic) throw new KnowledgeError("RECORD_UNAVAILABLE", reader.diagnostic);
     const groups = snapshotReview(reader, project.projectId, project.location.home, project.root, now);
-    return { items: groups.slice(0, REVIEW_VISIBLE).map(({ members: _members, ...card }) => card), waiting: groups.length, hidden: Math.max(0, groups.length - REVIEW_VISIBLE) };
+    return { items: groups.slice(0, REVIEW_VISIBLE).map(({ members: _members, conflict: _conflict, ...card }) => card), waiting: groups.length, hidden: Math.max(0, groups.length - REVIEW_VISIBLE) };
   } finally { reader.close(); }
 }

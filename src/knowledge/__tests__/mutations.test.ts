@@ -39,7 +39,9 @@ describe("explicit personal note changes", () => {
     const id = saved.entry.mex.id, original = readFileSync(entryPath(id), "utf8");
     const worktree = join(root, "worktree"), clone = join(root, "clone");
     git(repo, "worktree", "add", "-b", "other", worktree);
-    execFileSync("git", ["clone", "--no-local", repo, clone], { stdio: "pipe", timeout: 5000 });
+    const bundle = join(root, "fixture.bundle");
+    git(repo, "bundle", "create", bundle, "--all");
+    execFileSync("git", ["clone", bundle, clone], { stdio: "pipe", timeout: 5000 });
     expect(forget(id, "The behavior changed.", options(), new Date("2026-11-14"))).toMatchObject({ id, retired: { reason: "The behavior changed.", by: "mex forget", at: "2026-11-14" } });
     writeFileSync(entryPath(id), original);
     for (const projectPath of [repo, worktree, clone]) {
@@ -51,7 +53,7 @@ describe("explicit personal note changes", () => {
     expect(reader.setting(projectIdentity(repo).id, `knowledge.retired.${id}`)).toContain("The behavior changed."); reader.close();
     // Runtime suppression lives in the local record, never in the entry contract.
     expect(parseEntry(readFileSync(entryPath(id), "utf8"))).toEqual(saved.entry);
-    expect(note({ text: saved.entry.text }, options()).entry.mex.id).not.toBe(id);
+    expect(() => note({ text: saved.entry.text }, options())).toThrow(/entry you retired/);
   });
 
   it("records wrong as an explicit retirement without evaluating or delivering the claim", () => {

@@ -246,7 +246,9 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
           checkout: params.checkout, position: at, entry_hash: hash(candidate.content), checks_hash: checkHash(candidate),
           ...(candidate.evaluationHash ? { evaluation_hash: candidate.evaluationHash } : {}),
           files: snapshot.files.map(f => ({ path: f.path, hash: f.current_hash })),
-          result: outcome, label: "checked by model", model: result.selectedModel, at: new Date().toISOString(), ...(rewrite ? { rewrite } : {}) };
+          result: outcome, label: "checked by model", model: result.selectedModel,
+          ...(result.usage.model && !["unknown", "mixed"].includes(result.usage.model) ? { model_version: result.usage.model } : {}),
+          at: new Date().toISOString(), ...(rewrite ? { rewrite } : {}) };
         value.inputs_hash = value.evaluation_hash ? judgementInputsHash(value) : hash(JSON.stringify({ entry: candidate.content, evidence: snapshot }));
         saved.push(value);
       }

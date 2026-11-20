@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseDocument, stringify } from "yaml";
 import { ENTRY_KINDS, KNOWLEDGE_LIMITS, KnowledgeError } from "./contract.js";
+import { PRODUCER_IDS } from "./producers.js";
 export { ENTRY_KINDS, KNOWLEDGE_LIMITS, KnowledgeError } from "./contract.js";
 
 /** Internal entry-file v0 contract. Location, verdicts and usage are not entry fields. */
@@ -74,6 +75,9 @@ const metadata = z.object({
   source: z.object({
     type: z.enum(["person", "docs", "review", "ci", "config", "rule-file", "mined", "observed", "agent-memory"]),
     ref: line, quote: z.string().min(1).max(KNOWLEDGE_LIMITS.textCharacters).optional(),
+    producer: z.enum(PRODUCER_IDS).optional(),
+    model: z.object({ id: phrase(128), version: phrase(128) }).strict().optional(),
+    label: phrase(80).optional(),
   }).strict(),
   evidence: z.enum(["person", "docs", "review", "ci", "mined", "observed"]),
   one_line: line.refine(s => s.length <= KNOWLEDGE_LIMITS.oneLineCharacters, "One-line claim is too long"),

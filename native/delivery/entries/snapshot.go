@@ -354,6 +354,9 @@ var learnedID = lazy(`^mx_deep[a-f0-9]{32}$`)
 
 // Label is shared by every delivery form, so content hashes agree on resume.
 func Label(e *Entry, level string) string {
+	if (e.Evidence == "mined" || e.Evidence == "observed") && e.Source.Label != "" {
+		return "[" + e.Source.Label + "]"
+	}
 	switch level {
 	case "hint":
 		return "[hint, seen once]"

@@ -398,11 +398,12 @@ function missingScripts(text: string, scripts: Scripts): string[] {
 }
 
 /** Read every rule file in a checkout. Pure: writes nothing. */
-export function scanRuleFiles(root: string, created = new Date().toISOString().slice(0, 10), listed?: readonly string[]): RuleScan {
+export function scanRuleFiles(root: string, created = new Date().toISOString().slice(0, 10), listed?: readonly string[], readLines?: (body: string) => void): RuleScan {
   listed ??= listFiles(root);
   const found = discoverRuleFiles(root, listed);
   const entries: RuleEntry[] = [], review: ReviewItem[] = [];
   for (const file of found) {
+    readLines?.(frontmatter(file.text).body.replace(MANAGED_BLOCK, ""));
     const result = fileEntries(file, created);
     entries.push(...result.entries);
     review.push(...result.review);

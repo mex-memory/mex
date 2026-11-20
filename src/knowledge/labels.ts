@@ -7,6 +7,7 @@ export function statementDate(entry: KnowledgeEntry): string {
   return date && Number.isFinite(Date.parse(`${date}T00:00:00Z`)) && new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) === date ? date : entry.mex.created;
 }
 export function entryLabel(entry: KnowledgeEntry, level: KnowledgeLevel, observations = 1): string {
+  if ((entry.mex.evidence === "mined" || entry.mex.evidence === "observed") && entry.mex.source.label) return `[${entry.mex.source.label}]`;
   if (level === "hint") return observations === 1 ? "[hint, seen once]" : `[hint, seen ${observations} times]`;
   if (level === "team") return `[team, from ${entry.mex.evidence === "ci" ? "CI" : entry.mex.evidence === "person" ? "a person" : entry.mex.evidence}]`;
   if (entry.mex.source.type === "config") return `[repo, from ${entry.mex.source.ref}]`;

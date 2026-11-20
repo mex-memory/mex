@@ -65,11 +65,65 @@ function removeCopy(path: string, expected: string): void {
   for (const id of files.files.keys()) unlinkSync(join(path, `${id}.md`));
   rmdirSync(path);
 }
+type SwapManifest = z.infer<typeof Manifest>;
+
+function readPending(parent: string): { manifest: SwapManifest; path: string; folder?: string } | undefined {
+  const pending = join(parent, "notes.pending");
+  let path = pending, folder: string | undefined;
+  if (!present(pending)) return undefined;
+  if (lstatSync(pending, { throwIfNoEntry: false })?.isDirectory()) {
+    folder = containedDirectory(parent, ["notes.pending"]);
+    if (!folder) return undefined;
+    const names = readdirSync(folder);
+    if (!names.length) {
+      try { rmdirSync(folder); } catch (error) { if (!absent(error)) throw error; }
+      return undefined;
+    }
+    if (names.length !== 1 || !/^[a-f0-9]{24}$/u.test(names[0]!)) throw invalidPending();
+    path = join(folder, names[0]!);
+  }
+  const raw = readBoundedTextFile(path, 1024);
+  try {
+    const manifest = Manifest.parse(JSON.parse(raw!));
+    if (folder && path !== join(folder, manifest.id)) throw invalidPending();
+    return { manifest, path, folder };
+  } catch {
+    // A committed publisher can remove a directory marker while we read it.
+    if (folder && raw === undefined) {
+      try { rmdirSync(folder); } catch (error) { if (!absent(error)) throw error; }
+      return undefined;
+    }
+    throw invalidPending();
+  }
+}
+
+function invalidPending(): KnowledgeError {
+  return new KnowledgeError("UNSAFE_STORE", "Personal note recovery metadata is invalid; notes were kept.");
+}
+
+function clearPending(parent: string, path: string, folder?: string): void {
+  try { unlinkSync(path); } catch (error) { if (!absent(error)) throw error; }
+  if (folder) {
+    try { rmdirSync(folder); } catch (error) {
+      if (!absent(error) && (error as NodeJS.ErrnoException).code !== "ENOTEMPTY") throw error;
+    }
+  }
+  syncDirectory(parent);
+}
+
+function cleanCopies(parent: string, m: SwapManifest): void {
+  // The canonical notes are ready. Keep any copy whose contents changed.
+  try {
+    removeCopy(join(parent, `.notes-backup-${m.id}`), m.before);
+    removeCopy(join(parent, `.notes-stage-${m.id}`), m.after);
+    syncDirectory(parent);
+  } catch { /* copies can be kept for recovery */ }
+}
+
 function recoverLocked(writer: RecordWriter, project: string, parent: string): boolean {
-  const raw = readBoundedTextFile(join(parent, "notes.pending"), 1024);
-  if (raw === undefined) return false;
-  let m: z.infer<typeof Manifest>;
-  try { m = Manifest.parse(JSON.parse(raw)); } catch { throw new KnowledgeError("UNSAFE_STORE", "Personal note recovery metadata is invalid; notes were kept."); }
+  const pending = readPending(parent);
+  if (!pending) return false;
+  const { manifest: m, path, folder } = pending;
   const notes = join(parent, "notes"), stage = join(parent, `.notes-stage-${m.id}`), backup = join(parent, `.notes-backup-${m.id}`);
   const committed = writer.setting(project, "learning.publication") === m.id;
   if (committed) {
@@ -89,14 +143,13 @@ function recoverLocked(writer: RecordWriter, project: string, parent: string): b
   }
   // The revision remains changed after rollback, invalidating readers that
   // began before the swap. Ordinary readers never perform this recovery.
-  unlinkSync(join(parent, "notes.pending")); syncDirectory(parent);
-  // Once the canonical result is proved, cleanup cannot strand readers. An
-  // interruption may leave a private saved copy; never delete an unproved copy.
-  try { removeCopy(backup, m.before); removeCopy(stage, m.after); syncDirectory(parent); } catch { /* canonical notes are already complete */ }
+  clearPending(parent, path, folder);
+  cleanCopies(parent, m);
   return true;
 }
-export function recoverNotes(writer: RecordWriter, project: string): boolean {
+export function recoverNotes(writer: RecordWriter, project: string, locked = false): boolean {
   const parent = containedDirectory(writer.location.home, ["projects", project], true)!;
+  if (locked) return recoverLocked(writer, project, parent);
   writer.db.exec("BEGIN IMMEDIATE");
   try { const recovered = recoverLocked(writer, project, parent); writer.db.exec("COMMIT"); return recovered; }
   catch (error) { writer.db.exec("ROLLBACK"); throw error; }
@@ -104,6 +157,8 @@ export function recoverNotes(writer: RecordWriter, project: string): boolean {
 export interface PublishOptions {
   /** Called with the writer lock held, before any live file changes. */
   validate?: () => void;
+  /** The caller already owns the write transaction. Publication commits it. */
+  locked?: boolean;
   /** Internal fault injection for transaction/recovery tests. */
   step?: (phase: "prepared" | "backed-up" | "swapped" | "committed") => void;
 }
@@ -122,14 +177,27 @@ export function publishNotes(writer: RecordWriter, project: string, before: Note
     for (const name of readdirSync(stage)) { const fd = openSync(join(stage, name), "r+"); try { fsyncSync(fd); } finally { closeSync(fd); } }
     syncDirectory(stage);
   } catch (error) { try { removeCopy(stage, digest(copied)); } catch { /* keep an unproved copy */ } throw error; }
-  let committed = false, pending = false;
-  try { writer.db.exec("BEGIN IMMEDIATE"); }
+  let committed = false, pending: SwapManifest | undefined;
+  try { if (!options.locked) writer.db.exec("BEGIN IMMEDIATE"); }
   catch (error) { removeCopy(stage, staged.digest); throw error; }
   try {
     recoverLocked(writer, project, parent);
     if (directorySnapshot(notes).digest !== before.digest) throw new KnowledgeError("STALE_ENTRY", "Personal notes changed; consolidation must read them again.");
     options.validate?.(); options.step?.("prepared");
-    privateFile(parent, "notes.pending", JSON.stringify({ version: 1, id, before: before.digest, after: staged.digest, hadNotes: present(notes) })); pending = true;
+    const manifest: SwapManifest = { version: 1, id, before: before.digest, after: staged.digest, hadNotes: present(notes) };
+    if (options.locked) {
+      // A named marker can be removed safely after COMMIT, even if another
+      // writer has already recovered it and prepared a different publication.
+      const folder = join(parent, `.notes-pending-${id}`);
+      mkdirSync(folder, { mode: 0o700 });
+      privateFile(folder, id, JSON.stringify(manifest));
+      renameSync(folder, join(parent, "notes.pending"));
+      pending = manifest;
+      syncDirectory(parent);
+    } else {
+      privateFile(parent, "notes.pending", JSON.stringify(manifest));
+      pending = manifest;
+    }
     privateFile(parent, "notes.revision", id);
     if (present(notes)) renameSync(notes, backup);
     options.step?.("backed-up");
@@ -146,6 +214,15 @@ export function publishNotes(writer: RecordWriter, project: string, before: Note
   if (committed) {
     // After COMMIT, cleanup failure cannot turn a successful publication into
     // a reported failure. The next background pass completes owned cleanup.
-    try { options.step?.("committed"); recoverNotes(writer, project); } catch { /* pending marker withholds readers until recovery */ }
+    try {
+      options.step?.("committed");
+      if (options.locked && pending) {
+        const folder = join(parent, "notes.pending");
+        if (present(join(folder, id)) && directorySnapshot(notes).digest === pending.after) {
+          clearPending(parent, join(folder, id), folder);
+          cleanCopies(parent, pending);
+        }
+      } else recoverNotes(writer, project);
+    } catch { /* pending marker withholds readers until recovery */ }
   }
 }

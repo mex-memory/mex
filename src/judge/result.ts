@@ -10,7 +10,7 @@ export interface Judgement {
   checks_hash: string;
   evaluation_hash?: string;
   result: "still-true" | "rewritten" | "cannot-tell";
-  label: "checked by model"; model: string; at: string; rewrite?: KnowledgeEntry;
+  label: "checked by model"; model: string; model_version?: string; at: string; rewrite?: KnowledgeEntry;
 }
 const sha = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 export const JudgementSchema = z.object({
@@ -18,7 +18,7 @@ export const JudgementSchema = z.object({
   position: z.object({ branch: z.string().max(1024).nullable(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).nullable() }).strict(),
   entry_hash: sha, checks_hash: sha, evaluation_hash: sha.optional(), files: z.array(z.object({ path: z.string().min(1).max(512), hash: sha.nullable() }).strict()).max(JUDGE_LIMITS.files),
   result: z.enum(["still-true", "rewritten", "cannot-tell"]), label: z.literal("checked by model"),
-  model: z.string().min(1).max(128), at: z.string().datetime(), rewrite: EntrySchema.optional(),
+  model: z.string().min(1).max(128), model_version: z.string().min(1).max(128).optional(), at: z.string().datetime(), rewrite: EntrySchema.optional(),
 }).strict();
 export const resultKey = (checkout: string, id: string) => `judge.${shortHash(checkout)}.${id}`;
 

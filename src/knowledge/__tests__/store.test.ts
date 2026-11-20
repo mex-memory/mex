@@ -26,8 +26,11 @@ describe("personal knowledge", () => {
   it("is available from a second worktree and a full clone without registering reads", () => {
     const worktree = join(root, "second"); const clone = join(root, "clone");
     git(repo, "worktree", "add", "-b", "feature", worktree);
-    execFileSync("git", ["clone", "--no-local", repo, clone], { stdio: "pipe", timeout: 5000 });
+    const bundle = join(root, "fixture.bundle");
+    git(repo, "bundle", "create", bundle, "--all");
+    execFileSync("git", ["clone", bundle, clone], { stdio: "pipe", timeout: 5000 });
     const saved = note({ text: "Tests use fixtures because they are reproducible.", kind: "recipe", scope: ["tests/**"] }, options(), new Date("2026-11-13T10:00:00Z"));
+    expect(saved.entry.mex.source.producer).toBe("note");
     for (const projectPath of [worktree, clone]) {
       expect(recall("TESTS fixtures", { ...options(), projectPath }).entries).toMatchObject([{ id: saved.entry.mex.id, label: "[you said, 13 Nov]" }]);
       expect(expand(saved.entry.mex.id, { ...options(), projectPath }).entry).toEqual(saved.entry);

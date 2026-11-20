@@ -4,7 +4,9 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openRecord, type RecordWriter } from "../../record/index.js";
-import { note } from "../../knowledge/store.js";
+import { expandPersonal, note } from "../../knowledge/store.js";
+import { propose, type Proposal } from "../../knowledge/gate.js";
+import { producerEntryId } from "../../knowledge/producers.js";
 import { parseEntry, serializeEntry, type KnowledgeEntry } from "../../knowledge/entry.js";
 import { recordChecks } from "../../judge/native.js";
 import { hash, position } from "../../judge/evidence.js";
@@ -37,13 +39,22 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); writer.close(); rmSync(base, { recursive: true, force: true }); });
 
 async function queued(words = text, at = now, eligible = true): Promise<KnowledgeEntry> {
-  const entry = note({ text: words }, options(), new Date(at)).entry;
-  entry.mex.checks = (await recordChecks({ checkout: root }, [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/test" } }]))!;
-  writeFileSync(personalPath(entry.mex.id), serializeEntry(entry));
+  // Model offers can predate the producer gate and contain repeated claims.
+  const entry = {
+    mex: {
+      id: producerEntryId("note"), kind: "rule", scope: ["**"], evidence: "person",
+      source: { type: "person", ref: `mex note ${new Date(at).toISOString().slice(0, 10)}`, quote: words },
+      one_line: words, checks: [], status: "active", created: new Date(at).toISOString().slice(0, 10),
+    }, text: words,
+  } satisfies KnowledgeEntry;
+  const saved = { ...entry, mex: { ...entry.mex, checks: (await recordChecks({ checkout: root },
+    [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/test" } }]))! } };
+  mkdirSync(join(home, "projects", project, "notes"), { recursive: true });
+  writeFileSync(personalPath(entry.mex.id), serializeEntry(saved));
   writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `learning.note.${entry.mex.id}`, JSON.stringify({ at: new Date(at).toISOString(), holds: eligible ? [] : ["model-private"], sessions: [], sources: [{ quote: words, label: "lasting", source: { session: null, row: null, at: new Date(at).toISOString(), marks: "", delivered: [], private_tag: false, note_id: entry.mex.id } }] }));
-  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `learning.offer.${entry.mex.id}`, JSON.stringify({ state: "review", id: entry.mex.id, checkout: root, personal_hash: hash(serializeEntry(entry)), reason: "public-session", review_at: at }));
-  stageReview(writer, project, learningReviewId(project, entry), entry, { producer: "learning", key: `learning.offer.${entry.mex.id}`, checkout: root, level: "personal", path: personalPath(entry.mex.id), original_hash: hash(serializeEntry(entry)) }, "this repository is public", eligible, at);
-  return entry;
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `learning.offer.${entry.mex.id}`, JSON.stringify({ state: "review", id: entry.mex.id, checkout: root, personal_hash: hash(serializeEntry(saved)), reason: "public-session", review_at: at }));
+  stageReview(writer, project, learningReviewId(project, saved), saved, { producer: "learning", key: `learning.offer.${entry.mex.id}`, checkout: root, level: "personal", path: personalPath(entry.mex.id), original_hash: hash(serializeEntry(saved)) }, "this repository is public", eligible, at);
+  return saved;
 }
 const queue = (at = now) => reviewQueue(options(), at);
 async function apply(action: ReviewAction, card = "1", input: { text?: string } = {}) {
@@ -166,4 +177,47 @@ it("reads an unregistered project without creating a home", () => {
   writer.close(); rmSync(home, { recursive: true, force: true });
   expect(reviewQueue(options(), now).waiting).toBe(0); expect(existsSync(home)).toBe(false);
   expect(readdirSync(root).sort()).toEqual([".git", "package.json"]);
+});
+
+async function contradiction(key: string, type: "anti" | "required", words: string) {
+  const proposal: Proposal = { producer: "code-facts", key, kind: "rule", text: words, source: { type: "mined", ref: "imports" },
+    model: "none", anchors: { scope: ["src/**"], when: [{ type, match: "literal", pattern: "from Internal" }] } };
+  return (await propose([proposal], { ...options(), now: new Date(now) }))[0]!;
+}
+
+it("shows contradictions ahead of sharing cards and allows keeping the current entry with sharing off", async () => {
+  await queued();
+  await contradiction("old", "anti", "Internal imports stay in the adapter.");
+  const result = await contradiction("pending", "required", "The adapter boundary uses this internal import.");
+  if (result.status !== "review") throw new Error("Expected a conflict");
+  expect(queue().items[0]).toMatchObject({ id: result.reviewId, reason: "contradiction", conflictsWith: result.conflictsWith });
+  writer.db.prepare("UPDATE projects SET shared=0 WHERE id=?").run(project);
+  expect(queue().items).toHaveLength(1);
+  expect(queue(now + 30 * 86400000).items).toHaveLength(0);
+  expect((await apply("keep")).applied).toBe(true);
+  expect(queue().items).toHaveLength(0);
+  expect(expandPersonal(result.conflictsWith[0]!, options()).entry.text).toBe("Internal imports stay in the adapter.");
+});
+
+it("uses a conflicting proposal through the gate and retires only the personal entry", async () => {
+  writer.db.prepare("UPDATE projects SET shared=0 WHERE id=?").run(project);
+  await contradiction("old", "anti", "Internal imports stay in the adapter.");
+  const originalId = producerEntryId("code-facts", "old");
+  const personal = expandPersonal(originalId, options()).entry;
+  const team = { ...personal, mex: { ...personal.mex, id: "mx_team000", scope: ["src/**"], source: { type: "docs" as const, ref: "Repository guide" } } };
+  const folder = join(root, ".mex", "learned");
+  mkdirSync(folder, { recursive: true });
+  const teamPath = join(folder, team.mex.id + ".md");
+  const teamRaw = serializeEntry(team);
+  writeFileSync(teamPath, teamRaw);
+  const proposed = "The adapter boundary uses this internal import.";
+  expect(await contradiction("pending", "required", proposed)).toMatchObject({ status: "review" });
+  expect((await apply("use")).applied).toBe(true);
+  expect(queue().items).toHaveLength(0);
+  expect(expandPersonal(producerEntryId("code-facts", "pending"), options()).entry.text).toBe(proposed);
+  const retired = parseEntry(readFileSync(personalPath(originalId), "utf8"));
+  expect(retired.mex.retired?.reason).toBe("replaced in review");
+  expect(readFileSync(teamPath, "utf8")).toBe(teamRaw);
+  expect(await contradiction("pending", "required", proposed)).toMatchObject({ status: "accepted", change: "unchanged" });
+  expect(queue().items).toHaveLength(0);
 });
