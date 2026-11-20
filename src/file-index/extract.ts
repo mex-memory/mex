@@ -23,12 +23,21 @@ export function extractFile(path: string, bytes: Uint8Array, patterns: readonly 
   return { record: buildRecord(bytes, text, lang, parsed, patterns) };
 }
 
-export function buildRecord(bytes: Uint8Array, text: string, lang: FileRecord["lang"], parsed: ParsedFile | null, patterns: readonly IndexPattern[]): FileRecord {
+/** A file's text, decoded the way records are built. */
+export function decodeText(bytes: Uint8Array): string { return decoder.decode(bytes); }
+
+/** Occurrences of each counted literal pattern; patterns that don't occur are left out. */
+export function countPatterns(text: string, patterns: readonly IndexPattern[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const pattern of patterns) {
     const count = countLiteral(text, pattern.pattern);
     if (count > 0) counts[pattern.id] = count;
   }
+  return counts;
+}
+
+export function buildRecord(bytes: Uint8Array, text: string, lang: FileRecord["lang"], parsed: ParsedFile | null, patterns: readonly IndexPattern[]): FileRecord {
+  const counts = countPatterns(text, patterns);
   const outline = parsed?.outline ?? [];
   const imports = parsed?.imports ?? [];
   const exports = parsed?.exports ?? [];

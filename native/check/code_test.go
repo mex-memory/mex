@@ -16,7 +16,10 @@ type fakeIndex struct {
 	dropped  map[string]int
 	counts   map[string]int // pattern id -> count, for any scope
 	infos    map[string]*index.FileInfoAnswer
+	head     string // the commit the index was built at; "" unknown
 }
+
+func (f *fakeIndex) Head() string { return f.head }
 
 func (f *fakeIndex) Outline(path string) (*index.OutlineAnswer, *index.Miss) {
 	symbols, ok := f.outlines[path]
@@ -373,5 +376,49 @@ func TestSymbolCheckSeesOverloadBody(t *testing.T) {
 	write(t, root, "src/request.ts", strings.Replace(overloaded, "return (this.cache ??= compute(kind))", "return compute(kind)", 1))
 	if r := indexed(t, root, ix).Evaluate(&Entry{ID: "mx_overld", Status: "active", Checks: []Check{c}}); r.Verdict != Broken {
 		t.Fatalf("a changed overload body must not hold: %+v", r)
+	}
+}
+
+// A commit made outside a session (no edit hook saw it) leaves folder counts
+// stale until the index refreshes: they are being checked, never held, so a
+// rule can't deny an edit on a count the commit made wrong.
+func TestFolderPatternCountsWaitForAnIndexBehindHead(t *testing.T) {
+	root := t.TempDir()
+	const now, older = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	write(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+	write(t, root, ".git/refs/heads/main", now+"\n")
+	const file = "packages/db/x.ts"
+	write(t, root, file, "export const x = 1;\n")
+	banned, marker := PatternID(`"@acme/api"`), PatternID("export const")
+	ix := &fakeIndex{head: now, counts: map[string]int{banned: 0, marker: 1}, infos: map[string]*index.FileInfoAnswer{
+		file: {Hash: strings.TrimPrefix(hashBytes([]byte("export const x = 1;\n")), "sha256:")},
+	}}
+	folder := Check{Kind: "pattern", Role: Complete, Target: map[string]any{"scope": "packages/db/**", "pattern": `"@acme/api"`}, Saw: map[string]any{"count": 0}}
+	exact := Check{Kind: "pattern", Role: Complete, Target: map[string]any{"scope": file, "pattern": "export const"}, Saw: map[string]any{"count": 1}}
+	run := func(c Check) Result {
+		return indexed(t, root, ix).Evaluate(&Entry{ID: "mx_layer0", Status: "active", Checks: []Check{c}})
+	}
+	if r := run(folder); r.Verdict != Held {
+		t.Fatalf("current index: %+v", r)
+	}
+	ix.head = older
+	if r := run(folder); r.Verdict == Held || r.Checks[0].Status != Floor {
+		t.Fatalf("an index behind HEAD held a folder count: %+v", r)
+	}
+	// An exact file is re-read against its hash, so it still holds.
+	if r := run(exact); r.Verdict != Held {
+		t.Fatalf("exact file: %+v", r)
+	}
+	// The verdict cache sees the difference, so a held verdict from before the commit isn't reused.
+	l := Loaded{Hash: "h", Entry: &Entry{Checks: []Check{folder}}}
+	behind := indexed(t, root, ix).inputsHash(l, "t1")
+	ix.head = now
+	if indexed(t, root, ix).inputsHash(l, "t1") == behind {
+		t.Fatal("inputs hash ignores an index behind HEAD")
+	}
+	// An index from before HEAD was recorded counts as current.
+	ix.head = ""
+	if r := run(folder); r.Verdict != Held {
+		t.Fatalf("unknown index head: %+v", r)
 	}
 }

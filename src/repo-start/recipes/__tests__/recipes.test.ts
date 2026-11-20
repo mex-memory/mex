@@ -136,6 +136,17 @@ describe("edge cases from real repositories", () => {
     expect(file.packages.map(pkg => pkg.path)).toEqual(["", "packages/a"]);
   });
 
+  it("reads a workspace listing '.' as the root, not a package at '.'", () => {
+    // Hono's pnpm-workspace.yaml: `packages: ['.', 'adapters/*']`.
+    const root = repo({
+      "package.json": json({ name: "hono", scripts: { test: "vitest" } }),
+      "pnpm-workspace.yaml": "packages:\n  - '.'\n  - './adapters/*'\n",
+      "pnpm-lock.yaml": "",
+      "adapters/bun/package.json": json({ name: "@hono/bun", scripts: { test: "t" } }),
+    });
+    expect(scanRecipes({ root, binary: null }).packages.map(pkg => [pkg.path, pkg.name])).toEqual([["", "hono"], ["adapters/bun", "@hono/bun"]]);
+  });
+
   it("flags two test commands only within one tool family", () => {
     const django = scanRecipes({ root: repo({
       "package.json": json({ name: "django", scripts: { test: "grunt test" } }),

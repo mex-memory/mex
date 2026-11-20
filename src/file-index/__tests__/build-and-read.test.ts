@@ -9,6 +9,8 @@ import { openIndex } from "../read.js";
 import { writeShift } from "../shifts.js";
 import { checkoutKey, indexDirectory, writePatterns } from "../store.js";
 import { realPath } from "../../record/project.js";
+import { openRecord } from "../../record/index.js";
+import { queueBehindHead } from "../pending.js";
 import type { OutlineAnswer } from "../read.js";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -370,5 +372,53 @@ describe("discovery and refresh", () => {
     const back = await buildIndex({ root: repo, projectId: "g-branches", recordDirectory: records, workers: 0 });
     // f3.ts changes back: read again, but its content is already indexed.
     expect(back).toMatchObject({ files: 20, read: 1, parsed: 0, reused: 1 });
+  });
+
+  it("counts newly listed literals on the next refresh without parsing again", async () => {
+    const repo = join(root, "recount");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    writeFileSync(join(repo, "a.ts"), "// DO NOT EDIT\nexport function a() { return 1; }\n");
+    writeFileSync(join(repo, "b.py"), "# DO NOT EDIT\n# DO NOT EDIT\ndef b():\n    return 2\n");
+    writeFileSync(join(repo, "c.ts"), "export const c = 3;\n");
+    const first = await buildIndex({ root: repo, projectId: "g-recount", recordDirectory: records, workers: 0 });
+    expect(first).toMatchObject({ files: 3, parsed: 3 });
+    const marker = literalPattern("DO NOT EDIT");
+    writePatterns(indexDirectory(records, "g-recount"), [marker]);
+    const again = await buildIndex({ root: repo, projectId: "g-recount", recordDirectory: records, workers: 0 });
+    expect(again).toMatchObject({ files: 3, read: 3, parsed: 0, reused: 3 });
+    const index = openIndex({ recordDirectory: records, projectId: "g-recount", checkout: repo })!;
+    try {
+      expect(index.patternCounts("**", [marker.id])).toEqual({ [marker.id]: 3 });
+      expect(index.patternCounts("*.ts", [marker.id])).toEqual({ [marker.id]: 1 });
+      expect(index.symbolsNamed("a")).toEqual([{ path: "a.ts", start: 2, end: 2, kind: "function" }]);
+    } finally { index.close(); }
+  });
+
+  it("records HEAD, and the background pass refreshes an index a commit outside a session left behind", async () => {
+    const base = realPath(mkdtempSync(join(tmpdir(), "mex-index-head-")));
+    try {
+      const repo = join(base, "repo");
+      mkdirSync(repo);
+      git(repo, "init", "-q");
+      writeFileSync(join(repo, "a.ts"), "export const a = 1;\n");
+      const commit = (message: string) => { git(repo, "add", "-A"); git(repo, "-c", "user.email=t@e.com", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", message); };
+      commit("one");
+      const writer = openRecord({ home: join(base, "home"), projectPath: repo, isNetwork: () => false });
+      try {
+        const projectId = writer.checkout(repo)!.project_id;
+        const head = () => git(repo, "rev-parse", "HEAD").trim();
+        const built = await buildIndex({ root: repo, projectId, recordDirectory: writer.location.directory, workers: 0 });
+        expect(built.pointer.head).toBe(head());
+        expect(queueBehindHead(writer)).toBe(0);
+        writeFileSync(join(repo, "b.ts"), "import { x } from \"@acme/api\";\n");
+        commit("two, outside any session");
+        expect(queueBehindHead(writer)).toBe(1);
+        // One open refresh per checkout.
+        expect(queueBehindHead(writer)).toBe(0);
+        const again = await buildIndex({ root: repo, projectId, recordDirectory: writer.location.directory, workers: 0 });
+        expect(again.pointer.head).toBe(head());
+      } finally { writer.close(); }
+    } finally { rmSync(base, { recursive: true, force: true }); }
   });
 });

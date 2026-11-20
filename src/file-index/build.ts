@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { realPath } from "../record/project.js";
 import { processBatch, type BatchInput, type BatchOutput, type BatchRow } from "./batch.js";
-import { discoverFiles } from "./discover.js";
+import { discoverFiles, gitHead } from "./discover.js";
 import { removeStaleShifts } from "./shifts.js";
 import {
   baseSize, checkoutKey, checkoutSnapshots, collectGarbage, currentBase, indexDirectory, liveRecordKeys, loadPrevious, patternsVersion,
@@ -65,6 +65,8 @@ export async function buildIndex(options: BuildOptions): Promise<BuildResult> {
   const base = currentBase(directory, patterns);
   const reuse = !options.full && (previous === undefined || (previous.patterns === patternsVersion(patterns) && previous.extractor === String(EXTRACTOR_VERSION)));
 
+  // HEAD before the listing: a commit landing during the build leaves the older HEAD, so readers refresh again.
+  const head = await gitHead(root);
   const discovered = await discoverFiles(root);
   const afterDiscover = performance.now();
 
@@ -72,8 +74,10 @@ export async function buildIndex(options: BuildOptions): Promise<BuildResult> {
   const others = checkoutSnapshots(directory).filter((name) => name !== pointer?.snapshot).slice(0, 8);
   const sources = [...new Set([base, pointer?.snapshot, pointer?.base, ...others].filter((name): name is string => name !== undefined))].map((name) => join(directory, name));
   const previousRows = previous && reuse ? previous.paths : new Map<string, PathRow>();
+  // Only the counted patterns changed: this checkout's parses stay valid and just the counts are redone.
+  const recount = !reuse && pointer && previous?.extractor === String(EXTRACTOR_VERSION) ? [pointer.snapshot, pointer.base].map((name) => join(directory, name)) : undefined;
   const outputs = await runBatches(discovered.paths, (paths) => ({
-    root, paths, sources, patterns, reuse,
+    root, paths, sources, patterns, reuse, recount,
     previous: Object.fromEntries(paths.flatMap((path) => { const row = previousRows.get(path); return row ? [[path, row]] : []; })),
   }), options);
   const afterProcess = performance.now();
@@ -118,7 +122,7 @@ export async function buildIndex(options: BuildOptions): Promise<BuildResult> {
     }
     const extrasKeys = baseOutcome === "kept" ? missing : [];
     const paths: PathRow[] = rows.map(({ record: _record, ...row }) => row);
-    const written = writeCheckout(directory, key, { root, via: discovered.via, paths, extras: collect(extrasKeys, record), base: baseName, patterns });
+    const written = writeCheckout(directory, key, { root, via: discovered.via, paths, extras: collect(extrasKeys, record), base: baseName, patterns, head });
     writeLocator(options.recordDirectory, key, options.projectId, root);
     removeStaleShifts(directory, key, new Map(paths.filter((row) => row.hash).map((row) => [row.path, row.mtime_ns])), startedAt);
     collectGarbage(directory);

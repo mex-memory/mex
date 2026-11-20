@@ -44,6 +44,11 @@ export interface Pointer {
   base: string;
   /** When the snapshot was written (ISO time). */
   as_of: string;
+  /**
+   * The commit at HEAD before the files were listed; absent without git. Once HEAD moves,
+   * readers treat counts over a folder or glob as unsettled until the next refresh.
+   */
+  head?: string;
 }
 
 export function checkoutKey(realRoot: string): string { return shortHash(realRoot); }
@@ -293,6 +298,8 @@ export interface CheckoutSnapshot {
   extras: Iterable<FileRecord>;
   base: string;
   patterns: readonly IndexPattern[];
+  /** HEAD before the files were listed. */
+  head?: string;
 }
 
 /** Write a new checkout snapshot and point the checkout at it. */
@@ -317,7 +324,7 @@ export function writeCheckout(directory: string, key: string, snapshot: Checkout
     db.exec("COMMIT");
   } finally { db.close(); }
   renameSync(temporary, join(directory, name));
-  const pointer: Pointer = { version: STORE_VERSION, root: snapshot.root, snapshot: name, base: snapshot.base, as_of: asOf };
+  const pointer: Pointer = { version: STORE_VERSION, root: snapshot.root, snapshot: name, base: snapshot.base, as_of: asOf, ...(snapshot.head ? { head: snapshot.head } : {}) };
   writePointer(directory, key, pointer);
   return pointer;
 }

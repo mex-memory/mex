@@ -7,7 +7,27 @@ import (
 	"strings"
 
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/gitstate"
 )
+
+// builtAt is an index that knows the commit its files were listed at.
+type builtAt interface{ Head() string }
+
+// indexBehindHead reports whether HEAD moved since the index was built: a
+// commit, checkout or pull made outside a session that no edit hook saw. It
+// reads two small Git files once per evaluator and never runs Git. An index
+// or checkout whose HEAD can't be read counts as current.
+func (ev *Evaluator) indexBehindHead() bool {
+	if ev.behind == 0 {
+		ev.behind = 1
+		if ix, ok := ev.index.(builtAt); ok && ix.Head() != "" && ev.files != nil && ev.files.root != nil {
+			if now, ok := gitstate.Read(ev.files.root.Name()); ok && now.Head != ix.Head() {
+				ev.behind = 2
+			}
+		}
+	}
+	return ev.behind == 2
+}
 
 // Index is the part of the file index the code checks use. *index.Reader
 // satisfies it; without one, symbol and pattern checks fall back to the
@@ -297,7 +317,14 @@ func (ev *Evaluator) patternCount(target map[string]any) (int, CheckResult, bool
 	if !counted {
 		return 0, CheckResult{Status: Floor, Reason: "the file index doesn't count this pattern yet"}, false
 	}
-	if file := exactPatternFile(target); file != "" {
+	file := exactPatternFile(target)
+	// A folder or glob count can't be re-read here without walking the scope. After a commit
+	// made outside a session it may be stale until the background refresh lands (queued when
+	// HEAD moves), so it is being checked, never held: a rule must not deny an edit on it.
+	if file == "" && ev.indexBehindHead() {
+		return 0, CheckResult{Status: Floor, Reason: "the file index is catching up with a new commit"}, false
+	}
+	if file != "" {
 		data, res, ok := ev.readTarget(file)
 		if !ok {
 			return 0, res, false
