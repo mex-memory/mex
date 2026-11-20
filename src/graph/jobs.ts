@@ -57,6 +57,9 @@ registerJobKind<GraphJobParams, { runs: number }>({
   async runBatch({ params, checkpoint }) {
     const { ensureGraphCurrent } = await import("./maintenance.js");
     const result = await ensureGraphCurrent(params.checkout, { candidateExecution: "process" });
+    // The graph is ready: entries that link code by file hash get fingerprints.
+    const { upgradeEntryChecks } = await import("../knowledge/check-upgrade.js");
+    upgradeEntryChecks({ projectPath: params.checkout });
     return {
       checkpoint: { runs: (checkpoint?.runs ?? 0) + 1 },
       done: true,

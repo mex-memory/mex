@@ -60,6 +60,9 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
   const rootDir = options.root ?? process.cwd();
   const result = await ensureGraphCurrent(rootDir, { ...CLI_GRAPH_EXECUTION, force: options.force });
   const coverage = await readStoredGraphCoverage(rootDir, result.status.status === "fresh");
+  // The graph is ready: entries that link code by file hash get fingerprints.
+  const { upgradeEntryChecks } = await import("../knowledge/check-upgrade.js");
+  const upgrade = upgradeEntryChecks({ projectPath: rootDir });
   if (options.json) {
     console.log(JSON.stringify({
       operation: result.operation,
@@ -79,6 +82,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
         ? { declinedInputs: result.declinedInputs }
         : {}),
       ...(result.typescript ? { typescript: result.typescript } : {}),
+      ...(upgrade.upgraded > 0 ? { checksUpgraded: { entries: upgrade.upgraded, checks: upgrade.checks } } : {}),
     }, null, 2));
     return;
   }
@@ -90,6 +94,9 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
       `Code graph ${action}: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
         + `across ${result.filesIndexed} files in ${result.durationMs}ms → .mex/graph.db`,
     );
+  }
+  if (upgrade.upgraded > 0) {
+    console.log(`Upgraded ${upgrade.checks} file-hash check${upgrade.checks === 1 ? "" : "s"} in ${upgrade.upgraded} note${upgrade.upgraded === 1 ? "" : "s"} to code fingerprints.`);
   }
   printUnindexedSources(coverage);
   printSkippedSources(result.skipped);
