@@ -14,7 +14,8 @@ import { detectCaller } from "../repo-start/caller.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
 import { origin, PinnedTree, repoPath, revision } from "./git.js";
 import { hosts } from "./hosts.js";
-import { LEARN_COMMAND, LEARN_KIND, MAX_DOCS, MAX_PULLS, Plan, quoteCeiling, quoteTokens, reviewWindow, type LearningPlan } from "./plan.js";
+import { BACKFILL_PULLS_PER_BATCH, LEARN_COMMAND, LEARN_KIND, MAX_DOCS, MAX_PULLS, orderBackfillPulls, Plan, quoteCeiling, quoteTokens,
+  reviewWindow, type LearningPlan } from "./plan.js";
 import { importsEnabled, previewImport, type ImportFile } from "./session-import.js";
 
 type Print = (line: string) => void;
@@ -168,9 +169,10 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     if (inventory.more) gaps.push("Some merged changes were outside the source scan limit.");
     if (docs.length > MAX_DOCS) gaps.push("Some docs were outside the source scan limit.");
     const setup = options.modelSetup ?? "best-only";
-    const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), setup, sessions);
+    const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), setup, sessions, BACKFILL_PULLS_PER_BATCH);
     plan = Plan.parse({ checkout: root, head, origin: repo, source: inventory.source, visibility: inventory.visibility, agent,
-      setup, ...window, preferred, pulls: inventory.pulls, docs: docs.slice(0, MAX_DOCS), sessions, refresh: options.weekly !== false,
+      setup, ...window, preferred, pulls: orderBackfillPulls(inventory.pulls), pullsPerBatch: BACKFILL_PULLS_PER_BATCH,
+      docs: docs.slice(0, MAX_DOCS), sessions, refresh: options.weekly !== false,
       gaps, estimate, ceiling: quoteCeiling(estimate) });
     refreshUsageForQuote();
     const minutes = Math.max(1, Math.ceil(estimate / 12_000));
@@ -191,6 +193,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     if (planWindow(windows, Date.now()).blocked) lines.push("Your agent's usage window needs to reset before model work can start.");
     const details = [`Counted ${plan.pulls.length} merged changes and ${plan.docs.length} docs in the approved source scan. A small sample of closed issues and commit messages may supply context.`,
       `Agent: ${agent === "claude" ? "Claude Code" : "Codex"} · ${plan.setup === "mixed" ? "cheap filter, best writer" : "best model"}.`,
+      "Historical docs are screened out during the scan.",
       "Checked rules reach your sessions as learned, not shared. See `mex jobs` for progress and pause or cancel."];
     if (!await (options.confirm ?? ((lines, details) => askEnter(lines, details, write)))(lines, details)) return;
   } catch (error) {

@@ -1,0 +1,110 @@
+[
+  {
+    "id": "mx_deep2d1ff0cb74224aa6b03a61c9ef574b45",
+    "text": "Place graph evaluation artifacts under the excluded .mex directory and resume interrupted runs only when their full identity is unchanged. Archived source elsewhere inside the subject can contaminate the graph because scanning does not consult gitignore.",
+    "oneLine": "Keep graph evaluation artifacts under .mex and resume only when the run's full identity is unchanged.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deep397d4cd1b05b63f28b8fdd3af5825ea8",
+    "text": "During upgrade cleanup, automatically remove only an exact, wholly generated released watch hook; preserve mixed or edited hooks for manual review. The old installer did not save a backup and altered pre-existing whitespace, so upgrade must not claim to restore unavailable original bytes.",
+    "oneLine": "Remove only exact, wholly generated released watch hooks automatically; preserve mixed or edited hooks for review and never claim unavailable original bytes were restored.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deep43c83bfe318042122e55a0182e85633e",
+    "text": "For team entry edits and retirements, require an exact diff preview followed by apply with the expected revision; regenerate the preview if the change differs. The revision must bind the repository, target, current bytes and proposed bytes so approval cannot apply to a different change.",
+    "oneLine": "Require an exact preview and revision-bound apply for team entry edits and retirements; changed inputs require a fresh preview.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deep440baea69450e8792354dc9dd042ca87",
+    "text": "When changing the public API, keep compatibility documentation, entry-point exports, and public API tests aligned. Documented types must be exported and exercised through the public surface so the contract cannot silently drift.",
+    "oneLine": "Keep public API documentation, exports, and contract tests aligned whenever the API changes.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deep6be26c5dde592fb81485dc6aef0484c4",
+    "text": "Mark automatic model work with `automatic: { estimate }`, including when it runs in a foreground worker, and use a known reference-price model with an enabled project or machine job. This reserves automatic allowance; explicit user commands omit the flag and remain uncapped while sharing the same queue.",
+    "oneLine": "Automatic model work must supply an estimate and meet model/job eligibility even in foreground workers; explicit user commands omit the flag and share the queue uncapped.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deep6ece297b313cc8b07f4e86df02992685",
+    "text": "Enforce team-entry evidence gates on both writes and reads, requiring actual typed quotes for person evidence, existing repository sources, and two distinct PR source checks for review evidence. Rechecking reads prevents direct branch edits or copied hint metadata from bypassing promotion requirements.",
+    "oneLine": "Validate team-entry evidence on writes and reads: actual typed person quotes, existing repository sources, and two distinct PR source checks for review evidence; copied hint metadata does not qualify.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deep72ccbdbe666cd4d403e1fd852e25a6fd",
+    "text": "Keep canonical team-workflow writes in TeamWorkflowPort even when the Wiki adapter parses and indexes those files. Path-partitioned ownership prevents competing canonical writers.",
+    "oneLine": "Use TeamWorkflowPort as the sole canonical writer for member, Workstream, Inbox, Relay, activity, and Playbook paths, even when Wiki indexes them.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deep753a7d851c8edcd528a9038da610293a",
+    "text": "Keep runtime verdicts, usage clocks and per-checkout observations in the local record rather than knowledge entry files. Entry files hold authored knowledge and metadata, keeping checkout-specific runtime state out of shared entries.",
+    "oneLine": "Store runtime verdicts, usage clocks and per-checkout observations in the local record, never in knowledge entry files.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deep7a375c64122b9f2c6340cf83d2882df5",
+    "text": "Run release validation builds in isolated temporary copies with their own dependencies when the original checkout has a running setup or Hub. Rebuilding its active dist directory can remove chunks the running process still needs.",
+    "oneLine": "When setup or Hub is running, validate releases in an isolated copy with its own dependencies to preserve the active build.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deep81bd1c548bd24000926e5c26f68f5880",
+    "text": "Buffer Hub Graph and Wiki projections completely and revalidate their database, source, and generation bindings before returning them. Discard invalidated graph results as a whole so consumers cannot receive partial, untrustworthy data.",
+    "oneLine": "Buffer Hub projections and revalidate their bindings before return; discard invalidated graph results entirely.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deep88d938b4ba8c1878befa15914ab5aaf8",
+    "text": "Validate each new integrated release head with its own required checks. Passing CI on the base commit does not qualify the release-preparation changes, and local checks do not replace the pinned platform and performance gates.",
+    "oneLine": "Require checks on each integrated release head; base CI and local checks do not replace release-head platform and performance gates.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deep88ea14bcf4062facd5ee29172e1490f6",
+    "text": "Determine graph schema lineage from the actual SQLite structure before selecting an upgrade, and require a safe rebuild for partial or ambiguous layouts. The version integer alone cannot distinguish the two historical v3 layouts.",
+    "oneLine": "Inspect SQLite structure before choosing a graph upgrade; require a safe rebuild for partial or ambiguous layouts.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deepd2089c1218c85052dc7e9a43e3afd659",
+    "text": "Keep ordinary Graph, Wiki, and Hub reads immutable; perform maintenance only through explicit graph commands or already-mutating workflows holding the maintenance lease. This prevents inspection from changing the published graph.",
+    "oneLine": "Keep ordinary reads immutable; restrict maintenance to explicit commands or already-mutating workflows holding the maintenance lease.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deepe588a6889111877fe3a875965666609f",
+    "text": "Route Hub Graph and Wiki access through repository-bound ports with narrow interfaces, without direct SQLite access, raw query callbacks, or CLI subprocesses. This preserves the adapters' snapshot and validation boundaries.",
+    "oneLine": "Use repository-bound ports for Hub Graph and Wiki access; do not bypass them with SQLite, raw query callbacks, or CLI subprocesses.",
+    "duplicate": true
+  },
+  {
+    "id": "mx_deepe6e6613b116c6c58f895e9fe2dbf4044",
+    "text": "When both day and commit signals indicate staleness for one file, emit one compound issue and keep deduplication in the checker. This prevents duplicate score penalties while keeping score computation a simple sum.",
+    "oneLine": "Combine a file's day and commit staleness signals in the checker so scoring counts the issue once.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deepe740d73545708cd2377e38419155a795",
+    "text": "Keep language extractors deterministic, read-only, and limited to one parsed file, leaving parsing, resolution, persistence, and timestamps to the engine. This preserves the extractor boundary and prevents language implementations from duplicating engine responsibilities.",
+    "oneLine": "Keep extractors pure, deterministic, read-only, and single-file; leave engine responsibilities to the engine.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deepfc7b4569f40848e12bec69aac49486fe",
+    "text": "Before implementing code-graph changes, agree on a bounded, fixture-backed scope and target main. Changes to node identity, fingerprint reconciliation, SQLite schema, or grounding/drift semantics additionally require a core discussion issue and maintainer agreement because they affect shared graph behavior.",
+    "oneLine": "Agree on fixture-backed graph scope and target main; obtain core discussion agreement before identity, reconciliation, schema, or grounding/drift changes.",
+    "duplicate": false
+  },
+  {
+    "id": "mx_deepfecb873071b891fcc3247023d009f506",
+    "text": "Block legacy conversion when the reader reports `complete: false`, while keeping readable material available for inspection. Informational codec diagnostics alone do not make a read partial, so they must not unnecessarily block conversion.",
+    "oneLine": "Block conversion on `complete: false`; preserve readable inspection material and do not treat informational codec diagnostics alone as partial reads.",
+    "duplicate": false
+  }
+]
