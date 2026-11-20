@@ -23,6 +23,13 @@ describe("rendering native rule files", () => {
     expect(out.text).toBe(golden("codex-agents-root.md"));
   });
 
+  it("says under every title that existing code takes precedence", () => {
+    for (const format of Object.keys(CAPS) as (keyof typeof CAPS)[]) for (const area of ["", "apps/api"]) {
+      const out = renderNative(format, area, [team("mx_api001", "Validate request bodies with zod.")]);
+      expect(out.text).toMatch(/^# MEX rules(?: for apps\/api)?\n\nExisting code takes precedence over these notes\.\n\n- /mu);
+    }
+  });
+
   it("drops the weakest items over the format's cap", () => {
     const many = Array.from({ length: 40 }, (_, i) => team(`mx_n${String(i).padStart(5, "0")}`, `Rule number ${i} ${"x".repeat(300)}.`, i < 5 ? "person" : "docs"));
     const out = renderNative("claude-rules", "apps/api", many);

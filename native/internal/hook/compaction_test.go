@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	localrecord "github.com/mex-memory/mex/native/record"
 )
 
 func TestCompactionChecksRecordedClaudeHooks(t *testing.T) {
@@ -101,12 +99,13 @@ func TestCompactionRecoversPrunedLastRequest(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected one capture row, got %d", len(rows))
 	}
-	store, err := localrecord.OpenHooks(hooksLocation(h, h.recordDirectory()))
+	// Retention removed the request row; recovery still has it.
+	db, err := sql.Open("sqlite", hooksLocation(h, h.recordDirectory()).Hooks)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = store.PruneJournal(projectID, rows[0].ID)
-	store.Close()
+	_, err = db.Exec(`DELETE FROM journal WHERE id <= ?`, rows[0].ID)
+	db.Close()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -868,7 +868,8 @@ keys exist. Session keys in this file are protected by foreign keys.
 | `verdicts` | PK (`project_id`,`checkout`,`entry_id`); `verdict` (held/changed/broken/unknown), `inputs_hash`, `checked_at` | Check evaluator |
 | `ledger` | PK (`session_id`,`agent_id`,`lever`), raw `tokens_removed`, `turns_carried`, `cost_tokens`, `refetches` and optional `saved_input_millitokens`, `cost_input_millitokens` | Lever accounting |
 | `ledger_settlements` | PK `session_id`, `ended_at`, optional `price_profile` | Lever accounting |
-| `journal` | AUTOINCREMENT INTEGER PK `id`; `session_id`, `ts`, `kind` (typed/command), `text`, nullable `exit_code`, `marks` | Capture hook |
+| `journal` | AUTOINCREMENT INTEGER PK `id`; `session_id`, `ts`, `kind` (typed/command/edit), `text`, nullable `exit_code`, `marks` | Capture hook |
+| `journal_size` | PK `id` (always 1); `bytes` | Journal triggers (running byte total for retention) |
 | `outputs` | AUTOINCREMENT INTEGER PK `n`; `session_id`, `path`, `bytes` | Output trimmer/wrapper |
 | `notices_shown` | PK `notice_id`; `session_id`, `ts` | Session notice display |
 | `counters_go` | PK (`day`,`name`); `value` | Hook counter accumulator |
@@ -1047,6 +1048,35 @@ Hooks migrations 0011 (ledger settlements), 0012 (pricing), and 0013
 for search answers, budget lanes, and false-send counts. Earlier settlements
 without session metrics remain available to the per-lever ledger.
 
+### Capture journal: edit rows and retention (hooks migration 15)
+
+- **Edit rows.** `journal.kind` also takes `edit`: one row per file a
+  successful main-agent edit, write or patch changed, with `text` the path
+  relative to the session's checkout (slash-separated) and `exit_code` null.
+  Never file content. Files outside the checkout, failed or interrupted
+  edits, subagent edits and batch events are left out. A call records each
+  file once, at most 64 files, and skips paths over 1 KiB. Claude Code Edit,
+  Write, MultiEdit and NotebookEdit; Codex `apply_patch` (each added, updated,
+  deleted or move-target file); the other agents through the contract's edit,
+  write and patch tools.
+- **Migration 15** rebuilds `journal` for the new CHECK in one transaction:
+  rows, ids, the `journal_session_id` index and the AUTOINCREMENT allocation
+  point are kept, so ids are never reused.
+- **Retention: 90 days or 200 MB, whichever comes first.** Rows are no longer
+  deleted when the capture filter consumes them; `journal.consumed` is only
+  its cursor. Size counts each row's text, session id and timestamp plus 16
+  bytes. `journal_size` holds the running total, kept by insert and delete
+  triggers, so nothing sums the table. Session start (main agent) deletes
+  the oldest rows that are past 90 days or keep the journal over 200 MB, in at
+  most 4 steps of 1,000 rows, each its own short transaction; a longer backlog
+  clears over later session starts. Every 32nd insert also reads the total
+  and, when over the cap, deletes at most 256 of the oldest rows. Expired rows
+  are an id prefix because ids grow with time; an unreadable timestamp is kept.
+- Node's readers accept hooks schema 15 (`HOOKS_SCHEMA_VERSION`). The filter
+  reads only `typed` rows; `edit` rows, like commands, never hold back the
+  consumed prefix. Compaction recovery reads typed rows and rows with an exit
+  code, so it never sees edit rows.
+
 Indexes cover active sessions by project/time, deliveries by session/agent/epoch/
 entry/time and by time, followups by delivery/time, journal by session/id, and
 outputs by session/number. `moment`, `lever`, agent and job kinds remain open
@@ -1120,7 +1150,8 @@ choices. A Node writer can repair its own settings mirrors; readers never do.
 
 - Node finished a capture batch: write the last consumed journal ID into
   `record.db.settings`, scope = project ID, key = `journal.consumed`, value =
-  decimal ID. Go prunes up to that ID at the next session start.
+  decimal ID. It is the filter's cursor only: Go keeps consumed rows and
+  deletes by retention (90 days or 200 MB) at session start.
 - Go wants a judge/filter run: never call a model or write Node tables. The
   background process reads `verdicts` and `journal` and queues jobs itself.
 - Delivery check-and-mark is one transaction entirely inside `hooks.db`.

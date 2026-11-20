@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -188,3 +189,58 @@ func TestNoteCommand(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestEditRowsArePathsInTheCheckout(t *testing.T) {
+	root := t.TempDir()
+	at := func(parts ...string) string {
+		return filepath.ToSlash(filepath.Join(append([]string{root}, parts...)...))
+	}
+	edit := func(kind contract.Kind, tool contract.Tool) contract.Event {
+		if tool.Output == nil {
+			tool.Output = &contract.ToolOutput{OK: kind == contract.PostTool}
+		}
+		return contract.Event{Agent: "codex", Kind: kind, SessionID: "s", Checkout: root, Cwd: root, Tool: &tool}
+	}
+	long := at(strings.Repeat("d/", MaxEditPath/2), "x.go")
+	patch := contract.Tool{Name: contract.ToolPatch, Input: contract.ToolInput{Files: []contract.PatchFile{
+		{Path: at("a.go")}, {Path: at("a.go")}, {Path: at("b", "c.go")}, {Path: long}, {Path: at("token=abcdefgh12345678.txt")}, {Path: filepath.ToSlash(filepath.Dir(root)) + "/out.go"},
+	}}}
+	cases := []struct {
+		name string
+		ev   contract.Event
+		want string
+	}{
+		{"patch: once per file, inside the checkout, no long or secret paths", edit(contract.PostTool, patch), "a.go,b/c.go"},
+		{"write", edit(contract.PostTool, contract.Tool{Name: contract.ToolWrite, Input: contract.ToolInput{Path: at("w.md"), Content: ptr("body")}}), "w.md"},
+		{"failed", edit(contract.PostToolFailure, contract.Tool{Name: contract.ToolEdit, Input: contract.ToolInput{Path: at("e.go")}}), ""},
+		{"interrupted", edit(contract.PostTool, contract.Tool{Name: contract.ToolEdit, Input: contract.ToolInput{Path: at("e.go")}, Output: &contract.ToolOutput{OK: true, Interrupted: true}}), ""},
+		{"the checkout itself", edit(contract.PostTool, contract.Tool{Name: contract.ToolWrite, Input: contract.ToolInput{Path: at()}}), ""},
+		{"multi-edit is Claude Code's only", edit(contract.PostTool, contract.Tool{Name: contract.ToolOther, RawName: "MultiEdit", RawInput: []byte(`{"file_path":"m.go"}`)}), ""},
+	}
+	claude := edit(contract.PostTool, contract.Tool{Name: contract.ToolOther, RawName: "NotebookEdit", RawInput: []byte(`{"notebook_path":"nb/a.ipynb","new_source":"body"}`)})
+	claude.Agent = "claude-code"
+	cases = append(cases, struct {
+		name string
+		ev   contract.Event
+		want string
+	}{"notebook edit", claude, "nb/a.ipynb"})
+	sub := edit(contract.PostTool, contract.Tool{Name: contract.ToolWrite, Input: contract.ToolInput{Path: at("w.md")}})
+	sub.AgentID = "sub-1"
+	cases = append(cases, struct {
+		name string
+		ev   contract.Event
+		want string
+	}{"subagent", sub, ""})
+	for _, c := range cases {
+		var got []string
+		for _, r := range Rows(c.ev, Env{}) {
+			if r.Kind != "edit" || r.ExitCode != nil || r.Marks != "" {
+				t.Fatalf("%s: %+v", c.name, r)
+			}
+			got = append(got, r.Text)
+		}
+		if strings.Join(got, ",") != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}

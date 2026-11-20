@@ -7,6 +7,8 @@ import type { Candidate } from "./native-select.js";
 import { GENERATED_MARK } from "./rule-files.js";
 
 export const GENERATED_LINE = `${GENERATED_MARK} by MEX from its entries; edit the entries, not this file -->`;
+/** Under every title: these are notes about the code, and the code wins when they disagree. */
+export const PRECEDENCE_LINE = "Existing code takes precedence over these notes.";
 
 /**
  * Size caps, in bytes. Codex reads at most 32 KiB of AGENTS.md along a path, so one generated file takes a quarter.
@@ -28,7 +30,7 @@ function item(c: Candidate): string {
 }
 
 function frame(format: NativeFormat, area: string): { head: string; tail: string } {
-  const title = area ? `# MEX rules for ${area}` : "# MEX rules";
+  const title = `${area ? `# MEX rules for ${area}` : "# MEX rules"}\n\n${PRECEDENCE_LINE}`;
   if (format === "claude-rules" && area) {
     return { head: `---\npaths:\n  - "${area}/**"\n---\n${GENERATED_LINE}\n${title}\n\n`, tail: "" };
   }

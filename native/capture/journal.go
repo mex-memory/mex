@@ -1,18 +1,19 @@
-// Package capture saves what a person typed and what commands returned, and
-// nothing else (plan sheets 21-23). The prompt hook saves typed text before
-// the reply starts, so an interrupt or a terminal closed mid-reply loses
-// nothing. Tool hooks save the command and its exit code: never agent text,
-// file contents or tool output.
+// Package capture saves what a person typed, what commands returned and which
+// files the agent edited, and nothing else (plan sheets 21-23). The prompt
+// hook saves typed text before the reply starts, so an interrupt or a
+// terminal closed mid-reply loses nothing. Tool hooks save the command and its
+// exit code, or an edited file's repo-relative path: never agent text, file
+// contents or tool output.
 //
 // Everything here fails open. A capture that can't be saved is skipped; the
 // agent call always goes on.
 package capture
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +21,9 @@ import (
 
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/safefile"
+	"github.com/mex-memory/mex/native/internal/shellparse"
 	"github.com/mex-memory/mex/native/record"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 const (
@@ -30,6 +33,10 @@ const (
 	MaxTyped = 8 << 10
 	// MaxCommand bounds one command row.
 	MaxCommand = 2 << 10
+	// MaxEditPath bounds one edit row. A longer path is skipped, never cut.
+	MaxEditPath = 1 << 10
+	// maxEditRows bounds the files one tool call records (a large patch).
+	maxEditRows = 64
 )
 
 // Env is what capture needs from the hook.
@@ -47,7 +54,7 @@ func (e Env) getenv(k string) string {
 }
 
 // Rows turns one event into journal rows. Only the main agent types;
-// subagents type nothing, and their commands are left out too so a
+// subagents type nothing, and their commands and edits are left out too so a
 // subagent's failure is never the person's "last failing command".
 func Rows(ev contract.Event, env Env) []record.JournalRow {
 	if ev.AgentID != "" {
@@ -64,8 +71,107 @@ func Rows(ev contract.Event, env Env) []record.JournalRow {
 		if row, ok := commandRow(ev, ev.Tool); ok {
 			return []record.JournalRow{row}
 		}
+		return editRows(ev)
 	}
 	return nil
+}
+
+// editRows records the files a successful edit, write or patch changed, as
+// paths relative to the session's checkout. Files outside it are left out.
+// Like commands, they come from per-call events only, never from a batch.
+func editRows(ev contract.Event) []record.JournalRow {
+	t := ev.Tool
+	if ev.Kind != contract.PostTool || t == nil || t.Output == nil || !t.Output.OK || t.Output.Interrupted || ev.Checkout == "" {
+		return nil
+	}
+	var paths []string
+	switch t.Name {
+	case contract.ToolEdit, contract.ToolWrite:
+		paths = []string{t.Input.Path}
+	case contract.ToolPatch:
+		for _, f := range t.Input.Files {
+			paths = append(paths, f.Path)
+		}
+	case contract.ToolOther:
+		paths = claudeEditPaths(ev, t)
+	}
+	var out []record.JournalRow
+	seen := map[string]bool{}
+	for _, p := range paths {
+		rel, ok := checkoutRelative(ev.Checkout, p)
+		if !ok || seen[rel] || len(rel) > MaxEditPath || !utf8.ValidString(rel) || HasSecret(rel) {
+			continue
+		}
+		seen[rel] = true
+		out = append(out, record.JournalRow{Kind: "edit", Text: rel})
+		if len(out) == maxEditRows {
+			break
+		}
+	}
+	return out
+}
+
+// claudeEditPaths reads Claude Code edit tools the contract has no name for:
+// MultiEdit (file_path) and NotebookEdit (notebook_path).
+func claudeEditPaths(ev contract.Event, t *contract.Tool) []string {
+	if ev.Agent != "claude-code" || (t.RawName != "MultiEdit" && t.RawName != "NotebookEdit") || len(t.RawInput) == 0 {
+		return nil
+	}
+	var in struct {
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+	}
+	if json.Unmarshal(t.RawInput, &in) != nil {
+		return nil
+	}
+	p := in.FilePath
+	if t.RawName == "NotebookEdit" {
+		p = in.NotebookPath
+	}
+	if p == "" {
+		return nil
+	}
+	return []string{shellparse.Resolve(ev.Cwd, p)}
+}
+
+// checkoutRelative is p relative to the checkout, slash-separated. The plain
+// comparison usually settles it; links and OS aliases (macOS /var, Windows
+// short names) are resolved only when it doesn't.
+func checkoutRelative(checkout, p string) (string, bool) {
+	if p == "" {
+		return "", false
+	}
+	if rel, ok := plainRelative(checkout, p); ok {
+		return rel, true
+	}
+	real, err := place.RealPath(checkout)
+	if err != nil {
+		return "", false
+	}
+	native := filepath.FromSlash(p)
+	if resolved, err := place.RealPath(native); err == nil {
+		return plainRelative(real, resolved)
+	}
+	if parent, err := place.RealPath(filepath.Dir(native)); err == nil {
+		return plainRelative(real, filepath.Join(parent, filepath.Base(native)))
+	}
+	return "", false
+}
+
+func plainRelative(checkout, p string) (string, bool) {
+	native := filepath.FromSlash(p)
+	if !filepath.IsAbs(native) {
+		return "", false
+	}
+	rel, err := filepath.Rel(filepath.FromSlash(checkout), native)
+	if err != nil {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return rel, true
 }
 
 func commandRow(ev contract.Event, t *contract.Tool) (record.JournalRow, bool) {
@@ -247,47 +353,20 @@ func (e captureError) Error() string { return string(e) }
 
 const errRedirected = captureError("redirected hooks database")
 
-// SessionStart prunes what the last capture batch consumed and enforces the
-// cap. Node writes the consumed ID into record.db (local record contract,
-// "Crossing the line"); Go deletes up to it here.
+// SessionStart enforces journal retention (90 days or 200 MB, oldest first)
+// in bounded steps. What the filter consumed stays: Node's journal.consumed
+// setting is only its cursor, and a later import reads past sessions.
 func SessionStart(ev contract.Event, env Env) error {
 	if ev.AgentID != "" || ev.ProjectID == "" || env.RecordDirectory == "" {
 		return nil
 	}
-	consumed := consumedID(env.RecordDirectory, ev.ProjectID)
 	h, err := openHooks(env.RecordDirectory)
 	if err != nil {
 		return err
 	}
 	defer h.Close()
-	if consumed > 0 {
-		if err := h.PruneJournal(ev.ProjectID, consumed); err != nil {
-			return err
-		}
-	}
-	return h.TrimJournal()
-}
-
-// consumedID is the last journal ID the project's capture batch consumed, or 0.
-func consumedID(directory, projectID string) int64 {
-	recordPath := filepath.Join(directory, "record.db")
-	if !safefile.Regular(recordPath) {
-		return 0
-	}
-	r, err := record.OpenRecord(record.Location{Directory: directory, Record: recordPath})
-	if err != nil {
-		return 0
-	}
-	defer r.Close()
-	v, ok, err := r.Setting(projectID, "journal.consumed")
-	if err != nil || !ok {
-		return 0
-	}
-	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-	if err != nil || n < 0 {
-		return 0
-	}
-	return n
+	_, err = h.TrimJournal(now(env))
+	return err
 }
 
 // Hook is the capture step of one hook call: prune at session start, save the
