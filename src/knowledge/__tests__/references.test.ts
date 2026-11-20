@@ -21,6 +21,20 @@ describe("knowledge references", () => {
     for (const command of ["npm run test --workspace packages/api", "make build", "pytest"]) expect(commandExists(command, source), command).toBe(true);
     for (const command of ["npm run missing --workspace packages/api", "make missing"]) expect(commandExists(command, source), command).toBe(false);
   });
+  it("checks npm workspace scripts in the named package, with the flag in either position", () => {
+    write("package.json", JSON.stringify({ workspaces: ["packages/*"], scripts: { lint: "eslint ." } }));
+    write("packages/api/package.json", JSON.stringify({ name: "@acme/api", scripts: { generate: "node gen.mjs" } }));
+    write("packages/web/package.json", JSON.stringify({ name: "web", scripts: { dev: "vite" } }));
+    const source = references(root);
+    for (const command of ["npm run generate --workspace packages/api", "npm run generate -w packages/api", "npm run -w packages/api generate",
+      "npm run --workspace=packages/api generate", "npm run generate --workspace=@acme/api", "TZ=UTC npm run -w ./packages/api/ generate"]) {
+      expect(commandExists(command, source), command).toBe(true);
+    }
+    for (const command of ["npm run dev --workspace packages/api", "npm run -w packages/web generate", "npm run lint -w packages/api",
+      "npm run generate --workspace packages/none"]) {
+      expect(commandExists(command, source), command).toBe(false);
+    }
+  });
   it("verifies package scripts by name with every runner spelling", () => {
     write("package.json", JSON.stringify({ scripts: { test: "vitest run", "test:watch": "vitest" } }));
     const source = references(root);

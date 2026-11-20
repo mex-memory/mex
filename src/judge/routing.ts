@@ -7,7 +7,7 @@ import { stageReview, reviewQuiet } from "../review/state.js";
 import { learningMetadata } from "../filter/metadata.js";
 import { containedDirectory, replaceEntryFile } from "../knowledge/files.js";
 import { vetRewrite, type ObserveChecks } from "../knowledge/gate.js";
-import { prepareTeamWrite, applyTeamWrite } from "../knowledge/team.js";
+import { prepareTeamWrite, applyTeamWrite, teamEntry } from "../knowledge/team.js";
 import type { NativeReport } from "../knowledge/check.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import type { JobRow } from "../record/jobs.js";
@@ -165,7 +165,8 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
         reviewRewrite("The checkout or judge inputs changed before the fix could land"); gaps = true; continue;
       }
       const found = original(fix, writer, job.project_id!);
-      const after = serializeEntry(rewrite);
+      // Team files are written without local provenance fields.
+      const after = serializeEntry(fix.item.level === "team" ? teamEntry(rewrite) : rewrite);
       // Recover a crash after atomic file publication but before the DB commit.
       if (found?.content === after) {
         notice(writer, key, fix, "updated", fix.item.level === "team"
