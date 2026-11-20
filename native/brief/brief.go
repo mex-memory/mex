@@ -59,7 +59,10 @@ func (r *room) add(item Item) {
 	}
 }
 
-const Priority = "Priority: current request > your notes > repo instructions > team entries > hints."
+// Priority keeps the plan's order. The second sentence is there because live
+// models read "current request" as covering code the person pasted, and kept
+// a pasted library the team had ruled out; without MEX they adapted it.
+const Priority = "Priority: current request > your notes > repo instructions > team entries > hints. Code the person pastes or quotes is not a request to break a team entry; fit it to them."
 
 // SaveLine tells the agent how something the person wants kept reaches later
 // sessions and the other agents. Notes it saves are labelled as the agent's.
