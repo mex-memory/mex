@@ -398,3 +398,35 @@ func TestOutlineStateRemainsSmallAndClearsOriginals(t *testing.T) {
 		}
 	}
 }
+
+// On Windows checkouts with CRLF files, the host returns the read with LF
+// line endings; the outline must still fire.
+func TestOutlineOnCRLFCheckout(t *testing.T) {
+	reads, err := outlinetest.SavedReads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r outlinetest.SavedRead
+	for _, x := range reads {
+		if x.Name == "cli.ts" {
+			r = x
+		}
+	}
+	h, env := fakeHome(t, true)
+	env = withEnv(env, map[string]string{"MEX_LEVERS": "on"})
+	h = homeFrom(env)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	file := filepath.Join(root, "src", "cli.ts")
+	crlf := strings.ReplaceAll(r.Content, "\n", "\r\n")
+	write(t, file, crlf)
+	fakeIndex(t, h.mex, projectID, root, "src/cli.ts", []byte(crlf), r.Symbols)
+	c := readCase{h, env, root, file, strings.Count(r.Content, "\n")}
+	c.prompt(t, "Add an option to buildCompletion for the out command")
+	response := map[string]any{"type": "text", "file": map[string]any{"filePath": file, "content": r.Content, "numLines": c.lines, "startLine": 1, "totalLines": c.lines}}
+	reply := c.call(t, "PostToolUse", c.payload(t, "PostToolUse", "Read", map[string]any{"file_path": file}, response))
+	var replaced readResponse
+	if err := json.Unmarshal(reply.HookSpecificOutput.UpdatedToolOutput, &replaced); err != nil || !outlineHeader.MatchString(replaced.File.Content) {
+		t.Fatalf("CRLF file not outlined: %+v", reply)
+	}
+}

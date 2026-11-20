@@ -288,7 +288,11 @@ func boundedOutlineRead(path string) ([]byte, error) {
 	return data, err
 }
 
+// returnedReadText is the first limit lines of text as the host returns a
+// read: the host drops a leading byte-order mark and shows CRLF line endings
+// as LF, so a checkout with CRLF files still matches its own read.
 func returnedReadText(text string, limit int) string {
+	text = strings.ReplaceAll(strings.TrimPrefix(text, "\ufeff"), "\r\n", "\n")
 	lines := strings.SplitAfter(text, "\n")
 	return strings.Join(lines[:min(len(lines), max(0, limit))], "")
 }
