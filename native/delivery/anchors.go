@@ -246,6 +246,9 @@ type answerCard struct {
 	// value is the tokens of the reads a card replaces; detail names its kind.
 	value  int
 	detail string
+	// symPath and symName: the definition a card is about, so an entry about
+	// the same symbol goes out in the same card.
+	symPath, symName string
 }
 
 func anchorCard(anchors []Anchor) []answerCard {

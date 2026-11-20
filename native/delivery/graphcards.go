@@ -103,7 +103,9 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 		def.Signature = e.signature
 		if card, ok := graph.SignatureCard(store, ix, def, before, impactFiles, seen); ok {
 			seen[card.Key] = true
-			out = append(out, graphAnswerCard(card))
+			c := graphAnswerCard(card)
+			c.symPath, c.symName = def.Path, def.Name
+			out = append(out, c)
 		}
 	}
 	return out

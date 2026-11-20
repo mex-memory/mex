@@ -218,7 +218,7 @@ func searchCards(ev contract.Event, env Environment) []answerCard {
 	spans := StudySpans(ev, env)
 	var out []answerCard
 	for _, span := range spans {
-		card := answerCard{surface: "search-span", text: span.Text, target: record.SurfaceTarget{Paths: []string{span.Path}, Start: span.Start, End: span.End, Origin: span.Origin}}
+		card := answerCard{surface: "search-span", text: span.Text, target: record.SurfaceTarget{Paths: []string{span.Path}, Start: span.Start, End: span.End, Origin: span.Origin}, symPath: span.Path, symName: span.name}
 		if span.noisy {
 			// One card: the definition, then the graph's callers and test.
 			if lines, value, ok := graphSearchLines(ev, env, span); ok {

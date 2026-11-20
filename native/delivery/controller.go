@@ -330,6 +330,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 	}
 
+	if isMoment && ev.Kind != contract.Prompt {
+		cards = attachSymbolCards(groups, ev.Checkout, cards)
+	}
 	adviceHandled := false
 	for _, g := range groups {
 		if g.snap == nil {
@@ -393,7 +396,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 		text, err := deliver(h, ev, env, g)
 		if g.cardsConsumed {
-			cards = nil
+			cards = withoutCards(cards, g.cards)
 		}
 		if err != nil {
 			return contract.Reply{}, err
@@ -949,13 +952,18 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(res.Receipts) == 0 {
 		return "", nil
 	}
-	text := render(res.Receipts[0].BlockID, plan, res.Receipts)
-	lines := cardLines(g.cards, res.Receipts)
-	if lines != "" {
-		if text == "" {
-			text = "[mex " + res.Receipts[0].BlockID + "]"
+	// Cards first: a card about a symbol carries the notes about it.
+	lines, folded := mergedCards(g.cards, plan, res.Receipts)
+	rest := plan[:0:0]
+	for _, p := range plan {
+		if !folded[p.item.Entry.ID] {
+			rest = append(rest, p)
 		}
-		text += "\n" + lines
+	}
+	text := render(res.Receipts[0].BlockID, rest, res.Receipts)
+	if lines != "" {
+		head := "[mex " + res.Receipts[0].BlockID + "]"
+		text = head + "\n" + lines + strings.TrimPrefix(text, head)
 	}
 	return text, nil
 }
