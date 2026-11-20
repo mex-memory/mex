@@ -14,6 +14,10 @@ import (
 
 const spanCharacters = 600
 
+// noisySearchFiles: a search with hits in this many files is one grep didn't
+// settle; symbol help pays only on such names.
+const noisySearchFiles = 3
+
 var bareNameRE = lazy(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var definitionRE = lazy(`^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:func|function|class|def|type|interface|struct|enum|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[({:=<]|$)`)
 var assignmentRE = lazy(`^([A-Za-z_][A-Za-z0-9_]*)\s*=$`)
@@ -167,7 +171,9 @@ func StudySpans(ev contract.Event, env Environment) []SpanAnswer {
 		if ev.Agent == "claude-code" && ev.Kind == contract.PostTool {
 			origin = toolKey(tool)
 		}
-		return []SpanAnswer{{Path: hit.Path, Start: hit.Start, End: end, Text: text, SignatureOnly: signatureOnly, Origin: origin}}
+		_, _, _, files, lines, searched := searchResult(ev, tool)
+		noisy := searched && (len(files) >= noisySearchFiles || lines >= rescueWideMax)
+		return []SpanAnswer{{Path: hit.Path, Start: hit.Start, End: end, Text: text, SignatureOnly: signatureOnly, Origin: origin, name: name, noisy: noisy}}
 	}
 	return nil
 }
@@ -179,6 +185,10 @@ type SpanAnswer struct {
 	End           int    `json:"end"`
 	Text          string `json:"text"`
 	SignatureOnly bool   `json:"signature_only"`
+	// name is the definition's name; noisy marks a search grep alone didn't
+	// settle (hits in several files), where the graph's lines are added.
+	name  string
+	noisy bool
 }
 
 // Strip only search/read line labels. Comparing complete lines prevents a hit
@@ -208,7 +218,16 @@ func searchCards(ev contract.Event, env Environment) []answerCard {
 	spans := StudySpans(ev, env)
 	var out []answerCard
 	for _, span := range spans {
-		out = append(out, answerCard{surface: "search-span", text: span.Text, id: "mex:span:" + contentHash(span.Text)[7:31], target: record.SurfaceTarget{Paths: []string{span.Path}, Start: span.Start, End: span.End, Origin: span.Origin}})
+		card := answerCard{surface: "search-span", text: span.Text, target: record.SurfaceTarget{Paths: []string{span.Path}, Start: span.Start, End: span.End, Origin: span.Origin}}
+		if span.noisy {
+			// One card: the definition, then the graph's callers and test.
+			if lines, value, ok := graphSearchLines(ev, env, span); ok {
+				card.text += "\n" + lines
+				card.value, card.detail = value, "graph"
+			}
+		}
+		card.id = "mex:span:" + contentHash(card.text)[7:31]
+		out = append(out, card)
 	}
 	return out
 }

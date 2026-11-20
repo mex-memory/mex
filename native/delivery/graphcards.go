@@ -5,22 +5,31 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/mex-memory/mex/native/graph"
+	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
 )
 
 // Graph cards: the graph's answer at the moment it replaces work the agent
-// is about to do. They go through the same budget as knowledge, in the cards
-// lane, and carry the tokens of the reads they replace as their value. Each
-// is silent on any doubt: a name the graph doesn't hold once, a missing
-// graph, a span too long to help.
+// is about to do. Beside a search, the graph's lines join the search-span
+// card (spans.go); here are the impact note after an edit that changes a
+// signature used widely, and the tests card before a full run (testrun.go).
+// They go through the same budget as knowledge, in the cards lane, and carry
+// the tokens of the reads they replace as their value. Each is silent on any
+// doubt: a name the graph doesn't hold once, a missing graph, a span too
+// long to help.
 
 const graphCardSurface = "graph-card"
 
+// impactFiles: the impact note after a signature change goes out only when
+// this many other files use the symbol. Below it the agent's own follow-up
+// is cheap; the note pays only on high fan-out.
+const impactFiles = 5
+
 var (
-	identifier = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]{2,80}$`) })
 	// declaration finds a named definition at the start of a line, in the
 	// languages the graph extracts: function/def/func/fn forms and methods.
 	declaration = sync.OnceValue(func() *regexp.Regexp {
@@ -48,25 +57,19 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 	if len(tools) > 16 {
 		tools = tools[:16]
 	}
-	var searches []string
 	type changed struct{ name, signature string }
 	var edits []changed
 	for _, tool := range tools {
 		if tool.Output == nil || !tool.Output.OK || tool.Output.Interrupted {
 			continue
 		}
-		switch {
-		case searchEvent(ev):
-			if pattern, _, _, _, _, ok := searchResult(ev, tool); ok && identifier().MatchString(pattern) {
-				searches = append(searches, pattern)
-			}
-		case tool.Name == contract.ToolEdit && tool.Input.Old != nil && tool.Input.New != nil:
+		if tool.Name == contract.ToolEdit && tool.Input.Old != nil && tool.Input.New != nil {
 			for name, signature := range changedSignatures(*tool.Input.Old, *tool.Input.New) {
 				edits = append(edits, changed{name, signature})
 			}
 		}
 	}
-	if len(searches) == 0 && len(edits) == 0 {
+	if len(edits) == 0 {
 		return nil
 	}
 	ix := openRescueIndex(env, ev)
@@ -87,12 +90,6 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 
 	var out []answerCard
 	seen := graph.Seen{}
-	for _, name := range searches {
-		if card, ok := graph.SearchCard(store, ix, name, seen); ok {
-			seen[card.Key] = true
-			out = append(out, graphAnswerCard(card))
-		}
-	}
 	for _, e := range edits {
 		defs, err := store.Resolve(e.name)
 		if err != nil || len(defs) != 1 {
@@ -104,7 +101,7 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 			continue
 		}
 		def.Signature = e.signature
-		if card, ok := graph.SignatureCard(store, ix, def, before, seen); ok {
+		if card, ok := graph.SignatureCard(store, ix, def, before, impactFiles, seen); ok {
 			seen[card.Key] = true
 			out = append(out, graphAnswerCard(card))
 		}
@@ -163,4 +160,40 @@ func normalizeDeclaration(line string) string { return strings.Join(strings.Fiel
 
 func valueDetail(kind string, value int) string {
 	return kind + " value=" + strconv.Itoa(value)
+}
+
+// graphSearchLines are the graph's lines for a span card, in the room the
+// span leaves. Code lines are shown only for files unchanged since the
+// build, so a line number and its text always agree.
+func graphSearchLines(ev contract.Event, env Environment, span SpanAnswer) (string, int, bool) {
+	if ev.ProjectID == "" || ev.Checkout == "" || surfaceSetting(env, ev.ProjectID, graphCardSurface) == "off" {
+		return "", 0, false
+	}
+	room := spanCharacters - utf8.RuneCountInString(span.Text) - 1
+	if room <= 0 {
+		return "", 0, false
+	}
+	ix := openRescueIndex(env, ev)
+	if ix == nil {
+		return "", 0, false
+	}
+	defer closeRescueIndex(env, ix)
+	isTest := func(path string) bool {
+		info, miss := ix.FileInfo(path)
+		return miss == nil && info.IsTest
+	}
+	store, err := graph.OpenStore(env.RecordDirectory, ev.ProjectID, ev.Checkout, isTest)
+	if err != nil {
+		return "", 0, false
+	}
+	defer store.Close()
+	code := func(path string, line int) string {
+		built, ok := store.BuiltHash(path)
+		info, miss := ix.FileInfo(path)
+		if !ok || miss != nil || info.Hash != built {
+			return ""
+		}
+		return readSymbol(ev.Checkout, index.SymbolHit{Path: path, Start: line, End: line}, 240)
+	}
+	return graph.SearchLines(store, ix, span.Path, span.name, room, code)
 }
