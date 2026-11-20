@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
 import { codexExitCodes } from "./codex-exits.js";
-import { neutral, passedRuns } from "./fail-pass.js";
+import { neutral, passedRuns, rolloutExitHidden } from "./fail-pass.js";
 import { readConflict, stageConflict, type StoredConflict } from "../review/conflicts.js";
 import { REVIEW_DAYS } from "../review/state.js";
 import { nativeBinary, runNative, type Verdict } from "./check.js";
@@ -84,7 +84,8 @@ function journalPasses(proposals: readonly Proposal[], project: KnowledgeProject
         WHERE j.id IN (${chunk.map(() => "?").join(",")}) AND j.kind='command' AND (j.exit_code=0 OR (j.exit_code IS NULL AND j.call_id IS NOT NULL))
         AND s.project_id=? AND s.checkout=?`, ...chunk, project.projectId, project.root)) {
         if (row.exit_code !== null) passes.set(Number(row.id), row.text);
-        else if (row.agent === "codex") pending.set(row.session_id, [...pending.get(row.session_id) ?? [], { id: Number(row.id), text: row.text, call: row.call_id! }]);
+        // A pipeline's rollout code is its last stage's.
+        else if (row.agent === "codex" && !rolloutExitHidden(row.text)) pending.set(row.session_id, [...pending.get(row.session_id) ?? [], { id: Number(row.id), text: row.text, call: row.call_id! }]);
       }
     }
     for (const [session, rows] of pending) {
