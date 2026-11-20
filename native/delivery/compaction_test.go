@@ -90,6 +90,17 @@ func TestCompactionReservesRoomForDeliveredNotes(t *testing.T) {
 	}
 }
 
+// deleteJournalThrough stands in for retention removing the oldest rows.
+func deleteJournalThrough(path string, id int64) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.Exec(`DELETE FROM journal WHERE id <= ?`, id)
+	return err
+}
+
 func TestCompactionUsesFilteredQuotesAndHandlesLateSummary(t *testing.T) {
 	f := newFixture(t)
 	f.start("startup")
@@ -107,10 +118,10 @@ func TestCompactionUsesFilteredQuotesAndHandlesLateSummary(t *testing.T) {
 		{Kind: "typed", Text: "Check whether the failover worker restarts."},
 		{Kind: "typed", Text: "Finish the registry migration."},
 	})
-	if err == nil {
-		err = hooks.PruneJournal(f.project, 1)
-	}
 	hooks.Close()
+	if err == nil {
+		err = deleteJournalThrough(filepath.Join(f.dir, "hooks.db"), 1)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

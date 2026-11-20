@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -130,14 +131,27 @@ func TestPasted(t *testing.T) {
 
 func TestRedactKeepsTheRowWithoutTheSecret(t *testing.T) {
 	cases := map[string]string{
-		"deploy with token=abcd1234efgh5678":                             "deploy with token=" + Redacted,
-		"export GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123":         "export GITHUB_TOKEN=" + Redacted,
-		"curl -H 'Authorization: Bearer abcdefghijklmnop1234' x":         "curl -H 'Authorization: Bearer " + Redacted + "' x",
-		"git clone https://me:hunter2pass@example.com/r.git":             "git clone https://me:" + Redacted + "@example.com/r.git",
-		"key AKIAABCDEFGHIJKLMNOP here":                                  "key " + Redacted + " here",
-		"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY----- ok": Redacted + " ok",
-		"use mexi_0123456789abcdef as the producer token":                "use " + Redacted + " as the producer token",
-		"nothing secret about max_tokens=4096":                           "nothing secret about max_tokens=4096",
+		"deploy with token=abcd1234efgh5678":                              "deploy with token=" + Redacted,
+		"export GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123":          "export GITHUB_TOKEN=" + Redacted,
+		"curl -H 'Authorization: Bearer abcdefghijklmnop1234' x":          "curl -H 'Authorization: Bearer " + Redacted + "' x",
+		"git clone https://me:hunter2pass@example.com/r.git":              "git clone https://me:" + Redacted + "@example.com/r.git",
+		"key AKIAABCDEFGHIJKLMNOP here":                                   "key " + Redacted + " here",
+		"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY----- ok":  Redacted + " ok",
+		"use mexi_0123456789abcdef as the producer token":                 "use " + Redacted + " as the producer token",
+		"nothing secret about max_tokens=4096":                            "nothing secret about max_tokens=4096",
+		"DB_PASSWORD=hunter2hunter2 go test ./...":                        "DB_PASSWORD=" + Redacted + " go test ./...",
+		"STRIPE_API_KEY=sk_live_abcdefghijklmnop1234 cargo test":          "STRIPE_API_KEY=" + Redacted + " cargo test",
+		"NPM_TOKEN=npm_abcdefgh12345678 npm ci":                           "NPM_TOKEN=" + Redacted + " npm ci",
+		"PGPASSWORD=s3cretPassw0rd psql":                                  "PGPASSWORD=" + Redacted + " psql",
+		"DATABASE_URL=postgres://app:s3cretPassw0rd@db:5432/app npm test": "DATABASE_URL=postgres://app:" + Redacted + "@db:5432/app npm test",
+		"redis-cli -u redis://:s3cretPassw0rd@localhost:6379":             "redis-cli -u redis://:" + Redacted + "@localhost:6379",
+		// Ordinary words and settings that only look close stay.
+		"KEYBOARD=us-international-layout make build":            "KEYBOARD=us-international-layout make build",
+		"SORT_KEY=createdAtDescending npm test":                  "SORT_KEY=createdAtDescending npm test",
+		"PASSWORD_FILE=/run/secrets/database npm test":           "PASSWORD_FILE=/run/secrets/database npm test",
+		"pass --password-file ./secrets.txt to passthrough mode": "pass --password-file ./secrets.txt to passthrough mode",
+		"DATABASE_URL=postgres://localhost:5432/app npm test":    "DATABASE_URL=postgres://localhost:5432/app npm test",
+		"git clone ssh://git@github.com:22/org/repo.git":         "git clone ssh://git@github.com:22/org/repo.git",
 	}
 	for in, want := range cases {
 		if got := Redact(in); got != want {
@@ -188,3 +202,58 @@ func TestNoteCommand(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestEditRowsArePathsInTheCheckout(t *testing.T) {
+	root := t.TempDir()
+	at := func(parts ...string) string {
+		return filepath.ToSlash(filepath.Join(append([]string{root}, parts...)...))
+	}
+	edit := func(kind contract.Kind, tool contract.Tool) contract.Event {
+		if tool.Output == nil {
+			tool.Output = &contract.ToolOutput{OK: kind == contract.PostTool}
+		}
+		return contract.Event{Agent: "codex", Kind: kind, SessionID: "s", Checkout: root, Cwd: root, Tool: &tool}
+	}
+	long := at(strings.Repeat("d/", MaxEditPath/2), "x.go")
+	patch := contract.Tool{Name: contract.ToolPatch, Input: contract.ToolInput{Files: []contract.PatchFile{
+		{Path: at("a.go")}, {Path: at("a.go")}, {Path: at("b", "c.go")}, {Path: long}, {Path: at("token=abcdefgh12345678.txt")}, {Path: filepath.ToSlash(filepath.Dir(root)) + "/out.go"},
+	}}}
+	cases := []struct {
+		name string
+		ev   contract.Event
+		want string
+	}{
+		{"patch: once per file, inside the checkout, no long or secret paths", edit(contract.PostTool, patch), "a.go,b/c.go"},
+		{"write", edit(contract.PostTool, contract.Tool{Name: contract.ToolWrite, Input: contract.ToolInput{Path: at("w.md"), Content: ptr("body")}}), "w.md"},
+		{"failed", edit(contract.PostToolFailure, contract.Tool{Name: contract.ToolEdit, Input: contract.ToolInput{Path: at("e.go")}}), ""},
+		{"interrupted", edit(contract.PostTool, contract.Tool{Name: contract.ToolEdit, Input: contract.ToolInput{Path: at("e.go")}, Output: &contract.ToolOutput{OK: true, Interrupted: true}}), ""},
+		{"the checkout itself", edit(contract.PostTool, contract.Tool{Name: contract.ToolWrite, Input: contract.ToolInput{Path: at()}}), ""},
+		{"multi-edit is Claude Code's only", edit(contract.PostTool, contract.Tool{Name: contract.ToolOther, RawName: "MultiEdit", RawInput: []byte(`{"file_path":"m.go"}`)}), ""},
+	}
+	claude := edit(contract.PostTool, contract.Tool{Name: contract.ToolOther, RawName: "NotebookEdit", RawInput: []byte(`{"notebook_path":"nb/a.ipynb","new_source":"body"}`)})
+	claude.Agent = "claude-code"
+	cases = append(cases, struct {
+		name string
+		ev   contract.Event
+		want string
+	}{"notebook edit", claude, "nb/a.ipynb"})
+	sub := edit(contract.PostTool, contract.Tool{Name: contract.ToolWrite, Input: contract.ToolInput{Path: at("w.md")}})
+	sub.AgentID = "sub-1"
+	cases = append(cases, struct {
+		name string
+		ev   contract.Event
+		want string
+	}{"subagent", sub, ""})
+	for _, c := range cases {
+		var got []string
+		for _, r := range Rows(c.ev, Env{}) {
+			if r.Kind != "edit" || r.ExitCode != nil || r.Marks != "" {
+				t.Fatalf("%s: %+v", c.name, r)
+			}
+			got = append(got, r.Text)
+		}
+		if strings.Join(got, ",") != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}

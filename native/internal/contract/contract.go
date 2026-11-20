@@ -117,6 +117,9 @@ type ToolOutput struct {
 	ExitCode       *int   `json:"exit_code,omitempty"`
 	// Interrupted is set on a failure the person caused by stopping the tool.
 	Interrupted bool `json:"interrupted,omitempty"`
+	// Background is set when the host moved a shell command to the
+	// background: OK then only says it started, not how it ended.
+	Background bool `json:"-"`
 }
 
 type Decision string

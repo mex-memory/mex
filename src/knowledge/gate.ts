@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
+import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
+import { codexExitCodes } from "./codex-exits.js";
+import { neutral } from "./fail-pass.js";
 import { readConflict, stageConflict, type StoredConflict } from "../review/conflicts.js";
 import { REVIEW_DAYS } from "../review/state.js";
 import { nativeBinary, runNative, type Verdict } from "./check.js";
@@ -59,8 +61,53 @@ function publication(writer: RecordWriter, project: string, id: string): Publica
   } catch { return undefined; }
 }
 
+/**
+ * Fail-pass evidence is journal row ids. A command that only the journal saw
+ * is verified by having run in this checkout with exit 0: the rows are read
+ * here, never taken from the proposal, and only the exact row text counts.
+ */
+function journalPasses(proposals: readonly Proposal[], project: KnowledgeProject): Map<number, string> {
+  const passes = new Map<number, string>();
+  const ids = [...new Set(proposals.flatMap(p => p?.producer === "fail-pass" && Array.isArray(p.evidence)
+    ? p.evidence.filter((ref): ref is number => Number.isSafeInteger(ref) && (ref as number) > 0) : []))].slice(0, 4096);
+  if (!ids.length) return passes;
+  let hooks: ReturnType<typeof openHooksReadOnly>;
+  try {
+    hooks = openHooksReadOnly({ home: project.location.home });
+    if (!hooks || hooks.diagnostic) return passes;
+    // A Codex row without an exit code passed only if its rollout says exit 0.
+    const pending = new Map<string, Array<{ id: number; text: string; call: string }>>();
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      for (const row of hooks.all<{ id: number; text: string; exit_code: number | null; call_id: string | null; session_id: string; agent: string }>(
+        `SELECT j.id,j.text,j.exit_code,j.call_id,j.session_id,s.agent FROM journal j JOIN sessions s ON s.session_id=j.session_id
+        WHERE j.id IN (${chunk.map(() => "?").join(",")}) AND j.kind='command' AND (j.exit_code=0 OR (j.exit_code IS NULL AND j.call_id IS NOT NULL))
+        AND s.project_id=? AND s.checkout=?`, ...chunk, project.projectId, project.root)) {
+        if (row.exit_code !== null) passes.set(Number(row.id), row.text);
+        else if (row.agent === "codex") pending.set(row.session_id, [...pending.get(row.session_id) ?? [], { id: Number(row.id), text: row.text, call: row.call_id! }]);
+      }
+    }
+    for (const [session, rows] of pending) {
+      const exits = codexExitCodes(project.location, project.projectId, project.root, session, new Set(rows.map(row => row.call)));
+      for (const row of rows) if (exits.get(row.call) === 0) passes.set(row.id, row.text);
+    }
+  } catch { /* An unreadable journal verifies nothing. */ }
+  finally { hooks?.close(); }
+  return passes;
+}
+/**
+ * The exact runs a fail-pass proposal may name: each passing row's text, and
+ * that text without its leading environment assignments, since recipes name
+ * the command and give its environment as data (any shell can repeat it).
+ */
+function observedRuns(p: Proposal, passes: ReadonlyMap<number, string>): ReadonlySet<string> | undefined {
+  if (p?.producer !== "fail-pass" || !Array.isArray(p.evidence)) return undefined;
+  return new Set(p.evidence.flatMap(ref => typeof ref === "number" && passes.has(ref) ? [passes.get(ref)!, neutral(passes.get(ref)!)[0]] : []));
+}
+const backticked = (text: string) => [...text.matchAll(/`([^`\n]+)`/gu)].map(match => match[1]!.trim());
+
 function preflight(p: Proposal, tree: string, date: string, source: () => ReturnType<typeof references>,
-  special?: { entry: KnowledgeEntry; mode: "note" | "judge" | "review" }): Candidate | Dropped {
+  special?: { entry: KnowledgeEntry; mode: "note" | "judge" | "review" }, observed?: ReadonlySet<string>): Candidate | Dropped {
   let entry: KnowledgeEntry, checks: ProposedCheck[], evidence: Candidate["evidence"];
   try {
     if (!PRODUCER_IDS.includes(p.producer)) invalid("Unknown producer.");
@@ -104,7 +151,7 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   catch (error) { return drop("secret", message(error)); }
   let gated: KnowledgeEntry;
   const kept: number[] = [];
-  try { gated = gateEntry(entry, source(), index => kept.push(index)); }
+  try { gated = gateEntry(entry, observed ? { ...source(), exact: observed } : source(), index => kept.push(index)); }
   catch (error) { return drop(error instanceof KnowledgeError && error.code === "SECRET_FOUND" ? "secret" : "undefined-command", message(error)); }
   const sanitized: Candidate["sanitized"] = [];
   if (gated.text !== entry.text) sanitized.push("text");
@@ -115,7 +162,9 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   // A judge rewrite repairs an existing entry; it keeps whatever anchors the original had.
   if (owner.requiresAnchor && special?.mode !== "judge" && !gated.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob)) && !gated.mex.when?.length
     && !p.anchors?.symbols?.length && !gated.mex.checks.some(check => check.kind === "symbol"
-      || (check.kind === "command" && ["recipe", "procedure"].includes(gated.mex.kind)))) return drop("no-anchor");
+      || (check.kind === "command" && ["recipe", "procedure"].includes(gated.mex.kind)))
+    // A fail-pass recipe is anchored to the command moment by its observed command.
+    && !(observed && ["recipe", "procedure"].includes(gated.mex.kind) && backticked(gated.mex.one_line).some(run => observed.has(run)))) return drop("no-anchor");
   const quote = entry.mex.source.quote;
   if (quote !== undefined) {
     try {
@@ -295,7 +344,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
   let refs: ReturnType<typeof references> | undefined;
   let ruleLines: Set<string> | undefined;
   const rules = () => ruleLines ??= ruleClaims(tree);
-  const pending = Array.from(proposals, p => preflight(p, tree, date, () => refs ??= references(tree), special));
+  const passes = journalPasses(proposals, project);
+  const pending = Array.from(proposals, p => preflight(p, tree, date, () => refs ??= references(tree), special, observedRuns(p, passes)));
   if (pending.every(item => "status" in item) && !context.sweep && !context.validate && !context.onAccepted) return pending as Dropped[];
 
   const writer = openRecord({ ...context, create: true });

@@ -13,6 +13,7 @@ import { queueStaleCodeFacts } from "../repo-start/history/freshness.js";
 import { judgePending, queuePendingJudgements } from "../judge/pending.js";
 import { filterPending, queuePendingFilters } from "../filter/pending.js";
 import { nativePending, queuePendingNative } from "../knowledge/native-pending.js";
+import { queuePendingFailPass } from "../knowledge/fail-pass-job.js";
 import { queuePendingSetupRefresh, setupRefreshPending } from "../repo-start/refresh.js";
 import { BackgroundGraph } from "../graph/background-warm.js";
 import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/control.js";
@@ -289,6 +290,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       if (clock() - lastFreshness >= 60_000) {
         lastFreshness = clock();
         try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
+        // Commands that failed and then passed in a session become recipes.
+        try { queuePendingFailPass(writer, queueJob); } catch { /* a missed pass waits for the next one */ }
         // An index built before a commit made outside a session is refreshed, so folder counts settle again.
         try { queueBehindHead(writer); } catch { /* a missed pass waits for the next one */ }
         // Decisions that cite a commit come into force when it lands; a decision-like commit is offered at the next start.
@@ -337,6 +340,7 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
     queuePendingFilters(writer, queueJob);
     queuePendingNative(writer);
     queuePendingSetupRefresh(writer);
+    try { queuePendingFailPass(writer, queueJob); } catch { /* the background retries */ }
     requeueReadyJobs(writer);
     if (await runOneBatch(writer, self) === "idle") break;
     batches++;

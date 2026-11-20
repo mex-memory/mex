@@ -8,7 +8,7 @@ model evaluation.
 
 ## Ownership and scheduling
 
-Go retains typed text and command/exit-code rows in its existing journal. It
+Go retains typed text, command/exit-code rows and edited paths in its existing journal. It
 atomically replaces one metadata file per session under `filter-sessions/`:
 project, checkout, host, session id, last activity, explicit finish status, and
 host transcript reference. Only SessionEnd marks finished; later prompts clear
@@ -91,8 +91,8 @@ The existing `journal.consumed` contract remains a **fully consumed prefix**.
 Node walks journal rows in order, stopping at the first typed row not covered
 by its session acknowledgement. Commands need no filter and can advance the
 prefix. A later finished session never acknowledges an earlier active session,
-including another worktree. Go alone prunes through the safe prefix on the
-next session start, preserving its existing ownership and cap.
+including another worktree. The prefix is a cursor only: Go keeps consumed
+rows and deletes by retention (90 days or 200 MB) at session start.
 
 TOML configuration parsing already exists on the base branch. Dependency
 membership checks need a separate entry/check contract amendment and are not

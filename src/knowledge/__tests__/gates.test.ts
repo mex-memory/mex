@@ -94,4 +94,11 @@ describe("deterministic entry gates", () => {
     expect(() => assertNoSecrets({ saw: { value: { api_key: "a-synthetic-credential" } } })).toThrow(/possible secret/);
     expect(() => assertNoSecrets({ quote: 'password="a-synthetic-credential"' })).toThrow(/possible secret/);
   });
+  it("finds prefixed secret names and passwords in any URL scheme, not ordinary words", () => {
+    for (const secret of ["DB_PASSWORD=hunter2hunter2", "STRIPE_API_KEY=sk_live_abcdefghijklmnop1234", "GITHUB_TOKEN=abcdefgh12345678",
+      "PGPASSWORD=s3cretPassw0rd", "postgres://app:s3cretPassw0rd@db:5432/app", "redis://:s3cretPassw0rd@localhost:6379"]) expect(hasSecret(secret), secret).toBe(true);
+    for (const plain of ["KEYBOARD=us-international-layout", "SORT_KEY=createdAtDescending", "PASSWORD_FILE=/run/secrets/database",
+      "pass --password-file ./secrets.txt to passthrough mode", "postgres://localhost:5432/app", "ssh://git@github.com:22/org/repo.git",
+      "max_tokens=4096", "token: undefined", "the secret: rotation happens nightly"]) expect(hasSecret(plain), plain).toBe(false);
+  });
 });

@@ -1362,6 +1362,14 @@ configCmd
         console.log(value === "on"
           ? "MEX now learns lasting statements from what you type, in the background with your agent's smallest model, at most 3% of your usage. Turn off: mex config set learning.statements off"
           : "MEX no longer learns from what you type. Notes you save with mex note still get their checks.");
+      } else if (key === "learning.sessions") {
+        const { sessionLearningRefusal, setSessionLearning } = await import("./knowledge/session-learning.js");
+        const refused = sessionLearningRefusal(value);
+        if (refused) throw new Error(refused);
+        const { openRecord } = await import("./record/index.js");
+        const writer = openRecord({ create: true });
+        try { setSessionLearning(writer, value); } finally { writer.close(); }
+        console.log("Learning from past sessions is off.");
       } else if (key === "levers.output") {
         const { openRecord } = await import("./record/index.js");
         const { setOutputLevers } = await import("./controls/index.js");
@@ -1403,7 +1411,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output`);
         process.exitCode = 1;
         return;
       }

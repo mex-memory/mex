@@ -1,19 +1,48 @@
 package record
 
 import (
+	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestJournalAppendPruneAndCap(t *testing.T) {
-	h, err := OpenHooks(testLocation(t))
+func journalBytes(t *testing.T, h *Hooks) (counted, actual int64) {
+	t.Helper()
+	if err := h.db.QueryRow(`SELECT bytes FROM journal_size`).Scan(&counted); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRow(`SELECT coalesce(sum(` + journalRowBytes + `),0) FROM journal`).Scan(&actual); err != nil {
+		t.Fatal(err)
+	}
+	return counted, actual
+}
+
+func trimAll(t *testing.T, h *Hooks, now time.Time) int {
+	t.Helper()
+	starts := 0
+	for more := true; more; starts++ {
+		var err error
+		if more, err = h.TrimJournal(now); err != nil {
+			t.Fatal(err)
+		}
+		if starts > 100 {
+			t.Fatal("retention never finished")
+		}
+	}
+	return starts
+}
+
+func TestJournalAppendKeepsRowsAndKinds(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer h.Close()
 	one := 1
 	s := Session{SessionID: "s1", Agent: "claude-code", ProjectID: "g-aaaaaaaaaaaaaaaaaaaaaaaa", Checkout: "/r"}
-	if err := h.AppendJournal(s, "2026-11-15T00:00:00Z", []JournalRow{{Kind: "typed", Text: "fix the build"}, {Kind: "command", Text: "npm test", ExitCode: &one}}); err != nil {
+	if err := h.AppendJournal(s, "2026-11-15T00:00:00Z", []JournalRow{{Kind: "typed", Text: "fix the build"}, {Kind: "command", Text: "npm test", ExitCode: &one}, {Kind: "edit", Text: "src/a.ts"}}); err != nil {
 		t.Fatal(err)
 	}
 	// A pause survives: the journal never rewrites the session row.
@@ -27,48 +56,146 @@ func TestJournalAppendPruneAndCap(t *testing.T) {
 		t.Fatalf("pause lost: %+v", got)
 	}
 	rows, err := h.JournalRows("s1", 10)
-	if err != nil || len(rows) != 3 || rows[1].ExitCode == nil || *rows[1].ExitCode != 1 || rows[0].ExitCode != nil || rows[2].Marks != "pasted" {
+	if err != nil || len(rows) != 4 || rows[1].ExitCode == nil || *rows[1].ExitCode != 1 || rows[0].ExitCode != nil ||
+		rows[2].Kind != "edit" || rows[2].Text != "src/a.ts" || rows[2].ExitCode != nil || rows[3].Marks != "pasted" {
 		t.Fatalf("%+v %v", rows, err)
 	}
-	if err := h.AppendJournal(s, "t", []JournalRow{{Kind: "agent", Text: "x"}}); err == nil {
-		t.Fatal("agent text accepted")
+	for _, bad := range []JournalRow{{Kind: "agent", Text: "x"}, {Kind: "typed", Text: "x", Marks: "sdk"}, {Kind: "edit", Text: ""}, {Kind: "edit", Text: "a.ts", ExitCode: &one}} {
+		if err := h.AppendJournal(s, "t", []JournalRow{bad}); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
 	}
-	if err := h.AppendJournal(s, "t", []JournalRow{{Kind: "typed", Text: "x", Marks: "sdk"}}); err == nil {
-		t.Fatal("unknown mark accepted")
+	// Retention under both limits deletes nothing, consumed or not.
+	if starts := trimAll(t, h, time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)); starts != 1 {
+		t.Fatal(starts)
 	}
-	// Another project's rows survive a prune.
-	other := Session{SessionID: "s2", Agent: "codex", ProjectID: "g-bbbbbbbbbbbbbbbbbbbbbbbb", Checkout: "/o"}
-	if err := h.AppendJournal(other, "t", []JournalRow{{Kind: "typed", Text: "other"}}); err != nil {
-		t.Fatal(err)
+	if rows, _ := h.JournalRows("s1", 10); len(rows) != 4 {
+		t.Fatalf("rows lost: %+v", rows)
 	}
-	if err := h.PruneJournal(s.ProjectID, rows[1].ID); err != nil {
-		t.Fatal(err)
+	if counted, actual := journalBytes(t, h); counted != actual || counted == 0 {
+		t.Fatalf("byte total %d, rows hold %d", counted, actual)
 	}
-	if rows, _ := h.JournalRows("s1", 10); len(rows) != 1 || rows[0].Text != "again" {
-		t.Fatalf("prune: %+v", rows)
-	}
-	if rows, _ := h.JournalRows("s2", 10); len(rows) != 1 {
-		t.Fatalf("other project pruned: %+v", rows)
-	}
+}
 
-	// The cap keeps the newest text and drops the oldest.
-	big := strings.Repeat("x", 64<<10)
-	for i := 0; i < 100; i++ {
-		if err := h.AppendJournal(s, "t", []JournalRow{{Kind: "typed", Text: big}}); err != nil {
+func TestJournalAgeLimit(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	s := Session{SessionID: "s1", Agent: "codex", ProjectID: "p", Checkout: "/r"}
+	// 5,000 rows past 90 days, then rows just inside it: a backlog takes
+	// several bounded session starts, and stops at the first kept row.
+	old := now.Add(-JournalMaxAge - time.Hour)
+	for i := 0; i < 50; i++ {
+		batch := make([]JournalRow, 100)
+		for j := range batch {
+			batch[j] = JournalRow{Kind: "edit", Text: fmt.Sprintf("old/%d.go", i*100+j)}
+		}
+		if err := h.AppendJournal(s, old.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), batch); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := h.TrimJournal(); err != nil {
+	fresh := now.Add(-JournalMaxAge + time.Minute).Format(time.RFC3339Nano)
+	if err := h.AppendJournal(s, fresh, []JournalRow{{Kind: "typed", Text: "kept"}, {Kind: "command", Text: "go test ./..."}}); err != nil {
 		t.Fatal(err)
 	}
-	var total int64
-	if err := h.db.QueryRow(`SELECT coalesce(sum(length(CAST(text AS BLOB))),0) FROM journal`).Scan(&total); err != nil || total > JournalCapBytes || total < JournalCapBytes-(64<<10) {
-		t.Fatalf("cap: %d %v", total, err)
+	more, err := h.TrimJournal(now)
+	if err != nil || !more {
+		t.Fatal("one session start should leave a backlog", more, err)
+	}
+	var left int
+	h.db.QueryRow(`SELECT count(*) FROM journal`).Scan(&left)
+	if want := 5002 - journalTrimSteps*journalTrimStep; left != want {
+		t.Fatalf("one start deleted %d rows, want at most %d", 5002-left, journalTrimSteps*journalTrimStep)
+	}
+	trimAll(t, h, now)
+	rows, _ := h.JournalRows("s1", 10)
+	if len(rows) != 2 || rows[0].Text != "kept" {
+		t.Fatalf("%+v", rows)
+	}
+	if counted, actual := journalBytes(t, h); counted != actual {
+		t.Fatalf("byte total %d, rows hold %d", counted, actual)
+	}
+}
+
+func TestJournalSizeLimit(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	defer func(cap int64) { journalCap = cap }(journalCap)
+	journalCap = 1 << 20
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	ts := now.Format(time.RFC3339Nano)
+	s := Session{SessionID: "s1", Agent: "claude-code", ProjectID: "p", Checkout: "/r"}
+	big := strings.Repeat("x", 16<<10)
+	for i := 0; i < 100; i++ {
+		if err := h.AppendJournal(s, ts, []JournalRow{{Kind: "typed", Text: fmt.Sprintf("%03d", i) + big}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Appends only check the running total every 32 rows and delete a bounded
+	// step, so the journal stays near the cap between session starts.
+	counted, actual := journalBytes(t, h)
+	if counted != actual || counted > journalCap+32*(17<<10) {
+		t.Fatalf("append kept %d (rows hold %d)", counted, actual)
+	}
+	trimAll(t, h, now)
+	counted, actual = journalBytes(t, h)
+	if counted != actual || counted > journalCap || counted < journalCap-(17<<10) {
+		t.Fatalf("cap: %d (rows hold %d)", counted, actual)
 	}
 	var newest string
-	h.db.QueryRow(`SELECT text FROM journal ORDER BY id DESC LIMIT 1`).Scan(&newest)
-	if newest != big {
-		t.Fatal("newest row dropped")
+	h.db.QueryRow(`SELECT substr(text,1,3) FROM journal ORDER BY id DESC LIMIT 1`).Scan(&newest)
+	if newest != "099" {
+		t.Fatal("newest row dropped", newest)
+	}
+}
+
+// Migration 15 rebuilds the journal for the edit kind: rows, ids, the index
+// and the id allocation point survive, and the byte total starts right.
+func TestJournalMigrationKeepsRowsAndIDs(t *testing.T) {
+	location := testLocation(t)
+	db, err := sql.Open("sqlite", location.Hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range hookMigrationFiles[:14] {
+		data, err := schemas.ReadFile("schema/hooks/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(data) + fmt.Sprintf(";PRAGMA user_version=%d", i+1)); err != nil {
+			t.Fatal(name, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO sessions VALUES('s1','codex','p','/r','t','t',0);
+		INSERT INTO journal(session_id,ts,kind,text,exit_code,marks) VALUES('s1','t','typed','one',NULL,''),('s1','t','command','npm test',1,''),('s1','t','typed','three',NULL,'pasted');
+		DELETE FROM journal WHERE id=3`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	h, err := openHooks(location, testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if err := h.AppendJournal(Session{SessionID: "s1"}, "t", []JournalRow{{Kind: "edit", Text: "src/a.ts"}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := h.JournalRows("s1", 10)
+	if err != nil || len(rows) != 3 || rows[0].ID != 1 || rows[1].ID != 2 || *rows[1].ExitCode != 1 || rows[2].ID != 4 || rows[2].Kind != "edit" {
+		t.Fatalf("ids reused or rows lost: %+v %v", rows, err)
+	}
+	var index string
+	if err := h.db.QueryRow(`SELECT sql FROM sqlite_schema WHERE name='journal_session_id'`).Scan(&index); err != nil || !strings.Contains(index, "journal(session_id,id)") {
+		t.Fatal("index lost", index, err)
+	}
+	if counted, actual := journalBytes(t, h); counted != actual {
+		t.Fatalf("byte total %d, rows hold %d", counted, actual)
 	}
 }
 
@@ -91,5 +218,45 @@ func TestShowOnceAcrossSessions(t *testing.T) {
 	}
 	if got, _ := h.Delivered("a", "mx_none"); got {
 		t.Fatal("nothing was delivered")
+	}
+}
+
+// The byte total follows updates too, and a call id counts toward it. Only a
+// command without an exit code keeps a call id.
+func TestJournalSizeFollowsUpdatesAndCallIDs(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	s := Session{SessionID: "s1", Agent: "codex", ProjectID: "p", Checkout: "/r"}
+	ts := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	one := 1
+	if err := h.AppendJournal(s, ts, []JournalRow{{Kind: "command", Text: "npm test", CallID: "exec-1"}, {Kind: "typed", Text: "short"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []JournalRow{{Kind: "typed", Text: "x", CallID: "exec-2"}, {Kind: "command", Text: "x", ExitCode: &one, CallID: "exec-3"},
+		{Kind: "command", Text: "x", CallID: strings.Repeat("c", MaxCallID+1)}} {
+		if err := h.AppendJournal(s, ts, []JournalRow{bad}); err == nil {
+			t.Fatalf("accepted %+v", bad)
+		}
+	}
+	if rows, _ := h.JournalRows("s1", 10); len(rows) != 2 || rows[0].CallID != "exec-1" || rows[1].CallID != "" {
+		t.Fatalf("%+v", rows)
+	}
+	for _, update := range []string{`UPDATE journal SET text=text||? WHERE kind='typed'`, `UPDATE journal SET call_id=substr(?,1,100) WHERE kind='command'`,
+		`UPDATE journal SET ts=ts||? WHERE kind='typed'`} {
+		if _, err := h.db.Exec(update, strings.Repeat("y", 300)); err != nil {
+			t.Fatal(err)
+		}
+		if counted, actual := journalBytes(t, h); counted != actual {
+			t.Fatalf("after %q: counted %d, rows hold %d", update, counted, actual)
+		}
+	}
+	if _, err := h.db.Exec(`UPDATE journal SET call_id=NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if counted, actual := journalBytes(t, h); counted != actual {
+		t.Fatalf("counted %d, rows hold %d", counted, actual)
 	}
 }

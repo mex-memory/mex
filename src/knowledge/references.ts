@@ -16,6 +16,11 @@ export interface References {
   packageScripts: Map<string, Set<string>>;
   /** A discovery bound was reached; anything not collected stays unverified. */
   truncated: boolean;
+  /**
+   * Exact commands the capture journal saw pass here. Only the producer gate
+   * sets this, for fail-pass proposals, from their own journal evidence.
+   */
+  exact?: ReadonlySet<string>;
 }
 export function repoFile(root: string, path: string): string | undefined {
   if (!path || /[\\\x00-\x1f]/u.test(path) || /^(?:\/|[A-Za-z]:)/u.test(path)) return undefined;
@@ -194,7 +199,7 @@ export function withoutEnvironment(command: string): string {
 
 export function commandExists(command: string, source: References): boolean {
   const original = command.trim();
-  if (source.commands.has(original)) return true;
+  if (source.commands.has(original) || source.exact?.has(original)) return true;
   if (/[;&|<>$`\r\n]/u.test(command)) return false;
   const trimmed = withoutEnvironment(original);
   if (source.commands.has(trimmed)) return true;
