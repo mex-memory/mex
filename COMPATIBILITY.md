@@ -1,5 +1,24 @@
 # Compatibility
 
+## Unreleased dependency claim metadata
+
+`Claim`, exported from the package root, gains optional `ecosystem: "npm" |
+"python"` evidence for dependency and version claims. Existing callers can omit
+it. Extraction records explicit ecosystem headings (including enclosing
+headings) and scoped npm package names; mixed or unlabelled prose stays
+ambiguous. Checking distinguishes the named ecosystems, so unread Python
+manifests do not suppress identified npm claims. An unlabelled missing name
+still abstains when Python manifests are unread.
+
+Heading evidence uses whole ecosystem labels plus neutral dependency terms,
+for example `JavaScript Dependencies` or `Python` above `Key Libraries`.
+Bare `Node`, mixed-language headings, and unknown qualifiers clear inherited
+evidence; `Node.js` and `NodeJS` identify npm. When both npm and Python version
+claims exist for a name, an unlabelled version can match either candidate. A
+version matching neither remains a cross-file conflict.
+
+This is an additive change to the package-root API. No version bump is made here.
+
 ## MEX 0.9.0-beta.1
 
 This is a pre-release on npm's `next` tag. MEX 0.8.5 stays on `latest`.
