@@ -243,6 +243,7 @@ func sortRanked(r []rankedCandidate) {
 // most MaxGlobal repo-wide team entries. A group that doesn't fit is skipped
 // and the next one tried, so one long entry can't silence the rest.
 func (w workingSelection) main(used int) []Item {
+	budget := room{team: used}
 	var ranked []rankedCandidate
 	for _, c := range w.all {
 		if c.level == "hint" || c.entry.Status != "active" {
@@ -269,7 +270,8 @@ func (w workingSelection) main(used int) []Item {
 	seen, lines := map[string]bool{}, map[string]bool{}
 	var out []Item
 	globals := 0
-	// The person's notes don't count toward MaxItems; their budget is MaxNoteTokens.
+	// The person's notes don't count toward MaxItems; they have their own
+	// budget, MaxNoteTokens.
 	counted := func(items []Item) int {
 		n := 0
 		for _, item := range items {
@@ -291,11 +293,7 @@ func (w workingSelection) main(used int) []Item {
 		if !ok || len(group) == 0 {
 			continue
 		}
-		cost := 0
-		for _, item := range group {
-			cost += item.Tokens
-		}
-		if used+cost > capFor(group) || (counted(group) > 0 && counted(out)+counted(group) > MaxItems) {
+		if !budget.fits(group) || (counted(group) > 0 && counted(out)+counted(group) > MaxItems) {
 			continue
 		}
 		for _, item := range group {
@@ -304,7 +302,7 @@ func (w workingSelection) main(used int) []Item {
 			}
 			out = append(out, item)
 			seen[item.ID], lines[item.Line] = true, true
-			used += item.Tokens
+			budget.add(item)
 		}
 		if countsGlobal {
 			globals++

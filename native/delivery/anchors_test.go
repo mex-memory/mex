@@ -115,8 +115,10 @@ func TestPromptAnchorArmsRuleUntilFirstNamedRead(t *testing.T) {
 	}
 }
 
-func TestPromptAnchorTrialAndNoIndexSilence(t *testing.T) {
-	if record.SurfaceDefault("prompt-anchor") != "trial" {
+// A symbol the prompt names that resolves to one place is an exact anchor:
+// on by default. Without a file index it stays silent.
+func TestPromptAnchorOnByDefaultAndNoIndexSilence(t *testing.T) {
+	if record.SurfaceDefault("prompt-anchor") != "on" || record.SurfaceDefault("prompt-vocabulary") != "trial" {
 		t.Fatal("default")
 	}
 	f := rescueFixture(t)
@@ -129,7 +131,7 @@ func TestPromptAnchorTrialAndNoIndexSilence(t *testing.T) {
 	plantIndex(t, f, map[string][]plantedSymbol{"src/pool.ts": {{"makeWidget", "function", 1, 1}}})
 	indexedSource(t, f, "src/pool.ts", "function makeWidget() {}")
 	reply, err = Handle(ev, f.env())
-	if err != nil || !reply.Empty() {
+	if err != nil || !strings.Contains(reply.Context, "src/pool.ts:1") {
 		t.Fatal(reply, err)
 	}
 	if !record.Acted("prompt-anchor", record.SurfaceTarget{Paths: []string{"src/pool.ts"}}, record.SurfaceTool{Paths: []string{"src/pool.ts"}, Open: true, Success: true}) {

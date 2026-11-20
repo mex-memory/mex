@@ -108,6 +108,7 @@ func pruneLeverStates(dir string, now time.Time) {
 type leverOptions struct {
 	raw       bool   // MEX_RAW=1: show everything as it is
 	noOutline bool   // MEX_OUTLINE=0: no outlines
+	noBump    bool   // MEX_SPEED_BUMP=0: no speed bump
 	shell     string // SHELL: the shell Codex runs commands through, outside Windows
 	binary    string // this program, for the Codex wrapper; "" finds it
 }

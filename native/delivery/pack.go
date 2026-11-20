@@ -100,7 +100,7 @@ func packInto(items []shaped, companions func(string) *shaped, reserveBudget int
 		if s.reserve {
 			limit, spent = reserveBudget, &reserved
 		}
-		overhead := entries.EstimateTokens(" (" + id + ")")
+		overhead := entries.EstimateTokens(idSuffix(s.pointer, id))
 		if !markerPaid {
 			overhead += 8
 		}
@@ -237,11 +237,20 @@ func render(block string, plan []planned, receipts []record.Receipt) string {
 			b.WriteString("Correction: the MEX note " + id + " given earlier no longer matches the code; set it aside.\n")
 		case !p.correction && given[id] && p.text != "":
 			b.WriteString(strings.TrimSpace(p.text))
-			b.WriteString(" (" + id + ")\n")
+			b.WriteString(idSuffix(p.pointer, id) + "\n")
 		}
 	}
 	if b.Len() == 0 {
 		return ""
 	}
 	return "[mex " + block + "]\n" + strings.TrimRight(b.String(), "\n")
+}
+
+// idSuffix ends a delivered line: the entry's id, or for a prompt pointer the
+// command that reads the entry in full.
+func idSuffix(pointer bool, id string) string {
+	if pointer {
+		return " (full text: `mex expand " + id + "`)"
+	}
+	return " (" + id + ")"
 }

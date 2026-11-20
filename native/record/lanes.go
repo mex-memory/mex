@@ -31,7 +31,7 @@ func LaneFor(c DeliveryCandidate) string {
 	switch c.Surface {
 	case "search-span", "graph-card":
 		return "cards"
-	case "prompt", "prompt-anchor":
+	case "prompt", "prompt-anchor", "prompt-vocabulary":
 		return "prompt"
 	case "start-brief", "start-brief-working-set", "recovery", "carry":
 		return "brief"

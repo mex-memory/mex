@@ -40,7 +40,7 @@ func build(t *testing.T, opts Options) Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Tokens != TokenBound(r.Text) || r.Tokens > MaxNoteTokens {
+	if r.Tokens != TokenBound(r.Text) || r.Tokens > MaxTokens+MaxNoteTokens {
 		t.Fatalf("budget: %+v", r)
 	}
 	return r
@@ -88,7 +88,7 @@ func TestBriefKeepsThePersonsNotesPastTheDeadline(t *testing.T) {
 	// too long to fit use those checks up, so the short one after them waits.
 	for i := 0; i < maxLateNotes+2; i++ {
 		id := fmt.Sprintf("mx_long%02d", i)
-		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, strings.Repeat("x", 950), "rule", "**", "[]"))
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, strings.Repeat("界", 300), "rule", "**", "[]"))
 	}
 	if r = build(t, opts); len(r.Items) != 0 {
 		t.Fatal(r.Text)
@@ -99,9 +99,9 @@ func TestBriefKeepsThePersonsNotesPastTheDeadline(t *testing.T) {
 	}
 }
 
-// Notes no rule file carries for this agent (just saved, or Codex in a repo
-// whose AGENTS.md is the person's) get room beyond MaxTokens; team entries
-// still stop at MaxTokens.
+// The person's notes have their own budget (MaxNoteTokens) beside the one
+// for team entries and commands (MaxTokens): notes never crowd out the team's
+// lines, and team lines never crowd out the notes.
 func TestBriefGivesThePersonsNotesTheirOwnRoom(t *testing.T) {
 	opts := setup(t)
 	for i := 0; i < 6; i++ {
@@ -109,35 +109,63 @@ func TestBriefGivesThePersonsNotesTheirOwnRoom(t *testing.T) {
 		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, fmt.Sprintf("Note %d: deploys from the release branch only, after the QA sign-off.", i), "rule", "**", "[]"))
 	}
 	put(t, opts.Checkout, ".mex/learned/mx_team01.md", entry("mx_team01", "Team claim.", "rule", "**", "[]"))
-	r := build(t, opts)
-	notes := 0
-	for _, item := range r.Items {
-		if item.Level == "personal" {
-			notes++
+	count := func(r Result) (notes, noteTokens int) {
+		for _, item := range r.Items {
+			if item.Level == "personal" {
+				notes++
+				noteTokens += item.Tokens
+			}
 		}
+		return
 	}
-	if notes != 6 || strings.Contains(r.Text, "Team claim") || r.Tokens <= MaxTokens {
+	r := build(t, opts)
+	if notes, _ := count(r); notes != 6 || !strings.Contains(r.Text, "Team claim") {
 		t.Fatal(r.Text)
 	}
-	// With room left under MaxTokens a team entry still follows the notes.
-	opts2 := setup(t)
-	put(t, opts2.MexHome, "projects/"+project+"/notes/mx_note01.md", entry("mx_note01", "Small commits.", "rule", "**", "[]"))
-	put(t, opts2.Checkout, ".mex/learned/mx_team01.md", entry("mx_team01", "Team claim.", "rule", "**", "[]"))
-	if r := build(t, opts2); !strings.Contains(r.Text, "Team claim") || r.Tokens > MaxTokens {
-		t.Fatal(r.Text)
+	// More notes than their budget holds: whole notes up to MaxNoteTokens,
+	// and the team's line still goes out.
+	for i := 6; i < 16; i++ {
+		id := fmt.Sprintf("mx_note%02d", i)
+		put(t, opts.MexHome, "projects/"+project+"/notes/"+id+".md", entry(id, fmt.Sprintf("Note %d: deploys from the release branch only, after the QA sign-off.", i), "rule", "**", "[]"))
+	}
+	r = build(t, opts)
+	notes, noteTokens := count(r)
+	if notes < 6 || notes >= 16 || noteTokens > MaxNoteTokens || !strings.Contains(r.Text, "Team claim") {
+		t.Fatalf("%d notes, %d tokens: %s", notes, noteTokens, r.Text)
 	}
 }
 
 func TestBriefSelectsWholeClaimsWithinHardBoundIncludingUnicode(t *testing.T) {
 	opts := setup(t)
-	put(t, opts.Checkout, ".mex/learned/mx_long01.md", entry("mx_long01", strings.Repeat("界", 100), "rule", "**", "[]"))
+	// A character outside ASCII counts as a whole token: 320 of them can't fit.
+	put(t, opts.Checkout, ".mex/learned/mx_long01.md", entry("mx_long01", strings.Repeat("界", 320), "rule", "**", "[]"))
 	for i, line := range []string{"First.", "Second.", "Third.", "Fourth."} {
 		id := []string{"mx_short1", "mx_short2", "mx_short3", "mx_short4"}[i]
 		put(t, opts.Checkout, ".mex/learned/"+id+".md", entry(id, line, "rule", "**", "[]"))
 	}
 	r := build(t, opts)
-	if len(r.Items) != 3 || strings.Contains(r.Text, "界") || strings.Contains(r.Text, "Fourth") {
+	if strings.Contains(r.Text, "界") || !strings.Contains(r.Text, "Third") || r.Tokens > MaxTokens {
 		t.Fatal(r.Text)
+	}
+}
+
+// The calibrated estimate: prose at 4 bytes a token, text in backticks at
+// 2.3, and any character outside ASCII as a whole token.
+func TestTokenBound(t *testing.T) {
+	cases := []struct {
+		text string
+		want int
+	}{
+		{"", 0},
+		{"abcd", 1},
+		{"abcde", 2},
+		{"Run `npm test` first.", 1 + 4 + 2}, // "Run " 4/4, "npm test" 8/2.3, " first." 7/4
+		{strings.Repeat("界", 10), 10},
+	}
+	for _, c := range cases {
+		if got := TokenBound(c.text); got != c.want {
+			t.Errorf("%q: %d, want %d", c.text, got, c.want)
+		}
 	}
 }
 

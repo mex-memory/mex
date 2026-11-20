@@ -56,6 +56,9 @@ type StageReport struct {
 	Items []StageItem `json:"items"`
 	// Problems lists entry files that aren't valid entries.
 	Problems []StageProblem `json:"problems"`
+	// Flipped lists entries whose stored verdict went from held to not held,
+	// or back, in this run: rule files that carry them must be rebuilt.
+	Flipped []string `json:"flipped,omitempty"`
 }
 
 // StageItem is one entry as the run left it.
@@ -236,6 +239,9 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		item.Verdict = res.Verdict
 		report.Items = append(report.Items, item)
 		fresh = append(fresh, localrecord.Verdict{EntryID: l.Entry.ID, Verdict: res.Verdict, InputsHash: inputs, CheckedAt: checkedAt})
+		if v, ok := cached[l.Entry.ID]; ok && (v.Verdict == Held) != (res.Verdict == Held) {
+			report.Flipped = append(report.Flipped, l.Entry.ID)
+		}
 	}
 	if opts.Store == nil {
 		return report, nil

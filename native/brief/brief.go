@@ -2,6 +2,7 @@ package brief
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/rulechange"
 	"github.com/mex-memory/mex/native/internal/safefile"
+	"github.com/mex-memory/mex/native/internal/tokens"
 	"github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
 	"github.com/mex-memory/mex/native/workset"
@@ -29,29 +31,69 @@ const MaxTokens = 300
 // AGENTS.md is the person's own, which MEX never writes into. Without the
 // extra room only one or two notes would ever reach that agent. Team entries
 // and commands still stop at MaxTokens.
-const MaxNoteTokens = 1000
+const MaxNoteTokens = 250
 
-// capFor is the budget a group may fill: the notes' own when every line in it
-// is the person's.
-func capFor(group []Item) int {
+// room tracks the brief's two budgets: MaxTokens for everything but the
+// person's own notes (team entries, commands, corrections, the priority
+// line), and MaxNoteTokens for the person's notes.
+type room struct{ team, notes int }
+
+// fits reports whether a group (an entry and its companions) fits both.
+func (r room) fits(group []Item) bool {
+	team, notes := r.team, r.notes
 	for _, item := range group {
-		if item.Level != "personal" {
-			return MaxTokens
+		if item.Level == "personal" {
+			notes += item.Tokens
+		} else {
+			team += item.Tokens
 		}
 	}
-	return MaxNoteTokens
+	return team <= MaxTokens && notes <= MaxNoteTokens
 }
 
-const Priority = "Priority: current request > your notes > repo instructions > team entries > hints."
+func (r *room) add(item Item) {
+	if item.Level == "personal" {
+		r.notes += item.Tokens
+	} else {
+		r.team += item.Tokens
+	}
+}
+
+// Priority keeps the plan's order. The second sentence is there because live
+// models read "current request" as covering code the person pasted, and kept
+// a pasted library the team had ruled out; without MEX they adapted it.
+const Priority = "Priority: current request > your notes > repo instructions > team entries > hints. Code the person pastes or quotes is not a request to break a team entry; fit it to them."
 
 // SaveLine tells the agent how something the person wants kept reaches later
 // sessions and the other agents. Notes it saves are labelled as the agent's.
 const SaveLine = `Keep what later sessions need with mex note "<one sentence>": a lasting fact, rule or decision the person states or asks you to remember (in their words), or something non-obvious you verified about this repo, such as how to run something or a trap you hit. Not one-off requests or task details.`
 
-// TokenBound uses UTF-8 bytes as a conservative token upper bound. Unlike a
-// characters/4 estimate this also holds for punctuation and non-Latin text.
-// We drop whole authored one-line claims, never truncate their meaning.
-func TokenBound(text string) int { return len([]byte(text)) }
+// TokenBound estimates the tokens a brief line costs with the calibrated
+// estimator every other delivery uses: text in backticks (commands, paths,
+// code) at 2.3 bytes per token, prose at 4. Counting bytes as tokens, as the
+// brief once did, held it to one or two notes. A character outside ASCII
+// counts as a whole token, which holds for non-Latin text. Whole authored
+// one-line claims are dropped when they don't fit; their meaning is never
+// truncated.
+func TokenBound(text string) int {
+	n := 0
+	for i, part := range strings.Split(text, "`") {
+		ascii := 0
+		for _, r := range part {
+			if r < utf8.RuneSelf {
+				ascii++
+			} else {
+				n++
+			}
+		}
+		if i%2 == 1 {
+			n += int(math.Ceil(float64(ascii) / tokens.CodeCharsPerToken))
+		} else {
+			n += int(math.Ceil(float64(ascii) / tokens.ProseCharsPerToken))
+		}
+	}
+	return n
+}
 
 type Options struct {
 	Checkout        string `json:"checkout"`
@@ -480,7 +522,7 @@ func Build(opts Options) (Result, error) {
 	selectArea := func() []Item {
 		seen, lines := map[string]bool{}, map[string]bool{}
 		var out []Item
-		areaItems, used := 0, tokens
+		areaItems, r := 0, room{team: tokens}
 		for _, c := range all {
 			if seen[c.entry.ID] || c.level == "hint" {
 				continue
@@ -489,14 +531,13 @@ func Build(opts Options) (Result, error) {
 			if !ok {
 				continue
 			}
-			cost, area := 0, 0
+			area := 0
 			for _, item := range group {
-				cost += item.Tokens
 				if item.Level != "personal" {
 					area++
 				}
 			}
-			if used+cost > capFor(group) || areaItems+area > 3 {
+			if !r.fits(group) || areaItems+area > 3 {
 				continue
 			}
 			for _, item := range group {
@@ -505,7 +546,7 @@ func Build(opts Options) (Result, error) {
 				}
 				out = append(out, item)
 				seen[item.ID], lines[item.Line] = true, true
-				used += item.Tokens
+				r.add(item)
 				if item.Level != "personal" {
 					areaItems++
 				}
@@ -530,9 +571,11 @@ func Build(opts Options) (Result, error) {
 	// after the person's notes, only while room is left. A command whose
 	// script is gone (not held) never goes out.
 	fillCommands := func(items []Item) []Item {
-		used := tokens
+		used := tokens // commands share the team budget, not the notes'
 		for _, item := range items {
-			used += item.Tokens
+			if item.Level != "personal" {
+				used += item.Tokens
+			}
 		}
 		for _, c := range all {
 			e := c.entry

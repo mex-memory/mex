@@ -99,6 +99,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return explicitProbe(stdin, stdout, getenv)
 		case "--recall":
 			return recallRank(stdin, stdout)
+		case "--pattern-check":
+			return patternCheck(stdin, stdout)
 		case "run":
 			// The Codex wrapper: the command always runs, whatever MEX's state.
 			return runWrapped(args, stdin, stdout, stderr, getenv)
@@ -336,7 +338,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			canNotice = support.PersonLine
 		}
 	}
-	reply, deliveryErr := delivery.Handle(ev, delivery.Environment{Notices: canNotice, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	toModel, known := profile.Capabilities().Support(ev.Kind)
+	denv := delivery.Environment{Notices: canNotice, NoContext: !known || toModel.Context == adapter.ChannelNone, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)
@@ -350,13 +353,20 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			return "", ""
 		}
 		return c.ProjectID, c.Root
-	}})
+	}}
+	reply, deliveryErr := delivery.Handle(ev, denv)
 	if deliveryErr != nil {
 		if h.deliveryError != nil {
 			h.deliveryError(deliveryErr)
 		}
 		failed = true
 		reply = contract.Reply{}
+	}
+	// The speed bump, on every agent whose pre-tool hook can deny a call.
+	if ev.Kind == contract.PreTool && !h.levers.raw && !h.levers.noBump && !failed {
+		if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.Deny {
+			reply = mergeReplies(reply, delivery.SpeedBump(ev, denv))
+		}
 	}
 	leverStart := time.Now()
 	leverReply, measured := levers(ev, h, recordDirectory, now, captureOn)

@@ -43,6 +43,8 @@ type Snapshot struct {
 	Items          []Item
 	Retired        []string
 	Parsed, Reused int
+
+	patterns *Patterns // built on first use by Patterns()
 }
 type fileCache struct {
 	Size  int64

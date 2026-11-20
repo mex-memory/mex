@@ -38,8 +38,7 @@ func TestWorkingSetScoresFloorsCapsAndOrders(t *testing.T) {
 	got := strings.Join(ids(r.Items), ",")
 	// Seed file 0.6, globals 0.5 (two at most), branch word 0.4, then module
 	// seed and hop file at 0.3, each × docs confidence × unchecked freshness.
-	// The brief's byte bound stops it after four lines here.
-	if got != "mx_seedfl,mx_globa2,mx_globa3,mx_brword" {
+	if got != "mx_seedfl,mx_globa2,mx_globa3,mx_brword,mx_hopfle,mx_module" {
 		t.Fatal(got)
 	}
 	opts.WorkingSet.Words = nil
@@ -66,7 +65,7 @@ func TestWorkingSetScoresFloorsCapsAndOrders(t *testing.T) {
 
 func TestWorkingSetSkipsWhatDoesNotFitAndKeepsGoing(t *testing.T) {
 	opts := setup(t)
-	put(t, opts.Checkout, ".mex/learned/mx_toolng.md", entry("mx_toolng", strings.Repeat("Long words here. ", 14), "rule", "src/a.ts", "[]"))
+	put(t, opts.Checkout, ".mex/learned/mx_toolng.md", entry("mx_toolng", strings.Repeat("Long words here. ", 80), "rule", "src/a.ts", "[]"))
 	put(t, opts.Checkout, ".mex/learned/mx_fitsok.md", entry("mx_fitsok", "Short one.", "rule", "src/lib/**", "[]"))
 	opts.WorkingSet = &workset.Set{Version: 1, Seeds: []string{"src/a.ts", "src/lib/y.ts"}}
 	r := build(t, opts)

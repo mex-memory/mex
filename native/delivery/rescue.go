@@ -79,6 +79,9 @@ func findRescue(ev contract.Event, env Environment) *rescue {
 				r = wrongPathRescue(ev, env, file)
 			}
 		}
+		if r == nil && (tool.Name == contract.ToolWrite || tool.Name == contract.ToolPatch) {
+			r = siblingRescue(ev, env, tool)
+		}
 		if r == nil {
 			// searchResult checks success itself: a Claude Code search must have
 			// succeeded, a Codex search must have exited 0 or 1.

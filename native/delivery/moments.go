@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
@@ -64,6 +65,10 @@ type candidate struct {
 	rel           string
 	resend        bool // the ledger has it, but the agent's transcript no longer does
 	control       bool // the same eligible moment suppressed by epoch dedupe
+	lineOnly      bool // always the one-line form: a moment recipe (~40 tokens)
+	// pointer: a prompt-time item goes out as its one line and the command
+	// that reads it in full, never as its whole text.
+	pointer bool
 }
 
 // Resolver finds the registered checkout for a path. isFile is false for a
@@ -285,15 +290,6 @@ func triggers(item *entries.Item, kind string) []entries.Trigger {
 	return out
 }
 
-func containsAny(text string, ts []entries.Trigger) bool {
-	for _, t := range ts {
-		if strings.Contains(text, t.Pattern) {
-			return true
-		}
-	}
-	return false
-}
-
 // recipeCommands are the commands a recipe runs: its command checks first,
 // then commands quoted in backticks in its one-line form.
 func recipeCommands(e *entries.Entry) []string {
@@ -360,7 +356,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			case "pitfall":
 				add(momentRead, scopeTier(it, v.rel), true, false)
 			case "rule":
-				if ts := triggers(it, "anti"); len(ts) > 0 && readText != "" && containsAny(readText, ts) {
+				if snap.Patterns().Has(readText, it, "anti") {
 					add(momentReadRisk, tierPattern, true, false)
 				}
 			}
@@ -374,12 +370,16 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 					add(momentEdit, scopeTier(it, v.rel), false, false)
 				}
 			case "decision":
-				if ts := triggers(it, "rejected"); len(ts) > 0 && v.added != "" && containsAny(v.added, ts) && (inScope(it, v.rel) || isManifest(v.rel)) {
+				if snap.Patterns().InEdit(v.added, it, "rejected") && (inScope(it, v.rel) || isManifest(v.rel)) {
 					add(momentRejected, tierPattern, true, false)
 				}
 			case "procedure":
 				if v.created && createsMatch(it, v.rel) {
 					add(momentCreate, tierFile, false, false)
+				} else if momentRecipe(it, v.rel) {
+					// A co-change or generator rule, at the first edit in its
+					// area: "after changes in internal/ls, run ...".
+					out = append(out, candidate{item: it, moment: momentEdit, tier: scopeTier(it, v.rel), rel: v.rel, lineOnly: true})
 				}
 			}
 		case contract.ToolShell:
@@ -435,7 +435,7 @@ func promptMoments(text string, snap *entries.Snapshot) []candidate {
 		case "decision":
 			for _, t := range triggers(it, "rejected") {
 				if len(t.Pattern) >= 3 && wordIn(text, t.Pattern) {
-					out = append(out, candidate{item: it, moment: momentPrompt, tier: tierPattern, exempt: true})
+					out = append(out, candidate{item: it, moment: momentPrompt, tier: tierPattern, exempt: true, pointer: true})
 					break
 				}
 			}
@@ -454,7 +454,7 @@ func promptMoments(text string, snap *entries.Snapshot) []candidate {
 					}
 				}
 				if hit {
-					out = append(out, candidate{item: it, moment: momentPrompt, tier: tierPrompt})
+					out = append(out, candidate{item: it, moment: momentPrompt, tier: tierPrompt, pointer: true})
 					break
 				}
 			}
@@ -491,12 +491,88 @@ func wordIn(text, word string) bool {
 	return err == nil && re.MatchString(text)
 }
 
+// promptAnchored: the prompt names the entry exactly, not just shares words
+// with it: one of its `when:` patterns (a rejected option, an error string, a
+// pattern the person pasted), one of its commands written out, or a file in
+// its scope (unless the scope is the whole repo; a pitfall waits for the
+// file's first read, where it always fires). Word overlap alone (BM25) never
+// sends anything at prompt time; it only filters these.
+func promptAnchored(it *entries.Item, text string) bool {
+	if it == nil || it.Entry == nil {
+		return false
+	}
+	if it.Entry.Kind != "pitfall" && narrowScope(it.Entry) {
+		for _, p := range promptPathRE().FindAllString(text, 16) {
+			if inScope(it, strings.TrimPrefix(p, "./")) {
+				return true
+			}
+		}
+	}
+	for _, w := range it.Entry.When {
+		if w.Match != "literal" || len(strings.TrimSpace(w.Pattern)) < 3 || w.Type == "creates" {
+			continue
+		}
+		if isWordLike(w.Pattern) {
+			if wordIn(text, w.Pattern) {
+				return true
+			}
+		} else if strings.Contains(text, w.Pattern) {
+			return true
+		}
+	}
+	prompt := " " + strings.Join(normalizeCommand(text), " ") + " "
+	for _, c := range recipeCommands(it.Entry) {
+		if w := normalizeCommand(c); len(w) >= 2 && strings.Contains(prompt, " "+strings.Join(w, " ")+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+var promptPathRE = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?:\.?/)?(?:[A-Za-z0-9_.@-]+/)+[A-Za-z0-9_.@-]+|[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,5}`)
+})
+
+func narrowScope(e *entries.Entry) bool {
+	for _, s := range e.Scope {
+		if s != "**" && s != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func isWordLike(p string) bool {
+	for _, r := range p {
+		if !(r == '_' || r == '-' || r == '.' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 var manifests = map[string]bool{"package.json": true, "go.mod": true, "Cargo.toml": true, "pyproject.toml": true, "requirements.txt": true, "Gemfile": true, "pom.xml": true, "build.gradle": true, "composer.json": true}
 
 func isManifest(rel string) bool { return manifests[path.Base(rel)] }
 
 // createsMatch uses `when: creates` globs when the procedure has them, else
 // its scope.
+// momentRecipe: a procedure tied to an area, not to new files, fires at an
+// edit inside that area. Repo-wide procedures belong to the start brief.
+func momentRecipe(it *entries.Item, rel string) bool {
+	for _, w := range it.Entry.When {
+		if w.Type == "creates" {
+			return false
+		}
+	}
+	for _, s := range it.Entry.Scope {
+		if s == "**" || s == "**/*" || s == "*" {
+			return false
+		}
+	}
+	return inScope(it, rel)
+}
+
 func createsMatch(it *entries.Item, rel string) bool {
 	ts := triggers(it, "creates")
 	if len(ts) == 0 {

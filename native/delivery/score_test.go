@@ -215,12 +215,14 @@ func TestAdmissionUsesChosenScorerAndSessionPressure(t *testing.T) {
 
 // A typed prompt ranks with the shared ranker under every scorer; plain BM25
 // reuses those scores instead of rebuilding its own index from entry text.
+// The ranker only filters: what goes out is a pointer, and only because the
+// prompt names the entry's own pattern.
 func TestPromptDeliversUnderEachScorer(t *testing.T) {
 	for _, name := range []string{"tiers", "bm25", "fcfs", "risk"} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			f.file("src/a.ts", "export const sharedPool = new Pool()\n")
-			f.entry(spec{id: "mx_shpool", kind: "pitfall", scope: "src/**", oneLine: "sharedPool in src/a.ts must be released after each request, or requests hang."})
+			f.entry(spec{id: "mx_shpool", kind: "pitfall", scope: "src/**", oneLine: "sharedPool in src/a.ts must be released after each request, or requests hang.", when: []string{"anti:sharedPool"}})
 			f.entry(spec{id: "mx_other1", kind: "pitfall", scope: "docs/**", oneLine: "Docs pages are rebuilt by the site generator."})
 			ev := f.event(contract.Prompt)
 			ev.Prompt = &contract.PromptIn{Text: "How should sharedPool from src/a.ts handle requests?", Typed: true}
@@ -230,7 +232,8 @@ func TestPromptDeliversUnderEachScorer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			mustHave(t, reply.Context, "must be released")
+			// A pointer, never the whole text: the one line and how to read it.
+			mustHave(t, reply.Context, "must be released", "full text: `mex expand mx_shpool`")
 			if strings.Contains(reply.Context, "site generator") {
 				t.Fatal("an unrelated entry was sent")
 			}
@@ -252,5 +255,45 @@ func TestAidsSetting(t *testing.T) {
 	env.Aids = "off"
 	if aidsSetting(env) {
 		t.Fatal("override off")
+	}
+}
+
+// Word overlap alone sends nothing at prompt time; an exact anchor (here the
+// error string the entry is about) sends a pointer, and never more than two.
+func TestPromptSendsPointersOnlyOnExactAnchors(t *testing.T) {
+	f := newFixture(t)
+	f.file("src/a.ts", "export const sharedPool = new Pool()\n")
+	f.entry(spec{id: "mx_reset1", kind: "pitfall", scope: "src/**", oneLine: "ECONNRESET from the shared pool means a request kept its client; release it in finally.", when: []string{"anti:ECONNRESET"}})
+	prompt := func(text string) string {
+		ev := f.event(contract.Prompt)
+		ev.Prompt = &contract.PromptIn{Text: text, Typed: true}
+		reply, err := Handle(ev, f.env())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reply.Context
+	}
+	if ctx := prompt("Why do requests to the shared pool fail sometimes? The client seems kept."); ctx != "" {
+		t.Fatalf("word overlap alone sent: %q", ctx)
+	}
+	ctx := prompt("Requests fail with ECONNRESET from the shared pool. Why?")
+	mustHave(t, ctx, "release it in finally", "full text: `mex expand mx_reset1`")
+	if strings.Contains(ctx, "(mx_reset1)") {
+		t.Fatalf("a pointer ends with the command, not the bare id: %q", ctx)
+	}
+
+	g := newFixture(t)
+	for i, id := range []string{"mx_errone", "mx_errtwo", "mx_errthr"} {
+		code := []string{"EADDRINUSE", "ENOTFOUND", "ETIMEDOUT"}[i]
+		g.entry(spec{id: id, kind: "pitfall", scope: "src/**", oneLine: code + " from the client means the pool is misconfigured; see src/pool.ts.", when: []string{"anti:" + code}})
+	}
+	ev := g.event(contract.Prompt)
+	ev.Prompt = &contract.PromptIn{Text: "The client fails with EADDRINUSE, then ENOTFOUND, then ETIMEDOUT from the pool.", Typed: true}
+	reply, err := Handle(ev, g.env())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(reply.Context, "mex expand"); n > 2 {
+		t.Fatalf("%d pointers, at most 2: %q", n, reply.Context)
 	}
 }
