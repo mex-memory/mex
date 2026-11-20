@@ -95,6 +95,20 @@ function readAt(root: string, item: { id: string; path: string }): { entry: Know
   if (entry.mex.id !== item.id) throw new KnowledgeError("INVALID_ENTRY", "Team entry id does not match its filename.");
   return { entry, content };
 }
+/** Active claims as written, for save-time comparison. */
+export function teamClaims(root: string): KnowledgeEntry[] {
+  let bytes = 0;
+  const entries: KnowledgeEntry[] = [];
+  for (const item of teamFiles(root)) {
+    const found = readAt(root, item);
+    if (!found) continue;
+    bytes += Buffer.byteLength(found.content);
+    if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Team entries exceed the byte scan limit.");
+    if (found.entry.mex.status === "active") entries.push(found.entry);
+  }
+  return entries;
+}
+
 export function teamEntries(options: KnowledgeOptions, source?: References): { entries: TeamEntry[]; withheld: number } {
   const root = rootFor(options), files = teamFiles(root);
   if (!files.length) return { entries: [], withheld: 0 };

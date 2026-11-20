@@ -176,12 +176,20 @@ export function references(root: string): References {
   return result;
 }
 
+export const ENV_ASSIGNMENTS = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*=(?:[A-Za-z0-9_./,:@%+~=-]*|"[A-Za-z0-9_ ./,:@%+~=-]*"|'[A-Za-z0-9_ ./,:@%+~=-]*')[ \t]+)*`;
+
+export function withoutEnvironment(command: string): string {
+  return command.replace(new RegExp(`^${ENV_ASSIGNMENTS}`, "u"), "");
+}
+
 export function commandExists(command: string, source: References): boolean {
-  const trimmed = command.trim();
-  if (source.commands.has(trimmed)) return true;
+  const original = command.trim();
+  if (source.commands.has(original)) return true;
   if (/[;&|<>$`\r\n]/u.test(command)) return false;
+  const trimmed = withoutEnvironment(original);
+  if (source.commands.has(trimmed)) return true;
   const runner = RUNNERS.exec(trimmed)?.[1] ?? /^npm (test|start|stop|restart)$/u.exec(trimmed)?.[1];
   if (runner !== undefined && source.scripts.has(runner)) return true;
-  const script = /^(?:(?:node|python3?|bash|sh|pwsh)\s+)?((?:\.\/)?(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?js|py|sh|ps1))(?:\s+[^;&|<>$`\r\n]*)?$/u.exec(command.trim());
+  const script = /^(?:(?:node|python3?|bash|sh|pwsh)\s+)?((?:\.\/)?(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?js|py|sh|ps1))(?:\s+[^;&|<>$`\r\n]*)?$/u.exec(trimmed);
   return !!script && !!repoFile(source.root, script[1]);
 }

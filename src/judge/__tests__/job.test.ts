@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,7 +14,7 @@ import { entry } from "../../knowledge/__tests__/fixtures.js";
 import type { NativeReport } from "../../knowledge/check.js";
 import { createJudgeKind, readJudgement, type JudgeDependencies } from "../job.js";
 import { entryFiles, hash, nextBatch, type Candidate } from "../evidence.js";
-import { shortHash } from "../../record/project.js";
+import { realPath, shortHash } from "../../record/project.js";
 
 let base: string, root: string, home: string, writer: RecordWriter, projectId: string;
 let report: NativeReport, calls: ModelRequest[], deps: JudgeDependencies;
@@ -60,7 +60,7 @@ async function finish(id: string) {
   return row(id);
 }
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), "mex-judge-")));
+  base = realPath(mkdtempSync(join(tmpdir(), "mex-judge-")));
   root = join(base, "repo"); home = join(base, "home"); mkdirSync(root);
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
   source("src/api.ts", "old\n"); git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "baseline");

@@ -8,6 +8,7 @@ import { knowledgeProject, type KnowledgeOptions } from "../knowledge/context.js
 import { EntrySchema, KnowledgeError, serializeEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { editedEntry } from "../knowledge/mutations.js";
 import { gateEntry } from "../knowledge/gates.js";
+import { useConflict, type ObserveChecks } from "../knowledge/gate.js";
 import { references } from "../knowledge/references.js";
 import { prepareTeamWrite, applyTeamWrite, type TeamPreview } from "../knowledge/team.js";
 import { publishNotes, readNotes } from "../knowledge/personal-store.js";
@@ -24,14 +25,14 @@ import { claimHash } from "../knowledge/state.js";
 import { canonicalBytes, memberRevision, snapshotReview, type ReviewGroup } from "./queue.js";
 import { legacyJudge, put, rows, storedItems, ReviewItem, REVIEW_VISIBLE } from "./state.js";
 
-export type ReviewAction = "share" | "keep" | "edit";
-export interface ReviewDependencies { repository: typeof repositoryPolicy; recordChecks: typeof recordChecks; clock: () => number; }
+export type ReviewAction = "share" | "keep" | "edit" | "use";
+export interface ReviewDependencies { repository: typeof repositoryPolicy; recordChecks: typeof recordChecks; clock: () => number; observeChecks?: ObserveChecks; }
 const defaults: ReviewDependencies = { repository: repositoryPolicy, recordChecks, clock: Date.now };
 const ShareIntent = z.object({ version: z.literal(1), root: z.string().max(4096), preview: z.object({ id: z.string(), action: z.literal("share"), revision: z.string(), diff: z.string().max(128 << 10), message: z.string() }).strict(),
   group: z.object({ id: z.string(), entry: EntrySchema, reason: z.string(), sources: z.number(), createdAt: z.string(), expiresAt: z.string(), checkedByModel: z.boolean(),
     members: z.array(z.object({ row: z.object({ id: z.string(), project_id: z.string(), entry_id: z.string(), reason: z.string(), state: z.literal("pending"), created_at: z.string() }).strict(), item: ReviewItem, revision: z.string() }).strict()).min(1).max(10000) }).strict() }).strict();
 const intentKey = (revision: string) => `review.share.${revision.slice(7)}`;
-export interface ReviewPreview { id: string; action: ReviewAction; revision: string; diff: string; message: string; }
+export interface ReviewPreview { id: string; action: ReviewAction; revision: string; diff: string; message: string; conflict?: true; }
 interface Prepared { preview: ReviewPreview; group: ReviewGroup; entry: KnowledgeEntry; team?: TeamPreview; at: Position; names?: string; notes: ReturnType<typeof readNotes>; }
 const stale = () => new KnowledgeError("STALE_PREVIEW", "Review inputs changed; preview the action again.");
 function trackedNames(root: string): string {
@@ -64,6 +65,15 @@ async function prepare(selector: string, action: ReviewAction, text: string | un
   const notes = readNotes(project.location.home, project.projectId);
   let entry = group.entry, team: TeamPreview | undefined, names: string | undefined;
   const at = await position(project.root);
+  if (group.conflict) {
+    if (action !== "keep" && action !== "use") throw new KnowledgeError("INVALID_OPTION", "Use keep or use for a contradiction.");
+    const path = `personal/notes/${entry.mex.id}.md` as RepoRelativePath;
+    const diff = action === "use" ? canonicalFileDiff(path, notes.files.get(entry.mex.id) ?? null, serializeEntry(entry)) : "";
+    const revision = hash(JSON.stringify([project.projectId, project.root, action, groupRevision(group), notes.digest, at]));
+    const message = action === "keep" ? "Keep the current entries and dismiss this proposal." : "Save this proposal and retire the conflicting personal entries.";
+    return { preview: { id: group.id, action, revision, diff, message, conflict: true }, group, entry, notes, at };
+  }
+  if (action === "use") throw new KnowledgeError("INVALID_OPTION", "Only a contradiction can be resolved with use.");
   if (action === "edit") {
     if (!text) throw new KnowledgeError("INVALID_ENTRY", "Supply the corrected rule in plain words.");
     entry = gateEntry(editedEntry(entry, { text }, new Date(deps.clock())), references(project.root));
@@ -166,8 +176,8 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
   const prepared = await prepare(selector, action, input.text, options, deps);
   if (!input.apply) return { applied: false, preview: prepared.preview };
   if (!input.expect || input.expect !== prepared.preview.revision) throw stale();
-  const project = knowledgeProject(options), writer = openRecord(options);
-  const validate = () => {
+  const project = knowledgeProject(options);
+  const validate = (writer: RecordWriter) => {
     const current = choose(snapshotReview(writer, project.projectId, project.location.home, project.root, deps.clock()), prepared.group.id);
     if (groupRevision(current) !== groupRevision(prepared.group)) throw stale();
     if (action === "share") {
@@ -178,6 +188,28 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
       sourceProof(writer, project.projectId, current);
     }
   };
+  if (prepared.group.conflict) {
+    const { conflict, id } = prepared.group;
+    if (action === "use") {
+      const result = useConflict(id, conflict, { ...options, now: new Date(deps.clock()), observeChecks: deps.observeChecks,
+        validate: writer => {
+          validate(writer);
+          if (readNotes(project.location.home, project.projectId).digest !== prepared.notes.digest) throw stale();
+        },
+      });
+      if (result.status !== "accepted") throw new KnowledgeError("PROPOSAL_WITHHELD", `The proposal could not be saved (${result.reason}).`);
+    } else {
+      const writer = openRecord(options);
+      try {
+        writer.db.exec("BEGIN IMMEDIATE");
+        validate(writer);
+        writer.db.prepare("UPDATE review SET state='dismissed' WHERE id=? AND project_id=? AND state='pending'").run(id, project.projectId);
+        writer.db.exec("COMMIT");
+      } finally { writer.close(); }
+    }
+    return { applied: true, preview: prepared.preview };
+  }
+  const writer = openRecord(options);
   try {
     if (action === "share") {
       // Permission is checked again after the potentially slow native evaluator.
@@ -185,11 +217,11 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
       await withCheckoutPublication(project.root, prepared.at, () => {
         writer.db.exec("BEGIN IMMEDIATE");
         try {
-          validate();
+          validate(writer);
           // Persist the approved output before filesystem publication. A crash
           // can acknowledge only these exact bytes, never invent a new diff.
           put(writer, project.projectId, intentKey(input.expect!), ShareIntent.parse({ version: 1, root: project.root, preview: prepared.preview, group: prepared.group }));
-          writer.db.exec("COMMIT"); writer.db.exec("BEGIN IMMEDIATE"); validate();
+          writer.db.exec("COMMIT"); writer.db.exec("BEGIN IMMEDIATE"); validate(writer);
           applyTeamWrite(prepared.team!, prepared.team!.revision, { ...options, projectPath: project.root }, prepared.entry.mex.source.quote);
           finish(writer, project.projectId, prepared, action);
           writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project.projectId, intentKey(input.expect!)); writer.db.exec("COMMIT");
@@ -197,7 +229,7 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
       });
     } else {
       const files = new Map(prepared.notes.files); files.set(prepared.entry.mex.id, serializeEntry(prepared.entry));
-      publishNotes(writer, project.projectId, prepared.notes, files, () => finish(writer, project.projectId, prepared, action), { validate });
+      publishNotes(writer, project.projectId, prepared.notes, files, () => finish(writer, project.projectId, prepared, action), { validate: () => validate(writer) });
     }
     return { applied: true, preview: prepared.preview };
   } finally { writer.close(); }

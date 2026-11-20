@@ -44,6 +44,30 @@ func TestCodecParityFixtures(t *testing.T) {
 		})
 	}
 }
+func TestProducerMetadata(t *testing.T) {
+	raw, err := os.ReadFile("testdata/producer.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Source.Producer != "code-facts" || e.Source.Model == nil || *e.Source.Model != (Model{ID: "fixture", Version: "1"}) {
+		t.Fatalf("unexpected producer metadata: %+v", e.Source)
+	}
+	if got := Label(e, "personal"); got != "[mined from code, 9 of 10 sites]" {
+		t.Fatalf("unexpected label: %q", got)
+	}
+	light, err := decodeLight(encodeLight(lightFile{Version: lightVersion, Items: []Item{lighten(Item{Entry: e, Level: "personal"})}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Label(light.Items[0].Entry, "personal"); got != "[mined from code, 9 of 10 sites]" {
+		t.Fatalf("unexpected cached label: %q", got)
+	}
+}
+
 func TestSnapshotStoresAndInvalidation(t *testing.T) {
 	root, home, dir := t.TempDir(), t.TempDir(), t.TempDir()
 	team := filepath.Join(root, ".mex", "learned", "rule")
