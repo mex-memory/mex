@@ -59,6 +59,17 @@ describe("normalising commands", () => {
     for (const command of ["npm test 2>&1 | tail -20", "cd api && npm test", "npm test; echo done", "npm test -- $FILE", "npm test\nnpm run lint",
       "API_KEY=[secret removed] npm test", "npm test " + "x".repeat(400)]) expect(replayable(command), command).toBe(false);
   });
+  it("never replays a credential or an absolute path", () => {
+    // Capture's redaction can miss these: the names and URL passwords are refused here.
+    for (const command of ["DB_PASSWORD=hunter2hunter2 go test ./...", "STRIPE_API_KEY=sk_live_abcdefghijklmnop1234 cargo test",
+      "DATABASE_URL=postgres://app:s3cretPassw0rd@db:5432/app npm test", "NODE_AUTH_TOKEN=abc npm test", "PGPASSWORD=x npm test",
+      "$env:GITHUB_TOKEN='abcdefgh12345678'; npm test", "REDIS_URL=redis://:pw@localhost:6379 npm test",
+      // One machine's checkout or home: another worktree would run the wrong files.
+      "npx vitest run /home/alice/work/repo/src/a.test.ts", "npx vitest run C:\\Users\\alice\\repo\\src\\a.test.ts", "npx vitest run C:/repo/a.test.ts",
+      "npx vitest run ~/repo/a.test.ts", "CONFIG=/etc/app.json npm test", "npm test -- --config=/tmp/x.json"]) expect(replayable(command), command).toBe(false);
+    for (const command of ["KEYBOARD=us npm test", "DATABASE_URL=postgres://localhost:5432/app npm test", "PASSTHROUGH=1 npm test",
+      "npx vitest run src/a.test.ts", "go test ./...", "npm test -- --testPathPattern=src/a"]) expect(replayable(command), command).toBe(true);
+  });
   it("keeps the prep allow-list to safe steps", () => {
     for (const command of ["npm install", "npm ci --ignore-scripts", "pnpm install", "yarn", "npm run build", "pnpm generate", "npx prisma generate",
       "go generate ./...", "python manage.py migrate", "npm run db:migrate"]) expect(safePrep(command), command).toBe(true);
@@ -150,6 +161,15 @@ describe("the fail-pass job", () => {
     const after = entries();
     expect(after).toHaveLength(1);
     expect(after[0]!.mex.id).toBe(first[0]!.mex.id);
+  });
+
+  it("saves no recipe that carries a credential or an absolute path", async () => {
+    record("url", [["command", "npm test", 1], ["command", "DATABASE_URL=postgres://app:s3cretPassw0rd@db.internal:5432/app npm test", 0]]);
+    record("name", [["command", "go test ./...", 1], ["command", "DB_PASSWORD=hunter2hunter2 go test ./...", 0]]);
+    record("removed", [["command", "STRIPE_API_KEY=sk_live_abcdefghijklmnop1234 cargo test", 1], ["edit", "src/lib.rs"], ["command", "STRIPE_API_KEY=sk_live_abcdefghijklmnop1234 cargo test", 0]]);
+    record("path", [["command", "npx vitest run /home/alice/work/repo/src/a.test.ts", 1], ["edit", "src/a.ts"], ["command", "npx vitest run /home/alice/work/repo/src/a.test.ts", 0]]);
+    expect(await runJob()).toMatchObject({ state: "done" });
+    expect(entries()).toEqual([]);
   });
 
   it("pairs a failure before the cursor with a pass after it", async () => {

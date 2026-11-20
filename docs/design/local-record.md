@@ -1084,6 +1084,9 @@ without session metrics remain available to the per-lever ledger.
   `queued.through`). A session whose typed rows are marked `scripted` never
   counts. The producer gate verifies a fail-pass command by reading its
   evidence rows: exit code 0, in this project and checkout, exact text.
+  A command with an absolute or home path, or with an environment assignment
+  or text that may hold a credential (a secret-like name such as
+  `DB_PASSWORD`, or a password in a URL), never becomes a recipe.
 
 Indexes cover active sessions by project/time, deliveries by session/agent/epoch/
 entry/time and by time, followups by delivery/time, journal by session/id, and

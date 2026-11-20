@@ -9,8 +9,12 @@ const SECRETS = [
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/u,
   /\b(?:glpat|gldt|glrt|glsoat|glagent|glft)-[A-Za-z0-9_-]{12,}\b/u,
-  /\b(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization)["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
-  /https?:\/\/[^\s/@:]+:[^\s/@]+@/iu,
+  // A name may carry a prefix (DB_PASSWORD, STRIPE_API_KEY); a bare token or
+  // secret counts only as such a suffix (GITHUB_TOKEN), not as a plain word.
+  /\b(?:[A-Za-z0-9]+_)*(?:api[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|passwd|pgpassword|authorization)["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
+  /\b(?:[A-Za-z0-9]+_)+(?:token|secret|pwd)["']?\s*[:=]\s*["']?[A-Za-z0-9_+\/.=-]{8,}/iu,
+  // A password in a URL of any scheme: https, postgres, redis, amqp.
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s/@]+@/iu,
 ];
 export function hasSecret(text: string): boolean { return SECRETS.some(pattern => pattern.test(text)); }
 const secretKey = /^(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization|private[_ -]?key|aws_secret_access_key)$/iu;

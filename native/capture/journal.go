@@ -291,9 +291,11 @@ var secretPatterns = sync.OnceValue(func() []secretPattern {
 		{regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`), Redacted},
 		{regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`), Redacted},
 		{regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,}|mexi_[A-Za-z0-9_-]{8,})`), Redacted},
-		{regexp.MustCompile(`(?i)\b((?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|passwd|authorization|secret|token)\s*[:=]\s*["']?(?:Bearer\s+)?)[A-Za-z0-9_+/.=-]{8,}`), "${1}" + Redacted},
+		// A secret's name may carry a prefix: DB_PASSWORD, STRIPE_API_KEY, GITHUB_TOKEN.
+		{regexp.MustCompile(`(?i)\b((?:[A-Za-z0-9]+_)*(?:api[_ -]?key|secret[_ -]?key|private[_ -]?key|signing[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|passwd|pgpassword|pwd|authorization|secret|token|credentials?)\s*[:=]\s*["']?(?:Bearer\s+)?)[A-Za-z0-9_+/.=-]{8,}`), "${1}" + Redacted},
 		{regexp.MustCompile(`(?i)\b(Bearer\s+)[A-Za-z0-9_+/.=-]{16,}`), "${1}" + Redacted},
-		{regexp.MustCompile(`(?i)(https?://[^\s/@:]+:)[^\s/@]+@`), "${1}" + Redacted + "@"},
+		// A password in a URL of any scheme: https, postgres, redis, amqp.
+		{regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s/@:]*:)[^\s/@]+@`), "${1}" + Redacted + "@"},
 	}
 })
 

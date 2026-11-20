@@ -12,6 +12,7 @@
  */
 import { linePurpose } from "../repo-start/recipes/ci.js";
 import type { Proposal } from "./gate-types.js";
+import { hasSecret } from "./gates.js";
 
 export interface JournalRow { id: number; kind: "typed" | "command" | "edit"; text: string; exit_code: number | null; }
 export type Transition =
@@ -48,11 +49,32 @@ export function normalizeCommand(command: string): string {
   return splitEnvironment(command).rest.replace(/\s+/gu, " ").trim();
 }
 
-/** One plain command we can hand back exactly: no chains, pipes, redirects or expansions. */
+const SECRET_NAME = /(?:^|_)(?:TOKEN|SECRETS?|KEY|CREDENTIALS?|AUTH|COOKIE|SESSION|PAT|PWD)(?:_|$)|PASS(?:WORD|WD)/iu;
+const URL_PASSWORD = /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s/@]+@/iu;
+/** An absolute or home path names one machine's checkout, not the repository. */
+const ABSOLUTE_PATH = /(?:^|[\s='"(])(?:\/|~[\\/]|[A-Za-z]:[\\/]|\\\\)/u;
+
+/**
+ * An environment assignment that may carry a credential, by its name
+ * (DB_PASSWORD, STRIPE_API_KEY, GITHUB_TOKEN) or by a password in a URL value.
+ * Capture's redaction can miss one; a recipe must never repeat it.
+ */
+export function secretAssignment(canonical: string): boolean {
+  const at = canonical.indexOf("=");
+  return SECRET_NAME.test(canonical.slice(0, at)) || URL_PASSWORD.test(canonical.slice(at + 1)) || hasSecret(canonical);
+}
+
+/**
+ * One plain command we can hand back exactly: no chains, pipes, redirects or
+ * expansions, no absolute path (it names this machine's checkout), and no
+ * environment assignment or text that may hold a secret.
+ */
 export function replayable(command: string): boolean {
   const text = command.trim();
   if (!text || text !== command || text.length > MAX_RECIPE_COMMAND || /[\x00-\x1f\x7f`]/u.test(text) || text.includes("[secret removed]")) return false;
-  const rest = splitEnvironment(text).rest;
+  if (ABSOLUTE_PATH.test(text) || URL_PASSWORD.test(text) || hasSecret(text)) return false;
+  const { assignments, rest } = splitEnvironment(text);
+  if (assignments.some(a => secretAssignment(a.canonical))) return false;
   return !!rest && !/^env(?:\s|$)/u.test(rest) && !/[;&|<>$]/u.test(rest);
 }
 
