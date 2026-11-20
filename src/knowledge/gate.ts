@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
 import { codexExitCodes } from "./codex-exits.js";
-import { neutral } from "./fail-pass.js";
+import { neutral, passedRuns } from "./fail-pass.js";
 import { readConflict, stageConflict, type StoredConflict } from "../review/conflicts.js";
 import { REVIEW_DAYS } from "../review/state.js";
 import { nativeBinary, runNative, type Verdict } from "./check.js";
@@ -102,7 +102,9 @@ function journalPasses(proposals: readonly Proposal[], project: KnowledgeProject
  */
 function observedRuns(p: Proposal, passes: ReadonlyMap<number, string>): ReadonlySet<string> | undefined {
   if (p?.producer !== "fail-pass" || !Array.isArray(p.evidence)) return undefined;
-  return new Set(p.evidence.flatMap(ref => typeof ref === "number" && passes.has(ref) ? [passes.get(ref)!, neutral(passes.get(ref)!)[0]] : []));
+  // A passing chain's row verifies each command it ran.
+  return new Set(p.evidence.flatMap(ref => typeof ref === "number" && passes.has(ref)
+    ? passedRuns(passes.get(ref)!).flatMap(run => [run, neutral(run)[0]]) : []));
 }
 const backticked = (text: string) => [...text.matchAll(/`([^`\n]+)`/gu)].map(match => match[1]!.trim());
 

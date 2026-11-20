@@ -17,7 +17,11 @@ import { linePurpose } from "../repo-start/recipes/ci.js";
 import type { Proposal } from "./gate-types.js";
 import { hasSecret } from "./gates.js";
 
-export interface JournalRow { id: number; kind: "typed" | "command" | "edit"; text: string; exit_code: number | null; }
+export interface JournalRow {
+  id: number; kind: "typed" | "command" | "edit"; text: string; exit_code: number | null;
+  /** One segment of a `;` chain before its last: it ran, but its outcome is unknown. */
+  ran?: boolean;
+}
 export type Transition =
   | { type: "variant"; fail: JournalRow; pass: JournalRow }
   | { type: "prep"; fail: JournalRow; preps: JournalRow[]; pass: JournalRow }
@@ -81,6 +85,79 @@ export function replayable(command: string): boolean {
   return !!rest && !/^env(?:\s|$)/u.test(rest) && !/[;&|<>$]/u.test(rest);
 }
 
+/** Changes the folder or detaches: later segments of the chain don't run as a plain command would. */
+const CHAIN_BREAKER = /^(?:cd|chdir|pushd|popd|set-location|sl|push-location|pop-location|nohup|start|start-process|start-job|exec)(?:\s|$)/iu;
+const EXPORT = /^export\s+([A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"$`\\]*"|[^\s'"`$;&|<>()\\]+))$/u;
+const POWERSHELL_SET = /^\$env:[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'[^']*'|"[^"$`]*"|[^\s;'"`$]+)$/iu;
+
+/**
+ * A plain chain split at its top-level separators, outside quotes: only `;`
+ * chains or only `&&` chains. Pipes, `||`, `&`, redirects, subshells and mixed
+ * operators give undefined: what ran, and how it ended, isn't known.
+ */
+export function chainSegments(text: string): { op: "&&" | ";"; parts: string[] } | undefined {
+  const parts: string[] = [];
+  let op: "&&" | ";" | undefined, quote = "", start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (quote) { if (c === quote) quote = ""; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    let found: "&&" | ";" | undefined;
+    if (c === ";") found = ";";
+    else if (c === "&" && text[i + 1] === "&") found = "&&";
+    else if ("&|<>(){}`".includes(c)) return undefined;
+    if (!found) continue;
+    if (op && op !== found) return undefined;
+    op = found;
+    parts.push(text.slice(start, i).trim());
+    if (found === "&&") i++;
+    start = i + 1;
+  }
+  if (quote || !op) return undefined;
+  parts.push(text.slice(start).trim());
+  return parts.some(part => !part) ? undefined : { op, parts };
+}
+
+/**
+ * One command row as the commands it ran. A chain's outcome is known only so far:
+ * a passing `A && B` means every segment passed; in `A; B` only the last
+ * segment's exit is known and the earlier ones ran with an unknown outcome; a
+ * failing `&&` chain says nothing about which segment failed. An environment
+ * set in the chain (`$env:X='1'`, `export X=1`) carries to the segments after
+ * it. A chain that changes folder, detaches, sets a plain shell variable, or
+ * has any segment that isn't replayable (secrets, absolute paths) stays one row.
+ */
+export function expandRow(row: JournalRow): JournalRow[] {
+  if (row.kind !== "command" || row.text.length > MAX_RECIPE_COMMAND) return [row];
+  const chain = chainSegments(row.text.trim());
+  if (!chain) return [row];
+  const env: string[] = [], commands: string[] = [];
+  for (const part of chain.parts) {
+    if (POWERSHELL_SET.test(part)) { env.push(`${part};`); continue; }
+    const exported = EXPORT.exec(part);
+    if (exported) { env.push(exported[1]!); continue; }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=\S*$/u.test(part) || CHAIN_BREAKER.test(splitEnvironment(part).rest)) return [row];
+    // PowerShell keeps its `$env:` form; POSIX assignments go in front of the command.
+    const text = [...env.filter(e => e.endsWith(";")), ...env.filter(e => !e.endsWith(";")), part].join(" ");
+    if (!replayable(text)) return [row];
+    commands.push(text);
+  }
+  if (!commands.length) return [row];
+  // `export X=1; cmd` is one command with its environment.
+  if (commands.length === 1) return [{ ...row, text: commands[0]! }];
+  const passed = row.exit_code === 0;
+  return commands.map((text, i) => {
+    const last = i === commands.length - 1;
+    if (chain.op === "&&") return { ...row, text, exit_code: passed ? 0 : null };
+    return last ? { ...row, text } : { ...row, text, exit_code: null, ran: true };
+  });
+}
+
+/** Every command a passing row ran in this checkout, for the gate's exact set. */
+export function passedRuns(text: string): string[] {
+  return [...new Set([text, ...expandRow({ id: 0, kind: "command", text, exit_code: 0 }).map(row => row.text)])];
+}
+
 const verifies = (command: string) => {
   const purpose = linePurpose(normalizeCommand(command));
   return purpose === "test" || purpose === "build" || purpose === "lint" || purpose === "typecheck";
@@ -133,7 +210,8 @@ export function safePrep(command: string): boolean {
 const failed = (row: JournalRow) => row.kind === "command" && row.exit_code !== null && row.exit_code !== 0;
 
 /** Every verified transition in one session's rows, in journal order. */
-export function findTransitions(rows: readonly JournalRow[]): Transition[] {
+export function findTransitions(journal: readonly JournalRow[]): Transition[] {
+  const rows = journal.flatMap(expandRow);
   const out: Transition[] = [];
   for (let i = 0; i < rows.length; i++) {
     const fail = rows[i]!;
@@ -157,7 +235,7 @@ export function findTransitions(rows: readonly JournalRow[]): Transition[] {
         if (differs && !edits.length && !others.length) out.push({ type: "variant", fail, pass: row });
       } else if (edits.length) {
         out.push({ type: "edit", fail, edits, pass: row });
-      } else if (others.length >= 1 && others.length <= MAX_PREPS && others.every(o => o.exit_code === 0 && safePrep(o.text))) {
+      } else if (others.length >= 1 && others.length <= MAX_PREPS && others.every(o => (o.exit_code === 0 || o.ran) && safePrep(o.text))) {
         out.push({ type: "prep", fail, preps: others, pass: row });
       }
       break;
@@ -223,14 +301,14 @@ export function transitionProposal(t: Transition, agent: string): Proposal {
         : `with ${list(added)} set instead of ${list(removed)}; with ${list(removed)}, it failed here`;
     const oneLine = `Run ${code(splitEnvironment(t.pass.text).rest)} ${how} (${exit}).`;
     return { ...base, key: JSON.stringify(["variant", ...neutral(t.pass.text)]), kind: "recipe", oneLine,
-      text: `${oneLine} In one session it failed, then passed with only the environment changed.`, evidence: [t.fail.id, t.pass.id] };
+      text: `${oneLine} In one session it failed, then passed with only the environment changed.`, evidence: [...new Set([t.fail.id, t.pass.id])] };
   }
   if (t.type === "prep") {
     const steps = t.preps.map(p => phrase(p.text));
     const oneLine = `Before ${phrase(t.pass.text)}, run ${steps.join(", then ")}.`;
     return { ...base, key: JSON.stringify(["prep", neutral(t.pass.text), ...t.preps.map(p => neutral(p.text))]), kind: "recipe", oneLine,
       text: `${oneLine} In one session it failed (${exit}) until ${t.preps.length === 1 ? "that" : "those"} ran, then passed with no edit between.`,
-      evidence: [t.fail.id, ...t.preps.map(p => p.id), t.pass.id] };
+      evidence: [...new Set([t.fail.id, ...t.preps.map(p => p.id), t.pass.id])] };
   }
   const area = commonFolder(t.edits.map(e => e.text));
   const where = area ? `in ${code(area)}` : "in this repository";
@@ -238,5 +316,5 @@ export function transitionProposal(t: Transition, agent: string): Proposal {
   return { ...base, key: JSON.stringify(["edit", neutral(t.pass.text), area]), kind: "procedure", oneLine,
     text: `${oneLine} In one session it failed (${exit}), files there were edited, then it passed.`,
     anchors: { scope: [area ? `${area}/**` : "**"] },
-    evidence: [t.fail.id, ...t.edits.slice(0, MAX_EDIT_EVIDENCE).map(e => e.id), t.pass.id] };
+    evidence: [...new Set([t.fail.id, ...t.edits.slice(0, MAX_EDIT_EVIDENCE).map(e => e.id), t.pass.id])] };
 }
