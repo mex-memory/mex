@@ -59,7 +59,7 @@ func TestRelationUnreadFiles(t *testing.T) {
 	}
 }
 
-func TestRelationOtherQueriesWaitForTheGraph(t *testing.T) {
+func TestRelationCallsWaitForTheGraph(t *testing.T) {
 	root := t.TempDir()
 	target := map[string]any{"query": "calls", "from": "src/core/**", "to": "src/adapters/**"}
 	c := Check{Kind: "relation", Role: Complete, Target: target, Saw: map[string]any{"count": 0}, Files: map[string]string{}}
@@ -76,5 +76,64 @@ func TestUnreadSummary(t *testing.T) {
 	got := unreadSummary(map[string]int{"too big": 1, "imports not resolved for py": 3, "parse failed": 1})
 	if want := "3 files imports not resolved for py, 1 file parse failed, 1 file too big"; got != want {
 		t.Fatalf("%q", got)
+	}
+}
+
+// fakeCalls answers like the graph store.
+type fakeCalls struct {
+	calls      [][2]string // from file, to file
+	incomplete bool
+}
+
+func (g *fakeCalls) AsOf() string { return "2026-11-20T10:00:00Z" }
+func (g *fakeCalls) CallsBetween(from, to func(string) bool) (int, string, string, int, bool, error) {
+	n, fp, tp := 0, "", ""
+	for _, c := range g.calls {
+		if from(c[0]) && to(c[1]) {
+			if n == 0 {
+				fp, tp = c[0], c[1]
+			}
+			n++
+		}
+	}
+	return n, fp, tp, 7, !g.incomplete, nil
+}
+
+// "Core never calls adapters", read from the code graph: it holds until a
+// call crosses, and the failure names the first call.
+func TestRelationCallsFromTheGraph(t *testing.T) {
+	root := t.TempDir()
+	target := map[string]any{"query": "calls", "from": "src/core/**", "to": "src/adapters/**"}
+	g := &fakeCalls{calls: [][2]string{{"src/core/run.ts", "src/core/util.ts"}, {"src/adapters/http.ts", "src/core/run.ts"}}}
+	ev := func() *Evaluator { e := indexed(t, root, &fakeIndex{}); e.UseGraph(g); return e }
+	c, err := ev().Record("relation", Complete, target)
+	if err != nil || c.Saw["count"] != 0 {
+		t.Fatalf("record: %+v %v", c, err)
+	}
+	if r := ev().Evaluate(&Entry{ID: "mx_rel004", Status: "active", Checks: []Check{c}}); r.Verdict != Held {
+		t.Fatalf("held: %+v", r)
+	}
+	g.calls = append(g.calls, [2]string{"src/core/run.ts", "src/adapters/http.ts"})
+	r := ev().Evaluate(&Entry{ID: "mx_rel004", Status: "active", Checks: []Check{c}})
+	if r.Verdict != Broken || r.Checks[0].Reason != "src/core/run.ts:7 calls into src/adapters/http.ts" {
+		t.Fatalf("crossed: %+v", r)
+	}
+}
+
+// Without every file in the graph a lower count is a gap, not proof; a
+// higher one still is.
+func TestRelationCallsIncompleteGraph(t *testing.T) {
+	root := t.TempDir()
+	target := map[string]any{"query": "calls", "from": "src/core/**", "to": "src/adapters/**"}
+	c := Check{Kind: "relation", Role: Complete, Target: target, Saw: map[string]any{"count": 1}, Files: map[string]string{}}
+	g := &fakeCalls{incomplete: true}
+	e := indexed(t, root, &fakeIndex{})
+	e.UseGraph(g)
+	if r := e.Evaluate(&Entry{ID: "mx_rel005", Status: "active", Checks: []Check{c}}); r.Checks[0].Status != Floor || !strings.Contains(r.Checks[0].Reason, "calls unknown") {
+		t.Fatalf("gap: %+v", r)
+	}
+	g.calls = [][2]string{{"src/core/a.ts", "src/adapters/x.ts"}, {"src/core/b.ts", "src/adapters/y.ts"}}
+	if r := e.Evaluate(&Entry{ID: "mx_rel005", Status: "active", Checks: []Check{c}}); r.Verdict != Broken {
+		t.Fatalf("proof despite gap: %+v", r)
 	}
 }

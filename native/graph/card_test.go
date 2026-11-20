@@ -277,3 +277,53 @@ func TestNothingAtSessionStart(t *testing.T) {
 		t.Fatal("moments")
 	}
 }
+
+// The graph's lines for the span card: callers with their code inline, one
+// direct test, nothing for a name defined twice or found elsewhere.
+func TestSearchLines(t *testing.T) {
+	g, f := router()
+	code := func(path string, line int) string {
+		if path == "src/get.ts" {
+			return "    return parseRoute(req.path)"
+		}
+		return ""
+	}
+	text, value, ok := SearchLines(g, f, "src/router.ts", "parseRoute", 600, code)
+	if !ok {
+		t.Fatal("no lines")
+	}
+	want := "called by 2:\n  src/get.ts:12  return parseRoute(req.path)\n  src/post.ts:7 (handlePost)\ntest: test/router.test.ts:3 (routes work)"
+	if text != want || value != 800+700+500 {
+		t.Fatalf("%d\n%s", value, text)
+	}
+	if _, _, ok := SearchLines(g, f, "src/other.ts", "parseRoute", 600, code); ok {
+		t.Fatal("lines for a definition elsewhere")
+	}
+	g.symbols = append(g.symbols, sym("n9", "parseRoute", "src/legacy.ts", 1, 5, "function"))
+	if _, _, ok := SearchLines(g, f, "src/router.ts", "parseRoute", 600, code); ok {
+		t.Fatal("lines for a name defined twice")
+	}
+}
+
+// Fewer callers when room is short; nothing when even the tail doesn't fit.
+func TestSearchLinesFitTheRoom(t *testing.T) {
+	g, f := router()
+	text, _, ok := SearchLines(g, f, "src/router.ts", "parseRoute", 90, nil)
+	if !ok || len(text) > 90 || !strings.Contains(text, "+") {
+		t.Fatalf("%v %d\n%s", ok, len(text), text)
+	}
+	if _, _, ok := SearchLines(g, f, "src/router.ts", "parseRoute", 10, nil); ok {
+		t.Fatal("lines past the room")
+	}
+}
+
+// The impact note waits for wide use.
+func TestSignatureCardNeedsWideUse(t *testing.T) {
+	g, f := router()
+	if _, ok := SignatureCard(g, f, g.symbols[0], "parseRoute()", 5, Seen{}); ok {
+		t.Fatal("note for 3 files with a minimum of 5")
+	}
+	if _, ok := SignatureCard(g, f, g.symbols[0], "parseRoute()", 3, Seen{}); !ok {
+		t.Fatal("no note at the minimum")
+	}
+}
