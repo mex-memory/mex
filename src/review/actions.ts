@@ -10,7 +10,7 @@ import { editedEntry } from "../knowledge/mutations.js";
 import { gateEntry } from "../knowledge/gates.js";
 import { useConflict, type ObserveChecks } from "../knowledge/gate.js";
 import { references } from "../knowledge/references.js";
-import { prepareTeamWrite, applyTeamWrite, type TeamPreview } from "../knowledge/team.js";
+import { prepareTeamWrite, applyTeamWrite, teamEntry, type TeamPreview } from "../knowledge/team.js";
 import { publishNotes, readNotes } from "../knowledge/personal-store.js";
 import { canonicalFileDiff } from "../team/artifacts/unified-diff.js";
 import type { RepoRelativePath } from "../team/contracts/shared.js";
@@ -89,7 +89,7 @@ async function prepare(selector: string, action: ReviewAction, text: string | un
       entry.mex.checks.map(({ kind, role, target }) => ({ kind, role, target })));
     if (!observed || !isDeepStrictEqual(observed, entry.mex.checks) || trackedNames(project.root) !== names) throw new KnowledgeError("CHECKS_CHANGED", "The stored checks no longer hold on today's code; the rule stays personal.");
     team = prepareTeamWrite(entry, { ...options, projectPath: project.root }, entry.mex.source.quote);
-    if (team.after !== serializeEntry(entry)) throw new KnowledgeError("UNVERIFIED_SOURCE", "The sharing gates changed the verified rule; edit it first.");
+    if (team.after !== serializeEntry(teamEntry(entry))) throw new KnowledgeError("UNVERIFIED_SOURCE", "The sharing gates changed the verified rule; edit it first.");
   }
   const after = serializeEntry(entry), path = `personal/notes/${entry.mex.id}.md`;
   const diff = team?.diff ?? canonicalFileDiff(path as RepoRelativePath, notes.files.get(entry.mex.id) ?? null, after);
