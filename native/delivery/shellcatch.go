@@ -112,15 +112,82 @@ func shellCaught(v toolView, env Environment, snap *entries.Snapshot) []candidat
 	return out
 }
 
-// changedByCommand reports a file modified recently that the index says
-// changed outside any edit the hook recorded, with its current text.
-func changedByCommand(idx *index.Reader, checkout, rel string, since time.Time) (string, bool) {
+// shellProcedures returns the first-edit moment of each scoped procedure
+// (a CI obligation, "after changes in packages/api, run ...") whose area a
+// shell command changed: a generator, `sed -i` or `>>` edits files as surely
+// as the Edit tool does. The moment is the same as an Edit's, so the ledger
+// gives it once per epoch whichever way the files changed.
+func shellProcedures(v toolView, env Environment, snap *entries.Snapshot) []candidate {
+	if v.name != contract.ToolShell || v.checkout == "" || v.project == "" || v.command == "" || readsOrSearches(v.command) || snap == nil {
+		return nil
+	}
+	var items []*entries.Item
+	for i := range snap.Items {
+		if it := &snap.Items[i]; it.Entry.Kind == "procedure" && !it.NeedsHintGate {
+			items = append(items, it)
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	idx, err := index.Open(env.RecordDirectory, v.project, v.checkout)
+	if err != nil {
+		return nil // no index: stay silent
+	}
+	defer idx.Close()
+	now := env.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	deadline := time.Now().Add(shellCatchBudget)
+	since := now.Add(-shellCatchWindow)
+	changed := map[string]bool{}
+	var out []candidate
+	for _, it := range items {
+	scopes:
+		for _, glob := range it.Entry.Scope {
+			paths, _, err := idx.PathsMatching(glob, shellCatchPaths)
+			if err != nil {
+				continue
+			}
+			for _, rel := range paths {
+				if time.Now().After(deadline) {
+					return out
+				}
+				was, seen := changed[rel]
+				if !seen {
+					_, was = changedFile(idx, v.checkout, rel, since)
+					changed[rel] = was
+				}
+				if was && momentRecipe(it, rel) {
+					out = append(out, candidate{item: it, moment: momentEdit, tier: scopeTier(it, rel), rel: rel, lineOnly: true})
+					break scopes
+				}
+			}
+		}
+	}
+	return out
+}
+
+// changedFile reports a file modified recently that the index says changed
+// outside any edit the hook recorded, with its full path.
+func changedFile(idx *index.Reader, checkout, rel string, since time.Time) (string, bool) {
 	full := filepath.Join(filepath.FromSlash(checkout), filepath.FromSlash(rel))
 	info, err := os.Stat(full)
 	if err != nil || !info.Mode().IsRegular() || info.ModTime().Before(since) || info.Size() > shellCatchBytes {
 		return "", false
 	}
 	if _, miss := idx.FileInfo(rel); miss == nil || miss.NotIndexed != "changed since the last parse" {
+		return "", false
+	}
+	return full, true
+}
+
+// changedByCommand reports a file modified recently that the index says
+// changed outside any edit the hook recorded, with its current text.
+func changedByCommand(idx *index.Reader, checkout, rel string, since time.Time) (string, bool) {
+	full, ok := changedFile(idx, checkout, rel, since)
+	if !ok {
 		return "", false
 	}
 	f, err := os.Open(full)

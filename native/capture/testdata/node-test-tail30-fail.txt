@@ -1,0 +1,30 @@
+
+test at test\app.test.js:4:1
+✖ build info exists (4.0672ms)
+  AssertionError [ERR_ASSERTION]: src/build-info.js is missing: it is generated. Run `npm run generate` first.
+      at TestContext.<anonymous> (file:///C:/work/app/test/app.test.js:5:10)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1106:25)
+      at Test.start (node:internal/test_runner/test:1003:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at test\app.test.js:8:1
+✖ banner (10.0732ms)
+  Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:workapp\src\build-info.js' imported from C:workapp\src\app.js
+      at finalizeResolution (node:internal/modules/esm/resolve:274:11)
+      at moduleResolve (node:internal/modules/esm/resolve:864:10)
+      at defaultResolve (node:internal/modules/esm/resolve:990:11)
+      at #cachedDefaultResolve (node:internal/modules/esm/loader:757:20)
+      at ModuleLoader.resolve (node:internal/modules/esm/loader:734:38)
+      at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:317:38)
+      at #link (node:internal/modules/esm/module_job:208:49) {
+    code: 'ERR_MODULE_NOT_FOUND',
+    url: 'file:///C:/work/app/src/build-info.js'
+  }

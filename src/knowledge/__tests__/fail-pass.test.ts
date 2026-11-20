@@ -8,7 +8,7 @@ import { enqueueJob, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { propose, type Proposal } from "../gate.js";
 import { parseEntry, type KnowledgeEntry } from "../entry.js";
 import { readNotes } from "../personal-store.js";
-import { findTransitions, normalizeCommand, readsOnly, replayable, safePrep, splitEnvironment, type JournalRow } from "../fail-pass.js";
+import { chainSegments, expandRow, findTransitions, normalizeCommand, readsOnly, replayable, rolloutExitHidden, safePrep, splitEnvironment, type JournalRow } from "../fail-pass.js";
 import { cursorKey, FAIL_PASS_KIND, queuePendingFailPass, readFailPass } from "../fail-pass-job.js";
 import { rolloutExitCodes } from "../codex-exits.js";
 import { shortHash } from "../../record/project.js";
@@ -113,8 +113,103 @@ describe("finding transitions", () => {
     ["a variant after another command", [["command", "npm test", 1], ["command", "npm install", 0], ["command", "TZ=UTC npm test", 0]]],
     ["a pass of unknown exit", [["command", "npm test", 1], ["edit", "a.ts"], ["command", "npm test", null]]],
     ["a command that verifies nothing", [["command", "npm run dev", 1], ["edit", "a.ts"], ["command", "npm run dev", 0]]],
-    ["a piped pass", [["command", "npm test 2>&1 | tail", 1], ["edit", "a.ts"], ["command", "npm test 2>&1 | tail", 0]]],
+    ["a pipeline through a command that is not a filter", [["command", "npm test | xargs echo", 1], ["edit", "a.ts"], ["command", "npm test | xargs echo", 0]]],
+    ["a pipeline whose outcome the hook could not read", [["command", "npm test 2>&1 | tail", null], ["edit", "a.ts"], ["command", "npm test 2>&1 | tail", 0]]],
   ])("gives none for %s", (_name, steps) => expect(findTransitions(rows(steps))).toEqual([]));
+});
+
+describe("chained commands", () => {
+  const row = (text: string, exit: number | null): JournalRow => ({ id: 7, kind: "command", text, exit_code: exit });
+  const shape = (text: string, exit: number | null) => expandRow(row(text, exit)).map(r => [r.text, r.exit_code, r.ran ?? false]);
+
+  it("splits only plain `;` or `&&` chains, outside quotes", () => {
+    expect(chainSegments("npm run generate && npm test")).toEqual({ op: "&&", parts: ["npm run generate", "npm test"] });
+    expect(chainSegments("npm test; npm run test:time")).toEqual({ op: ";", parts: ["npm test", "npm run test:time"] });
+    expect(chainSegments("node -e \"a;b\" && npm test")).toEqual({ op: "&&", parts: ["node -e \"a;b\"", "npm test"] });
+    for (const text of ["npm test", "npm test || true", "npm test | tail", "npm test & npm run lint", "a && b; c", "npm test > out.txt; npm run lint", "(npm test); npm run lint", "npm test;"])
+      expect(chainSegments(text), text).toBeUndefined();
+  });
+
+  it("knows every segment of a passing `&&` chain, none of a failing one, and only the last of a `;` chain", () => {
+    expect(shape("npm run generate && npm test", 0)).toEqual([["npm run generate", 0, false], ["npm test", 0, false]]);
+    expect(shape("npm run generate && npm test", 1)).toEqual([["npm run generate", null, false], ["npm test", null, false]]);
+    expect(shape("npm test; npm run test:time", 1)).toEqual([["npm test", null, true], ["npm run test:time", 1, false]]);
+    // An environment set in the chain carries to the segments after it.
+    expect(shape("npm run generate; $env:TZ='UTC'; npm run test:time", 0)).toEqual([["npm run generate", null, true], ["$env:TZ='UTC'; npm run test:time", 0, false]]);
+    expect(shape("export TZ=UTC && npm test && npm run lint", 0)).toEqual([["TZ=UTC npm test", 0, false], ["TZ=UTC npm run lint", 0, false]]);
+    expect(shape("export TZ=UTC; npm test", 0)).toEqual([["TZ=UTC npm test", 0, false]]);
+  });
+
+  it("keeps a chain whole when a segment changes folder, detaches, sets a shell variable, or isn't replayable", () => {
+    for (const text of ["cd packages/api && npm test", "Set-Location api; npm test", "nohup npm run build; npm test", "TZ=UTC; npm test",
+      "GITHUB_TOKEN=abc npm run generate && npm test", "npm run generate && node C:/tools/x.js", "npm run generate && /usr/bin/npm test", "npm run generate; echo $HOME"])
+      expect(expandRow(row(text, 0)), text).toEqual([row(text, 0)]);
+  });
+
+  it("finds a prep in a passing `&&` chain and a variant after a failing `;` chain", () => {
+    expect(findTransitions(rows([["command", "npm test", 1], ["command", "npm run generate && npm test", 0]])).map(t => [t.type, t.pass.text, t.pass.id]))
+      .toEqual([["prep", "npm test", 2]]);
+    // PowerShell: only the chain's last command is known to have failed; the variant then passes.
+    const variant = findTransitions(rows([["command", "npm test; npm run test:time", 1], ["command", "$env:TZ='UTC'; npm run test:time", 0]]));
+    expect(variant.map(t => [t.type, t.fail.text, t.fail.exit_code, t.pass.text])).toEqual([["variant", "npm run test:time", 1, "$env:TZ='UTC'; npm run test:time"]]);
+    // A segment that ran before a known pass counts as a prep step.
+    expect(findTransitions(rows([["command", "npm test", 1], ["command", "npm run generate; npm test", 0]])).map(t => t.type)).toEqual(["prep"]);
+  });
+
+  it.each<[string, Step[]]>([
+    ["a failing && chain", [["command", "npm run build && npm test", 1], ["command", "npm test", 0]]],
+    ["an earlier ; segment of unknown outcome as the failure", [["command", "npm test; npm run lint", 0], ["command", "npm test", 0]]],
+    ["a chain whose pass is only an earlier ; segment", [["command", "npm test", 1], ["command", "npm run generate; npm test; npm run lint", 0], ["command", "npm test", 0]]],
+    ["a chain with a folder change", [["command", "npm test", 1], ["command", "cd app && npm run generate && npm test", 0]]],
+    ["a chain with a secret", [["command", "npm test", 1], ["command", "NPM_TOKEN=abc npm ci && npm test", 0]]],
+  ])("gives none for %s", (_name, steps) => expect(findTransitions(rows(steps))).toEqual([]));
+
+  it("saves the two recipes from chained runs, and the gate verifies each segment from its row", async () => {
+    record("bash", [["command", "npm test", 1], ["command", "npm run generate && npm test", 0]]);
+    record("ps", [["command", "npm test; npm run test:time", 1], ["command", "$env:TZ='UTC'; npm run test:time", 0]], "claude-code");
+    expect(await runJob()).toMatchObject({ state: "done" });
+    expect(entries().map(e => e.mex.one_line).sort()).toEqual([
+      "Before `npm test`, run `npm run generate`.",
+      "Run `npm run test:time` with `TZ=UTC` set; without it, it failed here (exit 1).",
+    ]);
+  });
+});
+
+describe("piped commands", () => {
+  const row = (text: string, exit: number | null): JournalRow => ({ id: 7, kind: "command", text, exit_code: exit });
+  const shape = (text: string, exit: number | null) => expandRow(row(text, exit)).map(r => [r.text, r.exit_code, r.ran ?? false]);
+
+  it("counts a pipeline through filters as its first stage, with the code the hook read from the runner's summary", () => {
+    expect(shape("npm test 2>&1 | tail -30", 1)).toEqual([["npm test", 1, false]]);
+    expect(shape("TZ=UTC npm run test:time 2>&1 | grep -E \"^ℹ (pass|fail)\"", 0)).toEqual([["TZ=UTC npm run test:time", 0, false]]);
+    expect(shape("npm test 2>&1 | Select-Object -Last 30", 0)).toEqual([["npm test", 0, false]]);
+    // The hook found no summary: it ran, outcome unknown.
+    expect(shape("npm run generate 2>&1 | tail -2", null)).toEqual([["npm run generate", null, true]]);
+    // An earlier pipeline's code was its last stage's, even in a passing `&&` chain.
+    expect(shape("npm test 2>&1 | tail -30; npm run test:time 2>&1 | tail -30", 1)).toEqual([["npm test", null, true], ["npm run test:time", 1, false]]);
+    expect(shape("npm test | tail -5 && npm run lint", 0)).toEqual([["npm test", null, true], ["npm run lint", 0, false]]);
+    // Only the first stage becomes a recipe: a filter's own arguments are never repeated.
+    expect(shape("npm test 2>&1 | tee /tmp/out.txt", 1)).toEqual([["npm test", 1, false]]);
+    for (const text of ["npm test | xargs echo", "npm test > out.txt | tail", "GITHUB_TOKEN=abc npm test | tail"])
+      expect(expandRow(row(text, 0)), text).toEqual([row(text, 0)]);
+  });
+
+  it("finds the prep in a natural session that pipes every command through tail", () => {
+    const found = findTransitions(rows([["command", "npm test 2>&1 | tail -30", 1], ["command", "npm run generate 2>&1 | tail -2", null], ["command", "npm test 2>&1 | tail -30", 0]]));
+    expect(found.map(t => [t.type, t.fail.text, t.type === "prep" ? t.preps.map(p => p.text) : [], t.pass.text])).toEqual([["prep", "npm test", ["npm run generate"], "npm test"]]);
+  });
+
+  it("knows a Codex rollout's code for a pipeline is only its last stage's", () => {
+    expect(["npm test | tail -30", "npm test; npm run lint | tail", "npm test | xargs echo"].map(rolloutExitHidden)).toEqual([true, true, true]);
+    expect(["npm test", "npm test | tail; npm run lint", "set -o pipefail; npm test | tail"].map(rolloutExitHidden)).toEqual([false, false, false]);
+  });
+
+  it("saves the prep recipe from piped rows, and the gate verifies the piped pass", async () => {
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", scripts: { generate: "node gen.js" } }));
+    record("piped", [["command", "npm test 2>&1 | tail -30", 1], ["command", "npm run generate 2>&1 | tail -2", null], ["command", "npm test 2>&1 | tail -30", 0]]);
+    expect(await runJob()).toMatchObject({ state: "done" });
+    expect(entries().map(e => e.mex.one_line)).toEqual(["Before `npm test`, run `npm run generate`."]);
+  });
 });
 
 describe("the fail-pass job", () => {

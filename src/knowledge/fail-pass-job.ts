@@ -13,7 +13,7 @@ import { shortHash } from "../record/project.js";
 import { filterAllowed } from "../filter/input.js";
 import { propose, summarizeResults } from "./gate.js";
 import type { Proposal } from "./gate-types.js";
-import { findTransitions, transitionProposal, type JournalRow } from "./fail-pass.js";
+import { findTransitions, rolloutExitHidden, transitionProposal, type JournalRow } from "./fail-pass.js";
 import { codexExitCodes } from "./codex-exits.js";
 
 export const FAIL_PASS_KIND = "fail-pass";
@@ -62,7 +62,7 @@ export function readFailPass(writer: RecordWriter, project: string, checkout: st
         ? codexExitCodes(writer.location, project, checkout, session, new Set(stored.flatMap(row => row.exit_code === null && row.call_id ? [row.call_id] : [])))
         : new Map<string, number>();
       const rows: JournalRow[] = stored.map(({ call_id, ...row }) => ({ ...row, id: Number(row.id),
-        exit_code: row.exit_code !== null ? Number(row.exit_code) : call_id ? exits.get(call_id) ?? null : null }));
+        exit_code: row.exit_code !== null ? Number(row.exit_code) : call_id && !rolloutExitHidden(row.text) ? exits.get(call_id) ?? null : null }));
       for (const transition of findTransitions(rows)) {
         if (transition.pass.id <= after) continue;
         const proposal = transitionProposal(transition, meta.agent);
