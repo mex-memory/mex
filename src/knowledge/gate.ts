@@ -199,10 +199,11 @@ function conflictWith(entry: KnowledgeEntry, old: Existing, verdicts: () => Read
   const verdict = current.get(`${id}:${old.level}`) ?? current.get(id);
   return verdict !== "broken" && verdict !== "changed";
 }
-function hintClaims(project: KnowledgeProject): KnowledgeEntry[] {
+function hintClaims(project: KnowledgeProject): { entries: KnowledgeEntry[]; invalid: number } {
   const directory = containedDirectory(project.location.home, ["projects", project.projectId, "hints"]);
-  if (!directory) return [];
+  if (!directory) return { entries: [], invalid: 0 };
   const handle = opendirSync(directory), entries: KnowledgeEntry[] = [];
+  let invalid = 0;
   try {
     let item, count = 0, bytes = 0;
     while ((item = handle.readSync())) {
@@ -212,11 +213,17 @@ function hintClaims(project: KnowledgeProject): KnowledgeEntry[] {
       if (!raw) continue;
       bytes += Buffer.byteLength(raw);
       if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Hints exceed the byte scan limit.");
-      const entry = parseEntry(raw);
-      if (entry.mex.id + ".md" !== item.name) invalid("Hint id differs from its filename.");
+      let entry: KnowledgeEntry;
+      try {
+        entry = parseEntry(raw);
+        if (entry.mex.id + ".md" !== item.name) throw new KnowledgeError("INVALID_ENTRY", "Hint id differs from its filename.");
+      } catch (error) {
+        if (!(error instanceof KnowledgeError) || !["INVALID_ENTRY", "ENTRY_TOO_LARGE"].includes(error.code)) throw error;
+        invalid++; continue;
+      }
       if (isActive(entry)) entries.push(entry);
     }
-    return entries;
+    return { entries, invalid };
   } finally { handle.closeSync(); }
 }
 
@@ -267,11 +274,14 @@ function owns(writer: RecordWriter, project: string, entry: KnowledgeEntry, raw:
   try { return JSON.parse(legacy).hash === digest(raw); } catch { return false; }
 }
 
-function activeClaims(project: KnowledgeProject, notes: Map<string, KnowledgeEntry>): Existing[] {
+function activeClaims(project: KnowledgeProject, notes: Map<string, KnowledgeEntry>, context: GateContext): Existing[] {
+  const team = teamClaims(project.root), hints = hintClaims(project);
+  // A malformed team or hint file is not compared against; it never blocks a write.
+  if (team.invalid || hints.invalid) context.onSkipped?.({ team: team.invalid, hint: hints.invalid });
   return [
     ...[...notes.values()].filter(isActive).map(entry => activeEntry(entry, "personal")),
-    ...teamClaims(project.root).map(entry => activeEntry(entry, "team")),
-    ...hintClaims(project).map(entry => activeEntry(entry, "hint")),
+    ...team.entries.map(entry => activeEntry(entry, "team")),
+    ...hints.entries.map(entry => activeEntry(entry, "hint")),
   ].filter(({ entry }) => !project.retired.has(entry.mex.id));
 }
 
@@ -302,7 +312,7 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
     }
     const snapshot = readNotes(location.home, projectId), files = new Map(snapshot.files);
     const notes = new Map([...files].map(([id, raw]) => [id, parseEntry(raw)]));
-    let active = activeClaims(project, notes);
+    let active = activeClaims(project, notes, context);
     const forgotten = retiredClaimHashes(writer, projectId);
     const retired = (id: string) => project.retired.has(id);
     const accepted: AcceptedEntry[] = [];
@@ -340,7 +350,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
           if (!previous || previous.replaces !== p.replaces) return drop("invalid", "The replacement target is no longer an active entry owned by this producer.");
         }
       }
-      return compare(p, active.filter(other => other.level !== "personal" || other.entry.mex.id !== id), forgotten, retired, rules);
+      // The producer's own entry and the entry it replaces are not duplicates of it.
+      return compare(p, active.filter(other => other.level !== "personal" || (other.entry.mex.id !== id && other.entry.mex.id !== p.replaces)), forgotten, retired, rules);
     };
     const checks: ProposedCheck[] = [], offsets = new Map<Candidate, number>();
     const firstPass = pending.map(p => {
@@ -381,7 +392,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       const raw = serializeEntry(entry);
       const hash = digest(raw), previous = publication(writer, projectId, id);
       const reviewed = previous?.hash === hash && Array.isArray(previous.approved) ? previous.approved : [];
-      const conflicts = approval ? [] : active.filter(other => other.entry.mex.id !== id && conflictWith(entry, other, getVerdicts)
+      const conflicts = approval ? [] : active.filter(other => other.entry.mex.id !== id
+        && !(other.level === "personal" && other.entry.mex.id === p.replaces) && conflictWith(entry, other, getVerdicts)
         && !reviewed.some(prior => prior?.id === other.entry.mex.id && prior.level === other.level
           && prior.revision === conflictProof(other).revision));
       if (conflicts.length) {
@@ -405,7 +417,9 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       const approved = approval?.item.conflicts.filter(other => other.level !== "personal") ?? reviewed;
       save(id, hash, p.evidence, p.replaces, approved.length ? approved : undefined);
       const replaced = p.replaces && notes.get(p.replaces);
-      if (replaced && isActive(replaced) && !retired(replaced.mex.id)) retire(replaced, "Superseded by a newer entry.", `mex ${source.producer}`, true);
+      // A replacement is not a forget: no tombstone, so the claim stays available. Retired by
+      // the producer rather than its sweep, the old id is never revived.
+      if (replaced && isActive(replaced) && !retired(replaced.mex.id)) retire(replaced, "Superseded by a newer entry.", `mex ${source.producer}`, false);
       if (approval) for (const other of approval.item.conflicts) {
         if (other.level !== "personal") continue;
         const old = notes.get(other.id)!;
@@ -419,11 +433,21 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
     }
 
     const sweep = context.sweep;
-    if (sweep && !results.some((result, i) => proposals[i]?.producer === sweep.producer && result.status === "dropped"
-      && !["forgotten", "duplicate-entry", "duplicate-rule-line"].includes(result.reason))) {
-      const wanted = new Set(pending.flatMap((p, i) => proposals[i]?.producer !== sweep.producer ? [] :
-        ["status" in p ? proposals[i]!.id : p.entry.mex.id]));
-      for (const [id, entry] of notes) {
+    if (sweep) {
+      // Every proposal in the batch keeps its entry, whatever its result. A duplicate of one of
+      // the producer's own entries keeps that entry too: it still holds the claim. A dropped
+      // proposal that names no entry (no usable id or key) could stand for any of them, so
+      // nothing is swept.
+      const wanted = new Set<string>();
+      let unnamed = false;
+      proposals.forEach((proposal, i) => {
+        if (proposal?.producer !== sweep.producer) return;
+        const p = pending[i]!, result = results[i]!;
+        const id = "status" in p ? proposedId(proposal) : p.entry.mex.id;
+        if (id) wanted.add(id); else unnamed = true;
+        if (result.status === "dropped" && result.reason === "duplicate-entry" && result.detail && notes.has(result.detail)) wanted.add(result.detail);
+      });
+      if (!unnamed) for (const [id, entry] of notes) {
         const raw = files.get(id)!;
         if (!wanted.has(id) && !retired(id) && isActive(entry) && owns(writer, projectId, entry, raw, sweep.producer) && (!sweep.includes || sweep.includes(entry))) {
           retire(entry, sweep.producer === "setup-recipe" ? "This command is no longer in the setup recipes." : "This entry is no longer produced.", sweepBy(sweep.producer), false);
@@ -442,6 +466,15 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
     try { writer.db.exec("ROLLBACK"); } catch { /* The transaction already ended. */ }
     finally { writer.close(); }
   }
+}
+
+/** The id a dropped proposal names, from its valid id or from its producer and key. */
+function proposedId(p: Proposal): string | undefined {
+  try {
+    if (p.id !== undefined) return EntryIdSchema.safeParse(p.id).success ? p.id : undefined;
+    if (typeof p.key === "string" && p.key.trim() && Buffer.byteLength(p.key) <= 4096 && PRODUCER_IDS.includes(p.producer)) return producerEntryId(p.producer, p.key);
+  } catch { /* an unusable key names no entry */ }
+  return undefined;
 }
 
 /** Save proposals in order, with one write transaction for the batch. */
@@ -498,7 +531,7 @@ export function vetRewrite(entry: KnowledgeEntry, original: KnowledgeEntry, mode
   try { forgotten = reader ? retiredClaimHashes(reader, project.projectId) : new Set(); }
   finally { if (!writer) reader?.close(); }
   const notes = new Map([...readNotes(project.location.home, project.projectId).files].map(([id, raw]) => [id, parseEntry(raw)]));
-  const others = activeClaims(project, notes).filter(other => other.entry.mex.id !== entry.mex.id);
+  const others = activeClaims(project, notes, context).filter(other => other.entry.mex.id !== entry.mex.id);
   const failure = compare(candidate, others, forgotten, id => project.retired.has(id), () => ruleClaims(tree))
     ?? recheck(candidate, observations(candidate.checks, context, project, tree));
   if (failure) return failure;

@@ -53,4 +53,6 @@ export interface GateContext extends KnowledgeOptions {
   onAccepted?: (writer: RecordWriter, accepted: AcceptedEntry[]) => void;
   observeChecks?: ObserveChecks;
   observeVerdicts?: (checkout: string) => ReadonlyMap<string, Verdict>;
+  /** Called with the number of malformed team and hint files left out of the comparison. */
+  onSkipped?: (invalid: { team: number; hint: number }) => void;
 }

@@ -9,6 +9,7 @@ import { enqueueJob, type JobRow } from "../../record/jobs.js";
 import { shortHash } from "../../record/project.js";
 import { note } from "../../knowledge/store.js";
 import { serializeEntry, type KnowledgeEntry } from "../../knowledge/entry.js";
+import { teamEntry } from "../../knowledge/team.js";
 import { evaluate } from "../../judge/native.js";
 import { hash, position } from "../../judge/evidence.js";
 import { publishNext, stagePromotion, publicationReady, PUBLICATION_WAIT, type PublicationDependencies } from "../publication.js";
@@ -64,7 +65,7 @@ it("shows the exact diff before adding a checked entry, with no staging or commi
   const preview = writer.db.prepare("SELECT text FROM notices WHERE kind LIKE 'learning-preview.%'").get()!;
   expect(JSON.parse(String(preview.text)).text).toContain("+Tests use vitest"); expect(publicationReady(writer, job)).toBe(false);
   receipt(); expect(publicationReady(writer, job)).toBe(true); expect((await run())?.results).toBe(1);
-  expect(readFileSync(teamPath(), "utf8")).toBe(serializeEntry(entry)); expect(saved().state).toBe("applied");
+  expect(readFileSync(teamPath(), "utf8")).toBe(serializeEntry(teamEntry(entry))); expect(saved().state).toBe("applied");
   expect(git("diff", "--cached", "--name-only")).toBe(""); expect(git("rev-parse", "HEAD")).toBe(head);
   expect(writer.db.prepare("SELECT id FROM notices WHERE kind LIKE 'learning-updated.%'").all()).toHaveLength(1);
   expect(await run()).toBeUndefined();
@@ -114,7 +115,7 @@ it.each(["branch", "head", "note", "privacy", "pause", "off", "cancel", "source"
 it("recovers a write before SQL receipt commit without a second file or duplicate line", async () => {
   await run(); receipt();
   writer.db.exec("CREATE TRIGGER fail_notice BEFORE INSERT ON notices WHEN new.kind LIKE 'learning-updated.%' BEGIN SELECT RAISE(ABORT,'injected'); END");
-  await expect(run()).rejects.toThrow("injected"); expect(readFileSync(teamPath(), "utf8")).toBe(serializeEntry(entry)); expect(saved().state).toBe("preview");
+  await expect(run()).rejects.toThrow("injected"); expect(readFileSync(teamPath(), "utf8")).toBe(serializeEntry(teamEntry(entry))); expect(saved().state).toBe("preview");
   writer.db.exec("DROP TRIGGER fail_notice"); await run(); expect(saved().state).toBe("applied"); expect(readdirSync(join(root, ".mex", "learned"))).toEqual([entry.mex.id + ".md"]);
 });
 it("holds a possible recorded-decision conflict rather than rewriting it", async () => {

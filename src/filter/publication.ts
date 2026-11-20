@@ -10,7 +10,7 @@ import { containedDirectory, readEntryFile } from "../knowledge/files.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
 import { shareProblems } from "../knowledge/share-checks.js";
 import { localSettings, claimHash, retiredClaimHashes } from "../knowledge/state.js";
-import { prepareTeamWrite, applyTeamWrite, teamEntries } from "../knowledge/team.js";
+import { prepareTeamWrite, applyTeamWrite, teamEntries, teamEntry } from "../knowledge/team.js";
 import { hash, position, samePosition, readSource, type Position } from "../judge/evidence.js";
 import { evaluate } from "../judge/native.js";
 import { judgeActor } from "../judge/ownership.js";
@@ -166,7 +166,9 @@ export async function publishNext(writer: RecordWriter, project: string, params:
   let preview;
   try { preview = prepareTeamWrite(found.entry, { home: writer.location.home, projectPath: params.checkout }, found.entry.mex.source.quote); }
   catch (error) { if (error instanceof KnowledgeError && error.code === "RETIRED_ENTRY") return hold("retired-team-entry", true); throw error; }
-  if (preview.after !== serializeEntry(found.entry)) return hold("write-gates-changed", true);
+  // Team files carry no local provenance fields; compare against the bytes a team write makes.
+  const teamBytes = serializeEntry(teamEntry(found.entry));
+  if (preview.after !== teamBytes) return hold("write-gates-changed", true);
   let report;
   try { report = await deps.evaluate({ checkout: params.checkout, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory }); }
   catch { return hold("checks-unavailable", true); }
@@ -183,7 +185,7 @@ export async function publishNext(writer: RecordWriter, project: string, params:
   }
   const same = team.find(t => t.entry.mex.id === offer.id);
   const conflict = team.some(t => t.entry.mex.id !== offer.id && t.entry.mex.kind === "decision" && overlap(t.entry.mex.scope, found.entry.mex.scope) && t.entry.text !== found.entry.text)
-    || !!same && serializeEntry(same.entry) !== serializeEntry(found.entry);
+    || !!same && serializeEntry(same.entry) !== teamBytes;
   const decision = promotionDecision({ evidence: { source: "person", observations }, shared: true, manual: false, ...policy, privacyHolds: metadata.holds ?? [], checksHold, conflict });
   if (decision.destination !== "team") return hold(decision.reason, decision.destination === "review");
   if (!found.entry.mex.source.quote || !sources.some((s, index) => s.quote === found.entry.mex.source.quote && observations[index]?.verified && !observations[index]?.marked && !observations[index]?.delivered)) return hold("current-quote-unverified");
