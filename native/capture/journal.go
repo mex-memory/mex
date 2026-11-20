@@ -190,11 +190,12 @@ func commandRow(ev contract.Event, t *contract.Tool) (record.JournalRow, bool) {
 	return record.JournalRow{Kind: "command", Text: clip(Redact(strings.TrimSpace(t.Input.Command)), MaxCommand), ExitCode: ExitCode(ev, t)}, true
 }
 
-// ExitCode is the command's exit code when the agent says it, else nil.
+// ExitCode is the command's exit code when the agent says it, else nil. A
+// command moved to the background has none yet: its OK only means it started.
 // Claude Code reports success on PostToolUse and the code on failure; Codex
 // gives a code only when its output carries an "Exit code:" header.
 func ExitCode(ev contract.Event, t *contract.Tool) *int {
-	if t == nil || t.Output == nil {
+	if t == nil || t.Output == nil || t.Output.Background {
 		return nil
 	}
 	if t.Output.ExitCode != nil {

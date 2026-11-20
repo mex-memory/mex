@@ -367,3 +367,24 @@ func TestSessionStartKeepsConsumedRows(t *testing.T) {
 		t.Fatalf("consumed row pruned: %+v", after)
 	}
 }
+
+// A backgrounded Claude command reports success when it starts, so its row
+// keeps no exit code: a later pass must not count it.
+func TestBackgroundCommandsKeepNoExitCode(t *testing.T) {
+	h, env := fakeHome(t, true)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	flag := map[string]any{"session_id": "s1", "hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "TZ=UTC npm test", "run_in_background": true}, "tool_response": map[string]any{"stdout": "", "stderr": ""}}
+	send(t, env, "claude-code", "PostToolUse", flag)
+	task := map[string]any{"session_id": "s1", "hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "npm run build"}, "tool_response": map[string]any{"stdout": "", "stderr": "", "backgroundTaskId": "b1"}}
+	send(t, env, "claude-code", "PostToolUse", task)
+	done := map[string]any{"session_id": "s1", "hook_event_name": "PostToolUse", "cwd": root, "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "npm test", "run_in_background": false}, "tool_response": map[string]any{"stdout": "ok", "stderr": ""}}
+	send(t, env, "claude-code", "PostToolUse", done)
+	rows := journalOf(t, h, "s1")
+	if len(rows) != 3 || rows[0].ExitCode != nil || rows[1].ExitCode != nil || rows[2].ExitCode == nil || *rows[2].ExitCode != 0 {
+		t.Fatalf("%+v", rows)
+	}
+}

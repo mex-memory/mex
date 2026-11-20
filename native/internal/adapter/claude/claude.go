@@ -136,7 +136,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		ev.Tool = &t
 	case contract.PostTool:
 		t := parseTool(p.ToolName, p.ToolInput, p.Cwd)
-		t.Output = &contract.ToolOutput{Text: responseText(p.ToolResponse), OK: true}
+		t.Output = &contract.ToolOutput{Text: responseText(p.ToolResponse), OK: true,
+			Background: t.Name == contract.ToolShell && backgrounded(p.ToolInput, p.ToolResponse)}
 		ev.Tool = &t
 	case contract.PostToolFailure:
 		t := parseTool(p.ToolName, p.ToolInput, p.Cwd)
@@ -224,6 +225,22 @@ func responseText(raw json.RawMessage) string {
 		return *shell.Stdout + "\n" + shell.Stderr
 	}
 	return string(raw)
+}
+
+// backgrounded reports a Bash call run with run_in_background, or one whose
+// response names the background task it became. Its success only means the
+// command started.
+func backgrounded(input, response json.RawMessage) bool {
+	var in struct {
+		RunInBackground bool `json:"run_in_background"`
+	}
+	if len(input) > 0 && json.Unmarshal(input, &in) == nil && in.RunInBackground {
+		return true
+	}
+	var out struct {
+		BackgroundTaskID string `json:"backgroundTaskId"`
+	}
+	return len(response) > 0 && json.Unmarshal(response, &out) == nil && out.BackgroundTaskID != ""
 }
 
 // exitCode reads "Exit code N" from the first line of a shell failure.
