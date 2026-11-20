@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { RecordWriter } from "../../record/index.js";
 import { registerJobKind, type JobRow } from "../../record/jobs.js";
 import type { RecordLocation } from "../../record/location.js";
+import { ENTRIES_KEY, ENTRIES_VERSION, entriesProposedAt } from "./freshness.js";
 
 export interface CodeFactsParams { checkout: string; }
 export interface CodeFactsFile {
@@ -181,15 +182,10 @@ registerJobKind<CodeFactsParams, { builds: number }>({
   },
 });
 
-/** Bumped when the entries made from the same facts change, so the next run proposes them again. */
-const ENTRIES_VERSION = 1;
-const ENTRIES_KEY = "code-facts.entries";
-
-function entriesProposedAt(writer: RecordWriter, projectId: string): string | undefined {
-  try {
-    const value = JSON.parse(writer.setting(projectId, ENTRIES_KEY) ?? "null") as { head?: unknown; version?: unknown } | null;
-    return value?.version === ENTRIES_VERSION && typeof value.head === "string" ? value.head : undefined;
-  } catch { return undefined; }
+/** Record that this version tried to propose the entries at `head`, and whether it finished. */
+function markEntriesProposed(writer: RecordWriter, projectId: string, head: string, complete: boolean): void {
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+    .run(projectId, ENTRIES_KEY, JSON.stringify({ head, version: ENTRIES_VERSION, complete }));
 }
 
 /**
@@ -210,12 +206,11 @@ async function proposeFactEntries(writer: RecordWriter, job: JobRow, checkout: s
         if (row?.state !== "running" || row.owner !== job.owner) throw new Error("The code-facts job was taken over before its entries were saved.");
       },
     });
-    if (result.complete && facts.head) {
-      writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
-        .run(job.project_id!, ENTRIES_KEY, JSON.stringify({ head: facts.head, version: ENTRIES_VERSION }));
-    }
+    // Incomplete is recorded too, so the background pass doesn't re-read history for it before HEAD moves.
+    if (facts.head) markEntriesProposed(writer, job.project_id!, facts.head, result.complete);
     return result.summary;
   } catch (error) {
+    if (facts.head) { try { markEntriesProposed(writer, job.project_id!, facts.head, false); } catch { /* the next run retries */ } }
     return `entries not saved: ${(error instanceof Error ? error.message : String(error)).split(/\r?\n/u)[0]!.slice(0, 200)}`;
   }
 }
