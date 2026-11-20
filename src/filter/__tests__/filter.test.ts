@@ -89,6 +89,24 @@ describe("filter batches and provenance", () => {
     add("later", "Builds use tsup because it bundles fast.", { finished: true });
     expect(filterInput(writer, project, params(), true, now)?.messages.map(m => m.text)).toEqual(["Builds use tsup because it bundles fast."]);
   });
+  it("acknowledges typed rows after the consumed cursor, earliest sessions first, so the cursor keeps moving", () => {
+    writer.db.prepare("DELETE FROM settings WHERE scope='global' AND key='learning.statements'").run();
+    // Consumed rows stay in the journal now. More sessions than one pass reads,
+    // named so that their names sort opposite to their rows.
+    const ids: number[] = [];
+    hooks.exec("BEGIN");
+    for (let i = 0; i < 4100; i++) ids.push(add(`s${9999 - i}`, `typed ${i}`));
+    hooks.exec("COMMIT");
+    const consumed = () => Number(writer.setting(project, "journal.consumed") ?? 0);
+    acknowledgeTyped(writer, project, root);
+    expect(consumed()).toBe(ids[4095]);
+    acknowledgeTyped(writer, project, root);
+    expect(consumed()).toBe(ids.at(-1));
+    // Rows at or before the cursor are not read again.
+    writer.db.prepare("DELETE FROM settings WHERE scope=? AND key LIKE 'filter.session.%'").run(project);
+    acknowledgeTyped(writer, project, root);
+    expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE scope=? AND key LIKE 'filter.session.%'").get(project)).toEqual({ n: 0 });
+  }, 60_000);
   it("skips recently active sessions but admits an explicit SessionEnd", () => {
     add("active", "active ask", { seen: new Date(now).toISOString() });
     expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
