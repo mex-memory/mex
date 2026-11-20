@@ -66,9 +66,9 @@ describe("a producer's entry, end to end", () => {
       const { job } = enqueueJob(writer, { kind: FAIL_PASS_KIND, projectId: checkout.project_id, params: { checkout: checkout.path } });
       await runOneBatch(writer, "producer-path-test", { only: new Set([job.id]) });
     } finally { hooks.close(); writer.close(); }
-    const id = (await import("../producers.js")).producerEntryId("fail-pass", JSON.stringify(["variant", "npm test", "TZ=UTC npm test"]));
+    const id = (await import("../producers.js")).producerEntryId("fail-pass", JSON.stringify(["variant", "npm test", "TZ=UTC"]));
     const { delivered } = deliver([id], options);
     expect(delivered).toEqual([{ id, verdict: "unknown", form: "full",
-      text: "[found by Codex] Run `TZ=UTC npm test`; without `TZ=UTC` it failed here (exit 1). In one session it failed, then passed with only the environment changed." }]);
+      text: "[found by Codex] Run `npm test` with `TZ=UTC` set; without it, it failed here (exit 1). In one session it failed, then passed with only the environment changed." }]);
   });
 });

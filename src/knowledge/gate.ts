@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
 import { codexExitCodes } from "./codex-exits.js";
+import { neutral } from "./fail-pass.js";
 import { readConflict, stageConflict, type StoredConflict } from "../review/conflicts.js";
 import { REVIEW_DAYS } from "../review/state.js";
 import { nativeBinary, runNative, type Verdict } from "./check.js";
@@ -94,9 +95,14 @@ function journalPasses(proposals: readonly Proposal[], project: KnowledgeProject
   finally { hooks?.close(); }
   return passes;
 }
+/**
+ * The exact runs a fail-pass proposal may name: each passing row's text, and
+ * that text without its leading environment assignments, since recipes name
+ * the command and give its environment as data (any shell can repeat it).
+ */
 function observedRuns(p: Proposal, passes: ReadonlyMap<number, string>): ReadonlySet<string> | undefined {
   if (p?.producer !== "fail-pass" || !Array.isArray(p.evidence)) return undefined;
-  return new Set(p.evidence.flatMap(ref => typeof ref === "number" && passes.has(ref) ? [passes.get(ref)!] : []));
+  return new Set(p.evidence.flatMap(ref => typeof ref === "number" && passes.has(ref) ? [passes.get(ref)!, neutral(passes.get(ref)!)[0]] : []));
 }
 const backticked = (text: string) => [...text.matchAll(/`([^`\n]+)`/gu)].map(match => match[1]!.trim());
 

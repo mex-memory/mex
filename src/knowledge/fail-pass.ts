@@ -8,7 +8,10 @@
  *  - edit: C fails, files are edited, then exactly C passes; C verifies (test,
  *    build, lint, typecheck).
  * The wording comes from templates, so the command in an entry is exactly the
- * command that passed. No model call: the commands and exit codes are the evidence.
+ * command that passed, without its shell's assignment syntax: leading
+ * environment assignments (`TZ=UTC cmd`, PowerShell `$env:TZ='UTC'; cmd`) are
+ * given as data, so an agent in any shell can follow the recipe. No model
+ * call: the commands and exit codes are the evidence.
  */
 import { linePurpose } from "../repo-start/recipes/ci.js";
 import type { Proposal } from "./gate-types.js";
@@ -178,6 +181,26 @@ export function commonFolder(paths: readonly string[]): string {
 
 const code = (text: string) => `\`${text}\``;
 const list = (items: string[]) => items.length === 1 ? items[0]! : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+/** An assignment as data, `NAME=value`, quoted only when the value needs it. */
+function shown(canonical: string): string {
+  const at = canonical.indexOf("="), value = canonical.slice(at + 1);
+  if (/^[\w@%+:,./-]*$/u.test(value)) return canonical;
+  return `${canonical.slice(0, at)}=${value.includes("'") ? `"${value}"` : `'${value}'`}`;
+}
+/**
+ * A command without its shell's assignment syntax: the command itself, then
+ * its environment as data. `TZ=UTC npm test` (POSIX) and `$env:TZ='UTC'; npm
+ * test` (PowerShell) are the same run, and an agent in either shell can repeat it.
+ */
+export function neutral(text: string): [command: string, ...environment: string[]] {
+  const { assignments, rest } = splitEnvironment(text);
+  return [rest, ...assignments.map(a => a.canonical).sort()];
+}
+/** "`npm test`", or "`npm test` with `CI=1` set". */
+function phrase(text: string): string {
+  const [command, ...environment] = neutral(text);
+  return environment.length ? `${code(command)} with ${list(environment.map(a => code(shown(a))))} set` : code(command);
+}
 const AGENT_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", copilot: "Copilot CLI", opencode: "OpenCode" };
 
 /** The display line naming the agent whose session found it. */
@@ -192,24 +215,27 @@ export function transitionProposal(t: Transition, agent: string): Proposal {
   const exit = `exit ${t.fail.exit_code}`;
   if (t.type === "variant") {
     const before = splitEnvironment(t.fail.text).assignments, after = splitEnvironment(t.pass.text).assignments;
-    const added = after.filter(a => !before.some(b => b.canonical === a.canonical)).map(a => code(a.text));
-    const removed = before.filter(b => !after.some(a => a.canonical === b.canonical)).map(b => code(b.text));
-    const how = !removed.length ? `without ${list(added)}` : !added.length ? `with ${list(removed)}` : `with ${list(removed)} instead of ${list(added)}`;
-    const oneLine = `Run ${code(t.pass.text)}; ${how} it failed here (${exit}).`;
-    return { ...base, key: JSON.stringify(["variant", normalizeCommand(t.pass.text), t.pass.text]), kind: "recipe", oneLine,
+    const added = after.filter(a => !before.some(b => b.canonical === a.canonical)).map(a => code(shown(a.canonical)));
+    const removed = before.filter(b => !after.some(a => a.canonical === b.canonical)).map(b => code(shown(b.canonical)));
+    const it = (items: string[]) => items.length === 1 ? "it" : "them";
+    const how = !removed.length ? `with ${list(added)} set; without ${it(added)}, it failed here`
+      : !added.length ? `without ${list(removed)} set; with ${it(removed)}, it failed here`
+        : `with ${list(added)} set instead of ${list(removed)}; with ${list(removed)}, it failed here`;
+    const oneLine = `Run ${code(splitEnvironment(t.pass.text).rest)} ${how} (${exit}).`;
+    return { ...base, key: JSON.stringify(["variant", ...neutral(t.pass.text)]), kind: "recipe", oneLine,
       text: `${oneLine} In one session it failed, then passed with only the environment changed.`, evidence: [t.fail.id, t.pass.id] };
   }
   if (t.type === "prep") {
-    const steps = t.preps.map(p => code(p.text));
-    const oneLine = `Before ${code(t.pass.text)}, run ${steps.join(", then ")}.`;
-    return { ...base, key: JSON.stringify(["prep", t.pass.text, ...t.preps.map(p => p.text)]), kind: "recipe", oneLine,
+    const steps = t.preps.map(p => phrase(p.text));
+    const oneLine = `Before ${phrase(t.pass.text)}, run ${steps.join(", then ")}.`;
+    return { ...base, key: JSON.stringify(["prep", neutral(t.pass.text), ...t.preps.map(p => neutral(p.text))]), kind: "recipe", oneLine,
       text: `${oneLine} In one session it failed (${exit}) until ${t.preps.length === 1 ? "that" : "those"} ran, then passed with no edit between.`,
       evidence: [t.fail.id, ...t.preps.map(p => p.id), t.pass.id] };
   }
   const area = commonFolder(t.edits.map(e => e.text));
   const where = area ? `in ${code(area)}` : "in this repository";
-  const oneLine = `After changes ${where}, run ${code(t.pass.text)}; it caught a failure here.`;
-  return { ...base, key: JSON.stringify(["edit", t.pass.text, area]), kind: "procedure", oneLine,
+  const oneLine = `After changes ${where}, run ${phrase(t.pass.text)}; it caught a failure here.`;
+  return { ...base, key: JSON.stringify(["edit", neutral(t.pass.text), area]), kind: "procedure", oneLine,
     text: `${oneLine} In one session it failed (${exit}), files there were edited, then it passed.`,
     anchors: { scope: [area ? `${area}/**` : "**"] },
     evidence: [t.fail.id, ...t.edits.slice(0, MAX_EDIT_EVIDENCE).map(e => e.id), t.pass.id] };

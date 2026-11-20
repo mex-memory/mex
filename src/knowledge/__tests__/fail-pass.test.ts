@@ -66,6 +66,9 @@ describe("normalising commands", () => {
     for (const command of ["DB_PASSWORD=hunter2hunter2 go test ./...", "STRIPE_API_KEY=sk_live_abcdefghijklmnop1234 cargo test",
       "DATABASE_URL=postgres://app:s3cretPassw0rd@db:5432/app npm test", "NODE_AUTH_TOKEN=abc npm test", "PGPASSWORD=x npm test",
       "$env:GITHUB_TOKEN='abcdefgh12345678'; npm test", "REDIS_URL=redis://:pw@localhost:6379 npm test",
+      // The same refusals in PowerShell and env(1) forms.
+      "$env:DB_PASSWORD='hunter2hunter2'; npm test", "$env:DATABASE_URL='postgres://app:s3cret@db/app'; npm test", "$env:NODE_AUTH_TOKEN=\"abc\"; npm test",
+      "env DB_PASSWORD=hunter2hunter2 npm test", "env STRIPE_API_KEY=sk_live_abcdefghijklmnop1234 npm test",
       // One machine's checkout or home: another worktree would run the wrong files.
       "npx vitest run /home/alice/work/repo/src/a.test.ts", "npx vitest run C:\\Users\\alice\\repo\\src\\a.test.ts", "npx vitest run C:/repo/a.test.ts",
       "npx vitest run ~/repo/a.test.ts", "CONFIG=/etc/app.json npm test", "npm test -- --config=/tmp/x.json"]) expect(replayable(command), command).toBe(false);
@@ -124,7 +127,7 @@ describe("the fail-pass job", () => {
     expect(saved.map(e => [e.mex.kind, e.mex.one_line, e.mex.scope, e.mex.source.label])).toEqual([
       ["procedure", "After changes in `src/api`, run `npx tsc --noEmit`; it caught a failure here.", ["src/api/**"], "found by Claude Code"],
       ["recipe", "Before `go test ./...`, run `go generate ./...`.", ["**"], "found by Codex"],
-      ["recipe", "Run `TZ=UTC npm test`; without `TZ=UTC` it failed here (exit 1).", ["**"], "found by Claude Code"],
+      ["recipe", "Run `npm test` with `TZ=UTC` set; without it, it failed here (exit 1).", ["**"], "found by Claude Code"],
     ]);
     for (const entry of saved) {
       expect(entry.mex).toMatchObject({ evidence: "observed", source: { type: "observed", producer: "fail-pass" }, checks: [] });
@@ -172,6 +175,28 @@ describe("the fail-pass job", () => {
     record("path", [["command", "npx vitest run /home/alice/work/repo/src/a.test.ts", 1], ["edit", "src/a.ts"], ["command", "npx vitest run /home/alice/work/repo/src/a.test.ts", 0]]);
     expect(await runJob()).toMatchObject({ state: "done" });
     expect(entries()).toEqual([]);
+  });
+
+  it("names the command and gives its environment as data, the same for POSIX and PowerShell", async () => {
+    // A Codex PowerShell run and a Claude Bash run of the same variant are one recipe that either shell can follow.
+    record("ps", [["command", "npm run test:time", 1], ["command", "$env:TZ='UTC'; npm run test:time", 0]], "codex");
+    expect(await runJob()).toMatchObject({ state: "done" });
+    const first = entries();
+    expect(first.map(e => e.mex.one_line)).toEqual(["Run `npm run test:time` with `TZ=UTC` set; without it, it failed here (exit 1)."]);
+    record("sh", [["command", "npm run test:time", 2], ["command", "TZ=UTC npm run test:time", 0]]);
+    await runJob();
+    expect(entries().map(e => [e.mex.id, e.mex.one_line])).toEqual([[first[0]!.mex.id, "Run `npm run test:time` with `TZ=UTC` set; without it, it failed here (exit 2)."]]);
+    // Removed and replaced assignments, values that need quoting, and an edit procedure's environment.
+    record("removed", [["command", "CI=true go test ./...", 1], ["command", "go test ./...", 0]]);
+    record("replaced", [["command", "$env:LANG='C'; cargo test", 1], ["command", "LANG='en_US.UTF-8 x' cargo test", 0]]);
+    record("edit", [["command", "$env:CI='1'; npx tsc --noEmit", 2], ["edit", "src/a.ts"], ["command", "$env:CI='1'; npx tsc --noEmit", 0]], "codex");
+    await runJob();
+    expect(entries().map(e => e.mex.one_line).sort()).toEqual([
+      "After changes in `src`, run `npx tsc --noEmit` with `CI=1` set; it caught a failure here.",
+      "Run `cargo test` with `LANG='en_US.UTF-8 x'` set instead of `LANG=C`; with `LANG=C`, it failed here (exit 1).",
+      "Run `go test ./...` without `CI=true` set; with it, it failed here (exit 1).",
+      "Run `npm run test:time` with `TZ=UTC` set; without it, it failed here (exit 2).",
+    ]);
   });
 
   it("pairs a failure before the cursor with a pass after it", async () => {

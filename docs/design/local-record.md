@@ -1094,7 +1094,12 @@ without session metrics remain available to the per-lever ledger.
   project and checkout, exact text.
   A command with an absolute or home path, or with an environment assignment
   or text that may hold a credential (a secret-like name such as
-  `DB_PASSWORD`, or a password in a URL), never becomes a recipe.
+  `DB_PASSWORD`, or a password in a URL), never becomes a recipe. A recipe
+  names the command without its shell's assignment syntax and gives its
+  environment as data ("Run `npm test` with `TZ=UTC` set; without it, it
+  failed here"), so POSIX `TZ=UTC npm test` and PowerShell
+  `$env:TZ='UTC'; npm test` are one entry that any shell can follow; the gate
+  accepts that command from a passing row's text with its assignments removed.
 
 Indexes cover active sessions by project/time, deliveries by session/agent/epoch/
 entry/time and by time, followups by delivery/time, journal by session/id, and
