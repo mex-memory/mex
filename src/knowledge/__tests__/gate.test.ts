@@ -10,6 +10,7 @@ import { entryProducer, listProducers, producerEntryId } from "../producers.js";
 import { expandPersonal } from "../store.js";
 import { forget } from "../mutations.js";
 import { reviewQueue } from "../../review/queue.js";
+import { prepareTeamWrite } from "../team.js";
 
 let base: string, context: GateContext;
 const now = new Date("2026-11-19T12:00:00Z");
@@ -165,5 +166,78 @@ describe("producer publication", () => {
       .toMatchObject({ status: "review" });
     expect(await save(proposal, { observeVerdicts: () => new Map([[producerEntryId("code-facts", "generated"), "changed"]]) }))
       .toMatchObject({ status: "accepted" });
+  });
+});
+
+describe("replacement, sweep and team regressions", () => {
+  const id = (key: string) => producerEntryId("code-facts", key);
+  const complete = { kind: "value", role: "complete", target } as const;
+  const port = (over: Partial<Proposal> = {}) => fact({ key: "port", kind: "fact", text: "The server listens on port 3000 by default.",
+    checks: [complete], ...over });
+
+  it("replaces an entry with the same claim and check, without forgetting the claim", async () => {
+    expect(await save(port())).toMatchObject({ change: "new" });
+    const replacement = port({ key: "port-api", anchors: { scope: ["src/api/**"] }, replaces: id("port") });
+    expect(await save(replacement)).toMatchObject({ status: "accepted", entryId: id("port-api"), change: "new" });
+    expect(() => expandPersonal(id("port"), context)).toThrow();
+    expect(await save(replacement)).toMatchObject({ change: "unchanged" });
+    expect(await save(port({ key: "port-api", anchors: { scope: ["src/api/**"] }, label: "mined from code, 2 of 2" })))
+      .toMatchObject({ status: "accepted", change: "updated" });
+    // The producer never revives the id it replaced.
+    expect(await save(port())).toMatchObject({ reason: "forgotten" });
+  });
+
+  it("keeps a producer's entry when a re-keyed proposal duplicates it under a sweep", async () => {
+    const sweep = { producer: "code-facts" } as const;
+    expect((await propose([port()], { ...context, sweep }))[0]).toMatchObject({ status: "accepted" });
+    const rekeyed = await propose([port({ key: "port-2", text: "Port 3000 is the default listen port." })], { ...context, sweep });
+    expect(rekeyed).toMatchObject([{ reason: "duplicate-entry", detail: id("port") }]);
+    expect(expandPersonal(id("port"), context).entry.mex.status).toBe("active");
+  });
+
+  it("retires stale entries even when another proposal in the batch is dropped", async () => {
+    const sweep = { producer: "code-facts" } as const;
+    await propose([fact(), fact({ key: "stale", text: "The adapter owns error reporting.", anchors: { scope: ["adapter/**"] } }),
+      fact({ key: "kept", text: "Schemas live under src/schema.", anchors: { scope: ["src/schema/**"] } })], context);
+    const results = await propose([fact(), fact({ key: "kept", text: "Schemas live under src/schema. Use `npm run absent`.", anchors: { scope: ["src/schema/**"] } })],
+      { ...context, sweep });
+    expect(results).toMatchObject([{ change: "unchanged" }, { reason: "undefined-command" }]);
+    expect(() => expandPersonal(id("stale"), context)).toThrow();
+    expect(expandPersonal(id("kept"), context).entry.text).toBe("Schemas live under src/schema.");
+    expect(expandPersonal(id("generated"), context).entry.mex.status).toBe("active");
+  });
+
+  it("skips the sweep when a dropped proposal names no entry", async () => {
+    const sweep = { producer: "code-facts" } as const;
+    await propose([fact(), fact({ key: "stale", text: "The adapter owns error reporting.", anchors: { scope: ["adapter/**"] } })], context);
+    const unnamed = { ...fact({ text: "" }), key: undefined };
+    expect(await propose([fact(), unnamed], { ...context, sweep })).toMatchObject([{ change: "unchanged" }, { reason: "invalid" }]);
+    expect(expandPersonal(id("stale"), context).entry.mex.status).toBe("active");
+  });
+
+  it("verifies npm workspace scripts with the flag before or after the script", async () => {
+    write("package.json", JSON.stringify({ workspaces: ["packages/*"] }));
+    write("packages/api/package.json", JSON.stringify({ name: "@acme/api", scripts: { generate: "node gen.mjs" } }));
+    const text = (command: string) => `Regenerate the client with \`${command}\` after schema changes.`;
+    for (const [key, command] of [["after", "npm run generate --workspace packages/api"], ["before", "npm run -w packages/api generate"]]) {
+      expect(await save(fact({ key, text: text(command) }))).toMatchObject({ status: "accepted" });
+    }
+    expect(await save(fact({ key: "missing", text: text("npm run missing --workspace packages/api") }))).toMatchObject({ reason: "undefined-command" });
+  });
+
+  it("writes team files without provenance and skips malformed team files", async () => {
+    write(".mex/learned/mx_broken01.md", ["---", "mex:", "  id: mx_broken01", "---", "Not an entry.", ""].join("\n"));
+    const onSkipped = vi.fn();
+    const text = "Keep the release notes in docs/releases.";
+    const saved = await save(fact({ producer: "note", text, anchors: undefined, label: "a person's note", source: { type: "person", ref: "mex note", quote: text, text } }),
+      { onSkipped });
+    expect(saved).toMatchObject({ status: "accepted" });
+    expect(onSkipped).toHaveBeenCalledWith({ team: 1, hint: 0 });
+    if (saved.status !== "accepted") throw new Error("Expected a saved note");
+    const personal = expandPersonal(saved.entryId, context).entry;
+    expect(personal.mex.source).toMatchObject({ producer: "note", label: "a person's note" });
+    const preview = prepareTeamWrite(personal, context, text);
+    expect(preview.after).not.toMatch(/producer:|model:|label:/u);
+    expect(parseEntry(preview.after).mex.source).toEqual({ type: "person", ref: "mex note", quote: text });
   });
 });

@@ -63,8 +63,10 @@ async function staged(level: "team" | "personal" = "team", outcome: "rewritten" 
   const preview = () => writer.db.prepare("SELECT id,text FROM notices WHERE kind LIKE 'judge-preview.%'").get() as { id: string; text: string } | undefined;
   const acknowledge = (session = "session") => hooks.prepare("INSERT OR REPLACE INTO notices_shown VALUES(?,?,?)").run(preview()!.id, session, new Date().toISOString());
   const reviews = () => writer.db.prepare("SELECT * FROM review").all();
-  return { job, report, path, before, after: serializeEntry({ ...rewrite, mex: { ...rewrite.mex, source: { ...rewrite.mex.source, producer: "judge",
-    model: { id: "fixture-cheap", version: "fixture-version" } } } }), proof, preview, acknowledge, reviews };
+  // Personal entries keep the judge's provenance; tracked team files leave it out.
+  const after = level === "team" ? serializeEntry(rewrite) : serializeEntry({ ...rewrite, mex: { ...rewrite.mex, source: { ...rewrite.mex.source, producer: "judge",
+    model: { id: "fixture-cheap", version: "fixture-version" } } } });
+  return { job, report, path, before, after, proof, preview, acknowledge, reviews };
 }
 
 describe("where judge fixes land", () => {
@@ -76,6 +78,7 @@ describe("where judge fixes land", () => {
     expect(fixPreviewReady(writer, f.job)).toBe(false); f.acknowledge(); expect(fixPreviewReady(writer, f.job)).toBe(true);
     expect(await route(writer, f.job, f.report)).toEqual({ waiting: false, gaps: false });
     expect(readFileSync(f.path, "utf8")).toBe(f.after); expect(git("status", "--porcelain")).toContain("M .mex/learned/");
+    expect(f.after).not.toMatch(/producer:|model:/u);
     expect(writer.db.prepare("SELECT text FROM notices WHERE kind LIKE 'judge-updated.%'").get()!.text).toContain("same PR");
     await route(writer, f.job, f.report); expect(f.reviews()).toHaveLength(0);
   });
