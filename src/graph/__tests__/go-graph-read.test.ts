@@ -12,7 +12,8 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openRecord } from "../../record/index.js";
 import { buildIndex } from "../../file-index/build.js";
-import { runGraph } from "../cli-graph.js";
+import { runGraph, runGraphRefresh } from "../cli-graph.js";
+import { graphLocation, readGraphPointer } from "../storage.js";
 import { askGraph, renderGraphAnswer } from "../cli-read.js";
 
 const enabled = process.env.MEX_TEST_REAL_HOOK_BINARY === "1" && spawnSync("go", ["version"], { encoding: "utf8" }).status === 0;
@@ -56,7 +57,7 @@ export function checksTwice(): boolean {
 `;
 
 describe.skipIf(!enabled)("graph reads in Go", () => {
-  let root: string, checkout: string, hook: string;
+  let root: string, checkout: string, hook: string, projectId: string, records: string;
   const exe = process.platform === "win32" ? ".exe" : "";
   const ask = (question: Parameters<typeof askGraph>[0], name: string) => askGraph(question, name, { root: checkout, binary: hook });
 
@@ -74,8 +75,8 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     await runGraph({ root: checkout, json: true });
     // The file index marks test files and re-checks changed ones, as in a real checkout.
     const writer = openRecord({ projectPath: checkout });
-    const projectId = writer.checkout(checkout)!.project_id;
-    const records = writer.location.directory;
+    projectId = writer.checkout(checkout)!.project_id;
+    records = writer.location.directory;
     writer.close();
     await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
 
@@ -129,4 +130,20 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
   it("says a name is missing or names several definitions instead of guessing", () => {
     expect(ask("callers", "doesNotExist").verdict).toBe("missing");
   });
+
+  it("reads through an overlay: the edited file's rows replace the base's", async () => {
+    writeFileSync(join(checkout, "src", "use.ts"), `${USE}\nexport function again(): number {\n  return area(3);\n}\n`);
+    try {
+      await runGraphRefresh({ root: checkout, json: true });
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+      expect(readGraphPointer(graphLocation(checkout))?.overlay).toMatch(/^graph-o-/);
+      const callers = ask("callers", "area").sites!.map((site) => site.in.name);
+      expect(callers).toEqual(expect.arrayContaining(["again", "report", "unit"]));
+      // Each caller once: base rows of the shadowed file are not read as well.
+      expect(callers.filter((name) => name === "report")).toHaveLength(1);
+    } finally {
+      writeFileSync(join(checkout, "src", "use.ts"), USE);
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+    }
+  }, 120_000);
 });
