@@ -10,11 +10,13 @@ import { registerJobKind, type BatchContext, type BatchResult, type JobKind } fr
 import type { RecordWriter } from "../record/index.js";
 import { refreshOwnUsage } from "../record/own-usage.js";
 import { coverageKey, makeNoteProof, matchesProof, noteKey, saveSourceReads, SourceRef, sourceRead, sourceRef, type TeamCoverage } from "./coverage.js";
-import { filteringPrompt, selectedSources, validatedEntries, writingPrompt, type EarlierEntry, type LearnedEntry } from "./entries.js";
+import { filteringPrompt, hasLearningEvidence, RejectionReason, selectedSources, validatedEntries, ValidationDiagnostics, writingPrompt,
+  type EarlierEntry, type LearnedEntry } from "./entries.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
 import { clearLearningChecks, origin, PinnedTree } from "./git.js";
 import { hosts } from "./hosts.js";
 import { contextSources } from "./history.js";
+import { branchScope, StaleDoc, staleDoc } from "./history-docs.js";
 import { DOCS_PER_BATCH, fitsQuote, LEARN_KIND, Plan, promptEstimate, PULLS_PER_BATCH, type LearningPlan } from "./plan.js";
 import type { Reviewers } from "./reviewers.js";
 import { importedSourceKey, importsEnabled, readImport, SESSIONS_PER_BATCH } from "./session-import.js";
@@ -28,12 +30,22 @@ const checkpointSchema = z.object({
   session: z.number().int().nonnegative().optional(),
   retryAt: z.number().optional(), recovered: z.number().int().nonnegative().optional(),
   weeklyPlan: Plan.optional(),
+  rejected: z.record(RejectionReason, z.number().int().positive()).optional(),
+  staleDocs: z.number().int().positive().optional(),
 }).strict();
 type Checkpoint = z.infer<typeof checkpointSchema>;
 type Context = BatchContext<unknown, Checkpoint>;
+const batchDiagnostics = z.object({
+  reviewSources: z.number().int().nonnegative(), verifiedReviewSources: z.number().int().nonnegative(),
+  verifiedPulls: z.number().int().nonnegative(), docs: z.number().int().nonnegative(), sessions: z.number().int().nonnegative(),
+  skip: z.enum(["no-sources", "insufficient-review-evidence", "changed-after-shortlist", "insufficient-shortlist"]).optional(),
+  validation: ValidationDiagnostics.optional(),
+  staleDocs: z.array(StaleDoc).max(DOCS_PER_BATCH).optional(),
+}).strict();
+type BatchDiagnostics = z.infer<typeof batchDiagnostics>;
 const receiptSchema = z.object({
   checkpoint: checkpointSchema, count: z.number().int().nonnegative().max(16), spent: z.number().int().nonnegative(), done: z.boolean(),
-  sources: z.array(SourceRef).max(48),
+  sources: z.array(SourceRef).max(48), diagnostics: batchDiagnostics.optional(),
 }).strict();
 type Receipt = z.infer<typeof receiptSchema>;
 const Shortlist = z.object({
@@ -68,10 +80,17 @@ function learningOn(writer: RecordWriter, project: string, plan: Pick<LearningPl
 function result(context: Context, plan: LearningPlan, saved: Receipt): BatchResult<Checkpoint> {
   const { checkpoint, count, spent, done } = saved;
   const total = plan.sessions.length;
+  const summary = [...checkpoint.gaps];
+  if (checkpoint.recovered) summary.push("Resumed from the last finished batch.");
+  if (checkpoint.rejected) {
+    const reasons = RejectionReason.options.flatMap(reason => checkpoint.rejected?.[reason] ? [`${checkpoint.rejected[reason]} ${reason}`] : []);
+    if (reasons.length) summary.push(`Rejected proposals (${reasons.join(", ")}).`);
+  }
+  if (checkpoint.staleDocs) summary.push(`Skipped ${checkpoint.staleDocs} historically scoped ${checkpoint.staleDocs === 1 ? "doc" : "docs"}.`);
   return {
     checkpoint, results: count, tokens: Math.max(0, spent - context.job.tokens_used), done,
     gaps: done && checkpoint.gaps.length > 0,
-    summary: [...checkpoint.gaps, ...(checkpoint.recovered ? ["Resumed from the last finished batch."] : [])].join(" "),
+    summary: summary.join(" "),
     progress: `${checkpoint.pull} of ${plan.pulls.length} merged changes and ${checkpoint.doc} of ${plan.docs.length} docs read`
       + (total ? ` · ${checkpoint.session ?? 0} of ${total} past sessions checked` : ""),
   };
@@ -166,8 +185,17 @@ function waitForIdle(state: Checkpoint, now: number): BatchResult<Checkpoint> {
 }
 
 async function modelEntries(deps: Dependencies, context: Context, plan: LearningPlan, tree: PinnedTree, sources: LearningSource[],
-  gaps: Set<string>, reviewers: Reviewers | undefined, weekly?: WeeklySchedule): Promise<LearnedEntry[]> {
-  if (!sources.length) return [];
+  gaps: Set<string>, reviewers: Reviewers | undefined, weekly?: WeeklySchedule): Promise<{ entries: LearnedEntry[]; diagnostics: BatchDiagnostics }> {
+  const reviews = sources.filter(source => source.kind === "review");
+  const verified = reviews.filter(source => source.writer);
+  const counts = { reviewSources: reviews.length, verifiedReviewSources: verified.length, verifiedPulls: new Set(verified.map(source => source.pull)).size,
+    docs: sources.filter(source => source.kind === "docs").length, sessions: sources.filter(source => source.kind === "person").length };
+  const skip = (reason: BatchDiagnostics["skip"]) => ({ entries: [], diagnostics: { ...counts, skip: reason } });
+  if (!sources.length) return skip("no-sources");
+  if (!hasLearningEvidence(sources, plan.source.slug)) {
+    gaps.add("Some review batches lacked verified reviews from two merged changes.");
+    return skip("insufficient-review-evidence");
+  }
   const { writer, job, progress } = context;
   const project = job.project_id!;
   const pastSessions = sources.some(source => source.kind === "person");
@@ -203,7 +231,7 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
     let shortlist = saved ? Shortlist.parse(JSON.parse(saved)) : undefined;
     if (shortlist && shortlist.input !== input) {
       gaps.add("Some sources changed after the batch was filtered.");
-      return [];
+      return skip("changed-after-shortlist");
     }
     if (!shortlist) {
       const prompt = filteringPrompt(sources);
@@ -219,12 +247,17 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
     const ids = new Set(shortlist.ids);
     selected = sources.filter(source => ids.has(source.id));
   }
-  if (!selected.length) return [];
+  if (!hasLearningEvidence(selected, plan.source.slug)) {
+    if (selected.length) gaps.add("Some shortlisted batches did not contain enough evidence to keep a rule.");
+    return skip("insufficient-shortlist");
+  }
   progress?.(`Learning from ${selected.length} sources`);
   const response = await call(writingPrompt(selected, earlier), "best");
   const validated = await validatedEntries(response.text, selected, plan, tree, writer.location.home, job.id, earlier);
-  if (validated.rejected) gaps.add("Some proposed entries could not be verified.");
-  return validated.entries;
+  if (validated.validation.response !== "valid" || validated.validation.rejected.some(item => item.reason !== "duplicate-existing")) {
+    gaps.add("Some proposed entries could not be verified.");
+  }
+  return { entries: validated.entries, diagnostics: { ...counts, validation: validated.validation } };
 }
 
 function deferWeekly(context: Context, schedule: WeeklySchedule, state: Checkpoint, due: number, why: string): BatchResult<Checkpoint> {
@@ -317,15 +350,22 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         if (!plan || !tree) return finishGap("The approved Git revision is no longer readable in this checkout.");
         const activePlan = plan, pinned = tree;
         const gaps = new Set(state.gaps);
-        const saveBatch = async (sources: LearningSource[], advanced: Pick<Checkpoint, "pull" | "doc" | "session">, reviewers?: Reviewers) => {
+        const saveBatch = async (sources: LearningSource[], advanced: Pick<Checkpoint, "pull" | "doc" | "session">, reviewers?: Reviewers,
+          staleDocs: z.infer<typeof StaleDoc>[] = []) => {
           const eligible = weekly ? sources.filter(source => !team?.read.has(coverageKey(source)) && !sourceRead(writer, project, activePlan, source)) : sources;
-          const entries = await modelEntries(deps, context, activePlan, pinned, eligible, gaps, reviewers, weekly);
+          const { entries, diagnostics } = await modelEntries(deps, context, activePlan, pinned, eligible, gaps, reviewers, weekly);
           const spent = spend();
           if (!weekly && spent > activePlan.ceiling) gaps.add("The last model batch reported more tokens than the approved ceiling.");
           const done = advanced.pull >= activePlan.pulls.length && advanced.doc >= activePlan.docs.length && (advanced.session ?? 0) >= activePlan.sessions.length;
           const schedule = done && (weekly || activePlan.refresh) ? scheduleFromPlan(activePlan, deps.next(deps.now())) : undefined;
-          const saved = publish(context, activePlan, key, entries, { checkpoint: { ...advanced, weeklyPlan: state.weeklyPlan, gaps: [...gaps].slice(0, 24), recovered: state.recovered }, spent, done,
-            sources: eligible.map(sourceRef),
+          const rejected = { ...state.rejected };
+          for (const { reason } of diagnostics.validation?.rejected ?? []) rejected[reason] = (rejected[reason] ?? 0) + 1;
+          const staleCount = (state.staleDocs ?? 0) + staleDocs.length;
+          if (staleDocs.length) diagnostics.staleDocs = staleDocs;
+          const saved = publish(context, activePlan, key, entries, { checkpoint: { ...advanced, weeklyPlan: state.weeklyPlan, gaps: [...gaps].slice(0, 24), recovered: state.recovered,
+            ...(Object.keys(rejected).length ? { rejected } : {}), ...(staleCount ? { staleDocs: staleCount } : {}),
+          }, spent, done,
+            sources: eligible.map(sourceRef), diagnostics,
           }, team, schedule);
           return result(context, activePlan, saved);
         };
@@ -341,17 +381,25 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         const host = hosts[plan.origin.host];
         const access = await host.access(client);
         if (!isDeepStrictEqual(access.source, plan.source) || access.visibility !== plan.visibility) return finishGap("Source access changed since approval. Run mex learn for a new quote.");
-        const pulls = plan.pulls.slice(state.pull, state.pull + PULLS_PER_BATCH);
+        const pulls = plan.pulls.slice(state.pull, state.pull + (plan.pullsPerBatch ?? PULLS_PER_BATCH));
         const docs = plan.docs.slice(state.doc, state.doc + DOCS_PER_BATCH);
-        const reviews = await host.reviews(client, { source: plan.source, pulls, since: plan.since, until: plan.until, tree, preferred: plan.preferred });
+        const reviews = await host.reviews(client, { source: plan.source, pulls, since: plan.since, until: plan.until, tree,
+          preferred: plan.preferred, preferDistinctPulls: plan.pullsPerBatch !== undefined });
         for (const gap of reviews.gaps) gaps.add(gap);
         if (job.batch === 0 && plan.origin.host === "github.com" && isDeepStrictEqual(plan.origin, plan.source)) {
           const status = await readGitHubWorkflows(client, tree, plan.origin, deps.now()).catch(() => undefined);
           if (status) saveGitHubWorkflows(writer, project, status);
         }
         const sources: LearningSource[] = [...reviews.reviews];
+        const scope = branchScope(docs.length ? await tree.read("AGENTS.md") : undefined);
+        const staleDocs: z.infer<typeof StaleDoc>[] = [];
         for (const path of docs) {
           const raw = await tree.read(path);
+          const reason = raw === undefined ? undefined : staleDoc(path, raw, scope);
+          if (reason) {
+            staleDocs.push({ path, reason });
+            continue;
+          }
           const excerpt = raw === undefined ? undefined : documentExcerpt(raw, reviews.reviewers);
           if (raw !== undefined && excerpt) {
             if (excerpt.coverage === "partial") gaps.add("Some long docs were only partly read.");
@@ -362,7 +410,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         if (!weekly && job.batch === 0 && sources.length) {
           sources.push(...await contextSources(client, plan.source, plan.origin, tree, plan, reviews.reviewers, gaps));
         }
-        return await saveBatch(sources, { pull: state.pull + pulls.length, doc: state.doc + docs.length }, reviews.reviewers);
+        return await saveBatch(sources, { pull: state.pull + pulls.length, doc: state.doc + docs.length }, reviews.reviewers, staleDocs);
       } catch (error) {
         if (weekly) {
           if (error instanceof AgentActive) return waitForIdle(state, deps.now());

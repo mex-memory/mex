@@ -4,6 +4,7 @@ import { redactReviews, repository, reviewSource, sourceBands, spreadPulls, vali
   type Repository, type ReviewSource, type SourceWindow } from "./source.js";
 
 const PAGE_SIZE = 12;
+const PULLS_PER_REQUEST = 4;
 
 export async function githubRepository(client: ForgeClient): Promise<RepositoryAccess> {
   const metadata = object((await client.get(`/repos/${client.repo.slug}`))?.value);
@@ -45,7 +46,14 @@ export async function githubInventory(client: ForgeClient, window: SourceWindow,
 
 interface Comment {
   id: string; marker: string; body: unknown; at: unknown; login: unknown; name?: unknown; human: boolean;
-  writer?: boolean; path?: string; topLevel: boolean; outdated: boolean;
+  writer?: boolean; association?: unknown; path?: string; topLevel: boolean; outdated: boolean;
+}
+
+// Membership and collaborator status can include read-only access. Treat them as
+// fallback evidence only when GitHub cannot answer the permission check, never
+// over an explicit lack of write access.
+function associatedWriter(association: unknown): true | undefined {
+  return association === "MEMBER" || association === "OWNER" || association === "COLLABORATOR" ? true : undefined;
 }
 
 function collectGraphComments(value: unknown, pull: Pull, request: ReviewRequest, gaps: Set<string>): Comment[] {
@@ -67,7 +75,7 @@ function collectGraphComments(value: unknown, pull: Pull, request: ReviewRequest
     if (!id || node.isCopilotCodeReview === true || node.isMinimized === true) return;
     comments.push({ id, marker, body: node.body, at: node.submittedAt ?? node.createdAt, login: actor?.login,
       name: actor?.name, human: actor?.__typename === "User", writer: typeof node.authorCanPushToRepository === "boolean"
-        ? node.authorCanPushToRepository : node.authorAssociation === "OWNER" ? true : undefined, topLevel, ...(path ? { path } : {}), outdated });
+        ? node.authorCanPushToRepository : undefined, association: node.authorAssociation, topLevel, ...(path ? { path } : {}), outdated });
   };
   add(pr, "description", true);
   for (const item of connection(pr.reviews)) add(item, "pullrequestreview-", true);
@@ -85,13 +93,19 @@ async function graphComments(client: ForgeClient, request: ReviewRequest, gaps: 
   const actor = "author{__typename login ... on User{name}}";
   const common = `fullDatabaseId body createdAt authorAssociation ${actor}`;
   const page = "pageInfo{hasNextPage}";
-  const fields = request.pulls.map((pull, i) => `p${i}:pullRequest(number:${pull.number}){number mergedAt ${common}
+  const groups: Comment[][] = [];
+  // Keep the same bounded response per request when a model batch spans more PRs.
+  for (let offset = 0; offset < request.pulls.length; offset += PULLS_PER_REQUEST) {
+    const pulls = request.pulls.slice(offset, offset + PULLS_PER_REQUEST);
+    const fields = pulls.map((pull, i) => `p${i}:pullRequest(number:${pull.number}){number mergedAt ${common}
     reviews(first:${PAGE_SIZE},states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){${page} nodes{${common} submittedAt authorCanPushToRepository isMinimized isCopilotCodeReview}}
     comments(first:${PAGE_SIZE}){${page} nodes{${common} isMinimized}}
     reviewThreads(first:${PAGE_SIZE}){${page} nodes{path isOutdated comments(first:4){${page} nodes{${common} isMinimized isCopilotCodeReview}}}}}`).join(" ");
-  const data = object((await client.graphql(`query LearningReviews($owner:String!,$name:String!){repository(owner:$owner,name:$name){${fields}}}`, { owner, name })).repository);
-  if (!data) throw new SourceError("unavailable");
-  return request.pulls.map((pull, i) => collectGraphComments(data[`p${i}`], pull, request, gaps));
+    const data = object((await client.graphql(`query LearningReviews($owner:String!,$name:String!){repository(owner:$owner,name:$name){${fields}}}`, { owner, name })).repository);
+    if (!data) throw new SourceError("unavailable");
+    groups.push(...pulls.map((pull, i) => collectGraphComments(data[`p${i}`], pull, request, gaps)));
+  }
+  return groups;
 }
 
 async function restComments(client: ForgeClient, request: ReviewRequest, gaps: Set<string>): Promise<Comment[][]> {
@@ -107,7 +121,7 @@ async function restComments(client: ForgeClient, request: ReviewRequest, gaps: S
       const user = object(entry.user);
       if (!positive(entry.id) || entry.is_copilot_code_review === true) return;
       comments.push({ id: String(entry.id), marker, body: entry.body, at: entry.submitted_at ?? entry.created_at,
-        login: user?.login, name: user?.name, human: user?.type === "User", writer: entry.author_association === "OWNER" ? true : undefined,
+        login: user?.login, name: user?.name, human: user?.type === "User", association: entry.author_association,
         topLevel, ...(path ? { path } : {}), outdated });
     };
     add(pr, "description", true);
@@ -132,14 +146,15 @@ function pullLink(source: Repository, pull: number, comment: Comment): string {
 
 export async function githubReviews(client: ForgeClient, request: ReviewRequest): Promise<ReviewBatch> {
   const reviewers = new Reviewers(), gaps = new Set<string>(), reviews: ReviewSource[] = [];
-  const permissions = new Map<string, boolean | undefined>();
+  const permissions = new Map<string, boolean | null | undefined>();
   const groups = client.anonymous ? await restComments(client, request, gaps) : await graphComments(client, request, gaps);
   for (const group of groups) for (const comment of group) {
     if (typeof comment.login !== "string") continue;
     reviewers.add(comment.login, comment.name);
-    if (comment.human && comment.writer === true) permissions.set(comment.login, true);
+    if (comment.human && comment.writer !== undefined && permissions.get(comment.login) !== false) permissions.set(comment.login, comment.writer);
   }
   let checked = 0;
+  const permissionLimit = PAGE_SIZE * Math.ceil(request.pulls.length / PULLS_PER_REQUEST);
   for (const [index, group] of groups.entries()) {
     const pull = request.pulls[index].number;
     for (const comment of group) {
@@ -149,14 +164,17 @@ export async function githubReviews(client: ForgeClient, request: ReviewRequest)
         at: comment.at, pull, writer: false, topLevel: comment.topLevel, outdated: comment.outdated, ...(comment.path ? { path: comment.path } : {}) }, gaps);
       if (!candidate) continue;
       let writer = comment.writer ?? permissions.get(comment.login);
-      if (writer === undefined && !client.anonymous && !permissions.has(comment.login) && checked++ < PAGE_SIZE && /^[A-Za-z0-9-]{1,100}$/u.test(comment.login)) {
-        const permission = object((await client.get(`/repos/${request.source.slug}/collaborators/${comment.login}/permission`, true))?.value)?.permission;
-        writer = typeof permission === "string" ? ["write", "maintain", "admin"].includes(permission) : undefined;
+      if (writer === undefined && !client.anonymous && !permissions.has(comment.login) && checked < permissionLimit && /^[A-Za-z0-9-]{1,100}$/u.test(comment.login)) {
+        checked++;
+        const page = await client.get(`/repos/${request.source.slug}/collaborators/${comment.login}/permission`, true);
+        const permission = object(page?.value)?.permission;
+        writer = page === undefined ? null : typeof permission === "string" ? ["write", "maintain", "admin"].includes(permission) : undefined;
         permissions.set(comment.login, writer);
       }
+      if (writer === null || (writer === undefined && client.anonymous)) writer = associatedWriter(comment.association);
       if (writer === undefined) gaps.add("Some review authors' write access could not be checked.");
       reviews.push({ ...candidate, writer: writer === true });
     }
   }
-  return { reviews: redactReviews(reviews, reviewers, gaps, request.preferred), reviewers, gaps: [...gaps] };
+  return { reviews: redactReviews(reviews, reviewers, gaps, request.preferred, request.preferDistinctPulls), reviewers, gaps: [...gaps] };
 }

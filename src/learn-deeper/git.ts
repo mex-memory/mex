@@ -36,6 +36,13 @@ export function repoPath(value: unknown): value is string {
 const FILE_BYTES = 96 << 10;
 const TREE_BYTES = 4 << 20;
 
+function knowledgePath(path: string): boolean {
+  return repoPath(path) && /\.mdx?$/iu.test(path)
+    && !path.split("/").some(part => part.startsWith(".") || part === "node_modules")
+    && !/^(?:events|inbox|relays|team|workstreams)\//u.test(path)
+    && !/^patterns\/(?:index|readme)\.md$/iu.test(path);
+}
+
 function scratchPath(home: string, jobId: string, create: boolean): string | undefined {
   if (!/^[a-f0-9-]{36}$/u.test(jobId)) throw new Error("Invalid learning job identity.");
   return containedDirectory(home, ["learn-checks", jobId], create);
@@ -55,18 +62,25 @@ export async function clearLearningChecks(home: string, jobId: string): Promise<
 
 /** Limited to regular files in the consented commit, without consulting the working tree. */
 export class PinnedTree {
-  constructor(readonly root: string, readonly head: string, private readonly blobs: ReadonlyMap<string, string>) {}
+  constructor(readonly root: string, readonly head: string, private readonly blobs: ReadonlyMap<string, string>,
+    private readonly knowledgeBlobs: ReadonlyMap<string, string> = new Map()) {}
 
   static async open(root: string, head: string): Promise<PinnedTree | undefined> {
     if (!SHA.test(head)) return undefined;
     const listing = await command(root, "git", ["ls-tree", "-rz", "--full-tree", head], undefined, TREE_BYTES);
     if (listing === undefined) return undefined;
     const blobs = new Map<string, string>();
+    const knowledge = new Map<string, string>();
     for (const row of listing.split("\0")) {
       const match = /^100(?:644|755) blob ([a-f0-9]+)\t(.+)$/u.exec(row);
-      if (match && SHA.test(match[1]) && repoPath(match[2])) blobs.set(match[2], match[1]);
+      if (!match || !SHA.test(match[1])) continue;
+      const [, blob, path] = match;
+      if (path.startsWith(".mex/")) {
+        const relative = path.slice(5);
+        if (knowledgePath(relative)) knowledge.set(relative, blob);
+      } else if (repoPath(path)) blobs.set(path, blob);
     }
-    return new PinnedTree(root, head, blobs);
+    return new PinnedTree(root, head, blobs, knowledge);
   }
 
   has(path: string): boolean { return this.blobs.has(path); }
@@ -89,7 +103,17 @@ export class PinnedTree {
   }
 
   async read(path: string): Promise<string | undefined> {
-    const blob = this.blobs.get(path);
+    return this.readBlob(this.blobs.get(path));
+  }
+
+  // Keep canonical knowledge out of the admissible source and check paths.
+  knowledgePaths(): string[] { return [...this.knowledgeBlobs.keys()]; }
+
+  async readKnowledge(path: string): Promise<string | undefined> {
+    return this.readBlob(this.knowledgeBlobs.get(path));
+  }
+
+  private async readBlob(blob: string | undefined): Promise<string | undefined> {
     if (!blob) return undefined;
     const content = await command(this.root, "git", ["cat-file", "blob", blob], undefined, FILE_BYTES);
     return content?.includes("\0") ? undefined : content;
