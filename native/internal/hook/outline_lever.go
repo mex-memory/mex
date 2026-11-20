@@ -160,7 +160,10 @@ func outlineRead(ev contract.Event, h home, recordDirectory string, state *lever
 	if state.Outlined == nil {
 		state.Outlined = map[string]*outlineMark{}
 	}
-	state.Outlined[key] = &outlineMark{Context: state.Context, Lines: min(res.Lines, resp.File.NumLines), Hash: hex.EncodeToString(sum[:]), Original: resp.File.Content[:min(len(resp.File.Content), 1<<20)]}
+	if state.guard == nil || state.guard.StoreOriginal == nil || state.guard.StoreOriginal(key, state.Context, resp.File.Content) != nil {
+		return contract.Reply{}, false
+	}
+	state.Outlined[key] = &outlineMark{Context: state.Context, Lines: min(res.Lines, resp.File.NumLines), Hash: hex.EncodeToString(sum[:])}
 	reply := contract.Reply{ReplaceOutput: &contract.ToolOutput{Text: res.Text, OK: true}}
 	if state.countOutline(1, 0, now) {
 		reply.PersonLine = killSwitchLine(recordDirectory)

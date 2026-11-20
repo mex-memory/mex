@@ -45,14 +45,13 @@ type leverState struct {
 }
 
 type outlineMark struct {
-	Hash     string `json:"hash,omitempty"`
-	Full     bool   `json:"full,omitempty"`
-	Original string `json:"original,omitempty"`
-	Context  int    `json:"context"`
-	Lines    int    `json:"lines"`
-	Ranged   bool   `json:"ranged,omitempty"`  // the agent has read part of it since
-	Stopped  bool   `json:"stopped,omitempty"` // an edit or full write was stopped once
-	Forced   bool   `json:"forced,omitempty"`  // a full read was turned into a range
+	Hash    string `json:"hash,omitempty"`
+	Full    bool   `json:"full,omitempty"`
+	Context int    `json:"context"`
+	Lines   int    `json:"lines"`
+	Ranged  bool   `json:"ranged,omitempty"`  // the agent has read part of it since
+	Stopped bool   `json:"stopped,omitempty"` // an edit or full write was stopped once
+	Forced  bool   `json:"forced,omitempty"`  // a full read was turned into a range
 }
 
 // leverOptions come from the environment of the agent that runs the hook.
@@ -135,7 +134,8 @@ func levers(ev contract.Event, h home, recordDirectory string, now time.Time, ca
 		}
 		rearmed, _ := ledgerOff(recordDirectory, localrecord.LeverOutline)
 		if rearmed > guard.RearmedAt {
-			*guard = localrecord.OutlineGuard{RearmedAt: rearmed}
+			store := guard.StoreOriginal
+			*guard = localrecord.OutlineGuard{RearmedAt: rearmed, StoreOriginal: store}
 		}
 		changed := false
 		switch ev.Kind {
@@ -147,6 +147,7 @@ func levers(ev contract.Event, h home, recordDirectory string, now time.Time, ca
 		case contract.SessionStart:
 			if ev.Source == "compact" || ev.Source == "clear" {
 				state.Context++
+				guard.ClearOriginals = true
 				state.Outlined = nil
 				state.Failed = nil
 				state.CompactNudged = false

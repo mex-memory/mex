@@ -107,3 +107,103 @@ func TestLeverStateRollbackAndIsolation(t *testing.T) {
 		t.Fatal("overlarge update survived")
 	}
 }
+
+func TestOriginalScanStorageBoundsAndLifecycle(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	now := time.Now()
+	for i := 0; i < 8; i++ {
+		err = h.UpdateLeverState("a", "s", fmt.Sprint(i), now.Add(-8*24*time.Hour), false, false, func(_ []byte, g *OutlineGuard) ([]byte, error) {
+			if err := g.StoreOriginal("p", 0, strings.Repeat("x", (1<<20)+10)); err != nil {
+				return nil, err
+			}
+			return []byte(`{"context":0}`), nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = h.UpdateLeverState("a", "s", "overflow", now, false, false, func(_ []byte, g *OutlineGuard) ([]byte, error) { return nil, g.StoreOriginal("p", 0, "x") })
+	if err == nil {
+		t.Fatal("session cap ignored across subagents")
+	}
+	text, err := h.OutlineOriginal("a", "s", "0", "p", 0)
+	if err != nil || len(text) != 1<<20 {
+		t.Fatal("read bound", len(text), err)
+	}
+	err = h.UpdateLeverState("a", "fresh", "", now, true, false, func([]byte, *OutlineGuard) ([]byte, error) { return []byte(`{}`), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := h.db.QueryRow("SELECT count(*) FROM outline_originals").Scan(&count); err != nil || count != 0 {
+		t.Fatal("orphaned originals", count, err)
+	}
+	for _, sub := range []string{"", "child"} {
+		err = h.UpdateLeverState("a", "s", sub, now, false, false, func(_ []byte, g *OutlineGuard) ([]byte, error) {
+			if err := g.StoreOriginal("p", 0, "original"); err != nil {
+				return nil, err
+			}
+			return []byte(`{}`), nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = h.UpdateLeverState("a", "s", "", now, false, false, func(_ []byte, g *OutlineGuard) ([]byte, error) {
+		g.ClearOriginals = true
+		return []byte(`{"context":1}`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRow("SELECT count(*) FROM outline_originals").Scan(&count); err != nil || count != 0 {
+		t.Fatal("clear retained originals", count, err)
+	}
+}
+
+func TestOriginalWritesAreOnceAndTransactional(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	now := time.Now()
+	for _, text := range []string{"first", "second"} {
+		err = h.UpdateLeverState("a", "s", "", now, false, false, func(_ []byte, g *OutlineGuard) ([]byte, error) {
+			if err := g.StoreOriginal("p", 1, text); err != nil {
+				return nil, err
+			}
+			return []byte(`{}`), nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := h.OutlineOriginal("a", "s", "", "p", 1)
+	if err != nil || got != "first" {
+		t.Fatal("overwritten", got, err)
+	}
+	for _, key := range [][3]string{{"b", "s", ""}, {"a", "s", "child"}, {"a", "other", ""}} {
+		got, err = h.OutlineOriginal(key[0], key[1], key[2], "p", 1)
+		if err != nil || got != "" {
+			t.Fatal("leaked across identity", err)
+		}
+	}
+	err = h.UpdateLeverState("a", "s", "", now, false, false, func(_ []byte, g *OutlineGuard) ([]byte, error) {
+		if err := g.StoreOriginal("rolled-back", 1, "text"); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("abort")
+	})
+	if err == nil {
+		t.Fatal("accepted aborted callback")
+	}
+	got, err = h.OutlineOriginal("a", "s", "", "rolled-back", 1)
+	if err != nil || got != "" {
+		t.Fatal("original survived rollback", err)
+	}
+}

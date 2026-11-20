@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	localrecord "github.com/mex-memory/mex/native/record"
 	"os"
 	"path/filepath"
@@ -344,4 +345,56 @@ func testOutlineStats(t *testing.T, d string) localrecord.OutlineGuard {
 		t.Fatal(err)
 	}
 	return result
+}
+
+func TestOutlineStateRemainsSmallAndClearsOriginals(t *testing.T) {
+	c := setupRead(t)
+	data, err := os.ReadFile(c.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		file := filepath.Join(c.root, "src", fmt.Sprintf("large%d.ts", i))
+		write(t, file, string(data))
+		info, _ := os.Stat(file)
+		dir := index.Directory(c.h.mex, projectID)
+		db, err := sql.Open("sqlite", filepath.Join(dir, "c-1.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = db.Exec("INSERT INTO paths SELECT ?,hash,lang,is_test,size,?,reason,? FROM paths LIMIT 1", fmt.Sprintf("src/large%d.ts", i), strconv.FormatInt(info.ModTime().UnixNano(), 10), filepath.Base(file))
+		db.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := c.call(t, "PostToolUse", c.payload(t, "PostToolUse", "Read", map[string]any{"file_path": file}, c.readResponse(t)))
+		if len(r.HookSpecificOutput.UpdatedToolOutput) == 0 {
+			t.Fatal("not outlined", i)
+		}
+	}
+	db, err := sql.Open("sqlite", filepath.Join(c.h.mex, "hooks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var size, count int
+	if err := db.QueryRow("SELECT length(state) FROM lever_state WHERE session_id='s1'").Scan(&size); err != nil || size > 2048 {
+		t.Fatal("large hot row", size, err)
+	}
+	if err := db.QueryRow("SELECT count(*) FROM outline_originals").Scan(&count); err != nil || count != 5 {
+		t.Fatal(count, err)
+	}
+	for _, source := range []string{"compact", "clear"} {
+		body, _ := json.Marshal(map[string]any{"session_id": "s1", "cwd": c.root, "hook_event_name": "SessionStart", "source": source})
+		c.call(t, "SessionStart", body)
+		if err := db.QueryRow("SELECT count(*) FROM outline_originals").Scan(&count); err != nil || count != 0 {
+			t.Fatal(source, count, err)
+		}
+		if source == "compact" {
+			r := c.call(t, "PostToolUse", c.payload(t, "PostToolUse", "Read", map[string]any{"file_path": c.file}, c.readResponse(t)))
+			if len(r.HookSpecificOutput.UpdatedToolOutput) == 0 {
+				t.Fatal("new context did not outline")
+			}
+		}
+	}
 }

@@ -973,3 +973,9 @@ outline guard counters update together in one bounded immediate transaction.
 Startup prunes old session rows after seven days, in bounded batches. Old
 JSON lever files are ignored. `mex on --lever outline` resets the outline
 kill switch through the existing rearm path. Node never writes hooks.db.
+
+Original read-risk scan text is stored separately in hooks.db `outline_originals`
+(migration 0015), capped at 1 MiB per read and 8 MiB per agent/session, including
+subagents. Only batch read-risk scans load it. When full, new reads stay whole.
+State pruning removes the corresponding originals; clear and context-changing
+compaction remove the session originals.

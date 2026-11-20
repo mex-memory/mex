@@ -9,11 +9,14 @@ import (
 )
 
 type OutlineGuard struct {
-	Outlines  int
-	Trips     int
-	Off       bool
-	OffSince  string
-	RearmedAt int64
+	// Transaction-scoped cold storage; never serialized into the hot state.
+	StoreOriginal  func(path string, context int, text string) error
+	ClearOriginals bool
+	Outlines       int
+	Trips          int
+	Off            bool
+	OffSince       string
+	RearmedAt      int64
 }
 
 // UpdateLeverState holds the writer lock across the read, decision and write.
@@ -46,6 +49,20 @@ func (h *Hooks) UpdateLeverState(agent, session, subagent string, now time.Time,
 		return err
 	}
 	guard := &OutlineGuard{}
+	guard.StoreOriginal = func(path string, context int, text string) error {
+		if len(text) > 1<<20 {
+			text = text[:1<<20]
+		}
+		var size int
+		if err := c.QueryRowContext(ctx, "SELECT coalesce(sum(length(CAST(original AS BLOB))),0) FROM outline_originals WHERE agent=? AND session_id=?", agent, session).Scan(&size); err != nil {
+			return err
+		}
+		if size+len(text) > 8<<20 {
+			return fmt.Errorf("original scan session limit")
+		}
+		_, err := c.ExecContext(ctx, "INSERT INTO outline_originals VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING", agent, session, subagent, path, context, text)
+		return err
+	}
 	if !nudge {
 		if err = c.QueryRowContext(ctx, "SELECT outlines,trips,off,off_since,rearmed_at FROM outline_guard WHERE id=1").Scan(&guard.Outlines, &guard.Trips, &guard.Off, &guard.OffSince, &guard.RearmedAt); err != nil {
 			return err
@@ -64,6 +81,11 @@ func (h *Hooks) UpdateLeverState(agent, session, subagent string, now time.Time,
 			return err
 		}
 	}
+	if guard.ClearOriginals {
+		if _, err = c.ExecContext(ctx, "DELETE FROM outline_originals WHERE agent=? AND session_id=?", agent, session); err != nil {
+			return err
+		}
+	}
 	if !nudge {
 		_, err = c.ExecContext(ctx, "UPDATE outline_guard SET outlines=?,trips=?,off=?,off_since=?,rearmed_at=? WHERE id=1", guard.Outlines, guard.Trips, guard.Off, guard.OffSince, guard.RearmedAt)
 		if err != nil {
@@ -72,6 +94,18 @@ func (h *Hooks) UpdateLeverState(agent, session, subagent string, now time.Time,
 	}
 	_, err = c.ExecContext(ctx, "COMMIT")
 	return err
+}
+
+// OutlineOriginal is only used by the batch read-risk scan.
+func (h *Hooks) OutlineOriginal(agent, session, subagent, path string, contextID int) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.budget.reader)
+	defer cancel()
+	var text string
+	err := h.db.QueryRowContext(ctx, "SELECT original FROM outline_originals WHERE agent=? AND session_id=? AND subagent=? AND path_key=? AND context=?", agent, session, subagent, path, contextID).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return text, err
 }
 
 // LeverState reads without taking the writer lock; output-off callers skip it.
