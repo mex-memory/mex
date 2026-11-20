@@ -196,9 +196,10 @@ func callerSummary(callers []Site, shown int, complete bool) (string, []string) 
 }
 
 // SignatureCard goes out once on an edit that changes an exported
-// signature: the files that use it, instead of a broken-callers round trip.
-// Values passed elsewhere count: they break on a new signature too.
-func SignatureCard(r Reader, files Files, def Symbol, before string, seen Seen) (*Card, bool) {
+// signature used in at least minFiles other files: the files that use it,
+// instead of a broken-callers round trip. Values passed elsewhere count:
+// they break on a new signature too.
+func SignatureCard(r Reader, files Files, def Symbol, before string, minFiles int, seen Seen) (*Card, bool) {
 	if !def.Exported || def.Signature == "" || def.Signature == before {
 		return nil, false
 	}
@@ -216,7 +217,7 @@ func SignatureCard(r Reader, files Files, def Symbol, before string, seen Seen) 
 			byFile[s.Path] = s
 		}
 	}
-	if len(byFile) == 0 {
+	if len(byFile) == 0 || len(byFile) < minFiles {
 		return nil, false
 	}
 	paths := make([]string, 0, len(byFile))
@@ -318,4 +319,92 @@ func ScopedCommand(command string, testFiles []string) (string, bool) {
 		return "", false
 	}
 	return command + " " + strings.Join(testFiles, " "), true
+}
+
+// CodeLine returns the text of one line as it is now, or "" when it can't
+// be shown exactly (the file changed since the build, or can't be read).
+type CodeLine func(path string, line int) string
+
+const maxCodeLineChars = 100
+
+// SearchLines are the graph's lines for the search-span card, which already
+// shows the definition: up to 3 callers, each with its own code line, and 1
+// direct test, in at most room characters. The name must resolve to one
+// definition, in path; a collision gets nothing. Value is the tokens of the
+// files the lines save opening.
+func SearchLines(r Reader, files Files, path, name string, room int, code CodeLine) (text string, value int, ok bool) {
+	def, ok := unique(r, files, name)
+	if !ok || def.Path != path {
+		return "", 0, false
+	}
+	sites, err := r.Callers(def.ID)
+	if err != nil {
+		return "", 0, false
+	}
+	sites, dropped := Recheck(sites, r, files)
+	callers := calls(sites)
+	tests, err := r.Tests(def.ID)
+	if err != nil {
+		return "", 0, false
+	}
+	testLine, testPath := "tests: none", ""
+	for _, t := range tests {
+		test, ok := Exact(files, t.Test)
+		if !ok {
+			continue
+		}
+		if t.Reach == Direct {
+			testLine, testPath = "test: "+codeAt(code, test.Path, test.Start, test.Name), test.Path
+			break
+		}
+		if testPath == "" && testLine == "tests: none" {
+			testLine = "tested only through a caller: " + at(test.Path, test.Start) + " (" + test.Name + ")"
+		}
+	}
+	tail := testLine
+	if n := r.Unresolved(def.ID); n > 0 {
+		tail += fmt.Sprintf("\n+%d dynamic calls not resolved", n)
+	}
+	complete := r.Complete() && dropped == 0
+	for shown := min(len(callers), maxCallers); shown >= 0; shown-- {
+		var b strings.Builder
+		paths := []string{}
+		switch {
+		case len(callers) == 0 && complete:
+			b.WriteString("no callers")
+		case len(callers) == 0:
+			b.WriteString("callers unknown")
+		default:
+			fmt.Fprintf(&b, "called by %d:", len(callers))
+			for _, s := range callers[:shown] {
+				b.WriteString("\n  " + codeAt(code, s.Path, s.Line, s.In.Name))
+				paths = append(paths, s.Path)
+			}
+			if len(callers) > shown {
+				fmt.Fprintf(&b, "\n  +%d more", len(callers)-shown)
+			}
+		}
+		out := b.String() + "\n" + tail
+		if len(out) <= room {
+			if testPath != "" {
+				paths = append(paths, testPath)
+			}
+			return out, tokensOf(files, paths...), true
+		}
+	}
+	return "", 0, false
+}
+
+// codeAt is a location with its code line inline, or the enclosing name when
+// the line can't be shown exactly.
+func codeAt(code CodeLine, path string, line int, in string) string {
+	if code != nil {
+		if text := strings.TrimSpace(code(path, line)); text != "" {
+			if r := []rune(text); len(r) > maxCodeLineChars {
+				text = string(r[:maxCodeLineChars]) + "…"
+			}
+			return at(path, line) + "  " + text
+		}
+	}
+	return at(path, line) + " (" + in + ")"
 }

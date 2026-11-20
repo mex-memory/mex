@@ -210,7 +210,7 @@ func TestSearchCardFitsIn600Characters(t *testing.T) {
 func TestSignatureCard(t *testing.T) {
 	g, f := router()
 	def := g.symbols[0]
-	c, ok := SignatureCard(g, f, def, "parseRoute(path: string): Route | null", Seen{})
+	c, ok := SignatureCard(g, f, def, "parseRoute(path: string): Route | null", 1, Seen{})
 	if !ok {
 		t.Fatal("no card")
 	}
@@ -219,14 +219,14 @@ func TestSignatureCard(t *testing.T) {
 	if c.Text != want {
 		t.Fatalf("%s", c.Text)
 	}
-	if _, ok := SignatureCard(g, f, def, "parseRoute(path: string): Route | null", Seen{c.Key: true}); ok {
+	if _, ok := SignatureCard(g, f, def, "parseRoute(path: string): Route | null", 1, Seen{c.Key: true}); ok {
 		t.Fatal("sent twice")
 	}
-	if _, ok := SignatureCard(g, f, def, def.Signature, Seen{}); ok {
+	if _, ok := SignatureCard(g, f, def, def.Signature, 1, Seen{}); ok {
 		t.Fatal("unchanged signature")
 	}
 	def.Exported = false
-	if _, ok := SignatureCard(g, f, def, "x", Seen{}); ok {
+	if _, ok := SignatureCard(g, f, def, "x", 1, Seen{}); ok {
 		t.Fatal("not exported")
 	}
 }
