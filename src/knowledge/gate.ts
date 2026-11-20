@@ -112,7 +112,8 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   if (!isDeepStrictEqual(gated.mex.checks, entry.mex.checks)) sanitized.push("checks");
   if (gated.mex.source.quote !== entry.mex.source.quote) sanitized.push("quote");
   if (!owner.personAuthored && sanitized.some(field => field !== "quote")) return drop("undefined-command", "The entry contains an unverified command, link or check.");
-  if (owner.requiresAnchor && !gated.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob)) && !gated.mex.when?.length
+  // A judge rewrite repairs an existing entry; it keeps whatever anchors the original had.
+  if (owner.requiresAnchor && special?.mode !== "judge" && !gated.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob)) && !gated.mex.when?.length
     && !p.anchors?.symbols?.length && !gated.mex.checks.some(check => check.kind === "symbol"
       || (check.kind === "command" && ["recipe", "procedure"].includes(gated.mex.kind)))) return drop("no-anchor");
   const quote = entry.mex.source.quote;
