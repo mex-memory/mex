@@ -197,6 +197,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return emptyReply
 	}
 	global := h.controls()
+	h.cacheOutputLevers(global)
 	observeAllowed := !global.Off
 	sessionStart, failed := false, false
 	defer func() {
@@ -354,7 +355,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 		return c.ProjectID, c.Root
 	}}
-	reply, deliveryErr := delivery.Handle(ev, denv)
+	reply, deliveryErr := delivery.Handle(originalBatchReads(ev, h, recordDirectory), denv)
 	if deliveryErr != nil {
 		if h.deliveryError != nil {
 			h.deliveryError(deliveryErr)

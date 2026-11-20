@@ -3,6 +3,8 @@
 exports[`reads installed agents, cached verdicts and last hook call without writing 1`] = `
 "MEX 0.9.0-beta.1.1 · on in this repo · capture on
 
+Output levers off; turn on: mex config set levers.output on
+
 Agents
   ✓ Claude Code: hooks installed (12 events) · last call 3 min ago
   ✓ Codex: hooks installed (9 events) · trust them once in Codex (/hooks, or Review hooks in the app)

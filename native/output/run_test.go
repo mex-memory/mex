@@ -18,12 +18,12 @@ func testShell() string {
 }
 
 func longCommand() string {
-	// Prints 600 passing lines, one warning and a summary: noisy (a find)
-	// and over the trim threshold.
+	// Prints 600 passing lines, one warning and a summary through a local test command.
+	// Its output is over the trim threshold.
 	if runtime.GOOS == "windows" {
-		return `Get-ChildItem -Path . -Filter no-such-mex-file; 1..600 | ForEach-Object { " - case $_ passes" }; "warning: slow test src/a.test.ts:12"; "Tests: 600 passed"`
+		return `function npm { }; npm test; 1..600 | ForEach-Object { " - case $_ passes" }; "warning: slow test src/a.test.ts:12"; "Tests: 600 passed"`
 	}
-	return `find /nonexistent-mex-dir 2>/dev/null; i=0; while [ $i -lt 600 ]; do echo " - case $i passes"; i=$((i+1)); done; echo "warning: slow test src/a.test.ts:12"; echo "Tests: 600 passed"`
+	return `npm() { :; }; npm test; i=0; while [ $i -lt 600 ]; do echo " - case $i passes"; i=$((i+1)); done; echo "warning: slow test src/a.test.ts:12"; echo "Tests: 600 passed"`
 }
 
 func TestRunKeepsExitCodeAndPrintsTheCommandFirst(t *testing.T) {

@@ -185,7 +185,7 @@ function ledgerFixture() {
   vi.stubEnv("MEX_HOOK_BINARY", binary);
   vi.stubEnv("MEX_TELEMETRY", "0");
   vi.stubEnv("MEX_OFF", "");
-  const hookEnv = { ...process.env, MEX_BACKGROUND: "", MEX_RAW: "", MEX_HOOK_RECORD: "", CLAUDE_CODE_ENTRYPOINT: "cli" };
+  const hookEnv = { ...process.env, MEX_BACKGROUND: "", MEX_RAW: "", MEX_LEVERS: "on", MEX_HOOK_RECORD: "", CLAUDE_CODE_ENTRYPOINT: "cli" };
   for (const key of ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL", "TF_BUILD"]) delete (hookEnv as NodeJS.ProcessEnv)[key];
   const writer = openRecord({ home, projectPath: checkout, isNetwork: () => false });
   function hook(event: string, session: string, fields: object = {}) {

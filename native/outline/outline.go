@@ -11,12 +11,13 @@ import (
 	"strings"
 
 	"github.com/mex-memory/mex/native/index/shift"
+	"github.com/mex-memory/mex/native/internal/tokens"
 )
 
 // Parameters start at the plan's values (sheet 35, L2).
 const (
-	// MinTokens: only files over this many tokens (characters / 4) are outlined.
-	MinTokens = 6000
+	// MinTokens keeps the tested cutoff at about 23k bytes: 10k calibrated code tokens.
+	MinTokens = 10000
 	// MaxSymbols listed; deeper symbols go first when there are more.
 	MaxSymbols = 400
 	// Slices: at most this many, of at most SliceLines each, SliceTotal in all.
@@ -33,11 +34,12 @@ const (
 
 // Input is one file read.
 type Input struct {
-	Path    string          // as the header shows it, relative to the checkout
-	Content string          // the file's text
-	Symbols []shift.Symbol  // from the file index, line shifts applied
-	Dropped int             // symbols an edit may have moved, left out
-	Terms   map[uint64]bool // hashed words of the current prompt (WordHash)
+	TotalLines int             // optional full file length when Content is the host-returned prefix
+	Path       string          // as the header shows it, relative to the checkout
+	Content    string          // the file's text
+	Symbols    []shift.Symbol  // from the file index, line shifts applied
+	Dropped    int             // symbols an edit may have moved, left out
+	Terms      map[uint64]bool // hashed words of the current prompt (WordHash)
 }
 
 // Result is the rendered outline.
@@ -57,7 +59,9 @@ func WordHash(w string) uint64 {
 
 // Header is the first line of an outline; the guard's messages repeat its
 // instruction for the full text.
-func Header(lines int, slices [][2]int) string {
+func Header(lines int, slices [][2]int) string { return headerForRead(lines, lines, slices) }
+
+func headerForRead(lines, readLines int, slices [][2]int) string {
 	shown := ""
 	if len(slices) > 0 {
 		parts := make([]string, len(slices))
@@ -66,14 +70,18 @@ func Header(lines int, slices [][2]int) string {
 		}
 		shown = " + lines " + strings.Join(parts, ", ")
 	}
-	return fmt.Sprintf("[MEX: %s-line file shown as outline%s · full text: Read offset=1 limit=%d]", group(lines), shown, lines)
+	label := "full text"
+	if readLines < lines {
+		label = "full text of this read"
+	}
+	return fmt.Sprintf("[MEX: %s-line file shown as outline%s · %s: Read offset=1 limit=%d]", group(lines), shown, label, readLines)
 }
 
 // Render builds the outline, or reports false when it wouldn't help: no
 // symbols, a small file, or an outline nearly as big as the file.
 func Render(in Input) (Result, bool) {
 	lines := splitLines(in.Content)
-	if len(in.Symbols) == 0 || len(in.Content)/4 <= MinTokens || len(lines) == 0 {
+	if len(in.Symbols) == 0 || tokens.Code(in.Content) <= MinTokens || len(lines) == 0 {
 		return Result{}, false
 	}
 	var symbols []shift.Symbol
@@ -92,7 +100,7 @@ func Render(in Input) (Result, bool) {
 	slices := pickSlices(lines, symbols, in.Symbols, in.Terms)
 
 	var b strings.Builder
-	b.WriteString(Header(len(lines), slices))
+	b.WriteString(headerForRead(max(in.TotalLines, len(lines)), len(lines), slices))
 	b.WriteByte('\n')
 	fmt.Fprintf(&b, "Outline of %s. Each entry is start-end in the file's own line numbers; this view's line numbers are not the file's.\n", in.Path)
 	width := len(fmt.Sprint(len(lines)))

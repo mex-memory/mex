@@ -39,6 +39,16 @@ describe("off/on CLI", () => {
     expect(absent.status).toBe(1);
     expect(absent.stderr).toContain("not registered");
   });
+  it("lists and switches output levers through the built CLI", () => {
+    const f = fixture();
+    const invalid = spawnSync(process.execPath, [cli, "config", "set", "unknown.fixture", "on"], { cwd: f.project, env: f.env, encoding: "utf8" });
+    expect(invalid.status).toBe(1);
+    expect(invalid.stderr).toContain("Supported keys: telemetry, feedback, learning.statements, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output");
+    expect(f.run("status")).toContain("Output levers off; turn on: mex config set levers.output on");
+    expect(f.run("config", "set", "levers.output", "on")).toContain("Output levers on.");
+    expect(f.run("status")).toContain("Output levers on");
+    expect(f.run("config", "set", "levers.output", "off")).toContain("Output levers off.");
+  });
   it("keeps global, repo and capture switches independent across processes", () => {
     const f = fixture();
     expect(JSON.parse(f.run("off", "--all", "--json"))).toEqual({ scope: "global", state: "off" });

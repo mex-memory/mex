@@ -1,0 +1,1 @@
+{"session_id":"s1","cwd":"/home/dev/shop","hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"/home/dev/shop/src/cart.ts"},"tool_response":{"type":"file_unchanged","file":{"filePath":"/home/dev/shop/src/cart.ts"}}}

@@ -109,9 +109,12 @@ type Hunk struct {
 }
 
 type ToolOutput struct {
-	Text     string `json:"text"`
-	OK       bool   `json:"ok"`
-	ExitCode *int   `json:"exit_code,omitempty"`
+	// ReadTotalLines is renderer-only metadata for a recovered Read prefix.
+	// It never changes the normalized event or reply wire format.
+	ReadTotalLines int    `json:"-"`
+	Text           string `json:"text"`
+	OK             bool   `json:"ok"`
+	ExitCode       *int   `json:"exit_code,omitempty"`
 	// Interrupted is set on a failure the person caused by stopping the tool.
 	Interrupted bool `json:"interrupted,omitempty"`
 }

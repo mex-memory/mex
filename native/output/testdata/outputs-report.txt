@@ -1,16 +1,21 @@
 # Replay of saved outputs through the trimmer (go test ./output -run TestReplaySavedOutputs -update)
-# name | command | noisy | lines | chars | trimmed | kept lines | dropped lines | dropped chars (counted) | dropped tokens (estimated, chars/4)
+# name | command | noisy | lines | chars | trimmed | kept lines | dropped lines | dropped chars (counted) | dropped tokens (estimated, bytes/2.3)
 cargo-build | cargo build | true | 269 | 7768 | false | 269 | 0 | 0 | 0
+directory-listing | git ls-files | true | 300 | 18570 | true | 35 | 265 | 16405 | 7133
 eslint-warnings | npm run lint | true | 346 | 22113 | false | 346 | 0 | 0 | 0
-find-listing | find . -name '*.tsx' | true | 700 | 26350 | true | 35 | 665 | 25035 | 6259
-git-log | git log -n 300 | true | 1800 | 55291 | true | 35 | 1765 | 54185 | 13547
-go-test-v | go test -v ./... | true | 641 | 20844 | true | 50 | 591 | 19368 | 4842
-gradle-crlf | ./gradlew build | true | 225 | 9155 | true | 37 | 188 | 7643 | 1911
-jest-pass | npm test | true | 271 | 8947 | true | 65 | 206 | 6930 | 1733
-npm-install | npm install --loglevel http | true | 128 | 10164 | true | 37 | 91 | 7521 | 1881
-pytest-v | python -m pytest -v | true | 372 | 27437 | true | 35 | 337 | 25167 | 6292
+find-listing | find . -name '*.tsx' | true | 700 | 26350 | true | 35 | 665 | 25035 | 10885
+git-log | git log -n 300 | true | 1800 | 55291 | true | 35 | 1765 | 54185 | 23559
+go-test-v | go test -v ./... | true | 641 | 20844 | true | 50 | 591 | 19368 | 8421
+gradle-crlf | ./gradlew build | true | 225 | 9155 | true | 37 | 188 | 7643 | 3324
+grep-numbered | grep -rn needle src | true | 300 | 20046 | false | 300 | 0 | 0 | 0
+jest-pass | npm test | true | 271 | 8947 | true | 65 | 206 | 6930 | 3014
+npm-install | npm install --loglevel http | true | 128 | 10164 | true | 37 | 91 | 7521 | 3270
+pytest-v | python -m pytest -v | true | 372 | 27437 | true | 35 | 337 | 25167 | 10943
+rg-context | rg -n -C 2 needle src | true | 303 | 20256 | true | 125 | 178 | 11946 | 5194
+rg-plain | rg needle src | true | 300 | 19170 | true | 35 | 265 | 16935 | 7364
 rg-search | rg -n computeTotal | true | 400 | 25594 | false | 400 | 0 | 0 | 0
 short | npm test | true | 1 | 25 | false | 1 | 0 | 0 | 0
-tsc-listfiles | npx tsc --noEmit --listFiles --diagnostics | true | 502 | 29551 | true | 35 | 467 | 27553 | 6889
-vitest-pass | npx vitest run --reporter=verbose | true | 531 | 28275 | true | 95 | 436 | 23537 | 5885
-# total: 196939 of 271514 characters dropped (counted), about 49235 tokens (estimated)
+tsc-listfiles | npx tsc --noEmit --listFiles --diagnostics | true | 502 | 29551 | true | 35 | 467 | 27553 | 11980
+vitest-pass | npx vitest run --reporter=verbose | true | 531 | 28275 | true | 95 | 436 | 23537 | 10234
+windows-search | Select-String needle src | true | 300 | 17946 | false | 300 | 0 | 0 | 0
+# total: 242225 of 367502 characters dropped (counted), about 105316 tokens (estimated)

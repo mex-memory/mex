@@ -14,6 +14,21 @@ import (
 	"github.com/mex-memory/mex/native/internal/contract"
 )
 
+// Avoid opening topic memory for prompts that cannot produce a nudge.
+func nudgeEligible(ev contract.Event, h home, captureOn bool) bool {
+	if ev.Agent != "claude-code" && ev.Agent != "codex" {
+		return false
+	}
+	if ev.Kind == contract.SessionStart || ev.Kind == contract.PostCompact {
+		return true
+	}
+	if ev.Kind != contract.Prompt || !captureOn || ev.AgentID != "" || ev.Checkout == "" || ev.Prompt == nil || !ev.Prompt.Typed ||
+		capture.Scripted(ev.Agent, h.env) || capture.Pasted(ev.Prompt.Text) || rank.Machine(ev.Prompt.Text) {
+		return false
+	}
+	return len(rank.Tokens(ev.Prompt.Text)) >= 4
+}
+
 // A short follow-up or a pasted tool result is too weak a topic signal.
 // Keep a few hashed terms from a substantive prompt in the same checkout.
 func compactNudge(ev contract.Event, h home, state *leverState) string {

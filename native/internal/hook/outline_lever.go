@@ -5,21 +5,24 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/internal/tokens"
 	"github.com/mex-memory/mex/native/outline"
 	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
 // Big file reads (L2, Claude Code only). A read with no range of a file over
-// 6k tokens, not edited in this session and not named in the prompt, is shown
-// as its outline from the file index plus the slices the prompt names. The
+// 10k calibrated tokens (about 23k bytes), not edited in this session and not
+// named in the prompt, is shown as its outline from the file index plus the slices the prompt names. The
 // rules from the plan's T1 test keep the agent from being locked out:
 //
 //   - a file is outlined at most once per context;
@@ -40,58 +43,23 @@ const (
 	maxOutlineFile = 4 << 20
 )
 
-type outlineStats struct {
-	Version  int    `json:"version"`
-	Outlines int    `json:"outlines"`
-	Trips    int    `json:"trips"`
-	Off      bool   `json:"off,omitempty"`
-	OffSince string `json:"off_since,omitempty"`
-}
-
-func outlineStatsPath(recordDirectory string) string {
-	return filepath.Join(recordDirectory, "levers", "outlines.json")
-}
-
-func readOutlineStats(recordDirectory string) outlineStats {
-	var s outlineStats
-	if data, err := os.ReadFile(outlineStatsPath(recordDirectory)); err == nil {
-		_ = json.Unmarshal(data, &s)
-	}
-	return s
-}
-
-// countOutline records an outline or a guard trip, and reports whether this
-// call turned the kill switch on.
-func countOutline(recordDirectory string, outlines, trips int, now time.Time) bool {
-	s := readOutlineStats(recordDirectory)
-	if s.Off {
+// countOutline runs inside the session's immediate transaction.
+func (state *leverState) countOutline(outlines, trips int, now time.Time) bool {
+	s := state.guard
+	if s == nil || s.Off {
 		return false
 	}
-	s.Version = 1
 	s.Outlines += outlines
 	s.Trips += trips
-	switched := s.Outlines >= killAfter && float64(s.Trips) > killShare*float64(s.Outlines)
-	if switched {
-		s.Off, s.OffSince = true, now.UTC().Format(time.RFC3339)
+	if s.Outlines >= killAfter && float64(s.Trips) > killShare*float64(s.Outlines) {
+		s.Off = true
+		s.OffSince = now.UTC().Format(time.RFC3339)
+		return true
 	}
-	data, err := json.Marshal(s)
-	file := outlineStatsPath(recordDirectory)
-	if err != nil || os.MkdirAll(filepath.Dir(file), 0o700) != nil {
-		return false
-	}
-	tmp := file + "." + randomSuffix() + ".tmp"
-	if os.WriteFile(tmp, data, 0o600) != nil {
-		return false
-	}
-	if os.Rename(tmp, file) != nil {
-		_ = os.Remove(tmp)
-		return false
-	}
-	return switched
+	return false
 }
-
-func killSwitchLine(recordDirectory string) string {
-	return fmt.Sprintf("MEX stopped showing big files as outlines: the agent needed the full text too often. Delete %s to turn outlines back on.", outlineStatsPath(recordDirectory))
+func killSwitchLine(_ string) string {
+	return "MEX stopped showing big files as outlines: the agent needed the full text too often. Run `mex on --lever outline` to turn outlines back on."
 }
 
 // readResponse is Claude Code's Read result for a text file.
@@ -115,33 +83,49 @@ func outlineRead(ev contract.Event, h home, recordDirectory string, state *lever
 	key := pathKey(path)
 	mark := state.Outlined[key]
 	current := mark != nil && mark.Context == state.Context
+	var resp readResponse
+	if json.Unmarshal([]byte(ev.Tool.Output.Text), &resp) != nil {
+		return contract.Reply{}, false
+	}
+	if current && !mark.Full && resp.Type != "text" && !h.levers.raw && !h.levers.noOutline {
+		return recoverRead(ev, state, mark)
+	}
 	if ev.Tool.Input.Offset != nil || ev.Tool.Input.Limit != nil {
-		// A ranged read of an outlined file: the agent has its text now.
-		if current && !mark.Ranged {
+		if current && resp.Type == "text" {
 			mark.Ranged = true
+			if resp.File.StartLine <= 1 && resp.File.NumLines >= mark.Lines {
+				mark.Full = true
+			}
 			return contract.Reply{}, true
 		}
 		return contract.Reply{}, false
 	}
+	if current && resp.Type == "text" {
+		mark.Ranged = true
+		mark.Full = resp.File.StartLine <= 1 && resp.File.NumLines >= mark.Lines
+		return contract.Reply{}, true
+	}
 	if current || h.levers.raw || h.levers.noOutline || state.Edited[key] || ev.ProjectID == "" || ev.Checkout == "" {
 		return contract.Reply{}, false
 	}
-	var resp readResponse
-	if json.Unmarshal([]byte(ev.Tool.Output.Text), &resp) != nil || resp.Type != "text" || resp.File.StartLine > 1 {
+	if resp.Type != "text" || resp.File.StartLine > 1 || resp.File.NumLines <= 0 {
 		return contract.Reply{}, false
 	}
-	if len(resp.File.Content)/4 <= outline.MinTokens || namedIn(state.Words, path) {
+	if tokens.Code(resp.File.Content) <= outline.MinTokens || namedIn(state.Words, path) {
 		return contract.Reply{}, false
 	}
-	if readOutlineStats(recordDirectory).Off || leverOff(recordDirectory, localrecord.LeverOutline) {
+	if (state.guard != nil && state.guard.Off) || leverOff(recordDirectory, localrecord.LeverOutline) {
 		return contract.Reply{}, false
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Size() > maxOutlineFile {
 		return contract.Reply{}, false
 	}
-	data, err := os.ReadFile(path)
+	data, err := boundedOutlineRead(path)
 	if err != nil {
+		return contract.Reply{}, false
+	}
+	if returnedReadText(resp.File.Content, resp.File.NumLines) != returnedReadText(string(data), resp.File.NumLines) {
 		return contract.Reply{}, false
 	}
 	sum := sha256.Sum256(data)
@@ -169,16 +153,19 @@ func outlineRead(ev contract.Event, h home, recordDirectory string, state *lever
 			rel = filepath.Base(path)
 		}
 	}
-	res, ok := outline.Render(outline.Input{Path: rel, Content: string(data), Symbols: answer.Symbols, Dropped: answer.Dropped, Terms: terms})
+	res, ok := outline.Render(outline.Input{TotalLines: resp.File.TotalLines, Path: rel, Content: returnedReadText(resp.File.Content, resp.File.NumLines), Symbols: answer.Symbols, Dropped: answer.Dropped, Terms: terms})
 	if !ok {
 		return contract.Reply{}, false
 	}
 	if state.Outlined == nil {
 		state.Outlined = map[string]*outlineMark{}
 	}
-	state.Outlined[key] = &outlineMark{Context: state.Context, Lines: res.Lines}
+	if state.guard == nil || state.guard.StoreOriginal == nil || state.guard.StoreOriginal(key, state.Context, resp.File.Content) != nil {
+		return contract.Reply{}, false
+	}
+	state.Outlined[key] = &outlineMark{Context: state.Context, Lines: min(res.Lines, resp.File.NumLines), Hash: hex.EncodeToString(sum[:])}
 	reply := contract.Reply{ReplaceOutput: &contract.ToolOutput{Text: res.Text, OK: true}}
-	if countOutline(recordDirectory, 1, 0, now) {
+	if state.countOutline(1, 0, now) {
 		reply.PersonLine = killSwitchLine(recordDirectory)
 	}
 	return reply, true
@@ -209,7 +196,7 @@ func namedIn(words []uint64, path string) bool {
 // outlineGuard runs before Read, Edit and Write on Claude Code.
 func outlineGuard(ev contract.Event, h home, recordDirectory string, state *leverState) (contract.Reply, bool) {
 	t := ev.Tool
-	if t.Input.Path == "" {
+	if t.Input.Path == "" || h.levers.raw || h.levers.noOutline {
 		return contract.Reply{}, false
 	}
 	mark := state.Outlined[pathKey(t.Input.Path)]
@@ -226,9 +213,9 @@ func outlineGuard(ev contract.Event, h home, recordDirectory string, state *leve
 		// path is left as the agent wrote it, not as MEX normalized it.
 		offset, limit := 1, mark.Lines
 		trip := !mark.Forced
-		mark.Forced, mark.Ranged = true, true
+		mark.Forced = true
 		reply := contract.Reply{ReplaceInput: &contract.ToolInput{Offset: &offset, Limit: &limit}}
-		if trip && countOutline(recordDirectory, 0, 1, time.Now()) {
+		if trip && state.countOutline(0, 1, time.Now()) {
 			reply.PersonLine = killSwitchLine(recordDirectory)
 		}
 		return reply, true
@@ -241,12 +228,71 @@ func outlineGuard(ev contract.Event, h home, recordDirectory string, state *leve
 		if t.Name == contract.ToolWrite {
 			verb = "rewrite"
 		}
-		reason := fmt.Sprintf("MEX showed %s as an outline, not its text, so this %s was stopped once. Read the lines you are changing first (Read with offset and limit, or offset=1 limit=%d for the whole file), then %s it.", filepath.Base(t.Input.Path), verb, mark.Lines, verb)
+		reason := fmt.Sprintf("MEX showed %s as an outline, not its text, so this %s was stopped once. Read the lines you are changing first (Read with offset and limit, or offset=1 limit=%d for the original read), then %s it.", filepath.Base(t.Input.Path), verb, mark.Lines, verb)
 		reply := contract.Reply{Decision: contract.Deny, Reason: reason}
-		if countOutline(recordDirectory, 0, 1, time.Now()) {
+		if state.countOutline(0, 1, time.Now()) {
 			reply.PersonLine = killSwitchLine(recordDirectory)
 		}
 		return reply, true
 	}
 	return contract.Reply{}, false
+}
+
+// A host unchanged stub cannot refer back to text that the model never saw.
+func recoverRead(ev contract.Event, state *leverState, mark *outlineMark) (contract.Reply, bool) {
+	limit := mark.Lines
+	fallback := contract.Reply{ReplaceOutput: &contract.ToolOutput{Text: fmt.Sprintf("MEX previously showed an outline. Read this file with offset=1 limit=%d to receive its text.", max(1, limit)), OK: true}}
+	if limit <= 0 || mark.Hash == "" || state.Edited[pathKey(ev.Tool.Input.Path)] {
+		return fallback, false
+	}
+	data, err := boundedOutlineRead(ev.Tool.Input.Path)
+	if err != nil || !utf8.Valid(data) {
+		return fallback, false
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != mark.Hash {
+		return fallback, false
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	text := strings.Join(lines[:min(limit, len(lines))], "")
+	mark.Full, mark.Ranged = true, true
+	return contract.Reply{ReplaceOutput: &contract.ToolOutput{Text: text, OK: true, ReadTotalLines: len(lines)}}, true
+}
+func boundedOutlineRead(path string) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() || before.Size() > maxOutlineFile {
+		return nil, fmt.Errorf("read limit")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	after, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(before, after) {
+		return nil, fmt.Errorf("file changed")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxOutlineFile+1))
+	if len(data) > maxOutlineFile {
+		return nil, fmt.Errorf("read limit")
+	}
+	return data, err
+}
+
+// returnedReadText is the first limit lines of text as the host returns a
+// read: the host drops a leading byte-order mark and shows CRLF line endings
+// as LF, so a checkout with CRLF files still matches its own read.
+func returnedReadText(text string, limit int) string {
+	text = strings.ReplaceAll(strings.TrimPrefix(text, "\ufeff"), "\r\n", "\n")
+	lines := strings.SplitAfter(text, "\n")
+	return strings.Join(lines[:min(len(lines), max(0, limit))], "")
 }
