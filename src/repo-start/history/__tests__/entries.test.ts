@@ -234,6 +234,30 @@ describe("layer rules", () => {
     expect(rule!.text).toBe("`packages/db` never imports `@acme/api` (`packages/api`): 3 imports go from `packages/api` into `packages/db` and none go back. Keep the dependency one-way.");
   });
 
+  it("keeps a rule when an edit the index saw was reverted outside a session before the re-mine", { timeout: 120_000 }, async () => {
+    const importDb = (name: string) => `import { db } from "@acme/db";\nexport const ${name} = db;\n`;
+    const original = "export const db = 1;\n";
+    const f = fixture({
+      "package.json": JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }),
+      "packages/db/package.json": JSON.stringify({ name: "@acme/db" }), "packages/db/index.ts": original,
+      "packages/api/package.json": JSON.stringify({ name: "@acme/api" }),
+      "packages/api/a.ts": importDb("a"), "packages/api/b.ts": importDb("b"), "packages/api/c.ts": importDb("c"),
+    }, { history: true });
+    await prepare(f);
+    await run(f);
+    const rule = () => stored(f).find(entry => entry.mex.kind === "rule");
+    expect(rule()!.mex.status).toBe("active");
+    // An agent adds the banned import and the index re-reads the file (as a hook-seen edit does)...
+    write(f.root, { "packages/db/index.ts": `import { a } from "@acme/api";\n${original}` });
+    await buildIndex({ root: f.root, projectId: f.projectId, recordDirectory: f.location.directory, workers: 0 });
+    // ...then `git checkout` puts it back outside any session, so nothing tells the index.
+    git(f.root, "checkout", "--", "packages/db/index.ts");
+    const { facts } = await mine(f);
+    expect(facts.layer_rules).toEqual([{ from: "packages/db", to: "packages/api", imports: 3 }]);
+    await run(f);
+    expect(rule()!.mex.status).toBe("active");
+  });
+
   it("never makes the root package a layer, even when recipes.json names it '.'", { timeout: 120_000 }, async () => {
     // Hono: pnpm's `packages: ['.', 'adapters/*']` once gave the root the path "." and rules like "`.` never imports @hono/bun".
     const f = fixture({

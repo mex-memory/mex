@@ -26,7 +26,7 @@ export interface CodeFactsFile {
   layer_rules: Array<{ from: string; to: string; imports: number }>;
   generated: Array<{ path: string; signal: "marker" | "gitattributes" | "history" }>;
   /** Why layer rules are empty when they couldn't be computed. */
-  layers_skipped?: "no file index";
+  layers_skipped?: "no file index" | "file index not refreshed";
 }
 
 const MAX_FILES = 50_000;
@@ -113,9 +113,18 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
   const packages = (recipes?.packages ?? []).filter(pkg => pkg.path !== "" && pkg.path !== ".");
   let layerRules: CodeFactsFile["layer_rules"] = [];
   let layersSkipped: CodeFactsFile["layers_skipped"];
-  const { openIndex } = await import("../../file-index/read.js");
-  const index = openIndex({ recordDirectory: location.directory, projectId, checkout: root });
-  if (!index) layersSkipped = "no file index";
+  const [{ openIndex }, { buildIndex }] = await Promise.all([import("../../file-index/read.js"), import("../../file-index/build.js")]);
+  // The index can lag the checkout: a file the agent edited and git then reverted outside a session
+  // keeps its edited imports until a refresh. Mining from that would retire a rule the code still
+  // agrees with, so refresh first (a background job; unchanged files reuse their parse). Without a
+  // refresh there are no layer rules this run, and the entries step keeps the existing ones.
+  let index = openIndex({ recordDirectory: location.directory, projectId, checkout: root });
+  if (index) {
+    index.close();
+    try { await buildIndex({ root, projectId, recordDirectory: location.directory }); index = openIndex({ recordDirectory: location.directory, projectId, checkout: root }); }
+    catch { index = undefined; layersSkipped = "file index not refreshed"; }
+  }
+  if (!index) layersSkipped ??= "no file index";
   else {
     try {
       const edges = new Map<string, Map<string, number>>();
