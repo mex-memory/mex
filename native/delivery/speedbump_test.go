@@ -40,7 +40,7 @@ func TestSpeedBumpStopsOncePerRulePerEpoch(t *testing.T) {
 	if r.Decision != contract.Deny {
 		t.Fatalf("first edit not stopped: %+v", r)
 	}
-	for _, want := range []string{"MEX stopped this edit once", "[team, from a person] The API uses date-fns", "`from 'moment'`", "apps/api/dates.ts", "make the edit again"} {
+	for _, want := range []string{"MEX stopped this edit once", "[team, from a person] The API uses date-fns", "`from 'moment'`", "apps/api/dates.ts", "Change the edit to follow it, unless the person asked for exactly this", "make the edit again"} {
 		if !strings.Contains(r.Reason, want) {
 			t.Fatalf("reason lacks %q:\n%s", want, r.Reason)
 		}
@@ -269,7 +269,7 @@ func TestSpeedBumpOneStopForEveryRuleTheEditBreaks(t *testing.T) {
 	if r.Decision != contract.Deny || !strings.Contains(r.Reason, "date-fns") || !strings.Contains(r.Reason, "logger") {
 		t.Fatalf("one stop for both rules: %+v", r)
 	}
-	if strings.Count(r.Reason, "MEX stopped this edit once") != 1 || strings.Count(r.Reason, "make the edit again") != 1 {
+	if strings.Count(r.Reason, "MEX stopped this edit once") != 1 || strings.Count(r.Reason, "make the edit again") != 1 || !strings.Contains(r.Reason, "follow them") {
 		t.Fatalf("one message, not two:\n%s", r.Reason)
 	}
 	if r := preEdit(f, add); r.Decision != "" {

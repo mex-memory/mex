@@ -274,9 +274,16 @@ func bumpReason(b bump, full string) string {
 	return fmt.Sprintf("%s\n`%s` %s in %s.", why, b.trigger.Pattern, what, b.rel)
 }
 
+// The last line makes following the rule the default. Asked only "if
+// deliberate", models in the live test repeated a pasted snippet at once and
+// told nobody; the person's explicit request still wins.
 func bumpMessage(reasons []string) string {
+	it := "it"
+	if len(reasons) > 1 {
+		it = "them"
+	}
 	return "MEX stopped this edit once. " + strings.Join(reasons, "\n\n") +
-		"\nIf this change is deliberate, make the edit again and it will go through."
+		"\nChange the edit to follow " + it + ", unless the person asked for exactly this. If they did, make the edit again and it will go through, and tell them it goes against what the team recorded."
 }
 
 // bumpState is kept per session and agent, and reset when the epoch moves.
