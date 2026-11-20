@@ -147,7 +147,7 @@ export class RepoFiles {
    * the scan's depth bound, other segments are literal or simple wildcards.
    */
   glob(pattern: string): string[] {
-    const segments = pattern.replace(/\\/gu, "/").replace(/^\.\//u, "").replace(/\/+$/u, "").split("/").filter(Boolean);
+    const segments = pattern.replace(/\\/gu, "/").replace(/^\.\//u, "").replace(/\/+$/u, "").split("/").filter(part => part && part !== ".");
     const out = new Set<string>();
     const walk = (base: string, rest: string[], depth: number) => {
       if (depth > SCAN_LIMITS.depth) { this.truncated = true; return; }

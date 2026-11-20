@@ -325,6 +325,10 @@ func (ev *Evaluator) inputsHash(l Loaded, asOf string) string {
 		if c.Kind == "symbol" || c.Kind == "pattern" {
 			lines = append(lines, "index "+asOf)
 		}
+		// A folder count read while the index is behind HEAD is re-read once it catches up.
+		if c.Kind == "pattern" && exactPatternFile(c.Target) == "" && ev.indexBehindHead() {
+			lines = append(lines, "index behind HEAD")
+		}
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))

@@ -109,7 +109,8 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
   // Layer rules from the file index's import lists, at the package or top-level-folder grain.
   const { readFactFile } = await import("../facts.js");
   const recipes = readFactFile<{ version: number; packages?: Array<{ path: string; name: string }> }>(location, projectId, "recipes.json");
-  const packages = (recipes?.packages ?? []).filter(pkg => pkg.path !== "");
+  // The root package is no unit: its path is "", or "." in recipes.json files written before pnpm's `packages: ['.']` was read as the root.
+  const packages = (recipes?.packages ?? []).filter(pkg => pkg.path !== "" && pkg.path !== ".");
   let layerRules: CodeFactsFile["layer_rules"] = [];
   let layersSkipped: CodeFactsFile["layers_skipped"];
   const { openIndex } = await import("../../file-index/read.js");

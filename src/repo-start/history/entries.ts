@@ -494,13 +494,18 @@ function ciDrafts(checkout: string, recipes: RecipesFile | undefined): TypeDraft
           if (!purpose && isGenerateLine(text)) { line = text; generate = true; break; }
         }
         if (!line) return;
-        // A generate step runs in its working directory: name that package in the command, or skip the step.
+        const at = pointer("jobs", jobName, "steps", index, "run");
+        // A setup recipe CI merged with this step names its own command.
+        const recipe = generate ? undefined : recipeCommand(recipes, file, at);
+        // Otherwise the step runs a package script or Makefile target in its working directory:
+        // name that package in the command, or skip the step.
         const raw = step["working-directory"] ?? directoryDefault;
         const directory = typeof raw === "string" ? raw.trim().replace(/^\.(?:\/+|$)/u, "").replace(/\/+$/u, "") : "";
-        if (generate && directory && packageFor(directory, packages) !== directory) { skip(out, "generate step in a folder that is not a package"); return; }
+        if (!recipe && directory && packageFor(directory, packages) !== directory) { skip(out, "CI step in a folder that is not a package"); return; }
+        // A step setup judged not to run on a laptop (secrets, services) is not an obligation.
+        if (!recipe && !runsLocally(recipes, file, at, job, step)) { skip(out, "CI step needs secrets or services"); return; }
         steps++;
-        const at = pointer("jobs", jobName, "steps", index, "run");
-        const local = generate ? generateCommand(files, recipes, line, directory, ciMatch(line, packages, directory)) : recipeCommand(recipes, file, at);
+        const local = recipe ?? scriptCommandAt(files, recipes, line, directory, ciMatch(line, packages, directory));
         if (!local || commands.includes(local.command)) return;
         commands.push(local.command);
         checks.push(local.check);
@@ -532,12 +537,22 @@ function recipeCommand(recipes: RecipesFile | undefined, file: string, at: strin
   return { command: recipe.command, check: { kind: "command", role: "supporting", target: { run: recipe.command, file: origin.file, pointer: origin.pointer } } };
 }
 
+const SECRET_REFERENCE = /\$\{\{\s*secrets\./u;
+/** No recipe for this step says it can't run locally, and its job starts no services or reads no secrets. */
+function runsLocally(recipes: RecipesFile | undefined, file: string, at: string, job: Record<string, unknown>, step: Record<string, unknown>): boolean {
+  const judged = recipes?.recipes.find(item => item.origin.some(origin => origin.file === file && origin.pointer === at));
+  if (judged && judged.local !== "yes") return false;
+  const services = record(job.services);
+  if ((services && Object.keys(services).length) || record(job.container)?.credentials !== undefined) return false;
+  return !SECRET_REFERENCE.test(JSON.stringify([step.run, step.env ?? null, step.with ?? null, job.env ?? null]));
+}
+
 /**
- * A generate step that runs a package script or a Makefile target the checkout defines. A script
- * is named the way setup recipes name it (`npm run generate --workspace packages/api`), so it runs
- * from the root; a Makefile target only from a step that runs at the root.
+ * A CI step that runs a package script or a Makefile target the checkout defines. A script is
+ * named the way setup recipes name it, so it runs from the root (`npm run -w packages/api
+ * generate`); a Makefile target only from a step that runs at the root.
  */
-function generateCommand(files: RepoFiles, recipes: RecipesFile | undefined, line: string, directory: string, match: string | undefined): { command: string; check: ProposedCheck } | undefined {
+function scriptCommandAt(files: RepoFiles, recipes: RecipesFile | undefined, line: string, directory: string, match: string | undefined): { command: string; check: ProposedCheck } | undefined {
   if (!match) return undefined;
   const script = /^script:([^:]*):(.+)$/u.exec(match);
   if (script) {
