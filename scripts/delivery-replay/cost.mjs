@@ -5,6 +5,54 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 export const prices = JSON.parse(fs.readFileSync(new URL('../../src/shared/delivery-prices.json', import.meta.url), 'utf8'));
 export const TOOL_CHARS_PER_TOKEN = CODE_CHARS_PER_TOKEN;
+// Offline reference rates for Codex models, shared with the budget profile
+// (a unit test keeps the two equal). Codex counts cache writes and reads
+// inside input when a rollout reports them.
+const tier = ({ input, write, read, output }) => [input, write, read, output];
+const codexRates = Object.fromEntries(Object.entries(prices.codex.models)
+    .map(([model, rates]) => [model, [tier(rates.short), tier(rates.long)]]));
+const costClasses = ['input', 'cache_write', 'cache_read', 'output'];
+const validCount = (count) => Number.isSafeInteger(count) && count >= 0;
+
+export function priceSession(records, agent) {
+    const usage = [0, 0, 0, 0], dollars = [0, 0, 0, 0];
+    const add = (counts, rates) => {
+        if (!counts.every(validCount)) throw new Error('Invalid token usage');
+        for (const [index, count] of counts.entries()) {
+            usage[index] += count;
+            dollars[index] += count * rates[index] / 1e6;
+        }
+    };
+    if (agent === 'claude-code') {
+        for (const { model, synthetic, tokens } of parseSession(records).calls) {
+            if (synthetic) continue;
+            if (!Object.hasOwn(prices.models, model)) throw new Error('Unknown Claude Code price');
+            const rate = prices.models[model];
+            add([tokens.input, tokens.write1h, tokens.read, tokens.output], [rate.input, rate.write1h, rate.read, rate.output]);
+            add([0, tokens.write5m, 0, 0], [0, rate.write5m, 0, 0]);
+        }
+    } else if (agent === 'codex') {
+        let model, previous = [0, 0, 0, 0];
+        for (const { type, payload } of records) {
+            if (type === 'turn_context' && payload?.model) model = payload.model;
+            const snapshot = type === 'event_msg' && payload?.type === 'token_count' && payload.info?.total_token_usage;
+            if (!snapshot) continue;
+            const total = [snapshot.input_tokens, snapshot.cache_write_input_tokens ?? 0, snapshot.cached_input_tokens, snapshot.output_tokens];
+            if (!total.every(validCount)) throw new Error('Invalid Codex usage snapshot');
+            const delta = total.map((count, index) => count - previous[index]);
+            if (!delta.every(validCount)) throw new Error('Codex usage went backwards');
+            previous = total;
+            if (delta.every((count) => count === 0)) continue;
+            if (!Object.hasOwn(codexRates, model)) throw new Error('Unknown Codex price');
+            const [input, write, read, output] = delta;
+            add([input - write - read, write, read, output], codexRates[model][Number(input > prices.codex.longAbove)]);
+        }
+    } else {
+        throw new Error('Unsupported replay agent');
+    }
+    if (!usage.every(validCount) || !usage.some(Boolean) || !dollars.every(Number.isFinite)) throw new Error('Missing priced usage');
+    return Object.fromEntries(costClasses.map((name, index) => [name, { tokens: usage[index], dollars: dollars[index] }]));
+}
 const weights = prices.unknown;
 export const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] : null;
 const sum = values => values.reduce((a, b) => a + b, 0);

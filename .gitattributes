@@ -4,8 +4,9 @@
 # and the CRLF fixture would pass everywhere by becoming an LF fixture.
 test/fixtures/wiki/** -text
 
-# The upgrade gate pins these files by sha256; a CRLF checkout must not change them.
+# The upgrade and replay gates pin these files by SHA-256 across OSes.
 scripts/gates/upgrade-corpus/** -text
+scripts/gates/replay-corpus/** -text
 
 # These two fixtures intentionally look invalid to Git's patch checker: one
 # carries CRLF bytes and the other carries literal conflict markers. Suppress
