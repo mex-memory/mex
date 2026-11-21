@@ -210,7 +210,7 @@ describe("generated files and headers", () => {
 });
 
 describe("layer rules", () => {
-  it("bans the precise import literals of the upper layer, and skips a folder reached only by relative paths", { timeout: 120_000 }, async () => {
+  it("bans the precise import literals of the upper layer, and counts the relative imports of a folder", { timeout: 120_000 }, async () => {
     const importDb = (name: string) => `import { db } from "@acme/db";\nexport const ${name} = db;\n`;
     const f = fixture({
       "package.json": JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }),
@@ -222,8 +222,18 @@ describe("layer rules", () => {
     }, { history: true });
     await prepare(f);
     const result = await run(f);
-    expect(result.summary).toContain("layer 1 saved, 0 to Review, 0 dropped (1 skipped: no precise import literal)");
-    const [rule] = active(f).filter(entry => entry.mex.kind === "rule");
+    expect(result.summary).toContain("layer 2 saved, 0 to Review, 0 dropped;");
+    const rules = active(f).filter(entry => entry.mex.kind === "rule");
+    const rule = rules.find(entry => entry.mex.scope.includes("packages/db/**"));
+    // core is reached only by relative paths: no literal names it, so a relation check counts
+    // the imports the file index resolves, and the gate proved there are none today.
+    const relative = rules.find(entry => entry.mex.scope.includes("core/**"));
+    expect(relative!.mex).toMatchObject({
+      evidence: "mined", source: { type: "mined", producer: "code-facts", label: "mined from code: 3 imports go app→core, none core→app" },
+      checks: [{ kind: "relation", role: "complete", target: { query: "imports", from: "core/**", to: "app/**" }, saw: { count: 0 } }],
+    });
+    expect(relative!.mex.when ?? []).toEqual([]);
+    expect(relative!.text).toBe("`core` never imports `app`: 3 imports go from `app` into `core` and none go back. Keep the dependency one-way.");
     const literals = ["'@acme/api'", "\"@acme/api\"", "'@acme/api/", "\"@acme/api/"];
     expect(rule!.mex).toMatchObject({
       scope: ["packages/db/**"], evidence: "mined",

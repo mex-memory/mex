@@ -23,7 +23,7 @@ import (
 // listing already carries. Text and checks are loaded with Load only when a
 // moment has found a candidate.
 
-const lightVersion = 3
+const lightVersion = 4
 
 type lightFile struct {
 	Version int    `json:"version"`
@@ -188,14 +188,19 @@ func LoadLight(directory, home, project, checkout string) (answer Snapshot, fail
 	return full, nil
 }
 
-// lighten keeps what moments read: no text, and only command checks' targets.
+// lightTargets are the check target fields moments read: a command's, and
+// an import relation's, which the speed bump holds an edit against.
+var lightTargets = []string{"run", "file", "pointer", "query", "from", "to"}
+
+// lighten keeps what moments read: no text, and only command and import
+// relation checks' targets.
 func lighten(it Item) Item {
 	e := *it.Entry
 	e.Text = ""
 	e.Source = Source{Type: e.Source.Type, Ref: e.Source.Ref, Label: e.Source.Label}
 	var checks []Check
 	for _, c := range e.Checks {
-		if c.Kind == "command" {
+		if q, _ := c.Target["query"].(string); c.Kind == "command" || c.Kind == "relation" && q == "imports" {
 			checks = append(checks, Check{Kind: c.Kind, Role: c.Role, Target: c.Target})
 		}
 	}
@@ -239,7 +244,7 @@ func encodeLight(lf lightFile) []byte {
 		for _, c := range e.Checks {
 			w.String(c.Kind)
 			w.String(c.Role)
-			for _, k := range []string{"run", "file", "pointer"} {
+			for _, k := range lightTargets {
 				v, _ := c.Target[k].(string)
 				w.String(v)
 			}
@@ -270,7 +275,7 @@ func decodeLight(b []byte) (lightFile, error) {
 		}
 		for j, m := 0, r.Count(maxList); j < m; j++ {
 			c := Check{Kind: r.String(), Role: r.String(), Target: map[string]any{}}
-			for _, k := range []string{"run", "file", "pointer"} {
+			for _, k := range lightTargets {
 				if v := r.String(); v != "" {
 					c.Target[k] = v
 				}
