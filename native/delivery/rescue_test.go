@@ -248,6 +248,18 @@ func TestCodexShellRescues(t *testing.T) {
 	if out := sendWith(t, ev, rescueEnv(f, "on")); !strings.Contains(out, "pkg/store/cache.go:7 function LoadCache") {
 		t.Fatal(out)
 	}
+	ev = f.event(contract.PostTool)
+	ev.Tool = &rg
+	rg.Output = &contract.ToolOutput{Text: "pkg/other.go:1:load_cache", OK: true}
+	if out := sendWith(t, ev, rescueEnv(f, "on")); !strings.Contains(out, "pkg/store/cache.go:7 function LoadCache") {
+		t.Fatalf("headerless search did not rescue: %q", out)
+	}
+	for _, text := range []string{"", "rg: pkg: Permission denied (os error 13)"} {
+		rg.Output.Text = text
+		if out := sendWith(t, ev, rescueEnv(f, "on")); out != "" {
+			t.Fatalf("ambiguous search %q sent %q", text, out)
+		}
+	}
 }
 
 func TestRescueStartsInShadowAndSendsNothing(t *testing.T) {
