@@ -580,8 +580,9 @@ func (s *Store) Tests(id string) ([]TestLink, error) {
 	if len(through) > 200 {
 		through = through[:200]
 	}
-	rows, err := s.db.Query(`SELECT `+symbolColumns+`, coalesce(e.line, n.start_line) FROM edges e
+	rows, err := s.db.Query(`SELECT `+symbolColumns+`, coalesce(e.line, n.start_line), coalesce(callee.name, '') FROM edges e
 		JOIN nodes n ON n.id = e.source
+		LEFT JOIN nodes callee ON callee.id = e.target
 		WHERE e.target IN (?`+strings.Repeat(",?", len(through)-1)+`) AND e.kind='calls'
 		ORDER BY n.file_path, e.line LIMIT 500`, through...)
 	if err != nil {
@@ -592,12 +593,13 @@ func (s *Store) Tests(id string) ([]TestLink, error) {
 		var line int
 		var exported int
 		var sym Symbol
-		if err := rows.Scan(&sym.ID, &sym.Name, &sym.Path, &sym.Start, &sym.End, &sym.Kind, &exported, &sym.Signature, &sym.Hash, &line); err != nil {
+		var callee string
+		if err := rows.Scan(&sym.ID, &sym.Name, &sym.Path, &sym.Start, &sym.End, &sym.Kind, &exported, &sym.Signature, &sym.Hash, &line, &callee); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		sym.Exported = exported != 0
-		via = append(via, TestLink{Test: sym, Line: line, Reach: ViaCaller})
+		via = append(via, TestLink{Test: sym, Line: line, Reach: ViaCaller, Via: callee})
 	}
 	err = rows.Err()
 	rows.Close()

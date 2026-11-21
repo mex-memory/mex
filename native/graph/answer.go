@@ -217,7 +217,11 @@ func KeepTests(tests []TestLink, name string, built Built, files Files, src Sour
 			kept = append(kept, t)
 			continue
 		}
-		site, ok := relocate(Site{Path: t.Test.Path, Line: t.Line, In: t.Test}, name, files, src, nil)
+		use := name
+		if t.Reach == ViaCaller && t.Via != "" {
+			use = t.Via // the test calls the caller, not the symbol
+		}
+		site, ok := relocate(Site{Path: t.Test.Path, Line: t.Line, In: t.Test}, use, files, src, nil)
 		if !ok {
 			dropped++
 			continue

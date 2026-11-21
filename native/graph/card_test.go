@@ -287,6 +287,16 @@ func TestRecheckChangedFiles(t *testing.T) {
 	if kept, dropped := Recheck(g.callers["n1"][:1], "parseRoute", g, f, renamed); len(kept) != 0 || dropped != 1 {
 		t.Fatalf("declaration gone: %+v", kept)
 	}
+	// A test reached through a caller, in a test file edited since the build,
+	// is found again by the caller it calls: it never names the symbol.
+	g, f, _ = router()
+	f.hashes["test/app.e2e.test.ts"] = "edited"
+	f.outlines["test/app.e2e.test.ts"] = []index.Symbol{{Name: "<callback:it[1]>", Kind: "function", Start: 2, End: 9}}
+	e2e := texts(map[string]string{"test/app.e2e.test.ts": lines(9, map[int]string{5: "  await handleGet(req)"})})
+	via := TestLink{Test: sym("n6", "<callback:it[1]>", "test/app.e2e.test.ts", 2, 8, "function"), Line: 4, Reach: ViaCaller, Via: "handleGet"}
+	if kept, dropped := KeepTests([]TestLink{via}, "parseRoute", g, f, e2e); len(kept) != 1 || dropped != 0 || kept[0].Line != 5 {
+		t.Fatalf("via caller: %+v dropped %d", kept, dropped)
+	}
 	// A call or mention of the name is not its declaration.
 	for line, want := range map[string]bool{
 		"export function handleGet(req) {": true,

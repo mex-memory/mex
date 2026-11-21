@@ -80,6 +80,9 @@ type TestLink struct {
 	Test  Symbol `json:"test"`
 	Line  int    `json:"line"`
 	Reach Reach  `json:"reach"`
+	// Via is the caller a test reached through a caller calls at Line: the
+	// name to find there again, since the test never names the symbol.
+	Via string `json:"via,omitempty"`
 }
 
 // Built is the hash each file had when the graph was built, so a reader can
