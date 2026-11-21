@@ -391,11 +391,11 @@ func (s *Store) test(path string) bool {
 
 // Callers are the uses of a symbol: real calls, and the symbol passed as a
 // value (a callback), kept apart. Each site is where the use is and the
-// definition it's inside.
+// definition it's inside; a recursive call is a site inside the symbol itself.
 func (s *Store) Callers(id string) ([]Site, error) {
 	return s.sites(`SELECT `+symbolColumns+`, coalesce(e.line, n.start_line), e.kind FROM edges e
 		JOIN nodes n ON n.id = e.source
-		WHERE e.target=? AND e.kind IN ('calls','references') AND e.source <> e.target
+		WHERE e.target=? AND e.kind IN ('calls','references')
 		ORDER BY n.file_path, e.line LIMIT 500`, []any{id}, nil)
 }
 
@@ -491,7 +491,7 @@ func (s *Store) Tests(id string) ([]TestLink, error) {
 		}
 		// Tests call the named definition a callback is passed in, never the callback.
 		named := c.Named()
-		if !asked[named.ID] {
+		if named.ID != id && !asked[named.ID] {
 			asked[named.ID] = true
 			through = append(through, named.ID)
 		}

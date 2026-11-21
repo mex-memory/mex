@@ -47,17 +47,31 @@ export function parseArgs(argv) {
 
 const posix = (p) => p.split(sep).join("/");
 
-/** The compiler's program for the repo: its tsconfig, or every .ts/.tsx file. */
+/** A tsconfig's files and options, following project references (a solution config lists none itself). */
+function configFiles(config, seen = new Set()) {
+  if (seen.has(config) || !ts.sys.fileExists(config)) return { files: [], options: undefined };
+  seen.add(config);
+  const parsed = ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config, ts.sys, dirname(config));
+  let files = [...parsed.fileNames], options = parsed.fileNames.length ? parsed.options : undefined;
+  for (const ref of parsed.projectReferences ?? []) {
+    const next = ts.sys.fileExists(ref.path) && !ts.sys.directoryExists(ref.path) ? ref.path : join(ref.path, "tsconfig.json");
+    const child = configFiles(next, seen);
+    files.push(...child.files);
+    options ??= child.options;
+  }
+  return { files: [...new Set(files)], options };
+}
+
+/** The compiler's program for the repo: its tsconfig (with its references), or every .ts/.tsx file. */
 export function loadProgram(repo) {
   const config = ts.findConfigFile(repo, ts.sys.fileExists, "tsconfig.json");
-  let files, options = { allowJs: false, noEmit: true };
+  let files = [], options = { allowJs: false, noEmit: true };
   if (config && posix(dirname(config)) === posix(repo)) {
-    const parsed = ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config, ts.sys, repo);
-    files = parsed.fileNames;
-    options = { ...parsed.options, noEmit: true };
-  } else {
-    files = ts.sys.readDirectory(repo, [".ts", ".tsx"], undefined, ["**/*"]);
+    const found = configFiles(config);
+    files = found.files;
+    if (found.options) options = { ...found.options, noEmit: true, composite: false, incremental: false };
   }
+  if (!files.length) files = ts.sys.readDirectory(repo, [".ts", ".tsx"], undefined, ["**/*"]);
   files = files.filter((f) => !f.endsWith(".d.ts") && !SKIP.test(posix(relative(repo, f))));
   const versions = new Map(files.map((f) => [f, "1"]));
   const host = {
@@ -159,11 +173,16 @@ export function grepCallSites(repo, files, def) {
   return sites;
 }
 
-/** MEX: the graph reader's callers, real calls only, timed. */
-export function mexCallSites(binary, location, def) {
+/**
+ * MEX: the graph reader's callers, real calls only, timed. The definition is
+ * named by its file, as `mex graph callers file:name` does, so a name the repo
+ * defines in files the key's program leaves out still names this one. Sites
+ * are scored over the files the key reads, as grep's are.
+ */
+export function mexCallSites(binary, location, def, keyFiles) {
   const started = performance.now();
   const result = spawnSync(binary, ["--graph-read"], {
-    input: JSON.stringify({ op: "callers", name: def.name, checkout: location.root, project_id: location.projectId, record_directory: location.recordDirectory }),
+    input: JSON.stringify({ op: "callers", name: `${def.rel}:${def.name}`, checkout: location.root, project_id: location.projectId, record_directory: location.recordDirectory }),
     encoding: "utf8", timeout: 60_000, windowsHide: true, maxBuffer: 16 << 20,
   });
   const ms = performance.now() - started;
@@ -171,7 +190,9 @@ export function mexCallSites(binary, location, def) {
   try { answer = JSON.parse(String(result.stdout).trim().split("\n").at(-1)); } catch { answer = { ok: false }; }
   const sites = new Set();
   if (answer.ok && answer.verdict === "found" && answer.symbol?.path === def.rel) {
-    for (const site of answer.sites ?? []) if (site.kind === "call") sites.add(`${site.path}:${site.line}`);
+    for (const site of answer.sites ?? []) {
+      if (site.kind === "call" && (!keyFiles || keyFiles.has(site.path))) sites.add(`${site.path}:${site.line}`);
+    }
   }
   return { sites, ms, verdict: answer.ok ? answer.verdict : "error" };
 }
@@ -224,10 +245,11 @@ export async function run(args) {
   const location = graphLocation(args.repo);
   const { service, files, program } = loadProgram(args.repo);
   const picked = sample(definitions(program, args.repo, files), args.sample);
+  const keyFiles = new Set(files.map((f) => posix(relative(args.repo, f))));
   const rows = [];
   for (const def of picked) {
     const key = compilerCallSites(service, program, args.repo, def);
-    const mex = mexCallSites(binary, location, def);
+    const mex = mexCallSites(binary, location, def, keyFiles);
     const grep = grepCallSites(args.repo, files, def);
     rows.push({ name: def.name, file: def.rel, line: def.line, verdict: mex.verdict, ms: Math.round(mex.ms * 10) / 10,
       mex: score(key, mex.sites), grep: score(key, grep) });
@@ -242,7 +264,8 @@ export async function run(args) {
     verdicts: rows.reduce((a, r) => ({ ...a, [r.verdict]: (a[r.verdict] ?? 0) + 1 }), {}),
     rows,
   };
-  report.pass = report.mex.f1 >= report.grep.f1 && report.mex.precision >= report.grep.precision;
+  // An empty sample proves nothing: it never passes.
+  report.pass = rows.length > 0 && report.mex.f1 >= report.grep.f1 && report.mex.precision >= report.grep.precision;
   return report;
 }
 

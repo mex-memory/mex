@@ -185,7 +185,8 @@ func (v View) SearchLines(path, name string, room int, shown Shown) (text string
 		}
 	}
 	for _, s := range byOwner(sites) {
-		if !isTest(v, s.Path) {
+		// A recursive call says nothing the definition doesn't.
+		if !isTest(v, s.Path) && s.Named().ID != def.ID {
 			code = append(code, s)
 		}
 	}
