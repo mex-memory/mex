@@ -30,6 +30,9 @@ if [ ! -s "$out/scip.json" ]; then
       # scip-python 0.6.6 crashes on Django's own test suite (a pyright assertion
       # in tests/model_enums/tests.py), so Django is judged on its library only.
       [ "$repo" = django ] && rm -rf "$src/tests"
+      # A src/ layout is importable once installed; the judge runs without
+      # installing, so it is told where the package lives.
+      if [ -d "$src/src" ]; then echo '{ "extraPaths": ["src"] }' > "$src/pyrightconfig.json"; fi
       echo "[]" > "$out/env.json"
       (cd "$src" && node "$JUDGES/scip-python/index.js" index . --project-name "$repo" --environment "$out/env.json" --output "$out/index.scip") > "$out/judge.log" 2>&1 ;;
     *) echo "no judge for $repo" >&2; exit 2 ;;
