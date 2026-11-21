@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import * as cliTools from "../../cli-tools.js";
@@ -33,7 +34,7 @@ import { prepareEntries } from "../entries.js";
 import { ForgeClient } from "../forge.js";
 import { PinnedTree } from "../git.js";
 import { createLearnKind, writerModel } from "../job.js";
-import { offerLearning } from "../offer.js";
+import { chooseAgent, offerLearning } from "../offer.js";
 import { LEARN_KIND, Plan } from "../plan.js";
 import { sourceDigest, type DocSource, type ReviewSource } from "../source.js";
 import { DAY_MS, nextWeeklyAt, queueDueWeekly, saveWeeklySchedule, WEEKLY_KIND, weeklySchedule, weeklyWakeDue } from "../weekly-schedule.js";
@@ -687,16 +688,26 @@ it("previews eligible past sessions, skips drift and non-user rows, and delivers
     claudeTurn(repo, "Credential password=fixtureSecret123"), claudeTurn(repo, "Ask private@example.invalid about secrets"),
     claudeTurn(fixture, "OUTSIDE_REPO_DATA"), claudeTurn(repo, "PRIVATE_ASSISTANT_DATA", { type: "assistant" })]);
   history("codex", codexId, [codexMeta(repo), codexTurn({ new_shape: "UNKNOWN_CODEX_DATA" })]);
+  // Setup's quote leaves past sessions out; a person asks for them with `mex learn --sessions`.
   const { result, ask } = await accept(vi.fn(async (lines: readonly string[]) => {
+    expect(lines.join("\n")).not.toContain("past session");
+    return false;
+  }));
+  const offered = vi.fn(async (lines: readonly string[]) => {
     expect(lines.join("\n")).toContain("1 past session and 1 eligible prompt");
     expect(lines.join("\n")).toContain("Codex capture paused");
     expect(lines.join("\n")).not.toContain(typed);
     return true;
-  }));
+  });
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, sessions: true, write: () => {}, confirm: offered });
+  expect(offered).toHaveBeenCalledTimes(1);
   const remote = vi.fn(async () => { throw new Error("Dry run attempted network"); });
   vi.stubGlobal("fetch", remote);
+  const off: string[] = [];
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, write: line => off.push(line) });
+  expect(off).toEqual(["Past-session import is off. Add --sessions to preview it."]);
   const preview: string[] = [];
-  await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, write: line => preview.push(line) });
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, sessions: true, write: line => preview.push(line) });
   expect(preview.join("\n")).toContain("1 past session");
   expect(preview.join("\n")).toContain("capture paused");
   expect(remote).not.toHaveBeenCalled();
@@ -728,7 +739,7 @@ it("previews eligible past sessions, skips drift and non-user rows, and delivers
     });
     expect(hook).toContain("[learned, not shared] Verify generated snapshots before release.");
     const repeated: string[] = [];
-    await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, write: line => repeated.push(line) });
+    await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, sessions: true, write: line => repeated.push(line) });
     expect(repeated.join("\n")).toContain("0 past sessions");
   } finally { writer.close(); }
 }, 25_000);
@@ -738,9 +749,10 @@ it("leaves changed sessions out of the approved batch and supports a reviews-onl
   const ask = vi.fn(async () => false);
   const { result } = await accept(ask);
   const lines: string[] = [];
-  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, sessions: false, write: line => lines.push(line),
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, write: line => lines.push(line),
     confirm: async shown => { expect(shown.join("\n")).not.toContain("Past-session dry run"); return false; } });
-  await accept();
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, sessions: true, write: () => {},
+    confirm: async shown => { expect(shown.join("\n")).toContain("Past-session dry run"); return true; } });
   history("codex", codexId, [codexMeta(repo), codexTurn("REPLACED_AFTER_CONSENT")]);
   const model = vi.fn<typeof runModel>(async () => reply({ entries: [] }));
   registerJobKind(createLearnKind({ model }));
@@ -1255,3 +1267,24 @@ it("names the model with the most usage, or unknown, never the requested alias",
   expect(writerModel({ selectedModel: "best", usage: { ...usage, model: "unknown" } })).toEqual({ id: "best", version: "unknown" });
 });
 
+it("picks the runner from the last 7 days, this project first", () => {
+  vi.spyOn(cliTools, "isCliAvailable").mockImplementation(() => true);
+  const writer = openRecord({ projectPath: repo });
+  const project = writer.checkout(repo)!.project_id;
+  const hooks = new DatabaseSync(join(writer.location.directory, "hooks.db"));
+  try {
+    const schema = resolve("native/record/schema/hooks");
+    for (const file of readdirSync(schema).filter(name => name.endsWith(".sql")).sort()) hooks.exec(readFileSync(join(schema, file), "utf8"));
+    const at = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString();
+    const add = (id: string, agent: string, projectId: string, days: number) =>
+      hooks.prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,0)").run(id, agent, projectId, repo, at(days), at(days));
+    // Codex was used more, but only before the window.
+    for (const id of ["c1", "c2", "c3"]) add(id, "codex", project, 20);
+    add("k1", "claude-code", project, 2);
+    expect(chooseAgent(project)).toBe("claude");
+    // With no recent use here, recent use anywhere on the machine decides.
+    hooks.exec("DELETE FROM sessions");
+    add("o1", "codex", "g-other", 1);
+    expect(chooseAgent(project)).toBe("codex");
+  } finally { hooks.close(); writer.close(); }
+});
