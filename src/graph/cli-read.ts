@@ -18,6 +18,8 @@ export interface GraphAnswer {
   verdict: "found" | "none" | "unknown" | "ambiguous" | "missing";
   symbol?: GraphSymbol;
   matches?: GraphMatch[];
+  /** Other definitions a plain name could mean, when it was read as the top-level one. */
+  also_named?: GraphMatch[];
   sites?: GraphSite[];
   tests?: GraphTest[];
   dropped: number;
@@ -63,7 +65,7 @@ function where(symbol: GraphSymbol): string {
 function named(symbol: GraphSymbol): string {
   const callback = /^<callback:([^[>]+)/u.exec(symbol.name);
   if (!callback) return symbol.name;
-  return callback[1] === "ReturnStatement" || callback[1] === "BinaryExpression" ? "a callback" : `a ${callback[1]}() callback`;
+  return /^[A-Z]/u.test(callback[1]!) ? "a callback" : `a callback passed to ${callback[1]}()`;
 }
 
 function inWhat(site: GraphSite): string {
@@ -88,6 +90,9 @@ export function renderGraphAnswer(answer: GraphAnswer): string[] {
   const symbol = answer.symbol!;
   lines.push(`${symbol.kind} ${symbol.name}  ${where(symbol)}  ${asOf}`);
   if (symbol.signature) lines.push(`  ${symbol.signature}`);
+  for (const other of answer.also_named ?? []) {
+    lines.push(`  (also named ${answer.name}: ${other.kind} at ${where(other)}${other.query ? `; ask for it as mex graph ${answer.op} ${other.query}` : ""})`);
+  }
   if (answer.op === "tests") {
     const tests = answer.tests ?? [];
     if (tests.length) {

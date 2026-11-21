@@ -345,6 +345,38 @@ func (s *Store) Selector(sym Symbol, matches []Symbol) string {
 	return ""
 }
 
+// Preferred is the definition a query without an owner means among several:
+// the one defined at the top of its file (`createMiddleware`, not the
+// `Factory.createMiddleware` method beside it), else the one that isn't a
+// bodiless member of an interface or type. Cards never use it: a card needs
+// a name that names one place.
+func (s *Store) Preferred(defs []Symbol, q Query) (Symbol, bool) {
+	if q.Owner != "" || len(defs) < 2 {
+		return Symbol{}, false
+	}
+	var top, bodied []Symbol
+	for _, d := range defs {
+		var qualified, container string
+		if s.db.QueryRow(`SELECT coalesce(n.qualified_name,''), coalesce(c.kind,'') FROM nodes n
+			LEFT JOIN nodes c ON c.id = n.container_id WHERE n.id=?`, d.ID).Scan(&qualified, &container) != nil {
+			return Symbol{}, false
+		}
+		if !strings.Contains(qualified, "::") {
+			top = append(top, d)
+		}
+		if container != "interface" && container != "type_alias" {
+			bodied = append(bodied, d)
+		}
+	}
+	switch {
+	case len(top) == 1:
+		return top[0], true
+	case len(bodied) == 1:
+		return bodied[0], true
+	}
+	return Symbol{}, false
+}
+
 // Node is one symbol by id.
 func (s *Store) Node(id string) (Symbol, bool) {
 	sym, err := scanSymbol(s.db.QueryRow(`SELECT `+symbolColumns+` FROM nodes n WHERE n.id=?`, id).Scan)

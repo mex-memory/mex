@@ -45,14 +45,17 @@ type Match struct {
 
 // Answer is one reply to a graph question. Every answer carries AsOf.
 type Answer struct {
-	Op      Op         `json:"op"`
-	Name    string     `json:"name"`
-	AsOf    string     `json:"as_of"`
-	Verdict Verdict    `json:"verdict"`
-	Symbol  *Symbol    `json:"symbol,omitempty"`
-	Matches []Match    `json:"matches,omitempty"`
-	Sites   []Site     `json:"sites,omitempty"`
-	Tests   []TestLink `json:"tests,omitempty"`
+	Op      Op      `json:"op"`
+	Name    string  `json:"name"`
+	AsOf    string  `json:"as_of"`
+	Verdict Verdict `json:"verdict"`
+	Symbol  *Symbol `json:"symbol,omitempty"`
+	Matches []Match `json:"matches,omitempty"`
+	// AlsoNamed are the other definitions a plain name could mean, when it
+	// was read as the one top-level definition or the one with a body.
+	AlsoNamed []Match    `json:"also_named,omitempty"`
+	Sites     []Site     `json:"sites,omitempty"`
+	Tests     []TestLink `json:"tests,omitempty"`
 	// Dropped are uses in files that changed since the build and no longer hold.
 	Dropped int `json:"dropped"`
 	// Unresolved dynamic uses: callers (or, for callees, calls) the graph may not show.
@@ -71,9 +74,10 @@ const impactDepth = 2
 const maxChangedFiles = 64
 
 // Selectors is the optional part of Reader that names one of several
-// definitions alone.
+// definitions alone, and picks the one a plain name means when there is one.
 type Selectors interface {
 	Selector(sym Symbol, matches []Symbol) string
+	Preferred(defs []Symbol, q Query) (Symbol, bool)
 }
 
 // Ask answers one question about a name. Uses in files that changed since
@@ -86,6 +90,24 @@ func Ask(r Reader, files Files, src Source, op Op, query string) (Answer, error)
 	if err != nil {
 		return a, err
 	}
+	sel, _ := r.(Selectors)
+	if len(defs) > 1 && sel != nil {
+		// A plain name means the one top-level definition, or the one with a
+		// body; the rest are named by owner and listed as also named.
+		if pick, ok := sel.Preferred(defs, ParseQuery(query)); ok {
+			for _, d := range defs {
+				if d.ID == pick.ID {
+					continue
+				}
+				m := Match{Symbol: d, Query: sel.Selector(d, defs)}
+				if exact, ok := Exact(files, d); ok {
+					m.Symbol = exact
+				}
+				a.AlsoNamed = append(a.AlsoNamed, m)
+			}
+			defs = []Symbol{pick}
+		}
+	}
 	switch len(defs) {
 	case 0:
 		a.Verdict = Missing
@@ -93,7 +115,6 @@ func Ask(r Reader, files Files, src Source, op Op, query string) (Answer, error)
 	case 1:
 	default:
 		a.Verdict = Ambiguous
-		sel, _ := r.(Selectors)
 		for _, d := range defs {
 			m := Match{Symbol: d}
 			if sel != nil {
