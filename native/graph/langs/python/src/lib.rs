@@ -28,6 +28,8 @@ use mex_graph_core::id::signature_identity;
 use mex_graph_core::text::{js_slice, js_trim, utf16_column};
 use tree_sitter::{Node, Parser, Tree};
 
+pub mod resolve;
+
 /// Bumped whenever this adapter's output changes; part of the facts cache key.
 pub const ADAPTER_VERSION: u32 = 1;
 pub const LANGUAGE: &str = "python";
