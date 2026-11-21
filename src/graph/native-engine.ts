@@ -6,32 +6,66 @@
 // Loaded on demand: graph reads never import it.
 
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 /** The contract version this module speaks; the engine must report the same. */
-export const GRAPH_ENGINE_CONTRACT = 1;
+export const GRAPH_ENGINE_CONTRACT = 2;
 /** Points at a specific engine binary, for development and tests. */
 export const GRAPH_ENGINE_ENV = "MEX_GRAPH_ENGINE";
+/** Languages the engine builds instead of today's extractors, e.g. `python`. */
+export const GRAPH_ENGINE_LANGUAGES_ENV = "MEX_GRAPH_ENGINE_LANGUAGES";
+/** Languages the engine can take over today. */
+const ENGINE_LANGUAGES = new Set(["python"]);
+
+/** The languages `MEX_GRAPH_ENGINE_LANGUAGES` hands to the engine (unknown names ignored), sorted. */
+export function graphEngineLanguages(env: NodeJS.ProcessEnv = process.env): string[] {
+  const listed = (env[GRAPH_ENGINE_LANGUAGES_ENV] ?? "").split(",").map((name) => name.trim().toLowerCase());
+  return [...new Set(listed.filter((name) => ENGINE_LANGUAGES.has(name)))].sort();
+}
 
 export interface EngineRequest {
-  mode: "build" | "refresh";
+  mode: "build" | "refresh" | "stage";
   root: string;
   files: Array<{ path: string; size?: number }>;
   configs?: string[];
   languages: string[];
-  output: string;
+  /** The candidate database; `stage` writes none. */
+  output?: string;
   base?: string | null;
   changed?: string[];
   factsCache?: string;
   limits: { memoryMb: number; deadlineMs: number; threads?: number };
 }
 
+/** One Python file's rows for today's (schema v4) writer, from `mex-graph stage`. */
+export interface EngineStagedFile {
+  type: "staged";
+  path: string;
+  contentHash: string;
+  size: number;
+  language: string;
+  parseStatus: "ok" | "partial" | "failed";
+  health: {
+    status: "ok" | "partial" | "failed";
+    diagnosticCount: number;
+    missingCount: number;
+    errorCoverage: number;
+    diagnostics: Array<{ type: string; startLine: number; endLine: number }>;
+  };
+  nodes: Array<Record<string, unknown> & { id: string; minhash?: number[]; tokenCount?: number }>;
+  edges: Array<Record<string, unknown> & { source: string; target: string; kind: string }>;
+  unresolved: Array<Record<string, unknown> & { fromNodeId: string; referenceName: string }>;
+}
+
 export type EngineEvent =
   | { type: "progress"; phase: string; done: number; total: number }
   | { type: "file"; path: string; status: string; reason?: string }
+  | EngineStagedFile
   | { type: "result"; files: number; nodes: number; edges: number; coverageGaps?: number; usage: { wallMs: number; peakRssMb: number; cpuMs?: number } }
   | { type: "error"; code: string; message: string };
 
@@ -88,16 +122,19 @@ function removeCandidate(output: string): void {
 }
 
 /**
- * Run one job. The request file is written beside the candidate; `start` is
- * sent once the engine is up, and the candidate is removed on any outcome
- * other than a clean exit, including a crash the engine couldn't clean up.
+ * Run one job. The request file is written beside the candidate (or in
+ * `requestDir` for `stage`, which writes no candidate); `start` is sent once
+ * the engine is up, and the candidate is removed on any outcome other than a
+ * clean exit, including a crash the engine couldn't clean up.
  */
 export function runGraphEngine(
   binary: string,
   request: EngineRequest,
-  options: { onEvent?: (event: EngineEvent) => void; signal?: AbortSignal } = {},
+  options: { onEvent?: (event: EngineEvent) => void; signal?: AbortSignal; requestDir?: string } = {},
 ): Promise<EngineRun> {
-  const requestPath = `${request.output}.request.json`;
+  const requestPath = request.output
+    ? `${request.output}.request.json`
+    : join(options.requestDir ?? tmpdir(), `mex-graph-request-${process.pid}-${randomBytes(6).toString("hex")}.json`);
   writeFileSync(requestPath, JSON.stringify({ contract: GRAPH_ENGINE_CONTRACT, ...request }));
   return new Promise((resolvePromise) => {
     const child = spawn(binary, [request.mode, "--request", requestPath], {
@@ -117,13 +154,16 @@ export function runGraphEngine(
     child.stderr.resume();
     const abort = (): void => { child.kill("SIGKILL"); };
     options.signal?.addEventListener("abort", abort, { once: true });
+    // An engine that refuses the request exits before reading start; the
+    // write then meets a closed pipe, which the exit code already explains.
+    child.stdin.on("error", () => {});
     child.stdin.write("start\n");
     child.on("close", (code, signal) => {
       options.signal?.removeEventListener("abort", abort);
       run.exitCode = code;
       run.signal = signal;
       rmSync(requestPath, { force: true });
-      if (code !== 0) removeCandidate(request.output);
+      if (code !== 0 && request.output) removeCandidate(request.output);
       resolvePromise(run);
     });
     child.on("error", (error) => {

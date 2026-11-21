@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -40,6 +40,22 @@ describe.skipIf(!binary)("the Rust graph engine from Node", () => {
     expect(events.at(-1)?.type).toBe("result");
     expect(existsSync(output)).toBe(true);
     expect(existsSync(`${output}.request.json`)).toBe(false);
+  });
+
+  it("streams staged Python rows without writing a candidate", async () => {
+    const { root, index } = fixture();
+    const events: EngineEvent[] = [];
+    const run = await runGraphEngine(binary!, {
+      mode: "stage", root, files: [{ path: "src/app.py" }, { path: "README.md" }], languages: ["python"],
+      limits: { memoryMb: 4096, deadlineMs: 60_000 },
+    }, { onEvent: (event) => events.push(event), requestDir: index });
+    expect(run.exitCode).toBe(0);
+    expect(events.map((event) => event.type)).toEqual(["staged", "file", "result"]);
+    const staged = events[0] as Extract<EngineEvent, { type: "staged" }>;
+    expect(staged).toMatchObject({ path: "src/app.py", language: "python", parseStatus: "ok" });
+    expect(staged.nodes.map((node) => node.kind)).toEqual(["file", "function"]);
+    expect(staged.edges).toEqual([expect.objectContaining({ kind: "contains", target: staged.nodes[1]!.id })]);
+    expect(readdirSync(index)).toEqual([]);
   });
 
   it("removes the candidate when the engine stops over its cap", async () => {
