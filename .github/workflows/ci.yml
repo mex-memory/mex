@@ -198,6 +198,52 @@ jobs:
           # Keep other native process tests out of the capture deadline.
           npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts src/knowledge/__tests__/check.test.ts src/knowledge/__tests__/rule-cache.test.ts src/knowledge/__tests__/native-checks.test.ts src/knowledge/__tests__/brief.test.ts
 
+  # The Rust graph engine (OSS-73): format, lint and tests on every OS.
+  rust:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    defaults:
+      run:
+        working-directory: native/graph
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      # As for Go: the default C: disk is about twice as slow on hosted Windows
+      # runners, so cargo's home and build output live under RUNNER_TEMP (D:).
+      - name: Keep cargo's files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'cargo')" >> $env:GITHUB_ENV
+          "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'cargo-target')" >> $env:GITHUB_ENV
+          "PATH=$(Join-Path $env:RUNNER_TEMP 'cargo\bin');$env:PATH" >> $env:GITHUB_ENV
+      # rust-toolchain.toml pins the version; rustup installs it on first use.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME || '~/.cargo' }}/registry
+            ${{ env.CARGO_HOME || '~/.cargo' }}/git
+            ${{ env.CARGO_TARGET_DIR || 'native/graph/target' }}
+          key: rust-${{ runner.os }}-${{ hashFiles('native/graph/Cargo.lock', 'native/graph/rust-toolchain.toml') }}
+          restore-keys: rust-${{ runner.os }}-
+      - name: rustfmt
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --locked
+
   storage-portability:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
