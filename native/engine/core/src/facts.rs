@@ -30,7 +30,8 @@ pub mod bounds {
     pub const MAX_SIGNATURE_BYTES: usize = 1_024;
     pub const MAX_CALLEE_TEXT_BYTES: usize = 256;
     pub const MAX_DOCSTRING_BYTES: usize = 2_048;
-    pub const MAX_DIAGNOSTICS: usize = 16;
+    /// Today's file rows keep the first 100 parse issues.
+    pub const MAX_DIAGNOSTICS: usize = 100;
 }
 
 /// A source range: bytes, then 0-based start line and column, end line and column.
