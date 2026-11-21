@@ -391,3 +391,22 @@ mod tests {
         assert_eq!(serde_json::from_str::<FileFacts>(&json).unwrap(), facts);
     }
 }
+
+impl Def {
+    /// This definition's identity under the signature profile (the
+    /// tree-sitter route's recipe), for a file at `path`.
+    pub fn signature_identity(&self, path: &str) -> String {
+        crate::id::signature_identity(
+            path,
+            self.kind.as_str(),
+            &self.qualified_name,
+            self.declaration_role.as_deref(),
+            &self.signature,
+        )
+    }
+
+    /// The public text id under the signature profile.
+    pub fn signature_id(&self, path: &str) -> String {
+        crate::id::node_id(self.kind.as_str(), &self.signature_identity(path))
+    }
+}
