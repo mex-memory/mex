@@ -14,3 +14,4 @@ pub mod facts;
 pub mod store;
 
 pub mod text;
+pub mod fingerprint;
