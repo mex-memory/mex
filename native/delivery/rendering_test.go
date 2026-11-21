@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/adapter"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
@@ -70,6 +71,31 @@ func TestSimilarityDoesNotConsumeFullSlots(t *testing.T) {
 	p := pack([]shaped{a, b, c}, nil)
 	if p[1].detail != "similar" || p[2].form != "full" {
 		t.Fatal(p)
+	}
+}
+
+// A short entry contained in a longer one must not hide the longer one (OSS-86:
+// Hono's five-command CI procedure was withheld after "Lint: `pnpm run lint`").
+// The other way round, the short one adds nothing and is withheld.
+func TestSimilarityIsDirectional(t *testing.T) {
+	ci := "After changes in `adapters/**`, `src/**`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `.github/workflows/ci-adapters.yml`, run `pnpm run lint`, `pnpm run build`, `pnpm run build:adapters`, `pnpm run test:adapters` and `pnpm --filter @hono/deno run test:deno` (CI runs them in `.github/workflows/ci-adapters.yml`)."
+	lint := "Lint: `pnpm run lint`"
+	procedure := &entries.Item{Entry: &entries.Entry{Kind: "procedure", Scope: []string{"adapters/**", "src/**"}, OneLine: ci, Text: ci}}
+	recipe := &entries.Item{Entry: &entries.Entry{Kind: "recipe", Scope: []string{"**"}, OneLine: lint, Text: lint}}
+	if itemSimilar(procedure, recipe) {
+		t.Fatal("the CI procedure was withheld as similar to the lint recipe")
+	}
+	if !itemSimilar(recipe, procedure) {
+		t.Fatal("the lint recipe was not withheld after the CI procedure that covers it")
+	}
+	if nativeSimilar(ci, []string{"# Checks\nRun `pnpm run lint` before you push.\n"}) {
+		t.Fatal("a rule-file line naming one command hid the CI procedure")
+	}
+	// The rationale doesn't count against coverage, but negations still do.
+	never := &entries.Item{Entry: &entries.Entry{Kind: "rule", OneLine: "Never edit the shared database pool settings.", Text: "Never edit the shared database pool settings. It broke prod."}}
+	edit := &entries.Item{Entry: &entries.Entry{Kind: "rule", OneLine: "Edit the shared database pool settings.", Text: "Edit the shared database pool settings."}}
+	if itemSimilar(edit, never) || itemSimilar(never, edit) {
+		t.Fatal("a negation was erased")
 	}
 }
 func TestRendererGoldenAgentFormats(t *testing.T) {

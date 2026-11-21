@@ -879,7 +879,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	}
 	for i := range items {
 		if items[i].action == "given" && !items[i].resend {
-			duplicate := nativeSimilar(items[i].item.Entry.OneLine+" "+items[i].item.Entry.Text, cov.texts)
+			duplicate := nativeSimilar(entryClaim(items[i].item.Entry), cov.texts)
 			for _, row := range known {
 				if it := validPrior(row); it != nil && itemSimilar(items[i].item, it) {
 					duplicate = true
