@@ -58,12 +58,10 @@ fn run(request: &Path, stdin_text: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin_text.as_bytes())
-        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(stdin_text.as_bytes()).unwrap();
+    // Keep the parent pipe open for started jobs until the child exits.
+    let _parent_stdin = (!stdin_text.is_empty()).then_some(stdin);
     child.wait_with_output().unwrap()
 }
 
