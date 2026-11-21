@@ -109,3 +109,25 @@ func TestJournalRowForAPipeline(t *testing.T) {
 		t.Fatalf("codex pipeline row: %+v", row)
 	}
 }
+
+// Codex 0.170 sends a shell result with no "Exit code:" header, and its
+// transcript can leave out a failed command's completion (OSS-86). A runner
+// summary decides; a command without one keeps its call id for the transcript.
+func TestCodexRowWithoutExitHeader(t *testing.T) {
+	cases := []struct {
+		name, command, output, want, callID string
+	}{
+		{"failing node --test", "npm run test:time", testdata(t, "codex-0.170-node-test-fail.txt"), "fail", ""},
+		{"passing node --test", "TZ=UTC npm run test:time", testdata(t, "codex-0.170-node-test-pass.txt"), "pass", ""},
+		{"no runner summary", "npm run generate", "\n> fp-app@1.0.0 generate\n> node scripts/generate.mjs\n\nwrote src/build-info.js\n", "unknown", "exec-3"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tool := &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: c.command}, Output: &contract.ToolOutput{Text: c.output, OK: true}, UseID: "exec-3"}
+			row, ok := commandRow(contract.Event{Agent: "codex", Kind: contract.PostTool, Tool: tool}, tool)
+			if !ok || exitText(row.ExitCode) != c.want || row.CallID != c.callID {
+				t.Fatalf("want exit %s call %q, got %+v (exit %s)", c.want, c.callID, row, exitText(row.ExitCode))
+			}
+		})
+	}
+}

@@ -1,0 +1,20 @@
+
+> fp-app@1.0.0 test:time
+> node --test test-time/time.test.js
+
+TAP version 13
+# Subtest: day boundaries (needs TZ=UTC)
+ok 1 - day boundaries (needs TZ=UTC)
+  ---
+  duration_ms: 0.598333
+  type: 'test'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 30.256042

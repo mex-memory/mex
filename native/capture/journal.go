@@ -194,10 +194,16 @@ func commandRow(ev contract.Event, t *contract.Tool) (record.JournalRow, bool) {
 	}
 	// A pipeline's own code is its last stage's: only a runner summary tells.
 	exit, piped := PipelineExit(t.Input.Command, output, exit)
+	// Codex 0.170 sends a shell result without its "Exit code:" header, and
+	// its transcript can leave out a failed command's completion. A runner's
+	// own summary then decides, as for a pipeline.
+	if exit == nil && !piped && ev.Agent == "codex" {
+		exit = runnerSummary(output)
+	}
 	row := record.JournalRow{Kind: "command", Text: clip(Redact(strings.TrimSpace(t.Input.Command)), MaxCommand), ExitCode: exit}
-	// Codex payloads often carry no exit code; its transcript does, under this
-	// call id. A later reader (never the hook) looks it up there. A pipeline's
-	// transcript code is its last stage's, so it gets none.
+	// Otherwise a Codex row keeps its call id: its transcript has the code. A
+	// later reader (never the hook) looks it up there. A pipeline's transcript
+	// code is its last stage's, so it gets none.
 	if row.ExitCode == nil && !piped && ev.Agent == "codex" && t.UseID != "" && len(t.UseID) <= record.MaxCallID && utf8.ValidString(t.UseID) && !strings.ContainsRune(t.UseID, 0) {
 		row.CallID = t.UseID
 	}
