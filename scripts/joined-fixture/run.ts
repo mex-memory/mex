@@ -222,25 +222,51 @@ async function main() {
   } else console.log("SKIP graph-card (pending: graph reads not merged)");
   console.log("DEFER Hub Sessions API (Hub v1 is deferred)");
 
-  await step("join 6→stale never stale", () => {
-    // The span carries source. A first read is the moment that can carry this pitfall's prose.
-    const read = (session: string, body: string) => hook("codex", "PostToolUse", {
-      session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
-      tool_input: { command: `cat ${file}` }, tool_response: `Exit code: 0\nOutput:\n${source(body)}`,
-    });
-    requireJoin(read("joined-fresh-entry", oldBody).includes(claim), `entry ${entry} was never delivered on a fresh read`);
-    writeFileSync(join(checkout, file), source(newBody));
+  // The span carries source. A first read is the moment that can carry this pitfall's prose.
+  const start = (session: string) => hook("codex", "SessionStart", { session_id: session, cwd: checkout, hook_event_name: "SessionStart", source: "startup" });
+  const read = (session: string, body: string) => hook("codex", "PostToolUse", {
+    session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
+    tool_input: { command: `cat ${file}` }, tool_response: `Exit code: 0\nOutput:\n${source(body)}`,
+  });
+  const kept = (session: string, context: string) => {
+    const receipts = readReceipts(project, session).filter(row => row.entry_id === entry);
+    return !context.includes(claim) && receipts.some(row => row.action === "withheld" || (row.action === "given" && row.form === "pointer"));
+  };
+  const change = (body: string) => {
+    writeFileSync(join(checkout, file), source(body));
     json("index", "--json");
+  };
+
+  // A session that is open while the code changes under it, by a shell
+  // command the agent runs (not an edit tool): the hook sees the command.
+  const open = "joined-open-session";
+  await step("join 6→7 fresh entry delivered", () => {
+    start(open);
+    requireJoin(read("joined-fresh-entry", oldBody).includes(claim), `entry ${entry} was never delivered on a fresh read`);
+  });
+
+  await step("join stale: a new session after the code changed", () => {
+    change(newBody);
     for (const agent of agents) {
       const context = replay(agent, `joined-${agent}-stale`);
       checkCard(context, agent, "search-span", newBody);
       requireJoin(!context.includes(claim) && !context.includes(oldBody), `${agent} replay delivered stale text for ${entry}`);
     }
-    const staleSession = "joined-stale-entry";
-    const staleRead = read(staleSession, newBody);
-    const receipts = readReceipts(project, staleSession).filter(row => row.entry_id === entry);
-    requireJoin(!staleRead.includes(claim) && receipts.some(row => row.action === "withheld" || (row.action === "given" && row.form === "pointer")),
-      `entry ${entry} was not withheld or reduced to a pointer after its symbol changed`);
+    const session = "joined-stale-entry";
+    start(session);
+    requireJoin(kept(session, read(session, newBody)), `entry ${entry} was not withheld or reduced to a pointer in a new session after its symbol changed`);
+  });
+
+  await step("join stale: a shell command changed the code mid-session", () => {
+    change(oldBody);
+    const session = "joined-shell-write";
+    start(session);
+    change(newBody);
+    hook("codex", "PostToolUse", {
+      session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
+      tool_input: { command: `sed -i "s/31/470/" ${file}` }, tool_response: "Exit code: 0\nOutput:\n",
+    });
+    requireJoin(kept(session, read(session, newBody)), `entry ${entry} was delivered in full after a shell command changed its symbol in the same session`);
   });
 }
 
