@@ -229,3 +229,29 @@ fn same_result_in_any_file_order() {
     assert_eq!(edges(&facts, &r), edges(&facts2, &r2));
     assert_eq!(edges(&facts, &r).len(), 4);
 }
+
+#[test]
+fn names_bound_two_ways_stay_unresolved() {
+    let (facts, r) = project(&[
+        ("testing.py", "class FlaskClient:\n    pass\n"),
+        (
+            "app.py",
+            "def make(self):\n    cls = self.client_class\n    if cls is None:\n        from testing import FlaskClient as cls\n    return cls()\n\n\
+             try:\n    from fast import dumps\nexcept ImportError:\n    from slow import dumps\n\n\
+             def save(x):\n    return dumps(x)\n\n\
+             def helper():\n    return 1\n\nhelper = staticmethod(helper)\n\n\
+             def use():\n    return helper()\n",
+        ),
+    ]);
+    let e = edges(&facts, &r);
+    assert!(
+        !e.iter().any(|x| x.contains("app.py:make -> testing.py")),
+        "{e:#?}"
+    );
+    assert!(!e.iter().any(|x| x.contains("app.py:use ->")), "{e:#?}");
+    let reasons = reasons(&r);
+    assert!(
+        reasons.iter().any(|(r, n)| *r == "rebound_name" && *n >= 2),
+        "{reasons:?}"
+    );
+}

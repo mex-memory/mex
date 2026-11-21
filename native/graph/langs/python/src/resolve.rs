@@ -181,6 +181,8 @@ enum Sym {
     From(usize, usize),
     /// `import a.b` binds `a`; `import a.b as c` binds `c` to `a.b`.
     ModulePath(String),
+    /// Bound two different ways in one scope: no single answer.
+    Ambiguous,
 }
 
 /// What a resolved name or expression is.
@@ -418,6 +420,49 @@ impl<'a> Resolver<'a> {
                 .or_default()
                 .insert(d.name.clone(), Sym::Def(i));
         }
+        // A name bound two different ways in one scope could be either one
+        // at a given call: two imports (a try/except fallback), an import
+        // beside an assignment or definition, or a function or class rebound
+        // by assignment (`f = wrap(f)`). Those stay unresolved. A variable
+        // definition and its own assignment are one binding, not two.
+        let mut imports: HashMap<(usize, &str), u32> = HashMap::new();
+        for import in &facts.imports {
+            for b in &import.bindings {
+                if let Some(local) = &b.local {
+                    *imports
+                        .entry((import.scope.max(0) as usize, local))
+                        .or_default() += 1;
+                }
+            }
+        }
+        let assigned: HashSet<(usize, &str)> = facts
+            .bindings
+            .iter()
+            .filter(|b| !b.param && b.field_of.is_none() && b.scope != NONE)
+            .map(|b| (b.scope as usize, b.name.as_str()))
+            .collect();
+        let mut defined: HashMap<(usize, &str), bool> = HashMap::new();
+        for d in facts.defs.iter().skip(1).filter(|d| d.parent != NONE) {
+            let callable = matches!(d.kind, Kind::Function | Kind::Method | Kind::Class);
+            let slot = defined
+                .entry((d.parent as usize, d.name.as_str()))
+                .or_default();
+            *slot |= callable;
+        }
+        for (scope, names) in &mut scopes {
+            for (name, sym) in names.iter_mut() {
+                let key = (*scope, name.as_str());
+                let imported = imports.get(&key).copied().unwrap_or(0);
+                let assigns = assigned.contains(&key);
+                let def = defined.get(&key).copied();
+                let ambiguous = imported >= 2
+                    || (imported == 1 && (assigns || def.is_some()))
+                    || (def == Some(true) && assigns);
+                if ambiguous {
+                    *sym = Sym::Ambiguous;
+                }
+            }
+        }
         FileTables {
             scopes,
             members,
@@ -473,6 +518,7 @@ impl<'a> Resolver<'a> {
     fn sym_value(&self, file: usize, scope: usize, sym: &Sym, depth: usize) -> Value {
         match sym {
             Sym::Def(d) => self.def_value(file, *d, depth),
+            Sym::Ambiguous => Value::Unknown("rebound_name"),
             Sym::Binding { type_name, basis } => {
                 self.typed_value(file, scope, type_name.as_deref(), *basis, depth)
             }
