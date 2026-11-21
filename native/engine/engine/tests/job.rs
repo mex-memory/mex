@@ -2,15 +2,17 @@
 //! real binary: the start barrier, every exit code, and the rule that a job
 //! that fails leaves no candidate behind.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 
+use mex_graph_core::CONTRACT_VERSION;
 use rusqlite::{Connection, types::Value as SqlValue};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const ENGINE: &str = env!("CARGO_BIN_EXE_mex-graph");
+mod common;
+use common::{ENGINE, last_event, run_job};
+
 const PYTHON_FILES: [&str; 3] = ["src/nested.py", "src/app.py", "src/bad.py"];
 const APP_SOURCE: &[u8] = b"LIMIT = 5\r\nLABEL = '\xf0\x9f\x9a\x80'\r\n# \xff\r\n";
 
@@ -60,7 +62,7 @@ impl Fixture {
 
     fn request(&self, edit: impl FnOnce(&mut serde_json::Value)) -> PathBuf {
         let mut request = serde_json::json!({
-            "contract": 1,
+            "contract": CONTRACT_VERSION,
             "mode": "build",
             "root": self.dir.join("repo"),
             "files": [{ "path": "src/app.py", "size": 21 }, { "path": "src/gone.py" }],
@@ -99,26 +101,7 @@ impl Drop for Fixture {
 }
 
 fn run(request: &Path, stdin_text: &str) -> Output {
-    let mut child = Command::new(ENGINE)
-        .args(["build", "--request"])
-        .arg(request)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    // A refused request exits before reading stdin, so this write may meet
-    // a closed pipe; the exit code and events are what the tests check.
-    let _ = stdin.write_all(stdin_text.as_bytes());
-    // Keep the parent pipe open for started jobs until the child exits.
-    let _parent_stdin = (!stdin_text.is_empty()).then_some(stdin);
-    child.wait_with_output().unwrap()
-}
-
-fn last_event(output: &Output) -> serde_json::Value {
-    let text = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(text.lines().last().expect("an event")).unwrap()
+    run_job("build", request, stdin_text)
 }
 
 #[test]

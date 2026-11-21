@@ -13,9 +13,7 @@ use mex_graph_core::facts::FileFacts;
 use mex_graph_python::{EXCLUDED, Python};
 use sha2::{Digest, Sha256};
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use crate::hex;
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut root = None;

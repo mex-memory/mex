@@ -1,4 +1,4 @@
-//! One build or refresh job, as `docs/design/graph-engine-contract.md` sets it out.
+//! One build or stage job, as `docs/design/graph-engine-contract.md` sets it out.
 //!
 //! Order matters: validate the request, start the guard, wait for `start` on
 //! stdin, then touch the repository. Every way out other than success deletes
@@ -8,18 +8,22 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use mex_graph_core::CONTRACT_VERSION;
 use mex_graph_core::facts::{FileFacts, ParseStatus};
 use mex_graph_core::id::id_bytes;
 use mex_graph_core::store::{self, EdgeRow, FileRow, NodeRow, Writer};
+use mex_graph_python::resolve::{Resolution, resolve};
 use mex_graph_python::{EXCLUDED, LANGUAGE, Python};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::guard::{Breach, Guard, Limits, ProcessSampler};
+use crate::stage;
+
+const GUARD_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,7 +37,8 @@ pub struct Request {
     pub configs: Vec<String>,
     #[serde(default)]
     pub languages: Vec<String>,
-    pub output: PathBuf,
+    // Validated for build and cleared for stage before starting the job.
+    output: Option<PathBuf>,
     #[serde(default)]
     pub base: Option<PathBuf>,
     #[serde(default)]
@@ -76,20 +81,30 @@ impl JobError {
             message: message.into(),
         }
     }
+
+    fn write(error: impl ToString) -> JobError {
+        JobError {
+            code: "graph_write_failed",
+            exit: 6,
+            message: error.to_string(),
+        }
+    }
 }
 
-fn emit(value: serde_json::Value) {
+pub(super) fn emit(value: &impl Serialize) -> Result<(), JobError> {
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{value}");
-    let _ = out.flush();
+    serde_json::to_writer(&mut out, value).map_err(JobError::write)?;
+    out.write_all(b"\n").map_err(JobError::write)?;
+    out.flush().map_err(JobError::write)
 }
 
 pub fn emit_error(code: &str, message: &str) {
-    emit(serde_json::json!({ "type": "error", "code": code, "message": message }));
+    let _ = emit(&serde_json::json!({ "type": "error", "code": code, "message": message }));
 }
 
 /// The candidate and its SQLite side files.
-fn remove_candidate(output: &Path) {
+fn remove_candidate(output: Option<&Path>) {
+    let Some(output) = output else { return };
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let mut path = output.as_os_str().to_owned();
         path.push(suffix);
@@ -101,7 +116,7 @@ fn remove_candidate(output: &Path) {
 pub fn load(path: &Path, mode: &str) -> Result<Request, JobError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| JobError::request(format!("can't read the request: {e}")))?;
-    let request: Request = serde_json::from_str(&text)
+    let mut request: Request = serde_json::from_str(&text)
         .map_err(|e| JobError::request(format!("the request is not valid: {e}")))?;
     if request.contract != CONTRACT_VERSION {
         return Err(JobError {
@@ -124,13 +139,21 @@ pub fn load(path: &Path, mode: &str) -> Result<Request, JobError> {
             "root must be an existing absolute folder",
         ));
     }
-    if !request.output.is_absolute() || request.output.exists() {
-        return Err(JobError::request(
-            "output must be an absolute path that doesn't exist yet",
-        ));
-    }
-    if !request.output.parent().is_some_and(Path::is_dir) {
-        return Err(JobError::request("output's folder must exist"));
+    if mode == "stage" {
+        request.output = None;
+    } else {
+        let output = request
+            .output
+            .as_deref()
+            .ok_or_else(|| JobError::request("output is required"))?;
+        if !output.is_absolute() || output.exists() {
+            return Err(JobError::request(
+                "output must be an absolute path that doesn't exist yet",
+            ));
+        }
+        if !output.parent().is_some_and(Path::is_dir) {
+            return Err(JobError::request("output's folder must exist"));
+        }
     }
     Ok(request)
 }
@@ -144,12 +167,24 @@ pub fn run(request: Request) -> Result<(), JobError> {
         Limits {
             memory_bytes: request.limits.memory_mb.saturating_mul(1024 * 1024),
             deadline: Duration::from_millis(request.limits.deadline_ms),
-            interval: Duration::from_millis(10),
+            interval: GUARD_INTERVAL,
         },
         ProcessSampler,
         move |breach: Breach| {
-            remove_candidate(&output);
-            emit_error(breach.code(), "the guard stopped the job");
+            let report = move || emit_error(breach.code(), "the guard stopped the job");
+            if output.is_some() {
+                remove_candidate(output.as_deref());
+                report();
+            } else {
+                // A large staged line can fill stdout's pipe. The guard must
+                // still exit if the parent stops draining it.
+                let (reported, completion) = mpsc::channel();
+                let _ = std::thread::Builder::new().spawn(move || {
+                    report();
+                    let _ = reported.send(());
+                });
+                let _ = completion.recv_timeout(GUARD_INTERVAL);
+            }
             std::process::exit(breach.exit_code());
         },
     ));
@@ -158,7 +193,7 @@ pub fn run(request: Request) -> Result<(), JobError> {
     let mut line = String::new();
     let stdin = std::io::stdin();
     if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 || line.trim() != "start" {
-        remove_candidate(&request.output);
+        remove_candidate(request.output.as_deref());
         return Err(JobError {
             code: "graph_parent_gone",
             exit: 5,
@@ -177,13 +212,9 @@ pub fn run(request: Request) -> Result<(), JobError> {
         });
     }
 
-    let result = build(&request);
-    if let Err(error) = result {
-        remove_candidate(&request.output);
-        return Err(error);
-    }
-    let counts = result.unwrap_or_default();
-    emit(serde_json::json!({
+    let counts =
+        run_started(&request).inspect_err(|_| remove_candidate(request.output.as_deref()))?;
+    let result = emit(&serde_json::json!({
         "type": "result",
         "files": counts.files,
         "nodes": counts.nodes,
@@ -194,36 +225,42 @@ pub fn run(request: Request) -> Result<(), JobError> {
             "peakRssMb": guard.peak_bytes() / (1024 * 1024),
         },
     }));
+    if request.output.is_none() {
+        result?;
+    }
     Ok(())
 }
 
 #[derive(Default)]
-struct BuildCounts {
-    files: usize,
-    nodes: usize,
-    edges: usize,
-    coverage_gaps: usize,
+pub(super) struct JobCounts {
+    pub(super) files: usize,
+    pub(super) nodes: usize,
+    pub(super) edges: usize,
+    pub(super) coverage_gaps: usize,
 }
 
-fn build(request: &Request) -> Result<BuildCounts, JobError> {
-    let write = |e: store::Error| JobError {
-        code: "graph_write_failed",
-        exit: 6,
-        message: e.to_string(),
-    };
+fn run_started(request: &Request) -> Result<JobCounts, JobError> {
     let root = request
         .root
         .canonicalize()
         .map_err(|e| JobError::request(format!("root: {e}")))?;
     let extracted = extract_files(&root, request);
-    let mut writer = Writer::create(&request.output).map_err(write)?;
-    let mut counts = BuildCounts::default();
-    let mut file_facts = Vec::new();
+    match request.output.as_deref() {
+        Some(output) => build(output, &extracted),
+        None => stage::write(&extracted),
+    }
+}
+
+fn build(output: &Path, extracted: &ExtractedFiles<'_>) -> Result<JobCounts, JobError> {
+    let write = JobError::write;
+    let mut writer = Writer::create(output).map_err(write)?;
+    let mut counts = JobCounts::default();
     let mut node_rows = Vec::new();
     let mut file_rows = Vec::new();
-    for (done, (file, extraction)) in request.files.iter().zip(extracted).enumerate() {
-        match extraction {
-            Ok(ExtractedPython { size, facts }) => {
+    for (done, file) in extracted.files.iter().enumerate() {
+        match *file {
+            ExtractedFile::Python { index, size } => {
+                let facts = &extracted.facts[index];
                 let id = writer
                     .add_file(&FileRow {
                         path: &facts.path,
@@ -242,31 +279,31 @@ fn build(request: &Request) -> Result<BuildCounts, JobError> {
                 counts.files += 1;
                 let nodes = if facts.health.status == ParseStatus::Failed {
                     writer
-                        .add_coverage(&file.path, "parse failed")
+                        .add_coverage(&facts.path, "parse failed")
                         .map_err(write)?;
                     counts.coverage_gaps += 1;
                     vec![None; facts.defs.len()]
                 } else {
-                    write_nodes(&mut writer, id, &facts, &mut counts).map_err(write)?
+                    write_nodes(&mut writer, id, facts, &mut counts).map_err(write)?
                 };
-                file_facts.push(facts);
                 node_rows.push(nodes);
                 file_rows.push(id);
             }
-            Err(reason) => {
-                writer.add_coverage(&file.path, reason).map_err(write)?;
+            ExtractedFile::Skipped { path, reason } => {
+                writer.add_coverage(path, reason).map_err(write)?;
                 counts.coverage_gaps += 1;
             }
         }
         if done % 1000 == 999 {
-            emit(
-                serde_json::json!({ "type": "progress", "phase": "extract", "done": done + 1, "total": request.files.len() }),
+            let _ = emit(
+                &serde_json::json!({ "type": "progress", "phase": "extract", "done": done + 1, "total": extracted.files.len() }),
             );
         }
     }
     write_resolution(
         &mut writer,
-        &file_facts,
+        &extracted.facts,
+        &extracted.resolve(),
         &node_rows,
         &file_rows,
         &mut counts,
@@ -284,8 +321,26 @@ struct ExtractedPython {
     facts: FileFacts,
 }
 
+pub(super) enum ExtractedFile<'a> {
+    Python { index: usize, size: u64 },
+    Skipped { path: &'a str, reason: &'static str },
+}
+
+pub(super) struct ExtractedFiles<'a> {
+    /// Dense Python facts, including failed parses, indexed by the resolver.
+    pub(super) facts: Vec<FileFacts>,
+    /// One entry per requested path, including skips, in request order.
+    pub(super) files: Vec<ExtractedFile<'a>>,
+}
+
+impl ExtractedFiles<'_> {
+    pub(super) fn resolve(&self) -> Resolution {
+        resolve(&self.facts)
+    }
+}
+
 /// Resolve inputs in request order and retain one extraction result per input.
-fn extract_files(root: &Path, request: &Request) -> Vec<Result<ExtractedPython, &'static str>> {
+fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
     let python_enabled = request
         .languages
         .iter()
@@ -329,12 +384,30 @@ fn extract_files(root: &Path, request: &Request) -> Vec<Result<ExtractedPython, 
         });
     }
 
-    inputs
+    let mut facts = Vec::new();
+    let files = inputs
         .into_iter()
-        .map(|input| {
-            input.and_then(|(_, _, result)| result.into_inner().expect("every input was processed"))
+        .zip(&request.files)
+        .map(|(input, file)| {
+            let result = input
+                .and_then(|(_, _, result)| result.into_inner().expect("every input was processed"));
+            match result {
+                Ok(extracted) => {
+                    let index = facts.len();
+                    facts.push(extracted.facts);
+                    ExtractedFile::Python {
+                        index,
+                        size: extracted.size,
+                    }
+                }
+                Err(reason) => ExtractedFile::Skipped {
+                    path: &file.path,
+                    reason,
+                },
+            }
         })
-        .collect()
+        .collect();
+    ExtractedFiles { files, facts }
 }
 
 fn extract_python(
@@ -358,7 +431,7 @@ fn write_nodes(
     writer: &mut Writer,
     file: i64,
     facts: &FileFacts,
-    counts: &mut BuildCounts,
+    counts: &mut JobCounts,
 ) -> Result<Vec<Option<i64>>, store::Error> {
     let mut rows = vec![None; facts.defs.len()];
     for (index, def) in facts.defs.iter().enumerate() {
@@ -407,18 +480,17 @@ fn write_nodes(
     Ok(rows)
 }
 
-/// Resolve calls, bases and imports across every Python file, write the
-/// edges between written nodes and the per-file unresolved counts, then the
+/// Write the resolved edges and the per-file unresolved counts, then the
 /// fingerprints: a sketch's neighbours are its callers and callees, so they
 /// come after resolution. Neighbours are ordered by text id, as today.
 fn write_resolution(
     writer: &mut Writer,
     files: &[FileFacts],
+    resolution: &Resolution,
     node_rows: &[Vec<Option<i64>>],
     file_rows: &[i64],
-    counts: &mut BuildCounts,
+    counts: &mut JobCounts,
 ) -> Result<(), store::Error> {
-    let resolution = mex_graph_python::resolve::resolve(files);
     let row = |(f, d): (usize, usize)| node_rows.get(f).and_then(|r| r.get(d)).copied().flatten();
     let mut written = HashSet::new();
     let mut neighbours: HashMap<(usize, usize), BTreeSet<(usize, usize)>> = HashMap::new();

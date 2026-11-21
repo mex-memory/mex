@@ -7,9 +7,14 @@ use std::process::ExitCode;
 mod facts_cmd;
 mod guard;
 mod job;
+mod stage;
 
-const USAGE: &str =
-    "usage: mex-graph version | languages | build --request <file> | facts --root <dir> <path>...";
+const USAGE: &str = "usage: mex-graph version | languages | build --request <file> | \
+    stage --request <file> | facts --root <dir> <path>...";
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,7 +39,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Some(mode @ "build") => {
+        Some(mode @ ("build" | "stage")) => {
             let Some(request) = args
                 .iter()
                 .position(|a| a == "--request")

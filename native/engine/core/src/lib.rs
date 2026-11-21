@@ -5,7 +5,7 @@
 
 /// Version of the interface between Node and the engine. Bumped on any change
 /// a caller could observe; Node refuses an engine with a different version.
-pub const CONTRACT_VERSION: u32 = 1;
+pub const CONTRACT_VERSION: u32 = 2;
 
 pub mod id;
 

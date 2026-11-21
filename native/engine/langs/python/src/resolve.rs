@@ -39,6 +39,7 @@ pub struct Edge {
 
 #[derive(Debug, Default)]
 pub struct Resolution {
+    /// Grouped by source file, in input file order.
     pub edges: Vec<Edge>,
     /// (file index, reason, count), sorted.
     pub unresolved: Vec<(usize, &'static str, u32)>,
@@ -226,6 +227,14 @@ fn is_node(facts: &FileFacts, def: usize) -> bool {
         .defs
         .get(def)
         .is_some_and(|d| !d.flags.iter().any(|f| f == EXCLUDED))
+}
+
+/// The nearest enclosing definition that is a node, defaulting to the file node.
+pub fn call_source(facts: &FileFacts, mut caller: i32) -> usize {
+    while caller > 0 && !is_node(facts, caller as usize) {
+        caller = facts.defs[caller as usize].parent;
+    }
+    caller.max(0) as usize
 }
 
 fn dir_of(path: &str) -> &str {
@@ -774,17 +783,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// The node a call is made from: its owner, or the nearest enclosing
-    /// definition that is a node.
-    fn source(&self, file: usize, owner: i32) -> DefRef {
-        let defs = &self.files[file].defs;
-        let mut cur = owner;
-        while cur > 0 && !is_node(&self.files[file], cur as usize) {
-            cur = defs[cur as usize].parent;
-        }
-        (file, cur.max(0) as usize)
-    }
-
     fn resolve_file(&self, file: usize, out: &mut Resolution) {
         let facts = &self.files[file];
         let mut reasons: HashMap<&'static str, u32> = HashMap::new();
@@ -837,7 +835,7 @@ impl<'a> Resolver<'a> {
             };
             match resolved {
                 Some((to, kind)) => out.edges.push(Edge {
-                    from: self.source(file, call.caller),
+                    from: (file, call_source(facts, call.caller)),
                     to,
                     kind,
                     line: call.name_range.start_line + 1,
