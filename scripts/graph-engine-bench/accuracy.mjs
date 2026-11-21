@@ -60,6 +60,11 @@ const hasMeta = sql("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name =
 const isV5 = hasMeta && sql("SELECT 1 FROM meta WHERE key = 'schema_version' AND value = '5'").length > 0;
 const { nodes: rows, edges } = isV5 ? loadV5() : loadV4();
 const nodes = new Map(rows.map((n) => [n.id, n]));
+const nodesByFile = new Map();
+for (const n of rows) {
+  if (!nodesByFile.has(n.file)) nodesByFile.set(n.file, []);
+  nodesByFile.get(n.file).push(n);
+}
 
 const lines = new Map();
 const fileLines = (rel) => {
@@ -135,6 +140,13 @@ function matches(id, v) {
   const line = v.def.line + 1;
   const spans = (m) => m.file === v.def.path && m.sl <= line && line <= m.el;
   if (spans(n) && lastSegment(n.name) === v.defName) return true;
+  // An overload set is one target: the judges name its first signature
+  // (`@overload` stubs, TypeScript overload lists), while a graph may name
+  // the implementation. Same file, same container, same name.
+  if (lastSegment(n.name) === v.defName && n.file === v.def.path) {
+    const judged = (nodesByFile.get(n.file) ?? []).find((m) => spans(m) && lastSegment(m.name) === v.defName);
+    if (judged && judged.parent === n.parent && judged.kind === n.kind) return true;
+  }
   // A class and its constructor name the same target, either way round.
   if (v.defName === "constructor" || v.defName === "__init__") return n.kind === "class" && spans(n);
   return false;
