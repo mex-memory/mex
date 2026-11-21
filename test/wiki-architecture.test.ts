@@ -798,7 +798,7 @@ describe("no unscoped scaffold writes", () => {
       "src/graph/grounding-evidence.ts": "writes only checkout-local, content-addressed grounded bodies under .mex/local/grounded-bodies",
       "src/graph/phase-timing.ts": "appends diagnostic phase timings only to the MEX_GRAPH_PHASE_TIMINGS target: the operator-named file, or the checkout-local .mex/local default for bare flag values",
       "src/graph/maintenance.ts": "publishes and recovers the disposable graph index under its maintenance lease",
-      "src/graph/native-engine.ts": "writes only the Rust engine's request file beside its candidate, and removes that request and a failed candidate",
+      "src/graph/native-engine.ts": "writes only the Rust engine's request file (beside its candidate, or in a temp folder for a stage job), and removes that request and a failed candidate",
       "src/graph/runtime.ts": "edits existing .mex Markdown; bypasses the pipeline (recorded D9 exception)",
       "src/graph/storage.ts": "writes only the disposable graph index, its pointer and temporary databases under the project index folder in the MEX home, never scaffold files",
       "src/hooks/shim/launcher.ts": "writes only the hook launcher file under the machine MEX home bin folder, and only when that home exists; never a repo file",

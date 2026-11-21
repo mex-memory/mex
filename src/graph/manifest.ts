@@ -10,6 +10,7 @@ import {
 } from "./corpus-policy.js";
 import { graphConfigIdentity } from "./config-identity.js";
 import { DB_SCHEMA_VERSION } from "./db/database.js";
+import { engineExtractorSuffix, graphEngineLanguages } from "./engine-languages.js";
 import { grammarManifestHash } from "./extraction/grammars.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
 import { recallSource, rememberSource } from "./source-memo.js";
@@ -19,6 +20,15 @@ const TYPESCRIPT_COMPILER_VERSION: string = createRequire(import.meta.url)("type
 // Pinned against extraction by the read-manifest compatibility test.
 export const CORPUS_EXTRACTOR_VERSION = "typescript-api-v8+tree-sitter-v4";
 export const RESOLVER_VERSION = "compiler-first-v3";
+
+/**
+ * The extractor version a build in this environment records: the corpus
+ * version, plus the engine's languages while `MEX_GRAPH_ENGINE_LANGUAGES`
+ * hands any to the Rust engine, so turning it on or off rebuilds once.
+ */
+export function corpusExtractorVersion(env: NodeJS.ProcessEnv = process.env): string {
+  return CORPUS_EXTRACTOR_VERSION + engineExtractorSuffix(graphEngineLanguages(env));
+}
 
 export interface GraphManifest {
   manifestHash: string;
@@ -54,7 +64,7 @@ export function graphManifest(root: string): GraphManifest {
   const inputs: GraphManifestInputs = {
     db: DB_SCHEMA_VERSION,
     compiler: TYPESCRIPT_COMPILER_VERSION,
-    extractor: CORPUS_EXTRACTOR_VERSION,
+    extractor: corpusExtractorVersion(),
     resolver: RESOLVER_VERSION,
     corpusPolicyHash: graphCorpusPolicyHash(root),
     grammarHash,
