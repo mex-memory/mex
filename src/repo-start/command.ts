@@ -21,6 +21,9 @@ import type { NativeAgent } from "../knowledge/agents-in-use.js";
 import type { PluginAgent } from "../install/index.js";
 import type { Agent } from "../install/settings.js";
 import type { FinishJob } from "./finish.js";
+import type { SetupStep } from "./steps.js";
+import type { AskQuestion } from "./questions/index.js";
+import type { CodeFactsFile } from "./history/job.js";
 
 /** Test-only: kill the process at a step boundary to prove each one leaves a clean state. */
 export const KILL_AT_VARIABLE = "MEX_REPO_START_KILL_AT";
@@ -43,11 +46,15 @@ export interface RepoStartOptions {
   folder?: boolean;
   /** Whether questions may be asked; defaults to true only for a person at a terminal. */
   interactive?: boolean;
-  ask?: (lines: readonly string[]) => Promise<boolean>;
+  ask?: (lines: readonly string[], details?: readonly string[]) => Promise<boolean>;
   /** `--no-wait`: leave the file index and git history to the background process. Waiting is the default. */
   wait?: boolean;
   /** How long to wait before handing the work on; defaults to WAIT_CAP_MS for the caller. */
   waitCapMs?: number;
+  /** Tests: answer the setup questions without a terminal. */
+  answer?: AskQuestion;
+  /** Tests: the rich screen into `write`, without a terminal. */
+  forceRich?: boolean;
 }
 export interface RepoStartResult {
   exitCode: number;
@@ -82,7 +89,7 @@ function message(error: unknown): string {
   return text.split(/\r?\n/u)[0]!.slice(0, 200);
 }
 
-interface HookSummary { note?: string; notices: string[]; agents?: Array<Agent | PluginAgent>; }
+interface HookSummary { note?: string; notices: string[]; agents?: Array<Agent | PluginAgent>; names?: string[]; }
 async function installHooks(): Promise<HookSummary> {
   try {
     const { installAgents, AGENT_NAMES } = await import("../install/index.js");
@@ -90,7 +97,7 @@ async function installHooks(): Promise<HookSummary> {
     if (!result.agents.length) return { note: "No supported agent found. Install Claude Code or Codex (the app, an editor extension or the CLI), Copilot CLI or OpenCode, open it once, then run `mex install`.", notices: [] };
     const where = result.agents.map(agent => AGENT_NAMES[agent]);
     return {
-      agents: result.agents,
+      agents: result.agents, names: where,
       note: `Hooks: ${list(where)}, in your user settings.`,
       // The trust and timing notices matter when hooks first change; repeat runs stay quiet.
       notices: result.changes.length ? result.notices : [],
@@ -139,12 +146,12 @@ export function ruleFindings(cache: RuleScan, root: string): Finding[] {
   ];
 }
 
-export async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; findings: Finding[] } | undefined> {
+export async function readRules(root: string, listing?: Promise<string[] | undefined>): Promise<{ files: number; conflicts: number; findings: Finding[]; scan: RuleScan } | undefined> {
   try {
     const { refreshRuleFiles } = await import("../knowledge/rule-cache.js");
     const cache = refreshRuleFiles({ projectPath: root }, new Date(), await listing);
     const conflicts = cache.review.filter(item => item.kind === "conflict").length;
-    return { files: cache.files.length, conflicts, findings: ruleFindings(cache, root) };
+    return { files: cache.files.length, conflicts, findings: ruleFindings(cache, root), scan: cache };
   } catch { return undefined; }
 }
 
@@ -185,9 +192,9 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const ask = options.ask ?? ((lines: readonly string[]) => askYesNo(lines, write));
   const mode = screenMode({ env });
   // A person at a colour terminal wide enough gets the live, rich screen; everyone else the plain one.
-  const rich = mode.color && !mode.ascii && caller === "person" && !options.write && process.stdout.isTTY === true
+  const rich = options.forceRich ? new Rich(env, 100) : mode.color && !mode.ascii && caller === "person" && !options.write && process.stdout.isTTY === true
     && (mode.width ?? 0) >= RICH_MIN_COLUMNS ? new Rich(env, Math.min(mode.width ?? 100, 110)) : undefined;
-  const step = rich ? new RichStep(rich) : undefined;
+  const step = rich ? new RichStep(rich, options.forceRich ? () => undefined : undefined) : undefined;
   const live = <T>(label: string, work: () => Promise<T> | T): Promise<T> => step ? step.run(label, work) : Promise.resolve().then(work);
   const install = options.install ?? (env.MEX_INSTALL_AUTO !== "0" && env.MEX_BACKGROUND !== "1");
 
@@ -231,6 +238,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const waiting = options.wait !== false;
   let learning: string | undefined;
   let rebuildRules = false;
+  // What the free step read, for the setup questions.
+  let ruleScan: RuleScan | undefined, recipesFile: Awaited<ReturnType<typeof readRecipes>>;
   let writer: RecordWriter | undefined = openRecord();
   let projectId: string, checkout: CheckoutRow, hidden = false;
   const git = place.kind === "git";
@@ -283,6 +292,15 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         const { queueJob } = await import("../record/background.js");
         finishJobs.push({ id: queueJob(writer, { kind: "code-facts", projectId, params: { checkout: checkout.path } }).job.id, kind: "code-facts" });
       }
+      // The code map, last: it finishes here on a small repo and in the background on a big one.
+      // Queued only when this build has the kind (graph-03), so a build without it shows no step.
+      if (git) {
+        await import("../record/job-kinds.js");
+        const [{ jobKind }, { queueJob }] = await Promise.all([import("../record/jobs.js"), import("../record/background.js")]);
+        if (jobKind("graph-build")) {
+          finishJobs.push({ id: queueJob(writer, { kind: "graph-build", projectId, params: { checkout: checkout.path } }).job.id, kind: "graph-build", smallOnly: true });
+        }
+      }
       killAt("queued", env);
       writer.close(); writer = undefined;
       if (rich) {
@@ -294,6 +312,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
 
       // The free step: local reads only, no network, no model, no repository command.
       const recipes = await live("Reading package files", () => readRecipes(checkout.path, projectId, env));
+      recipesFile = recipes;
       let recipeFinding: Finding | undefined;
       if (recipes) {
         const { recipeSummary } = await import("./recipes/index.js");
@@ -321,6 +340,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       showNew();
       const rules = await live("Reading rule files", () => readRules(checkout.path, listing));
       if (rules && rules.files > 0) findings.push(...rules.findings);
+      ruleScan = rules?.scan;
       showNew();
       const memory = await live("Reading your agents' memory", () => readAgentMemory(checkout.path));
       if (memory && memory.count > 0) {
@@ -405,6 +425,29 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       finishWriter.close();
     }
   }
+  // After the free results: learn deeper (one paid offer, a person only), then the questions
+  // while it runs. A test offer in the offer registry takes learn deeper's place.
+  const { dueOffer } = await import("./offers.js");
+  const context = { projectId, root: checkout.path };
+  const offer = exitCode ? undefined : dueOffer(context);
+  const proceed = !exitCode && !exitNow && git && rebuildRules;
+  let learnJob: SetupStep | undefined, answers = 0;
+  if (proceed) {
+    const [{ offerLearnDeeper, questionsStep }, { recordLocation }, { readFactFile }] = await Promise.all([
+      import("./deeper-steps.js"), import("../record/location.js"), import("./facts.js")]);
+    const location = recordLocation();
+    const deeper = { root: checkout.path, projectId, location, write, rich, mode, interactive, env };
+    if (!offer) {
+      try { learnJob = await offerLearnDeeper(deeper, options.ask); }
+      catch { /* learn deeper stays available through `mex learn` */ }
+    }
+    try {
+      const facts = readFactFile<CodeFactsFile>(location, projectId, "code-facts.json");
+      const asked = await questionsStep({ ...deeper, scan: ruleScan, recipes: recipesFile, facts, ask: options.answer, learning: !!learnJob });
+      answers = asked.saved;
+      if (asked.waiting) notes.push(`${asked.waiting === 1 ? "1 setup question waits" : `${asked.waiting} setup questions wait`} for you: run \`mex\` in a terminal to answer.`);
+    } catch { /* questions never stop the screen */ }
+  }
   if (rebuildRules) {
     try {
       const [{ rebuildNative }, { NATIVE_AGENTS }] = await Promise.all([import("../knowledge/native.js"), import("../knowledge/agents-in-use.js")]);
@@ -422,26 +465,25 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   }
   for (const line of rich ? rich.notes(notes) : renderNotes(notes, mode)) write(line);
   if (rich) {
-    for (const line of rich.next({ learning })) write(line);
+    for (const line of rich.next({ learning, agents: hooks.names })) write(line);
     // The mascot closes the run with what it found.
-    if (!exitNow) for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later] }))) write(line);
+    if (!exitNow) {
+      const deep = learnJob && ["queued", "running", "waiting"].includes(learnJob.state) ? (learnJob.state === "running" ? "running" : "queued") : undefined;
+      for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later], answers, ...(deep ? { learning: deep } : {}) }))) write(line);
+    }
   } else {
-    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning }, mode)) write(line);
+    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, agents: hooks.names }, mode)) write(line);
     if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
   }
   const ended = exitNow ? { exitNow: true as const } : {};
-
-  // One offer after the free results. A test offer can occupy the same slot.
-  const { dueOffer } = await import("./offers.js");
-  const context = { projectId, root: checkout.path };
-  const offer = dueOffer(context);
-  if (!offer || exitCode) {
-    if (!exitCode && !exitNow && git) {
-      const { offerLearning } = await import("../learn-deeper/offer.js");
-      await offerLearning({ root: checkout.path, projectId, write, interactive, confirm: options.ask });
-    }
-    return { exitCode, place: place.kind, projectId, turnedOn: true, ...ended };
+  // A person at a rich terminal watches learn deeper until it ends or a key leaves it running.
+  if (rich && learnJob && !exitNow) {
+    const [{ watchLearnDeeper }, { recordLocation }] = await Promise.all([import("./deeper-steps.js"), import("../record/location.js")]);
+    try { await watchLearnDeeper({ root: checkout.path, projectId, location: recordLocation(), write, rich, mode, interactive, env }, learnJob.jobId); }
+    catch { /* the job runs on in the background either way */ }
   }
+
+  if (!offer) return { exitCode, place: place.kind, projectId, turnedOn: true, ...ended };
   const summary = { question: offer.question, estimate: offer.estimate, command: offer.command };
   if (!interactive) {
     write(`${offer.question} (${offer.estimate}). Nothing paid was started; to start it, run: ${offer.command}`);
