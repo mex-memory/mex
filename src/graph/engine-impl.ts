@@ -2791,7 +2791,8 @@ function compareCodePoints(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function bodyHash(sourceLines: string[], startLine: number, endLine: number): string {
+/** @internal Exported for the Rust engine's shared vectors. */
+export function bodyHash(sourceLines: string[], startLine: number, endLine: number): string {
   return sha256(sourceLines.slice(startLine - 1, endLine).join("\n").replace(/\s+/g, " ").trim());
 }
 
