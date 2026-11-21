@@ -2,8 +2,12 @@ package delivery
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/mex-memory/mex/native/graph"
+	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/index/shift"
 	"github.com/mex-memory/mex/native/internal/contract"
 )
 
@@ -84,5 +88,53 @@ func TestGraphCardsStaySilentWithoutAMoment(t *testing.T) {
 		if cards := graphCards(ev, env); len(cards) != 0 {
 			t.Fatalf("%s: got %d cards, want none", ev.Kind, len(cards))
 		}
+	}
+}
+
+// outlineFiles answers the outline headerChanges reads.
+type outlineFiles struct{ symbols []shift.Symbol }
+
+func (o outlineFiles) Outline(path string) (*index.OutlineAnswer, *index.Miss) {
+	return &index.OutlineAnswer{Path: path, Symbols: o.symbols}, nil
+}
+func (o outlineFiles) FileInfo(path string) (*index.FileInfoAnswer, *index.Miss) {
+	return &index.FileInfoAnswer{Path: path}, nil
+}
+
+// An edit to a multi-line signature's parameters names no declaration: the
+// definition whose header holds it is found, with its header as one line.
+func TestHeaderChangesFindsMultiLineSignatures(t *testing.T) {
+	text := []string{
+		"export async function resolveDomainName({",
+		"  domainRepository,",
+		"  domain,",
+		"  scope,",
+		"}: {",
+		"  domainRepository: DomainRepository;",
+		"  domain: string;",
+		"  scope: { environmentId: string; organizationId: string };",
+		"}): Promise<DomainEntity> {",
+		"  const name = domain.toLowerCase();",
+		"  return name;",
+		"}",
+	}
+	view := graph.View{
+		Files: outlineFiles{[]shift.Symbol{{Name: "resolveDomainName", Kind: "function", Start: 1, End: 12}}},
+		Src:   func(string) []string { return text },
+	}
+	got := headerChanges(view, "a.ts", "  domain,\n  scope,\n")
+	if len(got) != 1 || got[0].def.Name != "resolveDomainName" || !strings.HasPrefix(got[0].header, "export async function resolveDomainName({ domainRepository, domain, scope, }") {
+		t.Fatalf("parameter edit: %v", got)
+	}
+	// An edit in the body is not a signature change.
+	if got := headerChanges(view, "a.ts", "  const name = domain.toLowerCase();\n"); len(got) != 0 {
+		t.Fatalf("body edit: %v", got)
+	}
+	// Text that is in more than one place can't be placed.
+	if got := headerChanges(view, "a.ts", "  domainRepository,"); len(got) != 1 {
+		t.Fatalf("unique line: %v", got)
+	}
+	if got := headerChanges(view, "a.ts", "}"); len(got) != 0 {
+		t.Fatalf("ambiguous: %v", got)
 	}
 }

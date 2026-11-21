@@ -297,6 +297,31 @@ func (s *Store) Resolve(query string) ([]Symbol, error) {
 	return out, rows.Err()
 }
 
+// Declared is every definition in one file, as built, in line order: what
+// an edit to the file can be inside of, after the file index has let go of
+// the lines it changed.
+func (s *Store) Declared(path string) ([]Symbol, error) {
+	rows, err := s.db.Query(`SELECT `+symbolColumns+` FROM nodes n WHERE n.file_path=? AND n.kind IN (`+definitionKinds+`) ORDER BY n.start_line LIMIT 500`, path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Symbol
+	for rows.Next() {
+		sym, err := scanSymbol(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sym)
+	}
+	return out, rows.Err()
+}
+
+// Declarer is the optional part of a Reader that lists a file's definitions.
+type Declarer interface {
+	Declared(path string) ([]Symbol, error)
+}
+
 func likeEscape(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

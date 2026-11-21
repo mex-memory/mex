@@ -99,8 +99,13 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 	if surfaceSetting(env, ev.ProjectID, graphCardSurface) == "off" {
 		return nil
 	}
-	type change struct{ rel, name, declaration string }
+	type change struct {
+		rel, name, declaration string
+		def                    *graph.Symbol // already placed in today's text
+	}
+	type edit struct{ rel, added string }
 	var changes []change
+	var inner []edit
 	for _, v := range views(ev, env.Resolve) {
 		if v.failed || v.output == nil || !v.output.OK || v.output.Interrupted || v.rel == "" || v.checkout != ev.Checkout {
 			continue
@@ -114,14 +119,18 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 		default:
 			continue
 		}
-		for name, line := range changedDeclarations(removed, added) {
-			changes = append(changes, change{v.rel, name, line})
+		found := changedDeclarations(removed, added)
+		for name, line := range found {
+			changes = append(changes, change{rel: v.rel, name: name, declaration: line})
 			if len(changes) >= 8 {
 				break
 			}
 		}
+		if len(found) == 0 && strings.TrimSpace(added) != "" && normalizeDeclaration(removed) != normalizeDeclaration(added) && len(inner) < 4 {
+			inner = append(inner, edit{v.rel, added})
+		}
 	}
-	if len(changes) == 0 {
+	if len(changes) == 0 && len(inner) == 0 {
 		return nil
 	}
 	view, done := graphView(ev, env)
@@ -129,18 +138,37 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 		return nil
 	}
 	defer done()
+	// An edit inside a multi-line signature (its parameters) names no
+	// declaration itself: find the definition whose header it falls in.
+	for _, e := range inner {
+		for _, h := range headerChanges(view, e.rel, e.added) {
+			def := h.def
+			changes = append(changes, change{rel: e.rel, name: def.Name, declaration: h.header, def: &def})
+		}
+	}
 	var out []answerCard
 	seen := graph.Seen{}
 	for _, c := range changes {
 		// The definition in the edited file, by that file: a changed call
 		// elsewhere never reads as a changed declaration.
-		defs, err := view.R.Resolve(c.rel + ":" + c.name)
-		if err != nil || len(defs) != 1 {
-			continue
-		}
-		def, ok := graph.Exact(view.Files, defs[0])
-		if !ok || !strings.Contains(normalizeDeclaration(view.Code(def.Path, def.Start)), firstWords(c.declaration)) {
-			continue
+		var def graph.Symbol
+		if c.def != nil {
+			def = *c.def
+		} else {
+			defs, err := view.R.Resolve(c.rel + ":" + c.name)
+			if err != nil || len(defs) != 1 {
+				continue
+			}
+			// The file was just edited, so the file index has let go of the
+			// definition's lines: today's text at its built start must still
+			// open with the new declaration.
+			def = defs[0]
+			if exact, ok := graph.Exact(view.Files, def); ok {
+				def = exact
+			}
+			if !strings.Contains(normalizeDeclaration(view.Code(def.Path, def.Start)), firstWords(c.declaration)) {
+				continue
+			}
 		}
 		if card, ok := view.SignatureCard(def, c.declaration, impactFiles, seen); ok {
 			seen[card.Key] = true
@@ -150,6 +178,111 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 		}
 	}
 	return out
+}
+
+// headerHit is a definition whose signature an edit falls inside.
+type headerHit struct {
+	def    graph.Symbol
+	header string
+}
+
+// headerChanges finds the definitions in rel whose signature, from its
+// first line to where its parameters close, holds the edit's added text as
+// the file reads today. Each comes with its header as one line. The
+// definitions come from the graph (the file index lets go of an edited
+// definition's lines until it re-parses), each checked against today's text:
+// its first line must still name it.
+func headerChanges(view graph.View, rel, added string) []headerHit {
+	if view.Src == nil {
+		return nil
+	}
+	lines := view.Src(rel)
+	if lines == nil {
+		return nil
+	}
+	var defs []graph.Symbol
+	if d, ok := view.R.(graph.Declarer); ok {
+		defs, _ = d.Declared(rel)
+	} else if view.Files != nil {
+		if outline, miss := view.Files.Outline(rel); miss == nil && outline != nil {
+			for _, sym := range outline.Symbols {
+				defs = append(defs, graph.Symbol{Name: sym.Name, Path: rel, Start: sym.Start, End: sym.End, Kind: sym.Kind})
+			}
+		}
+	}
+	if len(defs) == 0 {
+		return nil
+	}
+	// The edit's lines, found as one block in today's text.
+	var want []string
+	for _, l := range strings.Split(strings.ReplaceAll(added, "\r\n", "\n"), "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			want = append(want, t)
+		}
+	}
+	if len(want) == 0 || len(strings.Join(want, "")) < 3 {
+		return nil
+	}
+	at := 0
+	for i := range lines {
+		j, k := i, 0
+		for ; j < len(lines) && k < len(want); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == "" {
+				continue
+			}
+			if t != want[k] {
+				break
+			}
+			k++
+		}
+		if k == len(want) {
+			if at != 0 {
+				return nil // the edit's text is in more than one place
+			}
+			at = i + 1
+		}
+	}
+	if at == 0 {
+		return nil
+	}
+	var out []headerHit
+	for _, def := range defs {
+		if def.Start < 1 || def.Start > at || at-def.Start > maxHeaderLines || def.Start > len(lines) {
+			continue
+		}
+		end, header := signatureEnd(lines, def.Start)
+		if end >= at && strings.Contains(lines[def.Start-1], def.Name) {
+			out = append(out, headerHit{def, header})
+		}
+	}
+	return out
+}
+
+const maxHeaderLines = 40
+
+// signatureEnd is the line where a definition's parameter list closes (its
+// body or arrow follows), and the header joined as one line.
+func signatureEnd(lines []string, start int) (int, string) {
+	depth, opened := 0, false
+	var parts []string
+	for i := start - 1; i < len(lines) && i < start-1+maxHeaderLines; i++ {
+		l := lines[i]
+		parts = append(parts, strings.TrimSpace(l))
+		for _, r := range l {
+			switch r {
+			case '(':
+				depth++
+				opened = true
+			case ')':
+				depth--
+			}
+		}
+		if opened && depth <= 0 {
+			return i + 1, strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
+		}
+	}
+	return start, strings.TrimSpace(lines[start-1])
 }
 
 // firstWords is the start of a declaration line, enough to know it's the
