@@ -33,8 +33,33 @@ const [repoRoot, graphDb, scipPath] = process.argv.slice(2);
 const scip = JSON.parse(readFileSync(scipPath, "utf8"));
 
 const sql = (q) => JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", `file:${graphDb}?immutable=1`, q], { encoding: "utf8", maxBuffer: 1 << 30 }) || "[]");
-const nodes = new Map(sql("SELECT id, kind, name, file_path AS file, start_line AS sl, end_line AS el, container_id AS parent FROM nodes WHERE kind <> 'file'").map((n) => [n.id, n]));
-const edges = sql("SELECT e.kind, e.line, e.col, e.target, s.file_path AS file FROM edges e JOIN nodes s ON s.id = e.source WHERE e.kind IN ('calls','instantiates') AND e.line IS NOT NULL AND e.col IS NOT NULL");
+
+function loadV4() {
+  const nodes = sql("SELECT id, kind, name, file_path AS file, start_line AS sl, end_line AS el, container_id AS parent FROM nodes WHERE kind <> 'file'");
+  const edges = sql("SELECT e.kind, e.line, e.col, e.target, s.file_path AS file FROM edges e JOIN nodes s ON s.id = e.source WHERE e.kind IN ('calls','instantiates') AND e.line IS NOT NULL AND e.col IS NOT NULL");
+  return { nodes, edges };
+}
+
+function loadV5() {
+  const nodes = sql(`
+    SELECT n.id, k.name AS kind, n.name, f.path AS file, n.start_line AS sl, n.end_line AS el, n.parent
+    FROM nodes n JOIN node_kinds k ON k.id = n.kind JOIN files f ON f.id = n.file
+    WHERE k.name <> 'file'
+  `);
+  // V5 uses line 0 for an edge without a call site.
+  const edges = sql(`
+    SELECT k.name AS kind, e.line, e.col, e.target, f.path AS file
+    FROM edges e JOIN edge_kinds k ON k.id = e.kind
+      JOIN nodes s ON s.id = e.source JOIN files f ON f.id = s.file
+    WHERE k.name IN ('calls','instantiates') AND e.line > 0
+  `);
+  return { nodes, edges };
+}
+
+const hasMeta = sql("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta'").length > 0;
+const isV5 = hasMeta && sql("SELECT 1 FROM meta WHERE key = 'schema_version' AND value = '5'").length > 0;
+const { nodes: rows, edges } = isV5 ? loadV5() : loadV4();
+const nodes = new Map(rows.map((n) => [n.id, n]));
 
 const lines = new Map();
 const fileLines = (rel) => {
