@@ -2,7 +2,7 @@
 
 How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts, resolves and writes graph rows. Graph rows never cross into Node.
 
-The version is `CONTRACT_VERSION` in `native/graph/core/src/lib.rs`. Any change a caller could observe bumps it, and Node refuses an engine whose version differs.
+The version is `CONTRACT_VERSION` in `native/engine/core/src/lib.rs`. Any change a caller could observe bumps it, and Node refuses an engine whose version differs.
 
 ## Modes
 

@@ -6,7 +6,7 @@ import { GRAPH_ENGINE_CONTRACT, graphEngineBinary, graphEngineVersion, runGraphE
 
 /**
  * The Node side of the Rust engine's contract. Runs only where an engine is
- * built (`cargo build` in native/graph, or MEX_GRAPH_ENGINE); the Rust job
+ * built (`cargo build` in native/engine, or MEX_GRAPH_ENGINE); the Rust job
  * tests cover the engine's side on every OS.
  */
 const binary = graphEngineBinary();

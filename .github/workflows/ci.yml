@@ -211,7 +211,7 @@ jobs:
         os: [ubuntu-24.04, macos-15, windows-2022]
     defaults:
       run:
-        working-directory: native/graph
+        working-directory: native/engine
         shell: bash
     steps:
       - uses: actions/checkout@v5
@@ -232,8 +232,8 @@ jobs:
           path: |
             ${{ env.CARGO_HOME || '~/.cargo' }}/registry
             ${{ env.CARGO_HOME || '~/.cargo' }}/git
-            ${{ env.CARGO_TARGET_DIR || 'native/graph/target' }}
-          key: rust-${{ runner.os }}-${{ hashFiles('native/graph/Cargo.lock', 'native/graph/rust-toolchain.toml') }}
+            ${{ env.CARGO_TARGET_DIR || 'native/engine/target' }}
+          key: rust-${{ runner.os }}-${{ hashFiles('native/engine/Cargo.lock', 'native/engine/rust-toolchain.toml') }}
           restore-keys: rust-${{ runner.os }}-
       - name: rustfmt
         if: runner.os == 'Linux'

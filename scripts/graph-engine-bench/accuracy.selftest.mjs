@@ -22,7 +22,7 @@ try {
     ] }],
   }));
 
-  const schema = readFileSync(new URL("../../native/graph/core/src/schema_v5.sql", import.meta.url), "utf8");
+  const schema = readFileSync(new URL("../../native/engine/core/src/schema_v5.sql", import.meta.url), "utf8");
   execFileSync("sqlite3", ["-bail", graphDb], { input: `${schema}
     INSERT INTO meta VALUES ('schema_version', '5');
     INSERT INTO languages VALUES (1, 'python');

@@ -45,7 +45,7 @@ export interface EngineRun {
 
 /**
  * The engine binary: `MEX_GRAPH_ENGINE`, else a development build in this
- * checkout (`native/graph/target/{release,debug}`). Platform packages are M6.
+ * checkout (`native/engine/target/{release,debug}`). Platform packages are M6.
  */
 export function graphEngineBinary(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const fromEnv = env[GRAPH_ENGINE_ENV]?.trim();
@@ -54,7 +54,7 @@ export function graphEngineBinary(env: NodeJS.ProcessEnv = process.env): string 
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 6; i++) {
     for (const profile of ["release", "debug"]) {
-      const candidate = join(dir, "native", "graph", "target", profile, exe);
+      const candidate = join(dir, "native", "engine", "target", profile, exe);
       if (existsSync(candidate)) return candidate;
     }
     dir = dirname(dir);

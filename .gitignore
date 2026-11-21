@@ -63,4 +63,4 @@ npm/hook-*/bin/
 /native/.scratch/
 
 # The Rust graph engine build output.
-/native/graph/target/
+/native/engine/target/

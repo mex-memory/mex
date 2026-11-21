@@ -8,13 +8,13 @@ import type { NodeKind } from "../types.js";
 /**
  * Shared node-id vectors for the Rust graph engine (OSS-73).
  *
- * `native/graph/core/tests/id-vectors.json` lists identity inputs with the
+ * `native/engine/core/tests/id-vectors.json` lists identity inputs with the
  * identity string and id that TypeScript produces for them. This test keeps
  * the file equal to what TypeScript computes today; the Rust port runs the
- * same file (`native/graph/core/tests/id_vectors.rs`). Run with
+ * same file (`native/engine/core/tests/id_vectors.rs`). Run with
  * `MEX_WRITE_ID_VECTORS=1` to regenerate it after an intended change.
  */
-const VECTORS = join(import.meta.dirname, "../../../native/graph/core/tests/id-vectors.json");
+const VECTORS = join(import.meta.dirname, "../../../native/engine/core/tests/id-vectors.json");
 
 interface SignatureInput { profile: "signature"; path: string; kind: string; qualifiedName: string; declarationRole?: string; signature: string }
 interface OrdinalInput { profile: "ordinal"; path: string; kind: string; qualifiedName: string; declarationRole: string; ordinal?: number }

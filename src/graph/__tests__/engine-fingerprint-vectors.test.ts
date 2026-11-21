@@ -7,10 +7,10 @@ import { createFingerprint } from "../fingerprint.js";
 /**
  * Shared body-hash, fingerprint and text vectors for the Rust graph engine
  * (OSS-73), computed by today's TypeScript functions. The Rust port runs the
- * same file (`native/graph/core/tests/fingerprint_vectors.rs`). Run with
+ * same file (`native/engine/core/tests/fingerprint_vectors.rs`). Run with
  * `MEX_WRITE_ENGINE_VECTORS=1` to regenerate after an intended change.
  */
-const VECTORS = join(import.meta.dirname, "../../../native/graph/core/tests/fingerprint-vectors.json");
+const VECTORS = join(import.meta.dirname, "../../../native/engine/core/tests/fingerprint-vectors.json");
 
 const BODIES: Array<{ source: string; start: number; end: number }> = [
   { source: "def f():\n    return 1\n", start: 1, end: 2 },
