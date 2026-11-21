@@ -12,6 +12,7 @@ name = "mex-graph"
 path = "src/main.rs"
 
 [dependencies]
+memory-stats = "1"
 mex-graph-core = { path = "../core" }
 
 [lints]
