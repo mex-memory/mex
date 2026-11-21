@@ -101,6 +101,57 @@
         "wrong": 646
       },
       "errors": []
+    },
+    "engine": {
+      "runs": 2,
+      "failed": 0,
+      "files": 2824,
+      "nodes": 59406,
+      "edges": 143906,
+      "buildS": 1.334,
+      "cpuS": 6.43,
+      "peakMb": 276,
+      "diskMb": 36.796875,
+      "bytesPerNode": 650,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          16
+        ],
+        [
+          "nodes",
+          9.5
+        ],
+        [
+          "edges",
+          4
+        ],
+        [
+          "edges_target",
+          2.3
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          1.6
+        ],
+        [
+          "nodes_name",
+          1.4
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9927,
+        "recall": 0.9293,
+        "recallConcrete": 0.9293,
+        "sites": 12730,
+        "interfaceSites": 0,
+        "edgesJudged": 11917,
+        "edgesTotal": 68665,
+        "wrong": 87
+      },
+      "errors": []
     }
   },
   "express": {
@@ -309,6 +360,57 @@
         "wrong": 16
       },
       "errors": []
+    },
+    "engine": {
+      "runs": 3,
+      "failed": 0,
+      "files": 1118,
+      "nodes": 8919,
+      "edges": 12514,
+      "buildS": 0.239,
+      "cpuS": 1.18,
+      "peakMb": 54,
+      "diskMb": 5.234375,
+      "bytesPerNode": 615,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          2.1
+        ],
+        [
+          "nodes",
+          1.6
+        ],
+        [
+          "edges",
+          0.3
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          0.2
+        ],
+        [
+          "nodes_name",
+          0.2
+        ],
+        [
+          "edges_target",
+          0.2
+        ]
+      ],
+      "accuracy": {
+        "precision": 1,
+        "recall": 0.7079,
+        "recallConcrete": 0.7079,
+        "sites": 4406,
+        "interfaceSites": 0,
+        "edgesJudged": 3119,
+        "edgesTotal": 3129,
+        "wrong": 0
+      },
+      "errors": []
     }
   },
   "fd": {
@@ -438,14 +540,14 @@
         ]
       ],
       "accuracy": {
-        "precision": 0.8613,
-        "recall": 0.6794,
-        "recallConcrete": 0.6794,
-        "sites": 393,
+        "precision": 0.8558,
+        "recall": 0.2221,
+        "recallConcrete": 0.2221,
+        "sites": 1202,
         "interfaceSites": 0,
-        "edgesJudged": 310,
+        "edgesJudged": 312,
         "edgesTotal": 336,
-        "wrong": 43
+        "wrong": 45
       },
       "errors": []
     },
@@ -489,14 +591,65 @@
         ]
       ],
       "accuracy": {
-        "precision": 0.8613,
-        "recall": 0.6794,
-        "recallConcrete": 0.6794,
-        "sites": 393,
+        "precision": 0.8558,
+        "recall": 0.2221,
+        "recallConcrete": 0.2221,
+        "sites": 1202,
         "interfaceSites": 0,
-        "edgesJudged": 310,
+        "edgesJudged": 312,
         "edgesTotal": 336,
-        "wrong": 43
+        "wrong": 45
+      },
+      "errors": []
+    },
+    "engine": {
+      "runs": 3,
+      "failed": 0,
+      "files": 83,
+      "nodes": 1908,
+      "edges": 3114,
+      "buildS": 0.055,
+      "cpuS": 0.26,
+      "peakMb": 0,
+      "diskMb": 1.30859375,
+      "bytesPerNode": 719,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          0.5
+        ],
+        [
+          "nodes",
+          0.4
+        ],
+        [
+          "edges",
+          0.1
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          0.1
+        ],
+        [
+          "edges_target",
+          0.1
+        ],
+        [
+          "nodes_name",
+          0
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.998,
+        "recall": 0.8386,
+        "recallConcrete": 0.8386,
+        "sites": 1202,
+        "interfaceSites": 0,
+        "edgesJudged": 1010,
+        "edgesTotal": 1020,
+        "wrong": 2
       },
       "errors": []
     }
@@ -705,6 +858,57 @@
         "edgesJudged": 555,
         "edgesTotal": 570,
         "wrong": 59
+      },
+      "errors": []
+    },
+    "engine": {
+      "runs": 3,
+      "failed": 0,
+      "files": 60,
+      "nodes": 1485,
+      "edges": 3463,
+      "buildS": 0.049,
+      "cpuS": 0.27,
+      "peakMb": 0,
+      "diskMb": 1.05078125,
+      "bytesPerNode": 742,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          0.4
+        ],
+        [
+          "nodes",
+          0.3
+        ],
+        [
+          "edges",
+          0.1
+        ],
+        [
+          "edges_target",
+          0.1
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          0
+        ],
+        [
+          "nodes_name",
+          0
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9976,
+        "recall": 0.8291,
+        "recallConcrete": 0.8291,
+        "sites": 1504,
+        "interfaceSites": 0,
+        "edgesJudged": 1250,
+        "edgesTotal": 1849,
+        "wrong": 3
       },
       "errors": []
     }
