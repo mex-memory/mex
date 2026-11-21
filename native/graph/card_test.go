@@ -291,11 +291,11 @@ func TestRecheckChangedFiles(t *testing.T) {
 	for line, want := range map[string]bool{
 		"export function handleGet(req) {": true,
 		"const handleGet = (req) =>":       true,
-		"  handleGet(req: Request) {":       true,
-		"  await handleGet(req)":            false,
-		"  this.handleGet(req)":             false,
-		"  return handleGet(req)":           false,
-		"// handleGet runs first":           false,
+		"  handleGet(req: Request) {":      true,
+		"  await handleGet(req)":           false,
+		"  this.handleGet(req)":            false,
+		"  return handleGet(req)":          false,
+		"// handleGet runs first":          false,
 	} {
 		if declares(line, "handleGet") != want {
 			t.Errorf("declares %q: want %v", line, want)
