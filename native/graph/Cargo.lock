@@ -159,6 +159,9 @@ version = "0.1.0"
 dependencies = [
  "memory-stats",
  "mex-graph-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -10,6 +10,9 @@ use std::path::Path;
 
 use rusqlite::{Connection, params};
 
+/// The writer's error type.
+pub use rusqlite::Error;
+
 pub const SCHEMA_VERSION: u32 = 5;
 const SCHEMA: &str = include_str!("schema_v5.sql");
 
