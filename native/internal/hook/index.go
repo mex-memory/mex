@@ -3,6 +3,7 @@ package hook
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/mex-memory/mex/native/index/shift"
@@ -60,7 +61,8 @@ func noteEdit(ev contract.Event, recordDirectory string) []fileEdit {
 		} else {
 			record.Unknown = true
 		}
-		noted = append(noted, fileEdit{path: edit.path, ranges: ranges, placed: placed})
+		path := filepath.Join(checkout.Root, filepath.FromSlash(rel))
+		noted = append(noted, fileEdit{path: path, ranges: ranges, placed: placed})
 		if shift.WriteShift(shift.Directory(location.Directory, checkout.ProjectID), checkout.Key, record) == nil {
 			wrote = true
 		}

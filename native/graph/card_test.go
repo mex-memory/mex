@@ -434,22 +434,40 @@ func TestSignatureCard(t *testing.T) {
 	g, f, src := router()
 	def := g.symbols[0]
 	v := View{g, f, src}
-	if _, ok := v.SignatureCard(def, "export function parseRoute(path: string, base?: string): Route {", 4, Seen{}); ok {
+	if _, ok := v.SignatureCard(def, "export function parseRoute(path: string, base?: string): Route {", 4, Seen{}, nil); ok {
 		t.Fatal("card below the fan-out")
 	}
-	c, ok := v.SignatureCard(def, "export function parseRoute(path: string, base?: string): Route {", 2, Seen{})
+	c, ok := v.SignatureCard(def, "export function parseRoute(path: string, base?: string): Route {", 2, Seen{}, nil)
 	if !ok || !strings.Contains(c.Text, "used by 3 files: src/get.ts:12, src/post.ts:7, test/router.test.ts:5") {
 		t.Fatalf("card: %+v", c)
 	}
-	if _, ok := v.SignatureCard(def, "x", 2, Seen{c.Key: true}); !ok {
+	if _, ok := v.SignatureCard(def, "x", 2, Seen{c.Key: true}, nil); !ok {
 		t.Fatal("a different declaration is a new card")
 	}
-	if _, ok := v.SignatureCard(def, "export function parseRoute(path: string, base?: string): Route {", 2, Seen{c.Key: true}); ok {
+	if _, ok := v.SignatureCard(def, "export function parseRoute(path: string, base?: string): Route {", 2, Seen{c.Key: true}, nil); ok {
 		t.Fatal("repeated in the epoch")
 	}
 	def.Exported = false
-	if _, ok := v.SignatureCard(def, "y", 2, Seen{}); ok {
+	if _, ok := v.SignatureCard(def, "y", 2, Seen{}, nil); ok {
 		t.Fatal("card for an unexported definition")
+	}
+}
+
+func TestSignatureCardExcludesChangedCallers(t *testing.T) {
+	g, f, src := router()
+	v := View{g, f, src}
+	def := g.symbols[0]
+	excluded := map[string]bool{"src/get.ts": true}
+	card, ok := v.SignatureCard(def, "new signature", 2, Seen{}, excluded)
+	if !ok || !strings.Contains(card.Text, "used by 2 files: src/post.ts:7, test/router.test.ts:5") || strings.Contains(card.Text, "src/get.ts") {
+		t.Fatalf("card: %+v", card)
+	}
+	if _, ok := v.SignatureCard(def, "new signature", 3, Seen{}, excluded); ok {
+		t.Fatal("excluded files counted toward the threshold")
+	}
+	excluded["src/post.ts"], excluded["test/router.test.ts"] = true, true
+	if _, ok := v.SignatureCard(def, "new signature", 1, Seen{}, excluded); ok {
+		t.Fatal("card when all callers were edited")
 	}
 }
 

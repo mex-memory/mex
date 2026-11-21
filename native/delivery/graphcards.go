@@ -3,8 +3,10 @@ package delivery
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // Graph cards: the graph's answer at the moment it replaces work the agent
@@ -93,7 +96,10 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 	if ev.ProjectID == "" || ev.Checkout == "" || !graph.Allowed(ev.Kind) {
 		return nil
 	}
-	if ev.Kind != contract.PostTool && ev.Kind != contract.PostToolBatch {
+	if len(env.Changed) >= maxChangedFiles {
+		return nil // at capacity the session store may have dropped a caller
+	}
+	if ev.Kind != contract.PostTool && ev.Kind != contract.PostToolBatch && len(env.shellChanges) == 0 {
 		return nil
 	}
 	if surfaceSetting(env, ev.ProjectID, graphCardSurface) == "off" {
@@ -106,6 +112,7 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 	type edit struct{ rel, added string }
 	var changes []change
 	var inner []edit
+	excluded := map[string]bool{}
 	for _, v := range views(ev, env.Resolve) {
 		if v.failed || v.output == nil || !v.output.OK || v.output.Interrupted || v.rel == "" || v.checkout != ev.Checkout {
 			continue
@@ -119,6 +126,7 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 		default:
 			continue
 		}
+		excluded[v.rel] = true
 		found := changedDeclarations(removed, added)
 		for name, line := range found {
 			changes = append(changes, change{rel: v.rel, name: name, declaration: line})
@@ -130,7 +138,7 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 			inner = append(inner, edit{v.rel, added})
 		}
 	}
-	if len(changes) == 0 && len(inner) == 0 {
+	if len(changes) == 0 && len(inner) == 0 && len(env.shellChanges) == 0 {
 		return nil
 	}
 	view, done := graphView(ev, env)
@@ -140,10 +148,35 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 	defer done()
 	// An edit inside a multi-line signature (its parameters) names no
 	// declaration itself: find the definition whose header it falls in.
-	for _, e := range inner {
-		for _, h := range headerChanges(view, e.rel, e.added) {
+	addHeaders := func(hits []headerHit) {
+		for _, h := range hits {
 			def := h.def
-			changes = append(changes, change{rel: e.rel, name: def.Name, declaration: h.header, def: &def})
+			changes = append(changes, change{rel: def.Path, name: def.Name, declaration: h.header, def: &def})
+		}
+	}
+	for _, e := range inner {
+		addHeaders(headerChanges(view, e.rel, e.added))
+	}
+	paths := make([]string, 0, len(env.shellChanges))
+	for rel := range env.shellChanges {
+		excluded[rel] = true
+		paths = append(paths, rel)
+	}
+	sort.Strings(paths)
+	for _, rel := range paths {
+		spans := env.shellChanges[rel]
+		if len(spans) == 1 && spans[0].To == math.MaxInt32 {
+			continue // no old header to compare
+		}
+		addHeaders(signatureHeaders(view, rel, view.Src(rel), func(start, end int) bool {
+			return overlaps(spans, start, end)
+		}))
+	}
+	if len(changes) > 0 {
+		for file := range env.Changed {
+			if rel, ok := place.RelativeToCheckout(ev.Checkout, file); ok {
+				excluded[rel] = true
+			}
 		}
 	}
 	var out []answerCard
@@ -170,7 +203,7 @@ func graphCards(ev contract.Event, env Environment) []answerCard {
 				continue
 			}
 		}
-		if card, ok := view.SignatureCard(def, c.declaration, impactFiles, seen); ok {
+		if card, ok := view.SignatureCard(def, c.declaration, impactFiles, seen, excluded); ok {
 			seen[card.Key] = true
 			cardOut := graphAnswerCard(card)
 			cardOut.symPath, cardOut.symName = def.Path, def.Name
@@ -198,19 +231,6 @@ func headerChanges(view graph.View, rel, added string) []headerHit {
 	}
 	lines := view.Src(rel)
 	if lines == nil {
-		return nil
-	}
-	var defs []graph.Symbol
-	if d, ok := view.R.(graph.Declarer); ok {
-		defs, _ = d.Declared(rel)
-	} else if view.Files != nil {
-		if outline, miss := view.Files.Outline(rel); miss == nil && outline != nil {
-			for _, sym := range outline.Symbols {
-				defs = append(defs, graph.Symbol{Name: sym.Name, Path: rel, Start: sym.Start, End: sym.End, Kind: sym.Kind})
-			}
-		}
-	}
-	if len(defs) == 0 {
 		return nil
 	}
 	// The edit's lines, found as one block in today's text.
@@ -246,13 +266,34 @@ func headerChanges(view graph.View, rel, added string) []headerHit {
 	if at == 0 {
 		return nil
 	}
+	return signatureHeaders(view, rel, lines, func(start, end int) bool { return start <= at && at <= end })
+}
+
+func signatureHeaders(view graph.View, rel string, lines []string, touches func(start, end int) bool) []headerHit {
+	if len(lines) == 0 {
+		return nil
+	}
+	var defs []graph.Symbol
+	if d, ok := view.R.(graph.Declarer); ok {
+		var err error
+		if defs, err = d.Declared(rel); err != nil {
+			return nil
+		}
+	} else if view.Files != nil {
+		if outline, miss := view.Files.Outline(rel); miss == nil && outline != nil {
+			for _, sym := range outline.Symbols {
+				defs = append(defs, graph.Symbol{Name: sym.Name, Path: rel, Start: sym.Start, End: sym.End, Kind: sym.Kind})
+			}
+		}
+	}
 	var out []headerHit
 	for _, def := range defs {
-		if def.Start < 1 || def.Start > at || at-def.Start > maxHeaderLines || def.Start > len(lines) {
+		def, ok := graph.DeclaredIn(lines, def)
+		if !ok {
 			continue
 		}
 		end, header := signatureEnd(lines, def.Start)
-		if end >= at && strings.Contains(lines[def.Start-1], def.Name) {
+		if touches(def.Start, end) {
 			out = append(out, headerHit{def, header})
 		}
 	}

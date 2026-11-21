@@ -26,6 +26,23 @@ type LineSpan struct {
 // lines changed in it this session.
 type ChangedLines map[string][]LineSpan
 
+// RecordWorktreeDiff stores the current spans of a diff against HEAD. The
+// diff already includes earlier uncommitted edits in their new positions.
+func (c ChangedLines) RecordWorktreeDiff(changes ChangedLines) {
+	paths := make([]string, 0, len(changes))
+	for path := range changes {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		_, known := c[path]
+		if !known && len(c) >= maxChangedFiles {
+			continue
+		}
+		c[path] = mergeSpans(append([]LineSpan(nil), changes[path]...))
+	}
+}
+
 // Apply records one edit. ranges are in the lines before the edit, as the
 // file index records them; earlier spans move with the edit. An edit that
 // couldn't be placed marks the whole file.
@@ -35,7 +52,7 @@ func (c ChangedLines) Apply(path string, ranges []shift.Range, placed bool) {
 		return
 	}
 	if !placed {
-		c[path] = []LineSpan{{From: 1, To: math.MaxInt32}}
+		c[path] = wholeFile()
 		return
 	}
 	if len(ranges) == 0 {

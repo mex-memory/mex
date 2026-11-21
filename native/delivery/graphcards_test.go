@@ -126,6 +126,11 @@ func TestHeaderChangesFindsMultiLineSignatures(t *testing.T) {
 	if len(got) != 1 || got[0].def.Name != "resolveDomainName" || !strings.HasPrefix(got[0].header, "export async function resolveDomainName({ domainRepository, domain, scope, }") {
 		t.Fatalf("parameter edit: %v", got)
 	}
+	crlf := view
+	crlf.Src = func(string) []string { return strings.Split(strings.Join(text, "\r\n"), "\n") }
+	if hits := headerChanges(crlf, "a.ts", "  domain,\r\n  scope,\r\n"); !reflect.DeepEqual(hits, got) {
+		t.Fatalf("CRLF parameter edit: %v, want %v", hits, got)
+	}
 	// An edit in the body is not a signature change.
 	if got := headerChanges(view, "a.ts", "  const name = domain.toLowerCase();\n"); len(got) != 0 {
 		t.Fatalf("body edit: %v", got)

@@ -22,19 +22,29 @@ func TestChangedLinesPerSession(t *testing.T) {
 	pre := ev
 	pre.Kind = contract.PostTool
 	pre.Tool = &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: "npm test"}}
-	got := sessionChanged(pre, dir)
+	got := sessionChanged(pre, dir).Lines
 	if !reflect.DeepEqual(got["/repo/a.ts"], []delivery.LineSpan{{From: 3, To: 4}}) || len(got["/repo/b.ts"]) != 1 {
 		t.Fatalf("read back %v", got)
 	}
 	other := pre
 	other.SessionID = "s2"
-	if got := sessionChanged(other, dir); len(got) != 0 {
+	if got := sessionChanged(other, dir).Lines; len(got) != 0 {
 		t.Fatalf("another session saw %v", got)
 	}
 	read := pre
 	read.Tool = &contract.Tool{Name: contract.ToolRead}
-	if got := sessionChanged(read, dir); got != nil {
+	if got := sessionChanged(read, dir).Lines; got != nil {
 		t.Fatal("read state before a non-shell tool")
+	}
+}
+
+func TestShellChangedUpdatesLegacySession(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "changed.json")
+	write(t, file, `{"/repo/a.ts":[{"from":2,"to":3}]}`)
+	noteShellChanged(file, delivery.ChangedLines{"/repo/b.ts": {{From: 7, To: 7}}}, map[string]int64{"/repo/b.ts": 100})
+	state := loadChanged(file)
+	if len(state.Lines) != 2 || state.ShellMtimes["/repo/b.ts"] != 100 {
+		t.Fatalf("session state: %+v", state)
 	}
 }
 

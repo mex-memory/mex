@@ -312,8 +312,9 @@ func (v View) testLine(def Symbol, tests []TestLink, shown Shown, withCode bool)
 // SignatureCard goes out once on an edit that changes an exported
 // signature used in at least minFiles other files: the files that use it,
 // instead of a broken-callers round trip. Values passed elsewhere count:
-// they break on a new signature too. declaration is the new declaration.
-func (v View) SignatureCard(def Symbol, declaration string, minFiles int, seen Seen) (*Card, bool) {
+// they break on a new signature too. Excluded files were already edited in
+// the session, so they fall outside the follow-up.
+func (v View) SignatureCard(def Symbol, declaration string, minFiles int, seen Seen, excluded map[string]bool) (*Card, bool) {
 	if !def.Exported {
 		return nil, false
 	}
@@ -321,12 +322,18 @@ func (v View) SignatureCard(def Symbol, declaration string, minFiles int, seen S
 	if err != nil {
 		return nil, false
 	}
-	sites, _ = Recheck(sites, def.Name, v.R, v.Files, v.Src)
+	remaining := make([]Site, 0, len(sites))
+	for _, s := range sites {
+		if s.Path != def.Path && !excluded[s.Path] {
+			remaining = append(remaining, s)
+		}
+	}
+	if len(remaining) == 0 || len(remaining) < minFiles {
+		return nil, false
+	}
+	sites, _ = Recheck(remaining, def.Name, v.R, v.Files, v.Src)
 	byFile := map[string]Site{}
 	for _, s := range sites {
-		if s.Path == def.Path {
-			continue
-		}
 		if prior, ok := byFile[s.Path]; !ok || s.Line < prior.Line {
 			byFile[s.Path] = s
 		}

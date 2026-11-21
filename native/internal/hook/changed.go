@@ -14,11 +14,18 @@ import (
 
 // The lines a session's edits changed, for the card after a full test run.
 // One small file per session in <record directory>/changed/<agent>/, written
-// on edits and read after shell commands. It is not lever state: it is kept
-// whether or not the output levers are on, and like noteEdit it never opens a
-// database. Files a week old go at the next session start.
+// on edits and read for signature and test cards. It is kept whether or not
+// the output levers are on. Files a week old go at the next session start.
 
-const changedMaxAge = 7 * 24 * time.Hour
+const (
+	changedMaxAge  = 7 * 24 * time.Hour
+	maxShellMtimes = 64
+)
+
+type changeState struct {
+	Lines       delivery.ChangedLines `json:"lines"`
+	ShellMtimes map[string]int64      `json:"shell_mtimes,omitempty"`
+}
 
 func changedPath(recordDirectory string, ev contract.Event) string {
 	name := safeName(ev.SessionID)
@@ -28,12 +35,19 @@ func changedPath(recordDirectory string, ev contract.Event) string {
 	return filepath.Join(recordDirectory, "changed", safeName(ev.Agent), name+".json")
 }
 
-func loadChanged(file string) delivery.ChangedLines {
-	c := delivery.ChangedLines{}
+func loadChanged(file string) changeState {
+	var state changeState
 	if data, err := os.ReadFile(file); err == nil && len(data) <= 1<<20 {
-		_ = json.Unmarshal(data, &c)
+		if json.Unmarshal(data, &state) == nil && state.Lines != nil {
+			return state
+		}
+		// Older hooks wrote the line map without a session state wrapper.
+		var legacy delivery.ChangedLines
+		if json.Unmarshal(data, &legacy) == nil && legacy != nil {
+			return changeState{Lines: legacy}
+		}
 	}
-	return c
+	return changeState{Lines: delivery.ChangedLines{}}
 }
 
 // noteChanged adds placed edits to the session's changed lines. Only edits
@@ -44,11 +58,36 @@ func noteChanged(ev contract.Event, recordDirectory string, edits []fileEdit) {
 		return
 	}
 	file := changedPath(recordDirectory, ev)
-	changed := loadChanged(file)
+	state := loadChanged(file)
 	for _, edit := range edits {
-		changed.Apply(edit.path, edit.ranges, edit.placed)
+		state.Lines.Apply(edit.path, edit.ranges, edit.placed)
 	}
-	data, err := json.Marshal(changed)
+	writeChanged(file, state)
+}
+
+func noteShellChanged(file string, changes delivery.ChangedLines, mtimes map[string]int64) {
+	state := loadChanged(file)
+	state.Lines.RecordWorktreeDiff(changes)
+	if state.ShellMtimes == nil {
+		state.ShellMtimes = map[string]int64{}
+	}
+	for path, mtime := range mtimes {
+		state.ShellMtimes[path] = mtime
+	}
+	for len(state.ShellMtimes) > maxShellMtimes {
+		var oldest string
+		for path, mtime := range state.ShellMtimes {
+			if oldest == "" || mtime < state.ShellMtimes[oldest] {
+				oldest = path
+			}
+		}
+		delete(state.ShellMtimes, oldest)
+	}
+	writeChanged(file, state)
+}
+
+func writeChanged(file string, state changeState) {
+	data, err := json.Marshal(state)
 	if err != nil || os.MkdirAll(filepath.Dir(file), 0o700) != nil {
 		return
 	}
@@ -63,14 +102,31 @@ func noteChanged(ev contract.Event, recordDirectory string, edits []fileEdit) {
 	}
 }
 
-// sessionChanged is what delivery needs after a shell command: the lines
-// this session changed, for the card after a full test run. Nil for
-// anything else, so nothing is read.
-func sessionChanged(ev contract.Event, recordDirectory string) delivery.ChangedLines {
-	if (ev.Kind != contract.PostTool && ev.Kind != contract.PostToolFailure) || ev.Tool == nil || ev.Tool.Name != contract.ToolShell || recordDirectory == "" || ev.SessionID == "" {
-		return nil
+// sessionChanged loads edits only for events that can use them in a card.
+func sessionChanged(ev contract.Event, recordDirectory string) changeState {
+	if recordDirectory == "" || ev.SessionID == "" {
+		return changeState{}
 	}
-	return loadChanged(changedPath(recordDirectory, ev))
+	usesChanged := func(tool contract.Tool) bool {
+		switch tool.Name {
+		case contract.ToolShell, contract.ToolEdit, contract.ToolWrite, contract.ToolPatch:
+			return true
+		}
+		return false
+	}
+	switch ev.Kind {
+	case contract.PostTool, contract.PostToolFailure:
+		if ev.Tool != nil && usesChanged(*ev.Tool) {
+			return loadChanged(changedPath(recordDirectory, ev))
+		}
+	case contract.PostToolBatch:
+		for _, tool := range ev.Batch[:min(len(ev.Batch), 64)] {
+			if usesChanged(tool) {
+				return loadChanged(changedPath(recordDirectory, ev))
+			}
+		}
+	}
+	return changeState{}
 }
 
 // pruneChanged removes week-old session files at a new session's start.

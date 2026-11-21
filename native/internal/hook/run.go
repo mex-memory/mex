@@ -343,7 +343,10 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 	}
 	toModel, known := profile.Capabilities().Support(ev.Kind)
-	denv := delivery.Environment{Notices: canNotice, NoContext: !known || toModel.Context == adapter.ChannelNone, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, Changed: sessionChanged(ev, recordDirectory), KeepSession: func(agent, id string) bool {
+	changes := sessionChanged(ev, recordDirectory)
+	denv := delivery.Environment{Notices: canNotice, NoContext: !known || toModel.Context == adapter.ChannelNone, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, Changed: changes.Lines, ShellMtimes: changes.ShellMtimes, RecordShellChanges: func(changed delivery.ChangedLines, mtimes map[string]int64) {
+		noteShellChanged(changedPath(recordDirectory, ev), changed, mtimes)
+	}, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)

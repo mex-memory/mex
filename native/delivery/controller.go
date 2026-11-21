@@ -43,9 +43,11 @@ type Environment struct {
 	// Resolve finds the registered checkout of a touched path; nil means
 	// every tool uses the event's own checkout.
 	Resolve Resolver
-	// Changed is what this session edited, set only after a shell command,
-	// for the card after a full test run.
-	Changed ChangedLines
+	// Changed holds session edits for signature and test cards.
+	Changed            ChangedLines
+	ShellMtimes        map[string]int64
+	RecordShellChanges func(ChangedLines, map[string]int64)
+	shellChanges       ChangedLines
 }
 
 // EpochBudget uses conservative window anchors. An absent or unknown model
@@ -171,10 +173,28 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	defer indexes.close()
 	var policies policyCache
 	env.policy = &policies
+	shellComplete := true
+	if isMoment && !env.Offline && ev.Kind != contract.Prompt {
+		changes, mtimes, complete := shellEdits(ev, env)
+		shellComplete = complete
+		env.shellChanges = changes
+		if len(mtimes) > 0 {
+			updates := shellLineChanges(ev.Checkout, changes)
+			if env.Changed == nil {
+				env.Changed = ChangedLines{}
+			}
+			env.Changed.RecordWorktreeDiff(updates)
+			isTestRun = len(env.Changed) > 0 && fullTestRun(ev)
+			if env.RecordShellChanges != nil {
+				env.RecordShellChanges(updates, mtimes)
+			}
+		}
+	}
 	var groups []*group
 	var anchors []Anchor
 	cards := searchCards(ev, env)
-	if isMoment {
+	// An unfinished shell scan might have missed callers updated in this batch.
+	if isMoment && shellComplete {
 		cards = append(cards, graphCards(ev, env)...)
 	}
 	if isTestRun {
