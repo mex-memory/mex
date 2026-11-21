@@ -21,7 +21,7 @@ export interface SetupRun {
   exclude: { file: string; block: boolean };
 }
 
-export function writeFactFile(location: RecordLocation, projectId: string, name: "setup.json" | "recipes.json" | "code-facts.json", value: unknown): string {
+export function writeFactFile(location: RecordLocation, projectId: string, name: "setup.json" | "recipes.json" | "code-facts.json" | "setup-answers.json", value: unknown): string {
   const directory = projectDataDirectory(location, projectId);
   const file = join(directory, name);
   const bytes = `${JSON.stringify(value, null, 2)}\n`;

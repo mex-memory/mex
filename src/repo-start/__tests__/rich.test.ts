@@ -55,3 +55,30 @@ describe("the rich first screen", () => {
     expect(new Rich({ WT_SESSION: "1" }).fg("orange")).toBe("\x1b[38;2;232;132;92m");
   });
 });
+
+describe("setup v2 on the rich screen", () => {
+  const rich = new Rich({}, 100);
+  it("labels the code map and learn deeper like every other step", () => {
+    expect(labelled("Code map built: 640 files, 4,210 definitions; 12 notes now checked by code fingerprint"))
+      .toEqual({ label: "Code map", text: "640 files, 4,210 definitions · 12 notes now checked by code fingerprint" });
+    expect(labelled("The code map was already current")).toEqual({ label: "Code map", text: "already current" });
+    expect(labelled("Code map: building in the background (`mex jobs`)")).toEqual({ label: "Code map", text: "building in the background · mex jobs" });
+    expect(labelled("The code map didn't finish: out of memory (`mex jobs`)").label).toBe("Code map");
+    expect(labelled("Learn deeper queued. See `mex jobs` for progress.")).toEqual({ label: "Learn deeper", text: "queued. See `mex jobs` for progress." });
+    expect(labelled("Learn deeper: no reviews to learn from (no GitHub or GitLab remote) · $0, nothing started").label).toBe("Learn deeper");
+  });
+
+  it("shows a question with its choices and keys, and names the agents in use", () => {
+    expect(plain(rich.question({ index: 0, total: 2, text: "`packages/db` imports `@acme/ui` in 1 place. Is that allowed?",
+      choices: [{ key: "1", label: "no, keep it one-way" }, { key: "2", label: "yes, it's allowed" }], suggested: "1" }))).toEqual([
+      "   1/2 `packages/db` imports `@acme/ui` in 1 place. Is that allowed?",
+      "   [1] no, keep it one-way  [2] yes, it's allowed  · Enter 1 · s skip · S skip all",
+    ]);
+    expect(plain(rich.question({ index: 1, total: 2, text: "Which?", choices: [{ key: "1", label: "a" }] }))[1]).toContain("Enter skips");
+    expect(plain(rich.next({ agents: ["Claude Code", "Codex", "Gemini CLI"] })).join("\n"))
+      .toContain("Notes you save reach every new Claude Code, Codex and Gemini CLI session.");
+    const summary = plain(rich.summary({ name: "repo", ms: 1200, commandsSaved: true, findings: [], answers: 2, learning: "running" }));
+    expect(summary).toContain('Your 2 answers reach them as "you said".');
+    expect(summary).toContain("Learn deeper is running in the background · mex jobs");
+  });
+});

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { realPath } from "../src/record/project.js";
 import { KILL_AT_VARIABLE, KILL_POINTS } from "../src/repo-start/command.js";
+import { AGENT_VARIABLES } from "../src/repo-start/caller.js";
 
 const cli = resolve("dist/cli.js"), temps: string[] = [];
 afterEach(() => { for (const path of temps.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -19,7 +20,9 @@ function fixture() {
   writeFileSync(join(root, "README.md"), "# demo\n");
   git(root, "add", "."); git(root, "commit", "-qm", "init");
   const env: NodeJS.ProcessEnv = { ...process.env, MEX_HOME: base, HOME: base, USERPROFILE: base, MEX_TELEMETRY: "0", MEX_BACKGROUND: "0", MEX_INSTALL_AUTO: "0", MEX_OFFLINE: "1" };
-  delete env.CLAUDECODE; delete env.CODEX_THREAD_ID; delete env.NO_COLOR;
+  // Tests run from inside agents too: none of their variables may make this run an agent's.
+  for (const key of AGENT_VARIABLES) delete env[key];
+  delete env.NO_COLOR;
   const exclude = join(root, ".git", "info", "exclude");
   return {
     base, root, env, exclude, home: join(base, ".mex"),

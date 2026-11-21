@@ -24,7 +24,11 @@ export interface CodeFactsFile {
   skipped: null | "shallow clone" | "no git" | "no commits";
   change_together: Array<{ a: string; b: string; confidence: number; support: number; kind: "test" | "mirror" | "related" }>;
   layer_rules: Array<{ from: string; to: string; imports: number }>;
+  /** Near-rules the code breaks in a few places today; setup asks whether those imports are allowed. */
+  layer_exceptions?: Array<{ from: string; to: string; imports: number; back: number; files: string[] }>;
   generated: Array<{ path: string; signal: "marker" | "gitattributes" | "history" }>;
+  /** Generated files that commits changed on their own; setup asks whether that is allowed. */
+  hand_edited?: Array<{ path: string; commits: number }>;
   /** Why layer rules are empty when they couldn't be computed. */
   layers_skipped?: "no file index" | "file index not refreshed";
 }
@@ -112,6 +116,7 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
   // The root package is no unit: its path is "", or "." in recipes.json files written before pnpm's `packages: ['.']` was read as the root.
   const packages = (recipes?.packages ?? []).filter(pkg => pkg.path !== "" && pkg.path !== ".");
   let layerRules: CodeFactsFile["layer_rules"] = [];
+  let layerExceptions: NonNullable<CodeFactsFile["layer_exceptions"]> = [];
   let layersSkipped: CodeFactsFile["layers_skipped"];
   const [{ openIndex }, { buildIndex }] = await Promise.all([import("../../file-index/read.js"), import("../../file-index/build.js")]);
   // The index can lag the checkout: a file the agent edited and git then reverted outside a session
@@ -128,6 +133,7 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
   else {
     try {
       const edges = new Map<string, Map<string, number>>();
+      const files = new Map<string, string[]>();
       for (const file of index.importsByFile(MAX_FILES)) {
         const from = mine.unitOf(file.path, packages.map(pkg => pkg.path));
         if (!from) continue;
@@ -137,9 +143,13 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
           let row = edges.get(from);
           if (!row) edges.set(from, row = new Map());
           row.set(to, (row.get(to) ?? 0) + 1);
+          const pair = files.get(`${from}\0${to}`);
+          if (!pair) files.set(`${from}\0${to}`, [file.path]);
+          else if (pair.length < 3 && !pair.includes(file.path)) pair.push(file.path);
         }
       }
       layerRules = mine.layerRules(edges);
+      layerExceptions = mine.layerExceptions(edges, files);
     } finally { index.close(); }
   }
 
@@ -147,6 +157,8 @@ export async function buildCodeFacts(root: string, projectId: string, location: 
     version: 1, built_at: new Date().toISOString(), checkout: root, head, commits_read: commits.length, skipped: null,
     change_together: mine.changeTogether(commits, keep, mine.PAIR_PARAMS, path => generated.has(path)),
     layer_rules: layerRules,
+    layer_exceptions: layerExceptions,
+    hand_edited: mine.handEdited(commits, generated),
     generated: [...generated].map(([path, signal]) => ({ path, signal })).sort((a, b) => a.path.localeCompare(b.path)).slice(0, mine.HISTORY_LIMITS.generated),
     ...(layersSkipped ? { layers_skipped: layersSkipped } : {}),
   };

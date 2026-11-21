@@ -19,6 +19,7 @@ import type { RecipesFile } from "../recipes/index.js";
 import { scriptCommand } from "../recipes/node.js";
 import { pointer, record, RepoFiles, strings } from "../recipes/source.js";
 import type { CodeFactsFile } from "./job.js";
+import { answeredHandEdits } from "../questions/answers.js";
 import { attributeGenerated, attributeMatcher, generatedMarker, generatorTool, historyGenerators } from "./mine.js";
 
 export const FACT_LIMITS = Object.freeze({
@@ -147,7 +148,7 @@ export async function proposeCodeFacts(input: CodeFactEntriesInput, options: Cod
   if (small) notes.push(`small repo: ${plural(facts.commits_read, "commit")}, ${plural(sourceFiles, "source file")}; mined facts skipped`);
 
   const types: Record<FactType, TypeDrafts> = {
-    generated: generatedDrafts(checkout, tracked, facts, input.commits, small),
+    generated: generatedDrafts(checkout, tracked, facts, input.commits, small, answeredHandEdits(location, projectId)),
     layer: small ? emptyType() : layerDrafts(facts, recipes),
     ci: ciDrafts(checkout, recipes),
     env: envDrafts(checkout, tracked, recipes),
@@ -268,7 +269,8 @@ export function ignoreStyleGlob(raw: string, directoryContents: boolean): string
 }
 const repoWide = (glob: string) => /^(?:\*\*\/)*(?:\*\*|\*|\*\*\/\*)$/u.test(glob);
 
-function generatedDrafts(checkout: string, tracked: string[], facts: CodeFactsFile, commits: CodeFactEntriesInput["commits"], small: boolean): TypeDrafts {
+function generatedDrafts(checkout: string, tracked: string[], facts: CodeFactsFile, commits: CodeFactEntriesInput["commits"], small: boolean,
+  handEditsAllowed: ReadonlySet<string> = new Set()): TypeDrafts {
   const out = emptyType();
   const covered = new Set<string>();
   const add = (draft: Draft) => { if (out.drafts.length < FACT_LIMITS.generated) out.drafts.push(draft); else out.capped = true; };
@@ -304,7 +306,8 @@ function generatedDrafts(checkout: string, tracked: string[], facts: CodeFactsFi
   const trackedSet = new Set(tracked);
   const markers = new Map<string, { literal: string; tool?: string }>();
   for (const item of facts.generated) {
-    if (item.signal !== "marker" || covered.has(item.path) || !trackedSet.has(item.path)) continue;
+    // A person said this file is edited by hand (setup questions): no pitfall says otherwise.
+    if (item.signal !== "marker" || covered.has(item.path) || !trackedSet.has(item.path) || handEditsAllowed.has(item.path)) continue;
     const head = readHead(checkout, item.path);
     const literal = generatedMarker(head);
     if (literal) markers.set(item.path, { literal, tool: generatorTool(head) });
@@ -411,7 +414,7 @@ function groupMarkers(tracked: string[], markers: ReadonlyMap<string, unknown>):
 // ── Layer rules ──
 
 /** A package name precise enough to ban: scoped, or with a separator, so its quoted form never reads as a plain word. */
-const preciseName = (name: string) => /^@[a-z0-9][\w.-]*\/[\w.-]+$/iu.test(name) || /^[a-z0-9][\w-]*[-._][\w.-]+$/iu.test(name);
+export const preciseName = (name: string) => /^@[a-z0-9][\w.-]*\/[\w.-]+$/iu.test(name) || /^[a-z0-9][\w-]*[-._][\w.-]+$/iu.test(name);
 
 function layerDrafts(facts: CodeFactsFile, recipes: RecipesFile | undefined): TypeDrafts {
   const out = emptyType();

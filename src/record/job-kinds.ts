@@ -13,6 +13,8 @@ import "../learn-deeper/job.js";
 import "../knowledge/fail-pass-job.js";
 import "../repo-start/refresh.js";
 import { SESSION_LEARN_KIND } from "../knowledge/session-learning.js";
+// Last, so a stand-in only fills a kind no ticket has registered yet.
+import "../repo-start/standins.js";
 
 /**
  * Built-in job kinds. Later tickets add theirs (learning, judging, graph builds) the
