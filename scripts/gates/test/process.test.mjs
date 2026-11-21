@@ -13,6 +13,12 @@ test('process runner preserves UTF-8 output and distinguishes missing tools', as
   assert.equal((await runProcess('mex-gate-nonexistent-command', [])).reason, 'tool-unavailable');
 });
 
+test('process runner supplies stdin and closes the pipe', async () => {
+  const result = await runProcess(process.execPath, ['-e', "process.stdin.pipe(process.stdout)"], { input: 'replay\n' });
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, 'replay\n');
+});
+
 test('process runner bounds output and terminates a hanging process', async () => {
   const overflow = await runProcess(process.execPath, ['-e', "process.stdout.write('x'.repeat(4096));setInterval(()=>{},1000)"], { maxBytes: 128, timeoutMs: 5000 });
   assert.equal(overflow.reason, 'output-limit');

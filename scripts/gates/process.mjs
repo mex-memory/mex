@@ -3,10 +3,10 @@ import { join } from 'node:path';
 
 // Children cannot leave the runner waiting forever on a grandchild's pipe.
 // No shell, corpus-supplied command, or unbounded diagnostic output is used.
-export function runProcess(command, args, { cwd, env = process.env, timeoutMs = 120_000, maxBytes = 2 * 1024 * 1024 } = {}) {
+export function runProcess(command, args, { cwd, env = process.env, input, timeoutMs = 120_000, maxBytes = 2 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(command, args, { cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { child = spawn(command, args, { cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] }); }
     catch { resolve({ reason: 'tool-unavailable', code: null, stdout: '' }); return; }
     const output = [];
     let bytes = 0, reason, settled = false, force, deadline, finishDeadline;
@@ -28,6 +28,7 @@ export function runProcess(command, args, { cwd, env = process.env, timeoutMs = 
       // closed its pipes and ignored SIGTERM while remaining in the group.
       if (!reason) clearTimeout(force);
       clearTimeout(finishDeadline);
+      child.stdin?.destroy();
       child.stdout.destroy(); child.stderr.destroy();
       resolve({ code, reason, stdout: Buffer.concat(output).toString('utf8') });
     };
@@ -47,5 +48,9 @@ export function runProcess(command, args, { cwd, env = process.env, timeoutMs = 
     child.on('error', () => { reason = 'tool-unavailable'; finish(null); });
     child.on('close', (code, signal) => { if (signal && !reason) { reason = 'interrupted'; kill(true); } finish(code); });
     deadline = setTimeout(() => stop('timeout'), timeoutMs);
+    if (child.stdin) {
+      child.stdin.on('error', () => { /* The child can close before reading. */ });
+      child.stdin.end(input);
+    }
   });
 }
