@@ -117,6 +117,18 @@ export interface GraphRefreshResult extends IndexJobResult {
     projects: Readonly<Record<string, string>>;
     notes: ReadonlyArray<{ project: string; note: string }>;
   };
+  /**
+   * What the Rust graph engine built, while `MEX_GRAPH_ENGINE_LANGUAGES`
+   * hands it languages. Optional and additive.
+   */
+  engine?: {
+    languages: readonly string[];
+    files: number;
+    fallbackFiles: number;
+    fellBack?: string;
+    wallMs?: number;
+    peakRssMb?: number;
+  };
   /** How a refresh did its work. Optional and additive; absent from a rebuild. */
   refresh?: GraphRefreshWork;
 }

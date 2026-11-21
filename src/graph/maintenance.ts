@@ -788,6 +788,7 @@ function maintenanceResult(
       ? { declinedInputs: build.declinedInputs }
       : {}),
     ...(build.typescript ? { typescript: build.typescript } : {}),
+    ...(build.engine ? { engine: build.engine } : {}),
     ...(build.refresh ? { refresh: build.refresh } : {}),
     ...(published.recoveryPath ? { recoveryPath: published.recoveryPath } : {}),
   };

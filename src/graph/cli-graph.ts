@@ -79,6 +79,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
         ? { declinedInputs: result.declinedInputs }
         : {}),
       ...(result.typescript ? { typescript: result.typescript } : {}),
+      ...(result.engine ? { engine: result.engine } : {}),
     }, null, 2));
     return;
   }
@@ -95,6 +96,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
   printTypeScriptReport(result.typescript);
+  printEngineReport(result.engine);
 }
 
 /**
@@ -109,6 +111,18 @@ function printTypeScriptReport(report: GraphRefreshResult["typescript"]): void {
   }
   const omitted = report.notes.length - Math.min(report.notes.length, MAX_SKIPPED_PATHS_SHOWN);
   if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
+}
+
+function printEngineReport(report: GraphRefreshResult["engine"]): void {
+  if (!report) return;
+  const languages = report.languages.join(", ");
+  if (report.fellBack) {
+    console.log(`Rust graph engine not used for ${languages}: ${report.fellBack}. Today's extractors built those files.`);
+    return;
+  }
+  const usage = report.wallMs === undefined ? "" : ` in ${report.wallMs}ms, peak ${report.peakRssMb} MiB`;
+  const fallback = report.fallbackFiles > 0 ? `; ${report.fallbackFiles} changed during the build and were extracted as today` : "";
+  console.log(`Rust graph engine built ${report.files} ${languages} file(s)${usage}${fallback}.`);
 }
 
 /**
@@ -214,6 +228,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
   printSkippedSources(result.skipped);
   printDeclinedInputs(result.declinedInputs);
   printTypeScriptReport(result.typescript);
+  printEngineReport(result.engine);
   if (result.recoveryPath) {
     console.log(`Previous index retained for local recovery: ${result.recoveryPath}`);
   }

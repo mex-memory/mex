@@ -52,6 +52,21 @@ export interface GraphTypeScriptReport {
   notes: Array<{ project: string; note: string }>;
 }
 
+/** What the Rust graph engine (OSS-73) built in one pass. */
+export interface GraphEngineReport {
+  /** The languages it was asked to build. */
+  languages: string[];
+  /** Files whose rows came from the engine. */
+  files: number;
+  /** Files today's extractors built instead, because they changed while the engine read them. */
+  fallbackFiles: number;
+  /** Why today's extractors built every file instead, when they did. */
+  fellBack?: string;
+  /** The engine job's elapsed time and peak sampled memory. */
+  wallMs?: number;
+  peakRssMb?: number;
+}
+
 export interface BuildResult {
   filesIndexed: number;
   nodesCreated: number;
@@ -81,6 +96,11 @@ export interface BuildResult {
    * Absent when the corpus has no TypeScript or JavaScript.
    */
   typescript?: GraphTypeScriptReport;
+  /**
+   * What the Rust graph engine built, while `MEX_GRAPH_ENGINE_LANGUAGES`
+   * hands it languages. Absent otherwise.
+   */
+  engine?: GraphEngineReport;
   /** How a refresh did its work (issue #209). Absent from a clean build. */
   refresh?: GraphRefreshReport;
 }
