@@ -38,13 +38,15 @@ func graphRead(stdin io.Reader, stdout io.Writer) int {
 	}
 
 	var files graph.Files = graph.DiskFiles{Root: req.Checkout}
-	isTest := func(string) bool { return false }
+	isTest := graph.TestPath
 	if ix, err := index.Open(req.RecordDirectory, req.ProjectID, req.Checkout); err == nil {
 		defer ix.Close()
 		files = ix
 		isTest = func(path string) bool {
-			info, miss := ix.FileInfo(path)
-			return miss == nil && info.IsTest
+			if t, known := ix.TestFlag(path); known {
+				return t
+			}
+			return graph.TestPath(path)
 		}
 	}
 	store, err := graph.OpenStore(req.RecordDirectory, req.ProjectID, req.Checkout, isTest)
@@ -58,7 +60,7 @@ func graphRead(stdin io.Reader, stdout io.Writer) int {
 	}
 	defer store.Close()
 
-	answer, err := graph.Ask(store, files, op, req.Name)
+	answer, err := graph.Ask(store, files, graph.DiskSource(req.Checkout), op, req.Name)
 	if err != nil {
 		_ = enc.Encode(checkFailure{Error: err.Error()})
 		return 1

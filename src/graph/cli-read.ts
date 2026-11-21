@@ -5,8 +5,9 @@ import { graphLocation } from "./storage.js";
 export type GraphQuestion = "callers" | "callees" | "impact" | "tests";
 
 interface GraphSymbol { id: string; name: string; path: string; start: number; end: number; kind: string; signature?: string }
-interface GraphSite { path: string; line: number; in: GraphSymbol; kind: "call" | "value" }
-interface GraphTest { test: GraphSymbol; reach: "direct" | "via-caller" }
+interface GraphSite { path: string; line: number; in: GraphSymbol; owner?: GraphSymbol; kind: "call" | "value" }
+interface GraphTest { test: GraphSymbol; line: number; reach: "direct" | "via-caller" }
+interface GraphMatch extends GraphSymbol { query?: string }
 
 /** The Go reader's answer (native/graph/answer.go). */
 export interface GraphAnswer {
@@ -16,11 +17,13 @@ export interface GraphAnswer {
   as_of: string;
   verdict: "found" | "none" | "unknown" | "ambiguous" | "missing";
   symbol?: GraphSymbol;
-  matches?: GraphSymbol[];
+  matches?: GraphMatch[];
   sites?: GraphSite[];
   tests?: GraphTest[];
   dropped: number;
   unresolved: number;
+  /** Files changed since the build that use the name; -1 when it couldn't be told. */
+  changed: number;
   complete: boolean;
 }
 
@@ -29,6 +32,8 @@ export class GraphReadError extends Error {
 }
 
 const READ_TIMEOUT_MS = 30_000;
+/** Lines of uses or tests printed before the rest is counted. */
+const SHOWN = 25;
 
 /** Ask the native graph reader one question about a name. Never builds or refreshes. */
 export function askGraph(question: GraphQuestion, name: string, options: { root?: string; binary?: string | null; env?: NodeJS.ProcessEnv } = {}): GraphAnswer {
@@ -54,43 +59,70 @@ function where(symbol: GraphSymbol): string {
   return `${symbol.path}:${symbol.start}${symbol.end > symbol.start ? `-${symbol.end}` : ""}`;
 }
 
+/** An anonymous callback ("<callback:it[1]>") reads as the call it's passed to. */
+function named(symbol: GraphSymbol): string {
+  const callback = /^<callback:([^[>]+)/u.exec(symbol.name);
+  if (!callback) return symbol.name;
+  return callback[1] === "ReturnStatement" || callback[1] === "BinaryExpression" ? "a callback" : `a ${callback[1]}() callback`;
+}
+
+function inWhat(site: GraphSite): string {
+  if (site.owner) return site.owner.name;
+  return named(site.in);
+}
+
+function plural(n: number, word: string): string { return `${n} ${word}${n === 1 ? "" : "s"}`; }
+
 /** The answer as lines a person reads. */
 export function renderGraphAnswer(answer: GraphAnswer): string[] {
   const lines: string[] = [];
   const asOf = `(graph as of ${answer.as_of})`;
   if (answer.verdict === "missing") return [`No definition named ${answer.name} in the graph ${asOf}.`];
   if (answer.verdict === "ambiguous") {
-    lines.push(`${answer.name} names ${answer.matches?.length ?? 0} definitions ${asOf}; name one by its file:`);
-    for (const match of answer.matches ?? []) lines.push(`  ${match.kind} ${match.name}  ${where(match)}`);
+    lines.push(`${answer.name} names ${answer.matches?.length ?? 0} definitions ${asOf}. Ask about one of them:`);
+    for (const match of answer.matches ?? []) {
+      lines.push(`  ${match.query ? `mex graph ${answer.op} ${match.query}` : `${match.kind} ${match.name}`}  (${match.kind} at ${where(match)})`);
+    }
     return lines;
   }
   const symbol = answer.symbol!;
   lines.push(`${symbol.kind} ${symbol.name}  ${where(symbol)}  ${asOf}`);
   if (symbol.signature) lines.push(`  ${symbol.signature}`);
-  const label = answer.op === "callees" ? "Calls" : answer.op === "impact" ? "Impact (callers, two levels)" : answer.op === "tests" ? "Tests" : "Callers";
   if (answer.op === "tests") {
-    if (answer.tests?.length) {
-      lines.push(`${label}:`);
-      for (const test of answer.tests) lines.push(`  ${test.reach === "direct" ? "direct" : "through a tested caller"}  ${test.test.name}  ${where(test.test)}`);
+    const tests = answer.tests ?? [];
+    if (tests.length) {
+      const direct = tests.filter((t) => t.reach === "direct");
+      const via = tests.filter((t) => t.reach !== "direct");
+      for (const [label, list] of [["Direct tests", direct], ["Tests that reach it through a caller", via]] as const) {
+        if (!list.length) continue;
+        lines.push(`${label} (${list.length}):`);
+        for (const t of list.slice(0, SHOWN)) lines.push(`  ${t.test.path}:${t.line || t.test.start}  in ${named(t.test)}`);
+        if (list.length > SHOWN) lines.push(`  +${list.length - SHOWN} more`);
+      }
     }
   } else if (answer.sites?.length) {
-    lines.push(`${label}:`);
-    for (const site of answer.sites) {
-      const target = answer.op === "callees" ? site.in.name : site.in.name;
-      lines.push(`  ${site.path}:${site.line}  ${site.kind === "value" ? "passes" : answer.op === "callees" ? "calls" : "in"} ${target}`);
+    const sites = answer.sites;
+    const label = answer.op === "callees" ? "Calls" : answer.op === "impact" ? "Impact (callers, two levels)" : "Callers";
+    lines.push(`${label} (${sites.length}):`);
+    for (const site of sites.slice(0, SHOWN)) {
+      if (answer.op === "callees") lines.push(`  ${site.path}:${site.line}  ${site.kind === "value" ? "passes" : "calls"} ${site.in.name}  (${where(site.in)})`);
+      else lines.push(`  ${site.path}:${site.line}  ${site.kind === "value" ? "passed as a value in" : "in"} ${inWhat(site)}`);
     }
+    if (sites.length > SHOWN) lines.push(`  +${sites.length - SHOWN} more (--json lists every one)`);
   }
-  const none = answer.op === "tests" ? "No tests" : answer.op === "callees" ? "Calls nothing" : "No callers";
-  if (answer.verdict === "none") lines.push(`${none}: every file is indexed.`);
+  const none = answer.op === "tests" ? "No tests" : answer.op === "callees" ? "No calls into other code" : "No callers";
+  if (answer.verdict === "none") lines.push(`${none}: every file is indexed and none changed since the build uses it.`);
   if (answer.verdict === "unknown") {
     const why = [
       !answer.complete ? "some files are not indexed" : "",
-      answer.dropped ? `${answer.dropped} result${answer.dropped === 1 ? "" : "s"} in changed files no longer hold` : "",
-      answer.unresolved ? `${answer.unresolved} dynamic use${answer.unresolved === 1 ? "" : "s"} could not be resolved` : "",
+      answer.dropped ? `${plural(answer.dropped, "result")} in changed files no longer hold` : "",
+      answer.unresolved ? `${plural(answer.unresolved, answer.op === "callees" ? "call" : "dynamic use")} could not be resolved` : "",
+      answer.changed > 0 ? `${plural(answer.changed, "file")} changed since the build use the name` : "",
+      answer.changed < 0 && answer.complete && !answer.dropped && !answer.unresolved ? "files changed since the build could not be checked" : "",
     ].filter(Boolean).join("; ");
     lines.push(`${answer.op === "tests" ? "Tests" : answer.op === "callees" ? "Calls" : "Callers"} unknown${why ? `: ${why}` : ""}.`);
   } else if (answer.verdict === "found" && answer.dropped > 0) {
-    lines.push(`${answer.dropped} result${answer.dropped === 1 ? "" : "s"} in files changed since the build no longer hold and are left out.`);
+    lines.push(`${plural(answer.dropped, "result")} in files changed since the build no longer hold and are left out.`);
   }
   return lines;
 }

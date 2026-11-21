@@ -92,7 +92,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
     const action = result.operation === "refresh" ? "refreshed" : "built";
     console.log(
       `Code graph ${action}: ${result.nodesCreated} nodes, ${result.edgesCreated} edges `
-        + `across ${result.filesIndexed} files in ${result.durationMs}ms → .mex/graph.db`,
+        + `across ${result.filesIndexed} files in ${result.durationMs}ms`,
     );
   }
   if (upgrade.upgraded > 0) {

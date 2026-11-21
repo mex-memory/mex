@@ -548,13 +548,13 @@ graphCommand
 
 for (const [question, description] of [
   ["callers", "Who calls a symbol, re-checked against today's files"],
-  ["callees", "What a symbol calls"],
+  ["callees", "What a symbol calls, including from functions nested in it"],
   ["impact", "Callers two levels up: what a change to a symbol reaches"],
   ["tests", "Tests that cover a symbol, directly or through a tested caller"],
 ] as const) {
   graphCommand
     .command(`${question} <symbol>`)
-    .description(description)
+    .description(`${description}. Name it as name, Owner.name or path/to/file.ts:name`)
     .option("--json", "Output the answer as JSON")
     .option("--root <dir>", "Project root (defaults to current directory)")
     .action(async (symbol: string, opts) => {

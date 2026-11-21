@@ -117,7 +117,41 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
   it("says no callers only when every file is indexed", () => {
     const answer = ask("callers", "lonely");
     expect(answer.verdict).toBe("none");
-    expect(renderGraphAnswer(answer).join("\n")).toContain("No callers: every file is indexed.");
+    expect(renderGraphAnswer(answer).join("\n")).toContain("No callers: every file is indexed and none changed since the build uses it.");
+  });
+
+  it("doesn't say none when a file added since the build calls the name", async () => {
+    writeFileSync(join(checkout, "src", "late.ts"), `import { lonely } from "./shapes";\nexport const late = lonely();\n`);
+    try {
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+      const answer = ask("callers", "lonely");
+      expect(answer.verdict).toBe("unknown");
+      expect(answer.changed).toBe(1);
+      expect(renderGraphAnswer(answer).join("\n")).toContain("1 file changed since the build use the name");
+    } finally {
+      rmSync(join(checkout, "src", "late.ts"));
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+    }
+  });
+
+  it("drops a caller whose call is gone though its function is still there", async () => {
+    writeFileSync(join(checkout, "src", "use.ts"), USE.replace("return String(area(2));", "return String(2);"));
+    try {
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+      const answer = ask("callers", "area");
+      const names = answer.sites!.map((site) => `${site.in.name}:${site.kind}`);
+      expect(names).not.toContain("report:call");
+      expect(names).toContain("unit:call");
+      expect(answer.dropped).toBeGreaterThan(0);
+    } finally {
+      writeFileSync(join(checkout, "src", "use.ts"), USE);
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+    }
+  });
+
+  it("takes a file or an owner with the name", () => {
+    expect(ask("callers", "src/shapes.ts:area").verdict).toBe("found");
+    expect(ask("callers", "src/use.ts:area").verdict).toBe("missing");
   });
 
   it("re-checks a caller in a file changed since the build, and drops it when it no longer holds", () => {
