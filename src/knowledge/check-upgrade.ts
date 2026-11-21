@@ -8,8 +8,12 @@
  * evaluator. Fingerprints are computed for those definitions and nothing else.
  *
  * Personal entries only: team entries live in git, and a rewrite there is a
- * change a person commits. A check the graph can't place is left as it is.
- * No model, no network; running it again finds nothing more to do.
+ * change a person commits. And only entries a person wrote, or older ones no
+ * producer owns (0.8 groundings): every other producer wrote its checks
+ * through the gate and re-derives them itself (code facts re-count weekly,
+ * learn deeper re-checks its sources), so a rewrite here would fight it. A
+ * check the graph can't place is left as it is. No model, no network;
+ * running it again finds nothing more to do.
  */
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
@@ -22,6 +26,7 @@ import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { nativeBinary } from "./check.js";
 import { replacePersonalFields } from "./mutations.js";
 import { symbolsIn } from "./note-checks.js";
+import { entryProducer } from "./producers.js";
 
 /** The node kinds a symbol check can name: the graph reader's definitions. */
 const DEFINITIONS = ["class", "struct", "interface", "trait", "protocol", "function", "method",
@@ -90,6 +95,8 @@ function personalEntries(directory: string): Array<{ id: string; content: string
       if (!content) continue;
       const entry = parseEntry(content);
       if (entry.mex.id !== name.slice(0, -3) || entry.mex.status === "retired") continue;
+      const owner = entryProducer({ id: entry.mex.id, source: entry.mex.source });
+      if (owner !== "note" && owner !== "unknown") continue;
       out.push({ id: entry.mex.id, content, entry });
     } catch { /* an unreadable entry is the store gates' to report */ }
   }

@@ -189,6 +189,16 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     expect(after.text).toBe(entry.text);
     // Nothing more to do the second time.
     expect(upgradeEntryChecks(options).upgraded).toBe(0);
+
+    // A producer that wrote its checks through the gate keeps them: it re-derives them itself.
+    const mined = "mx_fact" + "0".repeat(31) + "1";
+    createEntryFile(notes, mined, serializeEntry(validateEntry({
+      mex: { id: mined, kind: "pitfall", scope: ["src/**"], source: { type: "mined", ref: "src/shapes.ts", producer: "code-facts" }, evidence: "mined",
+        one_line: "`area` is generated; regenerate it.", checks: [source], status: "active", created: "2026-11-20" },
+      text: "`area` comes from the generator; edit the template, not `area`.",
+    })));
+    expect(upgradeEntryChecks(options).upgraded).toBe(0);
+    expect(parseEntry(readEntryFile(join(notes, `${mined}.md`))!).mex.checks.map((check) => check.kind)).toEqual(["source"]);
   });
 
   it("records calls relations from the graph", () => {
