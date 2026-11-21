@@ -241,9 +241,18 @@ func ChangedUses(r Reader, files Files, src Source, name string) int {
 		return -1
 	}
 	built := r.BuiltFiles()
+	// Only files of a kind the graph builds can hold uses it can't show: a
+	// Python file in a TypeScript graph was never left out by a build.
+	kinds := map[string]bool{}
+	for path := range built {
+		kinds[strings.ToLower(filepath.Ext(path))] = true
+	}
 	var changed []string
 	for path, hash := range indexed {
 		if want, ok := built[path]; ok && hash != "" && hash == want {
+			continue
+		}
+		if !kinds[strings.ToLower(filepath.Ext(path))] {
 			continue
 		}
 		changed = append(changed, path)

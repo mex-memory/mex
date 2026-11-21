@@ -316,6 +316,18 @@ func TestAskNeverOverclaims(t *testing.T) {
 		t.Fatalf("new file: %+v", a)
 	}
 	delete(f.hashes, "src/new.ts")
+	// A file of a kind the graph never builds can't hold a use it missed.
+	f.hashes["tools/gen.py"] = "p"
+	src3 := func(p string) []string {
+		if p == "tools/gen.py" {
+			return []string{"parseRoute('/x')"}
+		}
+		return src(p)
+	}
+	if a, _ := Ask(g, files, src3, OpCallers, "parseRoute"); a.Verdict != None || a.Changed != 0 {
+		t.Fatalf("other kind: %+v", a)
+	}
+	delete(f.hashes, "tools/gen.py")
 	// Without a listing of the files, absence can't be told.
 	if a, _ := Ask(g, f, src, OpCallers, "parseRoute"); a.Verdict != Unknown || a.Changed != -1 {
 		t.Fatalf("no listing: %+v", a)

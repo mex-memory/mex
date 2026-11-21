@@ -120,6 +120,21 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     expect(renderGraphAnswer(answer).join("\n")).toContain("No callers: every file is indexed and none changed since the build uses it.");
   });
 
+  it("still says none when only docs or files of a kind the graph never builds name it", async () => {
+    writeFileSync(join(checkout, "NOTES.md"), "Call `lonely()` once at start.\n");
+    writeFileSync(join(checkout, "tool.py"), "lonely()\n");
+    try {
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+      const answer = ask("callers", "lonely");
+      expect(answer.verdict).toBe("none");
+      expect(answer.changed).toBe(0);
+    } finally {
+      rmSync(join(checkout, "NOTES.md"));
+      rmSync(join(checkout, "tool.py"));
+      await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
+    }
+  });
+
   it("doesn't say none when a file added since the build calls the name", async () => {
     writeFileSync(join(checkout, "src", "late.ts"), `import { lonely } from "./shapes";\nexport const late = lonely();\n`);
     try {

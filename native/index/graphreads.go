@@ -1,6 +1,11 @@
 package index
 
-import "github.com/mex-memory/mex/native/index/shift"
+import (
+	"runtime"
+	"sync"
+
+	"github.com/mex-memory/mex/native/index/shift"
+)
 
 // Reads the code graph needs from the file index: which files the hook has
 // edited since their parse, test flags that hold while a file is edited, and
@@ -27,28 +32,61 @@ func (r *Reader) TestFlag(path string) (isTest, known bool) {
 	return row.isTest == 1, true
 }
 
-// CodeFiles lists every indexed file that has a language, with the hash it
-// was parsed at. A file edited since its parse, or (with disk) changed on
+// CodeFiles lists every indexed code file (a file with a language other than
+// "other": docs and config are never code), with the hash it was parsed at. A file edited since its parse, or (with disk) changed on
 // disk some other way, lists with an empty hash: its content is unknown here.
 func (r *Reader) CodeFiles(disk bool) (map[string]string, error) {
-	rows, err := r.db.Query("SELECT path,hash,mtime_ns FROM paths WHERE reason IS NULL AND hash IS NOT NULL AND lang IS NOT NULL")
+	rows, err := r.db.Query("SELECT path,hash,mtime_ns FROM paths WHERE reason IS NULL AND hash IS NOT NULL AND lang IS NOT NULL AND lang <> 'other'")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]string{}
+	type file struct{ path, hash, mtime string }
+	var list []file
 	for rows.Next() {
-		var path, hash, mtime string
-		if err := rows.Scan(&path, &hash, &mtime); err != nil {
+		var f file
+		if err := rows.Scan(&f.path, &f.hash, &f.mtime); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		pending := shiftsFor(r, path, mtime)
-		if len(pending) > 0 || disk && r.changedOnDisk(path, mtime, pending) {
-			hash = ""
-		}
-		out[path] = hash
+		list = append(list, f)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	// One listing of the shifts, then the per-file checks in parallel: a
+	// large checkout has tens of thousands of files to stat.
+	shifted := shift.ShiftedPaths(r.directory, r.key)
+	unknown := make([]bool, len(list))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > 8 {
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := w; i < len(list); i += workers {
+				f := list[i]
+				var pending []shift.Shift
+				if shifted.Has(f.path) {
+					pending = shiftsFor(r, f.path, f.mtime)
+				}
+				unknown[i] = len(pending) > 0 || disk && r.changedOnDisk(f.path, f.mtime, pending)
+			}
+		}(w)
+	}
+	wg.Wait()
+	out := make(map[string]string, len(list))
+	for i, f := range list {
+		if unknown[i] {
+			f.hash = ""
+		}
+		out[f.path] = f.hash
+	}
+	return out, nil
 }
 
 func shiftsFor(r *Reader, rel, mtime string) []shift.Shift {
