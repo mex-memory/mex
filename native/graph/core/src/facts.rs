@@ -10,7 +10,9 @@
 //!
 //! Indices: `defs`, `scopes` and `calls` refer to each other by position in
 //! their own vector; `-1` (as [`NONE`]) means the file or the module scope.
-//! Positions are UTF-8 byte offsets plus 0-based line and UTF-8 column.
+//! Positions are UTF-8 byte offsets plus a 0-based line and a column in
+//! UTF-16 code units: the unit today's graph stores (web-tree-sitter indexes a
+//! JavaScript string), so spans read the same whichever engine wrote them.
 
 use serde::{Deserialize, Serialize};
 
@@ -171,9 +173,17 @@ pub struct Def {
     pub return_type: Option<String>,
     /// SHA-256 of the normalized body, for drift checks.
     pub body_hash: Option<[u8; 32]>,
-    /// Normalized syntax tokens for the MinHash fingerprint.
-    pub fingerprint_tokens: Option<Vec<u32>>,
+    /// The MinHash sketch of the definition's syntax tokens, computed while
+    /// its tree is still alive so the tree can be freed straight after.
+    pub sketch: Option<SketchFacts>,
     pub docstring: Option<String>,
+}
+
+/// A definition's sketch: 64 minima and the number of tokens behind them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SketchFacts {
+    pub minhash: Vec<u32>,
+    pub token_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
