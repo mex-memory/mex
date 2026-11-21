@@ -71,9 +71,14 @@ function readAll(dir) {
   }
 }
 
+const CORPUS_IGNORED = new Set(["node_modules", "dist", "build", "coverage", "out"]);
+
 function writeEngineRequest(root, home, output) {
   const paths = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 1 << 28 })
-    .split("\0").filter(Boolean);
+    .split("\0").filter(Boolean)
+    // Today's corpus policy: hidden paths are skipped (dot: false), and so
+    // are these folders (GRAPH_CORPUS_IGNORE_GLOBS in src/graph/corpus-policy.ts).
+    .filter((path) => !path.split("/").some((part) => part.startsWith(".") || CORPUS_IGNORED.has(part)));
   const files = paths.map((path) => ({ path, size: lstatSync(join(root, path), { throwIfNoEntry: false })?.size ?? 0 }));
   const request = join(home, "request.json");
   writeFileSync(request, JSON.stringify({
