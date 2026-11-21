@@ -62,13 +62,19 @@ func TestFullTestRun(t *testing.T) {
 		"pytest -q":      true,
 		"npx vitest run --config vitest.config.ts": true,
 		"cd app && npm test":                       true,
-		"npx vitest run src/a.test.ts":             false,
-		"go test ./internal/hook/":                 false,
-		"go test -run TestX ./...":                 false,
-		"pytest -k parse":                          false,
-		"npx jest -t 'routes work'":                false,
-		"npm run build":                            false,
-		"ls":                                       false,
+		// A workspace package's whole suite: the package is not a file.
+		"pnpm --filter @novu/providers run test 2>&1 | tail -30": true,
+		"pnpm --filter=@acme/api test":                           true,
+		"npm test -w @acme/core":                                 true,
+		"yarn workspace @acme/web test":                          true,
+		"pnpm --filter @acme/api test src/a.test.ts":             false,
+		"npx vitest run src/a.test.ts":                           false,
+		"go test ./internal/hook/":                               false,
+		"go test -run TestX ./...":                               false,
+		"pytest -k parse":                                        false,
+		"npx jest -t 'routes work'":                              false,
+		"npm run build":                                          false,
+		"ls":                                                     false,
 	}
 	for command, want := range cases {
 		ev := contract.Event{Kind: contract.PostTool, Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: command}, Output: &contract.ToolOutput{OK: true}}}

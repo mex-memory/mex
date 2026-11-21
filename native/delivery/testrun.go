@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mex-memory/mex/native/graph"
+	"github.com/mex-memory/mex/native/index/shift"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
 	"github.com/mex-memory/mex/native/internal/tokens"
@@ -18,12 +19,13 @@ import (
 // the run, not before it: context a host adds before a tool lands after the
 // tool's result (measured on Claude Code), so it could never replace that
 // run. Its value is what the run's output cost; it goes out only when that
-// is several times the card.
+// is at least twice the card. The output is a floor on what a rerun costs:
+// agents often trim it (| tail), and the run's time isn't counted at all.
 
 const (
 	maxChangedSymbols = 32
 	// testRunValueFactor: the run's output must cost this many times the card.
-	testRunValueFactor = 4
+	testRunValueFactor = 2
 )
 
 // fullTestRun reports a shell command that ran a whole test suite: a test
@@ -48,8 +50,12 @@ func fullTestRun(ev contract.Event) bool {
 				strings.HasPrefix(w, "--testNamePattern") || strings.HasPrefix(w, "-testNamePattern") ||
 				strings.HasPrefix(w, "--run=") || strings.HasPrefix(w, "-run="):
 				return false // a name filter
-			case w == "--config" || w == "-c" || w == "--project" || w == "--root" || w == "--dir" || w == "--reporter" || w == "-p":
-				i++ // the flag's value is not a target
+			case w == "--config" || w == "-c" || w == "--project" || w == "--root" || w == "--dir" || w == "--reporter" || w == "-p" ||
+				w == "--filter" || w == "-F" || w == "--workspace" || w == "-w":
+				i++ // the flag's value (a package for --filter or -w) is not a target
+			case strings.HasPrefix(w, "--filter=") || strings.HasPrefix(w, "--workspace="):
+			case i == 2 && words[1] == "workspace":
+				// yarn workspace <package> test: the package, not a target
 			case strings.HasPrefix(w, "-"):
 			case w == "." || w == "./..." || w == "...":
 			case strings.Contains(w, "/") || path.Ext(w) != "":
@@ -99,23 +105,55 @@ func testRunCards(ev contract.Event, env Environment) []answerCard {
 		if isTest(rel) {
 			continue // editing a test is not a change the tests cover
 		}
-		info, miss := ix.FileInfo(rel)
-		outline, omiss := ix.Outline(rel)
-		if miss != nil || omiss != nil {
+		// The file's hash today: the card comes back only after a new edit.
+		// A file changed outside the hook has no index answer until it
+		// re-parses; its text stands in.
+		lines := view.Src(rel)
+		var hash string
+		var outlined []shift.Symbol
+		if info, miss := ix.FileInfo(rel); miss == nil {
+			hash = info.Hash
+		} else if lines != nil {
+			hash = contentHash(strings.Join(lines, "\n"))
+		} else {
 			continue
+		}
+		if outline, miss := ix.Outline(rel); miss == nil {
+			outlined = outline.Symbols
 		}
 		spans := mergeSpans(changed[rel])
 		// The innermost definitions a change touches: a class whose method
 		// changed is not itself changed.
 		touched := map[int]bool{}
-		for i, sym := range outline.Symbols {
+		for i, sym := range outlined {
 			if overlaps(spans, sym.Start, sym.End) {
 				touched[i] = true
 			}
 		}
 		for i := range touched {
-			if p := outline.Symbols[i].Parent; p != nil {
+			if p := outlined[i].Parent; p != nil {
 				delete(touched, *p)
+			}
+		}
+		// An edited definition's lines are let go by the file index until it
+		// re-parses: the graph's definitions, found in today's text, fill in
+		// the ones the outline no longer has.
+		inOutline := map[string]bool{}
+		for _, sym := range outlined {
+			inOutline[sym.Name] = true
+		}
+		var fromGraph []graph.Symbol
+		if lines != nil {
+			if defs, err := store.Declared(rel); err == nil {
+				for _, d := range defs {
+					if inOutline[d.Name] || d.Kind == "class" || d.Kind == "interface" {
+						continue
+					}
+					if now, ok := graph.DeclaredIn(lines, d); ok && overlaps(spans, now.Start, now.End) {
+						d.Hash = hash
+						fromGraph = append(fromGraph, d)
+					}
+				}
 			}
 		}
 		indices := make([]int, 0, len(touched))
@@ -123,14 +161,18 @@ func testRunCards(ev contract.Event, env Environment) []answerCard {
 			indices = append(indices, i)
 		}
 		sort.Ints(indices)
+		for _, d := range fromGraph {
+			if len(symbols) < maxChangedSymbols {
+				symbols = append(symbols, d)
+			}
+		}
 		for _, i := range indices {
-			sym := outline.Symbols[i]
+			sym := outlined[i]
 			def, ok := graphDefinition(store, rel, sym.Name, sym.Kind, sym.Start)
 			if !ok {
 				continue
 			}
-			// The file's hash today: the card comes back only after a new edit.
-			def.Hash = info.Hash
+			def.Hash = hash
 			symbols = append(symbols, def)
 			if len(symbols) >= maxChangedSymbols {
 				break

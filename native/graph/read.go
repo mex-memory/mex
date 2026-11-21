@@ -286,6 +286,10 @@ func still(files Files, s Symbol) (Symbol, bool) {
 	return best, found
 }
 
+// DeclaredIn is declaredInText for readers outside the package: where a
+// built definition is declared in today's lines.
+func DeclaredIn(lines []string, s Symbol) (Symbol, bool) { return declaredInText(lines, s) }
+
 // declaredInText finds a definition's declaration in today's lines, the
 // nearest to where it was built: a line that names it as a declaration (not
 // a call on something, not a mention). Its end moves with its start, plus
