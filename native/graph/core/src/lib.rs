@@ -8,3 +8,5 @@
 pub const CONTRACT_VERSION: u32 = 1;
 
 pub mod id;
+
+pub mod facts;

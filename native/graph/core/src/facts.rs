@@ -1,0 +1,383 @@
+//! The facts contract: what one file contributes to the graph before any
+//! cross-file resolution.
+//!
+//! Every adapter produces a [`FileFacts`] per file and the resolver reads only
+//! facts, never syntax trees, so a file's tree is freed as soon as its facts
+//! exist and facts are the unit the cache stores. The shape starts from the
+//! mex-platform engine's facts (`packages/codegraph/src/facts.ts`) and adds
+//! what the OSS graph needs: identity inputs, body hashes and fingerprint
+//! tokens, framework markers, and hard bounds.
+//!
+//! Indices: `defs`, `scopes` and `calls` refer to each other by position in
+//! their own vector; `-1` (as [`NONE`]) means the file or the module scope.
+//! Positions are UTF-8 byte offsets plus 0-based line and UTF-8 column.
+
+use serde::{Deserialize, Serialize};
+
+/// Bumped on any change to these types; part of the facts cache key.
+pub const FACTS_VERSION: u32 = 1;
+
+/// "No index": the module scope, or the file as a definition's parent.
+pub const NONE: i32 = -1;
+
+/// Hard bounds: a file that reaches one records a diagnostic instead of
+/// growing without limit (graph-01 once rendered a 914k-character signature).
+pub mod bounds {
+    pub const MAX_DEFS: usize = 20_000;
+    pub const MAX_CALLS: usize = 100_000;
+    pub const MAX_SIGNATURE_BYTES: usize = 1_024;
+    pub const MAX_CALLEE_TEXT_BYTES: usize = 256;
+    pub const MAX_DOCSTRING_BYTES: usize = 2_048;
+    pub const MAX_DIAGNOSTICS: usize = 16;
+}
+
+/// A source range: bytes, then 0-based start line and column, end line and column.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Range {
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+/// The node kinds today's graph stores (`NODE_KINDS` in `src/graph/types.ts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    File,
+    Module,
+    Class,
+    Struct,
+    Interface,
+    Trait,
+    Protocol,
+    Function,
+    Method,
+    Property,
+    Field,
+    Variable,
+    Constant,
+    Enum,
+    EnumMember,
+    TypeAlias,
+    Namespace,
+    Parameter,
+    Import,
+    Export,
+    Route,
+    Component,
+}
+
+impl Kind {
+    /// The kind's name as it appears in node ids and the `nodes.kind` column.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::File => "file",
+            Kind::Module => "module",
+            Kind::Class => "class",
+            Kind::Struct => "struct",
+            Kind::Interface => "interface",
+            Kind::Trait => "trait",
+            Kind::Protocol => "protocol",
+            Kind::Function => "function",
+            Kind::Method => "method",
+            Kind::Property => "property",
+            Kind::Field => "field",
+            Kind::Variable => "variable",
+            Kind::Constant => "constant",
+            Kind::Enum => "enum",
+            Kind::EnumMember => "enum_member",
+            Kind::TypeAlias => "type_alias",
+            Kind::Namespace => "namespace",
+            Kind::Parameter => "parameter",
+            Kind::Import => "import",
+            Kind::Export => "export",
+            Kind::Route => "route",
+            Kind::Component => "component",
+        }
+    }
+}
+
+/// Everything one file contributes, before resolution.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FileFacts {
+    pub facts_version: u32,
+    /// Repository-relative path with `/` separators.
+    pub path: String,
+    pub language: String,
+    /// SHA-256 of the file's exact bytes.
+    pub content_hash: [u8; 32],
+    pub scopes: Vec<Scope>,
+    pub defs: Vec<Def>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Export>,
+    pub calls: Vec<Call>,
+    pub bindings: Vec<Binding>,
+    pub frameworks: Vec<FrameworkMarker>,
+    pub health: Health,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeKind {
+    Function,
+    Arrow,
+    Block,
+    Class,
+    Comprehension,
+    Module,
+}
+
+/// A lexical scope. Class scopes hold members; names bound there are not
+/// visible to nested functions (true in Python and in ECMAScript method bodies).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Scope {
+    pub kind: ScopeKind,
+    pub parent: i32,
+    /// The definition that owns this scope, or [`NONE`].
+    pub def: i32,
+    /// ECMAScript: whether `this` is the class (static) or an instance.
+    pub this_static: Option<bool>,
+}
+
+/// A declaration, and the inputs of its node id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Def {
+    pub kind: Kind,
+    pub name: String,
+    /// Dotted or `::`-joined name as the language's id profile expects it.
+    pub qualified_name: String,
+    /// The id's declaration role (`function-assignment`, `framework:flask`, ...);
+    /// `None` means the kind.
+    pub declaration_role: Option<String>,
+    /// Normalized signature, bounded by [`bounds::MAX_SIGNATURE_BYTES`].
+    pub signature: String,
+    /// Overload ordinal, for the ordinal id profile.
+    pub ordinal: Option<u32>,
+    pub parent: i32,
+    /// Scope the name is bound in.
+    pub scope: i32,
+    pub range: Range,
+    pub name_range: Range,
+    pub exported: bool,
+    pub is_default_export: bool,
+    /// Modifiers that change call semantics: `static`, `async`, `abstract`,
+    /// Python decorators such as `staticmethod`.
+    pub flags: Vec<String>,
+    /// Base classes and implemented interfaces, as written.
+    pub heritage: Vec<Heritage>,
+    pub return_type: Option<String>,
+    /// SHA-256 of the normalized body, for drift checks.
+    pub body_hash: Option<[u8; 32]>,
+    /// Normalized syntax tokens for the MinHash fingerprint.
+    pub fingerprint_tokens: Option<Vec<u32>>,
+    pub docstring: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Heritage {
+    pub implements: bool,
+    pub name: String,
+    pub range: Range,
+}
+
+/// One name an import binds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportBinding {
+    /// `default`, `*` or a symbol name.
+    pub imported: String,
+    /// Local name, or `None` for side-effect imports and re-exports.
+    pub local: Option<String>,
+    /// Re-exports: the exported name (`*` for `export *`).
+    pub exported: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportForm {
+    Es,
+    CommonJs,
+    Reexport,
+    Python,
+    RustUse,
+    CSharpUsing,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Import {
+    pub form: ImportForm,
+    /// The specifier as written, or Python's dotted module path.
+    pub specifier: String,
+    /// Python relative level (leading dots); 0 otherwise.
+    pub level: u32,
+    pub bindings: Vec<ImportBinding>,
+    pub scope: i32,
+    pub range: Range,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Export {
+    pub local: Option<String>,
+    pub def: i32,
+    pub exported: String,
+    pub range: Range,
+}
+
+/// What a call is made on: the evidence the resolver types receivers from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Receiver {
+    This,
+    Super,
+    Name {
+        name: String,
+    },
+    ThisMember {
+        name: String,
+    },
+    Path {
+        path: Vec<String>,
+    },
+    /// A call result, resolved only through a declared return type.
+    CallResult {
+        name: String,
+        receiver: Option<Box<Receiver>>,
+    },
+    /// A literal of a built-in type (`[].map`, `"".join`).
+    Builtin {
+        name: String,
+    },
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallForm {
+    Ident,
+    Member,
+    New,
+    SuperConstructor,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Call {
+    pub form: CallForm,
+    /// The called name (identifier, member or constructor).
+    pub name: String,
+    pub receiver: Option<Receiver>,
+    pub scope: i32,
+    /// The enclosing definition (the caller), or [`NONE`] for the file.
+    pub caller: i32,
+    pub range: Range,
+    /// Where the called name is written: the edge's line and column.
+    pub name_range: Range,
+    /// Callee text for unresolved reporting, bounded by
+    /// [`bounds::MAX_CALLEE_TEXT_BYTES`].
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeBasis {
+    Annotation,
+    Constructor,
+    Call,
+    /// A variable initialised from `this` and never reassigned.
+    This,
+}
+
+/// A local name, for shadowing and receiver typing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Binding {
+    pub name: String,
+    pub scope: i32,
+    pub param: bool,
+    /// Declared or inferred type, and the evidence for it.
+    pub type_name: Option<String>,
+    pub type_basis: Option<TypeBasis>,
+    /// Class fields: the owning class definition.
+    pub field_of: Option<i32>,
+}
+
+/// Something a framework resolver reads: a decorator, a route registration,
+/// a dependency-injection marker.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FrameworkMarker {
+    pub kind: String,
+    pub name: String,
+    pub arguments: Vec<String>,
+    pub def: i32,
+    pub range: Range,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParseStatus {
+    #[default]
+    Ok,
+    Partial,
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Health {
+    pub status: ParseStatus,
+    pub error_count: u32,
+    pub missing_count: u32,
+    /// Share of the file's bytes inside error nodes.
+    pub error_coverage: f32,
+    /// At most [`bounds::MAX_DIAGNOSTICS`] locations.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub code: String,
+    pub range: Range,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_names_match_todays_graph() {
+        for kind in [
+            Kind::File,
+            Kind::EnumMember,
+            Kind::TypeAlias,
+            Kind::Component,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+        }
+    }
+
+    #[test]
+    fn facts_round_trip_through_json() {
+        let facts = FileFacts {
+            facts_version: FACTS_VERSION,
+            path: "src/app.py".into(),
+            language: "python".into(),
+            calls: vec![Call {
+                form: CallForm::Member,
+                name: "request".into(),
+                receiver: Some(Receiver::CallResult {
+                    name: "client".into(),
+                    receiver: Some(Box::new(Receiver::This)),
+                }),
+                scope: NONE,
+                caller: NONE,
+                range: Range::default(),
+                name_range: Range::default(),
+                text: "self.client().request".into(),
+            }],
+            ..FileFacts::default()
+        };
+        let json = serde_json::to_string(&facts).unwrap();
+        assert_eq!(serde_json::from_str::<FileFacts>(&json).unwrap(), facts);
+    }
+}
