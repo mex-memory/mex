@@ -1,8 +1,24 @@
 /** Who ran this command: a person at a terminal, an agent, or a script (CI included). */
 export type Caller = "person" | "agent" | "script";
 
-/** Variables the agents MEX supports set in the shells they start. */
-const AGENT_VARIABLES = ["CLAUDECODE", "CODEX_THREAD_ID"] as const;
+/**
+ * Variables the agents MEX supports set in the shells they start. Any one of them makes the
+ * caller an agent. Names follow what each host injects into its shell tool (Claude Code,
+ * Codex, Gemini CLI, Cursor's agent, Copilot CLI and its cloud and editor agents, OpenCode,
+ * Kiro CLI, Antigravity), plus the cross-tool `AI_AGENT` convention. Devin sets no variable;
+ * it runs without a terminal, so it is a script here, which gets the same treatment.
+ */
+export const AGENT_VARIABLES = [
+  "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION",
+  "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_CI",
+  "GEMINI_CLI",
+  "CURSOR_AGENT",
+  "COPILOT_CLI", "COPILOT_AGENT", "COPILOT_AGENT_SESSION_ID",
+  "OPENCODE", "OPENCODE_CLIENT", "OPENCODE_SESSION_ID",
+  "KIRO_AGENT_PATH",
+  "ANTIGRAVITY_AGENT",
+  "AI_AGENT",
+] as const;
 
 export interface CallerInput {
   env?: NodeJS.ProcessEnv;
@@ -24,7 +40,7 @@ export function isCI(env: NodeJS.ProcessEnv = process.env): boolean {
 export function isAgentCaller(env: NodeJS.ProcessEnv = process.env): boolean {
   return AGENT_VARIABLES.some((key) => {
     const value = env[key]?.trim();
-    return value !== undefined && value !== "" && value !== "0";
+    return value !== undefined && value !== "" && !["0", "false", "no", "off"].includes(value.toLowerCase());
   });
 }
 
