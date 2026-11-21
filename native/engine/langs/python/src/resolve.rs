@@ -42,6 +42,9 @@ pub struct Resolution {
     pub edges: Vec<Edge>,
     /// (file index, reason, count), sorted.
     pub unresolved: Vec<(usize, &'static str, u32)>,
+    /// Every call left unresolved, in file and call order, so a reader can
+    /// answer "no callers" per symbol: (file index, call index, reason).
+    pub unresolved_calls: Vec<(usize, usize, &'static str)>,
 }
 
 const MAX_DEPTH: usize = 12;
@@ -785,7 +788,7 @@ impl<'a> Resolver<'a> {
     fn resolve_file(&self, file: usize, out: &mut Resolution) {
         let facts = &self.files[file];
         let mut reasons: HashMap<&'static str, u32> = HashMap::new();
-        for call in &facts.calls {
+        for (call_index, call) in facts.calls.iter().enumerate() {
             let scope = call.scope.max(0) as usize;
             let target = match (&call.form, &call.receiver) {
                 (CallForm::Ident, _) => self.lookup(file, scope, &call.name, 0),
@@ -848,6 +851,7 @@ impl<'a> Resolver<'a> {
                         Value::Def(_) => "called_value",
                     };
                     *reasons.entry(reason).or_default() += 1;
+                    out.unresolved_calls.push((file, call_index, reason));
                 }
             }
         }

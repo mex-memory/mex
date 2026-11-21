@@ -255,3 +255,26 @@ fn names_bound_two_ways_stay_unresolved() {
         "{reasons:?}"
     );
 }
+
+#[test]
+fn records_each_unresolved_call() {
+    let (facts, r) = project(&[(
+        "m.py",
+        "def f(c):\n    c.go()\n    print(c)\n    missing()\n",
+    )]);
+    let calls: Vec<_> = r
+        .unresolved_calls
+        .iter()
+        .map(|&(f, c, reason)| (facts[f].calls[c].name.as_str(), reason))
+        .collect();
+    assert_eq!(
+        calls,
+        vec![
+            ("go", "untyped_receiver"),
+            ("print", "builtin"),
+            ("missing", "unknown_name")
+        ]
+    );
+    let total: u32 = r.unresolved.iter().map(|(_, _, n)| n).sum();
+    assert_eq!(total as usize, r.unresolved_calls.len());
+}
