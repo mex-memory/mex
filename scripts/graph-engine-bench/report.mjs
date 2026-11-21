@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Summarize the M0 baseline: node report.mjs <BENCH_DIR> > baseline.json
+// Summarize the graph benchmark: node report.mjs <BENCH_DIR> > baseline.json
 // Medians across runs; bytes per node uses the built graph before the refresh.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +9,7 @@ const results = join(bench, "results");
 const median = (xs) => { const s = xs.filter((x) => Number.isFinite(x)).sort((a, b) => a - b); return s.length ? s[Math.floor((s.length - 1) / 2)] : null; };
 const read = (p) => (existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null);
 const out = {};
-for (const tool of ["085", "next2"]) {
+for (const tool of ["085", "next2", "engine"]) {
   const dir = join(results, tool);
   if (!existsSync(dir)) continue;
   for (const repo of readdirSync(dir)) {
