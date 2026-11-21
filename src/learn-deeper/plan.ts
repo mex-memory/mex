@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { tokenCount } from "../model-runner/consent.js";
-import type { Tokens } from "../record/usage.js";
+import { ZERO, type Tokens } from "../record/usage.js";
 import type { Pull } from "./forge.js";
 import { repoPath } from "./git.js";
 import { ImportFile, MAX_SESSIONS, SESSIONS_PER_BATCH } from "./session-import.js";
@@ -13,9 +13,17 @@ export const BACKFILL_PULLS_PER_BATCH = 8;
 export const DOCS_PER_BATCH = 6;
 export const MAX_PULLS = 48;
 export const MAX_DOCS = 36;
+export const MAX_LEARNED_PROPOSALS = 16;
+// The plan asks for about ten rules in the first batch, so the first answer stays short and quick to check.
+export const FIRST_BATCH_PROPOSALS = 10;
 
-const modelOverhead = 8192;
-const outputAllowance = 2400;
+const baseOutputAllowance = 2400;
+const anchorOutputPerRule = 192;
+const inputOverhead = 8192;
+// All five measured best-only Codex replay calls reported the same cached
+// prefix. Reserve it separately from the prompt and uncached headroom so both
+// token ceilings and the model's cache-read price see it.
+const codexCacheRead = 12_288;
 const iso = z.string().datetime({ offset: true });
 const slug = z.object({ host: z.enum(["github.com", "gitlab.com"]), slug: z.string() }).strict()
   .refine(value => repository(value.host, value.slug)?.slug === value.slug);
@@ -52,19 +60,25 @@ export function reviewWindow(now = new Date()): { since: string; until: string }
   return { since: start.toISOString(), until: now.toISOString() };
 }
 
-export function promptEstimate(prompt: string): Tokens {
-  return { input: modelOverhead + Math.ceil(Buffer.byteLength(prompt) / 3), cache_write: 0, cache_read: 0, output: outputAllowance };
+function estimateCall(promptTokens: number, agent: LearningPlan["agent"], anchorRules: number): Tokens {
+  return { ...ZERO, input: inputOverhead + promptTokens, cache_read: agent === "codex" ? codexCacheRead : 0,
+    output: baseOutputAllowance + anchorOutputPerRule * anchorRules };
 }
 
-export function quoteTokens(pulls: number, docs: number, setup: LearningPlan["setup"], sessions: ImportFile[] = [],
+export function promptEstimate(prompt: string, agent: LearningPlan["agent"], anchorRules = MAX_LEARNED_PROPOSALS): Tokens {
+  return estimateCall(Math.ceil(Buffer.byteLength(prompt) / 3), agent, anchorRules);
+}
+
+export function quoteTokens(pulls: number, docs: number, agent: LearningPlan["agent"], setup: LearningPlan["setup"], sessions: ImportFile[] = [],
   pullsPerBatch = PULLS_PER_BATCH): number {
   const batches = Math.max(pulls || docs || !sessions.length ? 1 : 0, Math.ceil(pulls / pullsPerBatch), Math.ceil(docs / DOCS_PER_BATCH));
   const importBatches = Math.ceil(sessions.length / SESSIONS_PER_BATCH);
-  const stages = setup === "mixed" ? 2 : 1;
-  return stages * ((batches + importBatches) * (modelOverhead + outputAllowance + 1000) + pulls * 4500 + docs * 1600
-    + sessions.reduce((sum, file) => sum + file.messages * 2000, 0));
+  // The writer includes the anchor instructions and up to twelve earlier
+  // entries. The source allowance includes bounded changed-file metadata.
+  const writer = tokenCount(estimateCall(4000, agent, MAX_LEARNED_PROPOSALS));
+  const filter = setup === "mixed" ? tokenCount(estimateCall(300, agent, 0)) : 0;
+  const sources = pulls * 5400 + docs * 1600 + sessions.reduce((sum, file) => sum + file.messages * 2000, 0);
+  return (batches + importBatches) * (writer + filter) + (filter ? 2 : 1) * sources;
 }
 
 export function quoteCeiling(estimate: number): number { return Math.floor(estimate * 1.5); }
-
-export function fitsQuote(prompt: string, ceiling: number): boolean { return tokenCount(promptEstimate(prompt)) <= ceiling; }

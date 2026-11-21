@@ -51,6 +51,29 @@ describe("producer validation", () => {
     expect(listProducers().filter(p => !p.active).map(p => p.id)).toEqual(["session-import", "session-ongoing"]);
   });
 
+  it("lets only a learned doc or review rule, decision or procedure go repo-wide without an anchor", async () => {
+    const body = "Bug fixes need a regression test in the same pull request.";
+    const learned = (over: Partial<Proposal>): Proposal => ({
+      producer: "learn-deeper", kind: "rule", text: "Add a regression test with every bug fix.", anchors: { scope: ["**"] },
+      source: { type: "docs", ref: "CONTRIBUTING.md", quote: body, text: body }, evidenceClass: "docs",
+      model: { id: "fixture", version: "fixture-1" }, ...over,
+    });
+    const results = await propose([
+      learned({ key: "rule-docs" }),
+      learned({ key: "decision-review", kind: "decision", text: "Prefer small independent pull requests.", evidenceClass: "review",
+        source: { type: "review", ref: "https://github.com/example/memory/pull/1", quote: body, text: body } }),
+      learned({ key: "procedure-docs", kind: "procedure", text: "Add a news entry for each user-facing change." }),
+      learned({ key: "recipe-docs", kind: "recipe", text: "Run the release script from a clean checkout." }),
+      learned({ key: "pitfall-docs", kind: "pitfall", text: "The cache directory is shared between runs." }),
+      learned({ key: "person", text: "Keep fixture names short.", evidenceClass: "person",
+        source: { type: "person", ref: "session", quote: body, text: body } }),
+      fact({ key: "mined", anchors: { scope: ["**"] } }),
+    ], context);
+    expect(results.map(item => item.status === "dropped" ? item.reason : item.status))
+      .toEqual(["accepted", "accepted", "accepted", "no-anchor", "no-anchor", "no-anchor", "no-anchor"]);
+    expect(expandPersonal(producerEntryId("learn-deeper", "rule-docs"), context).entry.mex.scope).toEqual(["**"]);
+  });
+
   it("sanitizes a note and verifies inert environment prefixes", async () => {
     write("package.json", JSON.stringify({ scripts: { test: "node tests.js" } }));
     const text = "Use `TZ=UTC npm test` before applying the schema. Run `npm run absent` when testing.";

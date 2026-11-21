@@ -1077,8 +1077,8 @@ program
   .description("Review a quote for learning from past reviews and docs")
   .option("--model-setup <setup>", "Choose mixed or best-only")
   .option("--raise-ceiling", "Review a higher token ceiling for a waiting learning job")
-  .option("--dry-run", "Preview past-session import without queuing learning")
-  .option("--no-sessions", "Learn from reviews and docs without importing sessions")
+  .option("--dry-run", "Preview without queuing learning")
+  .option("--sessions", "Also import eligible past sessions (off by default)")
   .option("--no-weekly", "Approve a one-time run without enrolling in weekly refresh")
   .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }) => {
     try {

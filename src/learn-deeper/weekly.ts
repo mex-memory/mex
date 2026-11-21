@@ -49,7 +49,7 @@ export async function quoteRefresh(client: ForgeClient, schedule: WeeklySchedule
     ...(inventory.more ? ["Some merged changes were outside the weekly scan limit."] : []),
     ...(docs.length > MAX_DOCS ? ["Some docs were outside the weekly scan limit."] : []),
   ];
-  const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), schedule.setup);
+  const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), schedule.agent, schedule.setup);
   return Plan.parse({ checkout: schedule.checkout, origin: schedule.origin, source: schedule.source, visibility: schedule.visibility,
     agent: schedule.agent, setup: schedule.setup, preferred: schedule.preferred, head: tree.head, ...window, pulls: inventory.pulls,
     docs: docs.slice(0, MAX_DOCS), gaps, estimate, ceiling: quoteCeiling(estimate) });

@@ -1,4 +1,5 @@
-import { ForgeClient, object, positive, rows, SourceError, type Inventory, type Pull, type RepositoryAccess, type ReviewBatch, type ReviewRequest } from "./forge.js";
+import { ForgeClient, MAX_REVIEW_FILES, object, pinnedChangedPaths, positive, readChangedPaths, rows, SourceError,
+  type Inventory, type Pull, type RepositoryAccess, type ReviewBatch, type ReviewRequest } from "./forge.js";
 import { Reviewers } from "./reviewers.js";
 import { redactReviews, repository, reviewSource, sourceBands, spreadPulls, validAt,
   type Repository, type ReviewSource, type SourceWindow } from "./source.js";
@@ -48,6 +49,7 @@ interface Comment {
   id: string; marker: string; body: unknown; at: unknown; login: unknown; name?: unknown; human: boolean;
   writer?: boolean; association?: unknown; path?: string; topLevel: boolean; outdated: boolean;
 }
+interface ChangeEvidence { comments: Comment[]; changedPaths: string[]; }
 
 // Membership and collaborator status can include read-only access. Treat them as
 // fallback evidence only when GitHub cannot answer the permission check, never
@@ -56,10 +58,10 @@ function associatedWriter(association: unknown): true | undefined {
   return association === "MEMBER" || association === "OWNER" || association === "COLLABORATOR" ? true : undefined;
 }
 
-function collectGraphComments(value: unknown, pull: Pull, request: ReviewRequest, gaps: Set<string>): Comment[] {
+function collectGraphComments(value: unknown, pull: Pull, request: ReviewRequest, gaps: Set<string>): ChangeEvidence {
   const pr = object(value);
   if (!pr || pr.number !== pull.number || typeof pr.mergedAt !== "string" || !validAt(pr.mergedAt, request.since, request.until)) {
-    gaps.add("Some merged changes were no longer readable."); return [];
+    gaps.add("Some merged changes were no longer readable."); return { comments: [], changedPaths: [] };
   }
   const comments: Comment[] = [];
   const connection = (value: unknown) => {
@@ -84,20 +86,21 @@ function collectGraphComments(value: unknown, pull: Pull, request: ReviewRequest
     if (typeof thread.path !== "string" || !request.tree.has(thread.path)) continue;
     for (const item of connection(thread.comments)) add(item, "discussion_r", false, thread.path, thread.isOutdated === true);
   }
-  return comments;
+  return { comments, changedPaths: pinnedChangedPaths(object(pr.files)?.nodes, "path", request.tree) };
 }
 
-async function graphComments(client: ForgeClient, request: ReviewRequest, gaps: Set<string>): Promise<Comment[][]> {
+async function graphComments(client: ForgeClient, request: ReviewRequest, gaps: Set<string>): Promise<ChangeEvidence[]> {
   if (!request.pulls.length) return [];
   const [owner, name] = request.source.slug.split("/");
   const actor = "author{__typename login ... on User{name}}";
   const common = `fullDatabaseId body createdAt authorAssociation ${actor}`;
   const page = "pageInfo{hasNextPage}";
-  const groups: Comment[][] = [];
+  const groups: ChangeEvidence[] = [];
   // Keep the same bounded response per request when a model batch spans more PRs.
   for (let offset = 0; offset < request.pulls.length; offset += PULLS_PER_REQUEST) {
     const pulls = request.pulls.slice(offset, offset + PULLS_PER_REQUEST);
     const fields = pulls.map((pull, i) => `p${i}:pullRequest(number:${pull.number}){number mergedAt ${common}
+    files(first:${MAX_REVIEW_FILES}){nodes{path}}
     reviews(first:${PAGE_SIZE},states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){${page} nodes{${common} submittedAt authorCanPushToRepository isMinimized isCopilotCodeReview}}
     comments(first:${PAGE_SIZE}){${page} nodes{${common} isMinimized}}
     reviewThreads(first:${PAGE_SIZE}){${page} nodes{path isOutdated comments(first:4){${page} nodes{${common} isMinimized isCopilotCodeReview}}}}}`).join(" ");
@@ -108,13 +111,13 @@ async function graphComments(client: ForgeClient, request: ReviewRequest, gaps: 
   return groups;
 }
 
-async function restComments(client: ForgeClient, request: ReviewRequest, gaps: Set<string>): Promise<Comment[][]> {
+async function restComments(client: ForgeClient, request: ReviewRequest, gaps: Set<string>): Promise<ChangeEvidence[]> {
   const prefix = `/repos/${request.source.slug}`;
-  const groups: Comment[][] = [];
+  const groups: ChangeEvidence[] = [];
   for (const pull of request.pulls) {
     const pr = object((await client.get(`${prefix}/pulls/${pull.number}`, true))?.value);
     if (!pr || typeof pr.merged_at !== "string" || !validAt(pr.merged_at, request.since, request.until)) {
-      gaps.add("Some merged changes were no longer readable."); groups.push([]); continue;
+      gaps.add("Some merged changes were no longer readable."); groups.push({ comments: [], changedPaths: [] }); continue;
     }
     const comments: Comment[] = [];
     const add = (entry: Record<string, unknown>, marker: string, topLevel: boolean, path?: string, outdated = false) => {
@@ -135,7 +138,9 @@ async function restComments(client: ForgeClient, request: ReviewRequest, gaps: S
         add(entry, marker, !inline, file, inline && (entry.position === null || entry.line === null));
       }
     }
-    groups.push(comments);
+    const changedPaths = positive(pr.changed_files) && comments.some(comment => comment.human && associatedWriter(comment.association))
+      ? await readChangedPaths(client, `${prefix}/pulls/${pull.number}/files`, "filename", request.tree) : [];
+    groups.push({ comments, changedPaths });
   }
   return groups;
 }
@@ -148,16 +153,16 @@ export async function githubReviews(client: ForgeClient, request: ReviewRequest)
   const reviewers = new Reviewers(), gaps = new Set<string>(), reviews: ReviewSource[] = [];
   const permissions = new Map<string, boolean | null | undefined>();
   const groups = client.anonymous ? await restComments(client, request, gaps) : await graphComments(client, request, gaps);
-  for (const group of groups) for (const comment of group) {
+  for (const { comments } of groups) for (const comment of comments) {
     if (typeof comment.login !== "string") continue;
     reviewers.add(comment.login, comment.name);
     if (comment.human && comment.writer !== undefined && permissions.get(comment.login) !== false) permissions.set(comment.login, comment.writer);
   }
   let checked = 0;
   const permissionLimit = PAGE_SIZE * Math.ceil(request.pulls.length / PULLS_PER_REQUEST);
-  for (const [index, group] of groups.entries()) {
+  for (const [index, { comments, changedPaths }] of groups.entries()) {
     const pull = request.pulls[index].number;
-    for (const comment of group) {
+    for (const comment of comments) {
       if (typeof comment.login !== "string" || !comment.human || /\[bot\]$/iu.test(comment.login)
         || typeof comment.body !== "string" || typeof comment.at !== "string" || !validAt(comment.at, request.since, request.until)) continue;
       const candidate = reviewSource(comment.body, { id: `github:${comment.marker}:${comment.id}`, link: pullLink(request.source, pull, comment),
@@ -173,7 +178,7 @@ export async function githubReviews(client: ForgeClient, request: ReviewRequest)
       }
       if (writer === null || (writer === undefined && client.anonymous)) writer = associatedWriter(comment.association);
       if (writer === undefined) gaps.add("Some review authors' write access could not be checked.");
-      reviews.push({ ...candidate, writer: writer === true });
+      reviews.push({ ...candidate, writer: writer === true, ...(writer && changedPaths.length ? { changedPaths } : {}) });
     }
   }
   return { reviews: redactReviews(reviews, reviewers, gaps, request.preferred, request.preferDistinctPulls), reviewers, gaps: [...gaps] };

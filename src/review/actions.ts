@@ -22,6 +22,7 @@ import { backgroundEnvironment } from "../filter/environment.js";
 import { learningMetadata } from "../filter/metadata.js";
 import { verifySources } from "../filter/publication.js";
 import { claimHash } from "../knowledge/state.js";
+import { entryProducer } from "../knowledge/producers.js";
 import { canonicalBytes, memberRevision, snapshotReview, type ReviewGroup } from "./queue.js";
 import { legacyJudge, put, rows, storedItems, ReviewItem, REVIEW_VISIBLE } from "./state.js";
 
@@ -204,6 +205,13 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
         writer.db.exec("BEGIN IMMEDIATE");
         validate(writer);
         writer.db.prepare("UPDATE review SET state='dismissed' WHERE id=? AND project_id=? AND state='pending'").run(id, project.projectId);
+        // Learn deeper stores a source proof for a proposal sent to Review. Keep drops the proposal, so its proof goes too,
+        // unless a saved note or another open card still uses that id.
+        const proposed = conflict.entry.mex.id;
+        if (entryProducer(conflict.entry.mex) === "learn-deeper" && !readNotes(project.location.home, project.projectId).files.has(proposed)
+          && !writer.db.prepare("SELECT 1 FROM review WHERE project_id=? AND entry_id=? AND state='pending'").get(project.projectId, proposed)) {
+          writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project.projectId, `learning.deep.note.${proposed}`);
+        }
         writer.db.exec("COMMIT");
       } finally { writer.close(); }
     }

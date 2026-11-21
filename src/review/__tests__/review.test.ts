@@ -199,6 +199,22 @@ it("shows contradictions ahead of sharing cards and allows keeping the current e
   expect(expandPersonal(result.conflictsWith[0]!, options()).entry.text).toBe("Internal imports stay in the adapter.");
 });
 
+it("removes a learned proposal's source proof when its contradiction card is kept", async () => {
+  await contradiction("old", "anti", "Internal imports stay in the adapter.");
+  const words = "The adapter boundary uses this internal import.";
+  const learned: Proposal = { producer: "learn-deeper", key: "pending", kind: "rule", text: words, evidenceClass: "docs",
+    source: { type: "docs", ref: "README.md", quote: words, text: words }, model: { id: "fixture", version: "fixture-1" },
+    anchors: { scope: ["src/**"], when: [{ type: "required", match: "literal", pattern: "from Internal" }] } };
+  const result = (await propose([learned], { ...options(), now: new Date(now) }))[0]!;
+  if (result.status !== "review") throw new Error("Expected a conflict");
+  const proof = `learning.deep.note.${producerEntryId("learn-deeper", "pending")}`, other = "learning.deep.note.mx_deepkept";
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, proof, "{}");
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, other, "{}");
+  expect((await apply("keep")).applied).toBe(true);
+  expect(writer.setting(project, proof)).toBeUndefined();
+  expect(writer.setting(project, other)).toBe("{}");
+});
+
 it("uses a conflicting proposal through the gate and retires only the personal entry", async () => {
   writer.db.prepare("UPDATE projects SET shared=0 WHERE id=?").run(project);
   await contradiction("old", "anti", "Internal imports stay in the adapter.");

@@ -16,7 +16,7 @@ import { scopesOverlap } from "./gate-scopes.js";
 import type { AcceptedEntry, Dropped, GateContext, GateResult, Observation, Proposal, ProposedCheck } from "./gate-types.js";
 import { assertNoSecrets, gateEntry } from "./gates.js";
 import { publishNotes, readNotes, recoverNotes } from "./personal-store.js";
-import { entryProducer, ownsEntryId, producer, producerEntryId, PRODUCER_IDS } from "./producers.js";
+import { anchorRequired, entryProducer, ownsEntryId, producer, producerEntryId, PRODUCER_IDS } from "./producers.js";
 import { references, repoFile, withoutEnvironment } from "./references.js";
 import { scanRuleFiles } from "./rule-files.js";
 import { claimHash, retiredClaimHashes, saveTombstone } from "./state.js";
@@ -163,7 +163,7 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   if (gated.mex.source.quote !== entry.mex.source.quote) sanitized.push("quote");
   if (!owner.personAuthored && sanitized.some(field => field !== "quote")) return drop("undefined-command", "The entry contains an unverified command, link or check.");
   // A judge rewrite repairs an existing entry; it keeps whatever anchors the original had.
-  if (owner.requiresAnchor && special?.mode !== "judge" && !gated.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob)) && !gated.mex.when?.length
+  if (anchorRequired(owner.id, gated.mex.kind, gated.mex.evidence) && special?.mode !== "judge" && !gated.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob)) && !gated.mex.when?.length
     && !p.anchors?.symbols?.length && !gated.mex.checks.some(check => check.kind === "symbol"
       || (check.kind === "command" && ["recipe", "procedure"].includes(gated.mex.kind)))
     // A fail-pass recipe is anchored to the command moment by its observed command.
@@ -171,10 +171,19 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   const quote = entry.mex.source.quote;
   if (quote !== undefined) {
     try {
-      const file = repoFile(tree, p.source.ref);
+      // Learn Deeper verifies the redacted excerpt against its source before
+      // proposing. A prepared quote may contain redactions absent on disk.
+      const file = p.producer === "learn-deeper" && p.source.text !== undefined ? undefined : repoFile(tree, p.source.ref);
       const body = file ? readBoundedTextFile(file, 1024 * 1024) : p.source.text;
       if (!normalize(quote) || !body || !normalize(body).includes(normalize(quote))) return drop("quote-not-found");
+      if (p.producer === "learn-deeper" && entry.mex.source.type === "person"
+        && (gated.mex.source.quote !== quote || !body.includes(quote))) return drop("quote-not-found");
     } catch { return drop("quote-not-found"); }
+  }
+  // Learn Deeper retains forge ids, hashes and links. The exact typed quote
+  // remains required for person evidence while past-session import exists.
+  if (p.producer === "learn-deeper" && gated.mex.source.type !== "person") {
+    delete gated.mex.source.quote;
   }
 
   const cleanChecks = gated.mex.checks.map((check, i) => toProposedCheck(check, checks[kept[i]!]!.saw !== undefined));
@@ -217,11 +226,22 @@ function checkRequest(project: KnowledgeProject, tree: string) {
 }
 function observations(checks: ProposedCheck[], context: GateContext, project: KnowledgeProject, tree: string): Observation[] | undefined {
   if (!checks.length) return [];
+  if (context.observeChecks) {
+    try { return context.observeChecks(checks, tree); } catch { return undefined; }
+  }
+  return observeProposalChecks(checks, { ...checkRequest(project, tree), ...(context.checkIndex ? {
+    project_id: context.checkIndex.projectId, record_directory: context.checkIndex.recordDirectory,
+  } : {}) }, context.env);
+}
+
+/** Record actual observations without executing proposed commands. */
+export function observeProposalChecks(checks: readonly ProposedCheck[], request: ReturnType<typeof checkRequest>,
+  env?: NodeJS.ProcessEnv): Observation[] | undefined {
+  if (!checks.length) return [];
   try {
-    if (context.observeChecks) return context.observeChecks(checks, tree);
-    const binary = nativeBinary(context.env);
+    const binary = nativeBinary(env);
     if (!binary) return undefined;
-    const result = runNative(binary, { ...checkRequest(project, tree), action: "record-batch",
+    const result = runNative(binary, { ...request, action: "record-batch",
       items: checks.map(({ kind, role, target }) => ({ kind, role, target })) }) as unknown as {
         results?: Array<{ ok?: boolean; check?: unknown; error?: string }>;
       };
@@ -503,7 +523,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       if (!unnamed) for (const [id, entry] of notes) {
         const raw = files.get(id)!;
         if (!wanted.has(id) && !retired(id) && isActive(entry) && owns(writer, projectId, entry, raw, sweep.producer) && (!sweep.includes || sweep.includes(entry))) {
-          retire(entry, sweep.producer === "setup-recipe" ? "This command is no longer in the setup recipes." : "This entry is no longer produced.", sweepBy(sweep.producer), false);
+          retire(entry, sweep.tombstone?.reason ?? (sweep.producer === "setup-recipe" ? "This command is no longer in the setup recipes." : "This entry is no longer produced."),
+            sweep.tombstone?.by ?? sweepBy(sweep.producer), sweep.tombstone !== undefined);
         }
       }
     }
@@ -512,8 +533,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       throw new KnowledgeError("STORE_LIMIT", "Personal notes exceed the byte or entry limit.");
     }
     const changed = files.size !== snapshot.files.size || [...files].some(([id, raw]) => snapshot.files.get(id) !== raw);
-    if (changed) publishNotes(writer, projectId, snapshot, files, () => context.onAccepted?.(writer, accepted), { locked: true });
-    else { context.onAccepted?.(writer, accepted); writer.db.exec("COMMIT"); }
+    if (changed) publishNotes(writer, projectId, snapshot, files, () => context.onAccepted?.(writer, accepted, results), { locked: true });
+    else { context.onAccepted?.(writer, accepted, results); writer.db.exec("COMMIT"); }
     return results;
   } finally {
     try { writer.db.exec("ROLLBACK"); } catch { /* The transaction already ended. */ }

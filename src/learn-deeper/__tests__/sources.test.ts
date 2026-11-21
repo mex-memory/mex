@@ -1,9 +1,10 @@
 import { expect, it, vi } from "vitest";
+import { tokenCount } from "../../model-runner/consent.js";
 import { ForgeClient } from "../forge.js";
 import { PinnedTree } from "../git.js";
 import { githubReviews } from "../github.js";
 import { gitlabInventory, gitlabReviews } from "../gitlab.js";
-import { BACKFILL_PULLS_PER_BATCH, orderBackfillPulls, quoteTokens } from "../plan.js";
+import { BACKFILL_PULLS_PER_BATCH, orderBackfillPulls, promptEstimate, quoteTokens } from "../plan.js";
 import { Reviewers } from "../reviewers.js";
 import { BACKFILL_REVIEW_LIMIT, cleanSourceText, documentExcerpt, prioritizeReviews, redactReviews, repositoryFromRemote, reviewRelevance,
   spreadPulls,
@@ -52,8 +53,26 @@ it("groups the sampled PRs by merge date and quotes the wider model batches", ()
   const older = { number: 12, at: "2026-01-01T00:00:00Z" };
   const recent = { number: 20, at: then };
   expect(orderBackfillPulls([recent, older])).toEqual([older, recent]);
-  expect(quoteTokens(8, 6, "best-only", [], BACKFILL_PULLS_PER_BATCH))
-    .toBeLessThan(quoteTokens(8, 6, "best-only"));
+  expect(quoteTokens(8, 6, "codex", "best-only", [], BACKFILL_PULLS_PER_BATCH))
+    .toBeLessThan(quoteTokens(8, 6, "codex", "best-only"));
+});
+
+it.each([
+  { bytes: 12133, rules: 8, input: 5540, output: 399 },
+  { bytes: 9797, rules: 7, input: 5083, output: 372 },
+  { bytes: 8837, rules: 8, input: 4988, output: 386 },
+  { bytes: 5085, rules: 4, input: 3975, output: 189 },
+  { bytes: 6132, rules: 5, input: 6725, output: 251 },
+])("covers the recorded Codex token classes for a $bytes-byte anchor prompt", ({ bytes, rules, input, output }) => {
+  // Measured anchor-only replay, 2026-11-21. Cache reads are separate from
+  // the uncached input reported by MEX. Keep the fixture body-free.
+  const actual = { input, output, cache_write: 0, cache_read: 12_288 };
+  const estimated = promptEstimate("x".repeat(bytes), "codex", rules);
+  expect(estimated.cache_read).toBe(actual.cache_read);
+  expect(estimated.input).toBeGreaterThanOrEqual(input);
+  expect(estimated.output).toBeGreaterThanOrEqual(output);
+  expect(estimated.output).toBeGreaterThan(promptEstimate("", "codex", 0).output);
+  expect(tokenCount(estimated)).toBeGreaterThanOrEqual(tokenCount(actual));
 });
 
 it("preserves verified evidence from a second PR under the review source cap", () => {
@@ -64,6 +83,14 @@ it("preserves verified evidence from a second PR under the review source cap", (
   const selected = redactReviews([...reviews, second], new Reviewers(), new Set(), [], true);
   expect(selected).toHaveLength(BACKFILL_REVIEW_LIMIT);
   expect(selected.map(review => review.id)).toContain(second.id);
+});
+
+it("ranks a comment that led to a code change ahead of other verified reviews", () => {
+  const summary: ReviewSource = { kind: "review", id: "summary", hash: sha, link: "", text: "Keep stable snapshots.",
+    at: then, pull: 1, writer: true, topLevel: true, outdated: false };
+  const fixed = { ...summary, id: "fixed", topLevel: false, outdated: true, path: "src/runtime.ts" };
+  const open = { ...summary, id: "open", topLevel: false, path: "src/runtime.ts" };
+  expect(prioritizeReviews([summary, open, fixed], []).map(review => review.id)).toEqual(["fixed", "summary", "open"]);
 });
 
 it("redacts known reviewers in prose while preserving technical terms and code spans", () => {
@@ -81,18 +108,29 @@ it("redacts known reviewers in prose while preserving technical terms and code s
   expect(cleanSourceText([terms, mention, boundaries, inline, "", fence, "", shell].join("\n"), reviewers)).toBe([
     terms, "Thanks, [reviewer] and [reviewer]. Email [reviewer] or ask @unknown.", boundaries, inline, "", fence, "", shell,
   ].join("\n"));
-  expect(documentExcerpt(`${terms}\n${mention}`, reviewers)).toEqual({
+  expect(documentExcerpt(`${terms}\n${mention}`, reviewers).excerpt).toEqual({
     text: `${terms}\nThanks, tEsT  uSeR and [reviewer]. Email [reviewer] or ask @unknown.`, coverage: "full",
   });
 });
 
-it("reports a UTF-8-safe partial excerpt and checks the whole doc for secrets", () => {
+it("reports a UTF-8-safe partial excerpt and trims a flagged document before the finding", () => {
   const reviewers = new Reviewers();
   const prefix = "x".repeat(4095);
   const raw = `${prefix}🙂 remaining text`;
-  expect(documentExcerpt(`${prefix}!`, reviewers)?.coverage).toBe("full");
-  expect(documentExcerpt(raw, reviewers)).toEqual({ text: prefix, coverage: "partial" });
-  expect(documentExcerpt(`${raw}\npassword=fixtureSecret123`, reviewers)).toBeUndefined();
+  expect(documentExcerpt(`${prefix}!`, reviewers).excerpt?.coverage).toBe("full");
+  expect(documentExcerpt(raw, reviewers).excerpt).toEqual({ text: prefix, coverage: "partial" });
+  expect(documentExcerpt(`${raw}\npassword=fixtureSecret123`, reviewers)).toEqual({
+    excerpt: { text: prefix, coverage: "partial" }, privacy: { status: "excerpt", reason: "possible-secret" },
+  });
+  expect(documentExcerpt("password=fixtureSecret123\nOrdinary text follows.", reviewers)).toEqual({
+    privacy: { status: "skipped", reason: "possible-secret" },
+  });
+  expect(documentExcerpt("Public introduction.\n<private>Restricted text.</private>", reviewers)).toEqual({
+    privacy: { status: "skipped", reason: "private-marker" },
+  });
+  expect(documentExcerpt("Safe introduction.\n-----BEGIN PRIVATE KEY-----\nfixture-key-body\n-----END PRIVATE KEY-----", reviewers)).toEqual({
+    excerpt: { text: "Safe introduction.", coverage: "partial" }, privacy: { status: "excerpt", reason: "possible-secret" },
+  });
 });
 
 it("normalizes the public GitHub REST comment shape, withholding deleted files and bot reviews", async () => {
@@ -103,7 +141,8 @@ it("normalizes the public GitHub REST comment shape, withholding deleted files a
   const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     expect(new Headers(init?.headers).has("authorization")).toBe(false);
     const path = new URL(String(input)).pathname;
-    if (path.endsWith("/pulls/2")) return Response.json({ number: 2, merged_at: then });
+    if (path.endsWith("/pulls/2")) return Response.json({ number: 2, merged_at: then, changed_files: 2 });
+    if (path.endsWith("/pulls/2/files")) return Response.json([{ filename: "src/runtime.ts" }, { filename: "src/deleted.ts" }]);
     if (path.endsWith("/pulls/2/comments")) return Response.json([inline, { ...inline, id: 102, path: "src/deleted.ts" },
       { ...inline, id: 103, user: { login: "ci[bot]", type: "Bot" } }, { ...inline, id: 104, is_copilot_code_review: true }]);
     if (path.endsWith("/issues/2/comments")) return Response.json([{ ...inline, id: 105, path: undefined, position: 1,
@@ -113,11 +152,13 @@ it("normalizes the public GitHub REST comment shape, withholding deleted files a
   });
   const result = await githubReviews(new ForgeClient(github, undefined, request, 0), { ...window, source: github, pulls: [{ number: 2, at: then }], tree, preferred: [] });
   expect(result.gaps).toEqual([]);
-  expect(result.reviews.map(item => item.id)).toEqual(["github:issuecomment-:105", "github:discussion_r:101"]);
-  expect(result.reviews[1]).toMatchObject({ writer: true, outdated: true, text: "Keep the stable snapshot identifier. Nice work, [reviewer].",
+  // The outdated inline comment led to a code change, so it ranks first.
+  expect(result.reviews.map(item => item.id)).toEqual(["github:discussion_r:101", "github:issuecomment-:105"]);
+  expect(result.reviews[0]).toMatchObject({ writer: true, outdated: true, text: "Keep the stable snapshot identifier. Nice work, [reviewer].",
     link: "https://github.com/fiction/memory/pull/2#discussion_r101" });
-  const [topLevel, outdated] = result.reviews;
+  const [outdated, topLevel] = result.reviews;
   expect(topLevel.writer).toBe(true);
+  expect(topLevel.changedPaths).toEqual(["src/runtime.ts"]);
   expect(prioritizeReviews([{ ...topLevel, writer: false }, { ...outdated, outdated: false, id: "fresh" }, outdated], []).map(item => item.id))
     .toEqual([outdated.id, "fresh", topLevel.id]);
 });
@@ -139,13 +180,15 @@ it("falls back on GitHub association for 403 or 404 without overriding explicit 
     const path = new URL(String(input)).pathname;
     if (path === "/graphql") {
       const { query } = JSON.parse(String(init?.body));
+      expect(query).toContain("files(first:8){nodes{path}}");
       const pulls = [...String(query).matchAll(/p\d+:pullRequest\(number:(\d+)\)/gu)].map(match => Number(match[1]));
       reads.push(pulls);
       const repository = Object.fromEntries(pulls.map((number, i) => {
         const { association, push } = cases[number - 1]!;
         const comment = { fullDatabaseId: number, createdAt: then, body: "Keep the shared snapshot ID stable between builds.",
           author: { login: `writer-${number}`, __typename: "User" }, authorAssociation: association, authorCanPushToRepository: push };
-        return [`p${i}`, { number, mergedAt: then, reviews: page(push === undefined ? [] : [comment]),
+        return [`p${i}`, { number, mergedAt: then, files: page([{ path: "src/runtime.ts" }, { path: "src/deleted.ts" }]),
+          reviews: page(push === undefined ? [] : [comment]),
           comments: page(push === undefined && number !== 4 ? [comment] : []),
           reviewThreads: page(number === 4 ? [{ path: "src/runtime.ts", comments: page([comment]) }] : []) }];
       }));
@@ -162,6 +205,8 @@ it("falls back on GitHub association for 403 or 404 without overriding explicit 
   expect(reads).toEqual([[1, 2, 3, 4], [5, 6, 7, 8]]);
   expect(permissions).toEqual([3, 4, 5, 6, 7, 8]);
   expect(result.reviews.filter(review => review.writer).map(review => review.pull).sort()).toEqual([1, 3, 4, 5]);
+  expect(result.reviews.find(review => review.pull === 1)?.changedPaths).toEqual(["src/runtime.ts"]);
+  expect(result.reviews.find(review => review.pull === 2)?.changedPaths).toBeUndefined();
   expect(result.reviews.find(review => review.pull === 4)).toMatchObject({ topLevel: false });
 });
 
@@ -180,6 +225,8 @@ it("uses GitLab's upstream and nested project permissions, and omits raw identit
     const mr = { id: 928, iid: 5, state: "merged", merged_at: then, created_at: then, author };
     if (url.pathname.endsWith(`/projects/${project}/merge_requests`)) return Response.json([mr]);
     if (url.pathname.endsWith("/merge_requests/5")) return Response.json(mr);
+    if (url.pathname.endsWith("/merge_requests/5/diffs")) return Response.json([{ new_path: "src/runtime.ts", diff: "excluded diff text" },
+      { new_path: "src/deleted.ts" }]);
     if (url.pathname.endsWith("/merge_requests/5/discussions")) return Response.json([{ id: "c8d3", individual_note: false, notes: [note,
       { ...note, id: 82, body: "This leaked token is glpat-abcdefghijklmnopqrst." }, { ...note, id: 83, system: true },
       { ...note, id: 84, author: { ...author, bot: true } }] }]);
@@ -191,7 +238,8 @@ it("uses GitLab's upstream and nested project permissions, and omits raw identit
   expect(inventory).toMatchObject({ source: gitlab, visibility: "private", pulls: [{ number: 5, at: then }] });
   const result = await gitlabReviews(client, { ...window, source: inventory.source, pulls: inventory.pulls, tree, preferred: [] });
   expect(result.reviews).toHaveLength(1);
-  expect(result.reviews[0]).toMatchObject({ id: "gitlab:note:81", writer: true, text: "Keep the snapshot IDs stable. Thanks, [reviewer]." });
+  expect(result.reviews[0]).toMatchObject({ id: "gitlab:note:81", writer: true,
+    changedPaths: ["src/runtime.ts"], text: "Keep the snapshot IDs stable. Thanks, [reviewer]." });
   expect(result.gaps).toEqual(["Some source text was withheld by privacy checks."]);
 });
 

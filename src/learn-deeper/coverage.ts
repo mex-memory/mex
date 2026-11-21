@@ -42,7 +42,8 @@ export function parseManifest(raw: string | undefined): z.infer<typeof manifest>
 }
 
 const NoteProof = z.object({ origin: repositorySchema.optional(), source: repositorySchema, visibility: z.enum(["public", "private"]),
-  hash, sources: z.array(ForgeSource).max(8).default([]) }).strict();
+  hash, sources: z.array(ForgeSource).max(8).default([]),
+  evidenceDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).optional() }).strict();
 export const noteKey = (id: string) => `learning.deep.note.${id}`;
 
 function readProof(value: string | undefined, raw: string): z.infer<typeof NoteProof> | undefined {
@@ -53,15 +54,15 @@ function readProof(value: string | undefined, raw: string): z.infer<typeof NoteP
   } catch { return undefined; }
 }
 
-export function matchesProof(plan: LearningPlan, raw: string, value: string | undefined): boolean {
+export function learningProof(plan: LearningPlan, raw: string, value: string | undefined): z.infer<typeof NoteProof> | undefined {
   const proof = readProof(value, raw);
-  return !!proof && isDeepStrictEqual(proof.source, plan.source) && proof.visibility === plan.visibility
-    && (!proof.origin || isDeepStrictEqual(proof.origin, plan.origin));
+  return proof && isDeepStrictEqual(proof.source, plan.source) && proof.visibility === plan.visibility
+    && (!proof.origin || isDeepStrictEqual(proof.origin, plan.origin)) ? proof : undefined;
 }
 
-export function makeNoteProof(plan: LearningPlan, raw: string, sources: SourceRef[]): string {
+export function makeNoteProof(plan: LearningPlan, raw: string, sources: SourceRef[], evidenceDay?: string): string {
   return JSON.stringify({ origin: plan.origin, source: plan.source, visibility: plan.visibility, hash: sourceDigest(raw),
-    sources: sources.filter(source => ForgeSource.safeParse(source).success) });
+    sources: sources.filter(source => ForgeSource.safeParse(source).success), evidenceDay });
 }
 
 export function approvedCoverage(entry: KnowledgeEntry, raw: string, value: string | undefined, origin?: Repository): SharedCoverage {

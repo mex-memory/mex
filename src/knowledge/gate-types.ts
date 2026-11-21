@@ -41,6 +41,8 @@ export interface Sweep {
   producer: ProducerId;
   /** Omit to sweep the entire producer. Omitted proposals are protected if the scan was incomplete. */
   includes?: (entry: KnowledgeEntry) => boolean;
+  /** A verified team retirement also suppresses resurrection of that claim. */
+  tombstone?: { reason: string; by: string };
 }
 export type Observation = { check: EntryCheck } | { reason: string };
 export type ObserveChecks = (checks: ProposedCheck[], tree: string) => Observation[] | undefined;
@@ -48,9 +50,11 @@ export type ObserveChecks = (checks: ProposedCheck[], tree: string) => Observati
 export interface GateContext extends KnowledgeOptions {
   now?: Date;
   checkTree?: string;
+  /** Temporary file index for a pinned check tree, separate from the live project's index. */
+  checkIndex?: { projectId: string; recordDirectory: string };
   sweep?: Sweep;
   validate?: (writer: RecordWriter) => void;
-  onAccepted?: (writer: RecordWriter, accepted: AcceptedEntry[]) => void;
+  onAccepted?: (writer: RecordWriter, accepted: AcceptedEntry[], results: readonly GateResult[]) => void;
   observeChecks?: ObserveChecks;
   observeVerdicts?: (checkout: string) => ReadonlyMap<string, Verdict>;
   /** Called with the number of malformed team and hint files left out of the comparison. */
