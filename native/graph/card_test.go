@@ -272,6 +272,35 @@ func TestRecheckChangedFiles(t *testing.T) {
 	if kept, _ := Recheck(g.callers["n1"][2:3], "parseRoute", g, f, nil); len(kept) != 0 {
 		t.Fatal("kept without reading the file")
 	}
+	// Changed outside the hook (a shell edit): the index can't outline the file
+	// until it re-parses, so the definition is found in today's text.
+	g, f, _ = router()
+	f.hashes["src/get.ts"] = "shell-edited"
+	delete(f.outlines, "src/get.ts")
+	shifted := texts(map[string]string{"src/get.ts": lines(36, map[int]string{16: "export function handleGet(req: Request) {", 18: "  const r = parseRoute({ path: req.path })"})})
+	kept, dropped = Recheck(g.callers["n1"][:1], "parseRoute", g, f, shifted)
+	if dropped != 0 || len(kept) != 1 || kept[0].Line != 18 {
+		t.Fatalf("shell edit: %+v dropped %d", kept, dropped)
+	}
+	// Its declaration gone from the text too: dropped.
+	renamed := texts(map[string]string{"src/get.ts": lines(36, map[int]string{16: "export function handleFetch(req: Request) {", 18: "  const r = parseRoute(req.path)"})})
+	if kept, dropped := Recheck(g.callers["n1"][:1], "parseRoute", g, f, renamed); len(kept) != 0 || dropped != 1 {
+		t.Fatalf("declaration gone: %+v", kept)
+	}
+	// A call or mention of the name is not its declaration.
+	for line, want := range map[string]bool{
+		"export function handleGet(req) {": true,
+		"const handleGet = (req) =>":       true,
+		"  handleGet(req: Request) {":       true,
+		"  await handleGet(req)":            false,
+		"  this.handleGet(req)":             false,
+		"  return handleGet(req)":           false,
+		"// handleGet runs first":           false,
+	} {
+		if declares(line, "handleGet") != want {
+			t.Errorf("declares %q: want %v", line, want)
+		}
+	}
 }
 
 func TestUsesWord(t *testing.T) {

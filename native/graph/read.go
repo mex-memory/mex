@@ -195,7 +195,15 @@ func relocate(s Site, name string, files Files, src Source, claimed map[string]b
 	if !Anonymous(anchor) && anchor.Kind != "file" {
 		now, ok := still(files, anchor)
 		if !ok {
-			return s, false // the definition the use was in is gone
+			// The file index can't place the definition while a file changed
+			// outside the hook (a shell edit) waits for its re-parse: find its
+			// declaration in today's text instead. Gone from both, it's gone.
+			if _, miss := files.Outline(s.Path); miss == nil {
+				return s, false // the definition the use was in is gone
+			}
+			if now, ok = declaredInText(lines, anchor); !ok {
+				return s, false
+			}
 		}
 		predicted = s.Line + now.Start - anchor.Start
 		lo, hi = max(1, now.Start), min(len(lines), now.End)
@@ -276,6 +284,56 @@ func still(files Files, s Symbol) (Symbol, bool) {
 		}
 	}
 	return best, found
+}
+
+// declaredInText finds a definition's declaration in today's lines, the
+// nearest to where it was built: a line that names it as a declaration (not
+// a call on something, not a mention). Its end moves with its start, plus
+// the window, since its body may have grown.
+func declaredInText(lines []string, s Symbol) (Symbol, bool) {
+	if s.Name == "" || s.Start < 1 {
+		return s, false
+	}
+	best, found := s, false
+	for n := max(1, s.Start-recheckWindow); n <= min(len(lines), s.Start+recheckWindow); n++ {
+		if !declares(lines[n-1], s.Name) {
+			continue
+		}
+		if !found || abs(n-s.Start) < abs(best.Start-s.Start) {
+			best.Start, found = n, true
+		}
+	}
+	if !found {
+		return s, false
+	}
+	best.End = min(len(lines), best.Start+(s.End-s.Start)+recheckWindow)
+	return best, true
+}
+
+// declares reports a line that declares name: the name followed by its
+// parameters or a binding, and not reached through a dot or called after
+// await, return or new.
+func declares(line, name string) bool {
+	i := strings.Index(line, name)
+	for i >= 0 {
+		before := strings.TrimRight(line[:i], " \t")
+		after := strings.TrimLeft(line[i+len(name):], " \t")
+		word := (i == 0 || !isIdent(line[i-1])) && (i+len(name) == len(line) || !isIdent(line[i+len(name)]))
+		if word && !strings.HasSuffix(before, ".") && !strings.HasSuffix(before, "await") && !strings.HasSuffix(before, "return") && !strings.HasSuffix(before, "new") &&
+			(strings.HasPrefix(after, "(") || strings.HasPrefix(after, "<") || strings.HasPrefix(after, "=") || strings.HasPrefix(after, ":")) {
+			return true
+		}
+		next := strings.Index(line[i+1:], name)
+		if next < 0 {
+			break
+		}
+		i += next + 1
+	}
+	return false
+}
+
+func isIdent(b byte) bool {
+	return b == '_' || b == '$' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
 func abs(n int) int {
