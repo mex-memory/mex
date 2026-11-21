@@ -5,6 +5,7 @@ import { globToRegExp } from "../file-index/glob.js";
 import { observeProposalChecks, type GateContext, type Proposal, type ProposedCheck } from "../knowledge/gate.js";
 import { hasSecret, stripHidden } from "../knowledge/gates.js";
 import { checkPatterns, keptPatterns, type PatternCandidate, type WhenPattern } from "../knowledge/pattern-check.js";
+import { anchorRequired } from "../knowledge/producers.js";
 import { shortHash } from "../record/project.js";
 import { anchorEvidence, codeSymbolFile, declaredCommands, MAX_SCOPE_FILES, scopePattern } from "./anchor-evidence.js";
 import { object, type ForgeClient } from "./forge.js";
@@ -25,7 +26,7 @@ export interface AnchorDraft {
 export interface ReviewLines { objected: string; anchor: string; }
 export type ReadReviewLines = (source: ReviewSource) => Promise<ReviewLines | undefined>;
 export type CheckContext = Pick<GateContext, "checkTree" | "checkIndex">;
-export const ANCHOR_KINDS = ["code-scope", "symbol", "command", "when", "doc-only"] as const;
+export const ANCHOR_KINDS = ["code-scope", "symbol", "command", "when", "repo-wide"] as const;
 export type AnchorKind = typeof ANCHOR_KINDS[number];
 export type AnchorResult = (Proposal & { anchorKinds: AnchorKind[] }) | "no-anchor" | "check-target" | "check-verification";
 
@@ -147,13 +148,18 @@ function commandChecks(plan: AnchorPlan, declared: ReturnType<typeof declaredCom
   return commands.slice(0, MAX_SCOPE_FILES);
 }
 
+/**
+ * Scope only from code the evidence names: cited paths and globs and verified symbol files. A command
+ * check's manifest (`package.json`, a Makefile) is not the code a rule governs, so it never becomes scope.
+ */
 function codeScope(plan: AnchorPlan, staged: ReadonlySet<string>, checks: Array<SymbolCheck | CommandCheck>,
   quotedSymbolFiles: string[]): { scope: string[]; fromPaths: boolean } {
   const supported = [...plan.evidence.quotedPaths, ...quotedSymbolFiles].filter(path => staged.has(path));
   const suggestions = plan.suggested.filter(item => supported.some(path => item.match.test(path)));
   const fromPaths = suggestions.length > 0 || plan.evidence.scopes.some(item => item.files.some(path => staged.has(path)));
   const scopes = plan.evidence.scopes.filter(item => item.files.some(path => staged.has(path) && !suggestions.some(model => model.match.test(path))));
-  const targets = checks.map(check => check.target.file).filter(file => !suggestions.some(item => item.match.test(file)));
+  const targets = checks.flatMap(check => check.kind === "symbol" ? [check.target.file] : [])
+    .filter(file => !suggestions.some(item => item.match.test(file)));
   return { scope: [...new Set([...suggestions.map(item => item.glob), ...scopes.map(item => item.glob), ...targets])].slice(0, MAX_SCOPE_FILES), fromPaths };
 }
 
@@ -180,6 +186,11 @@ async function verifiedPatterns(plan: AnchorPlan, scope: string[], tree: PinnedT
     })) ?? null));
   }
   return when;
+}
+
+/** A teammate's doc or review rule with no code anchor is repo-wide: start brief and recall, like a person's note. */
+export function repoWideAllowed(proposal: Proposal): boolean {
+  return !anchorRequired(proposal.producer, proposal.kind, proposal.evidenceClass ?? "");
 }
 
 /** Stage verified inputs once, then keep the same tree alive for the gate's observations. */
@@ -228,12 +239,18 @@ export async function withVerifiedAnchors<T>(drafts: readonly AnchorDraft[], tre
       const when = scope.length ? await verifiedPatterns(plan, scope, tree, staged, readReview, cached, checkOptions) : [];
       if (when.length) anchorKinds.push("when");
       if (!scope.length) {
-        scope.push(...plan.evidence.docs.filter(path => staged.has(path) && scopePattern(path)).slice(0, MAX_SCOPE_FILES));
-        if (!scope.length) {
-          results.push(plan.supplied.some(check => check.kind === "symbol" || check.kind === "command") ? "check-verification" : "no-anchor");
+        // No doc-scope fallback: a scope on the cited doc fires only when that doc is read.
+        const commandAnchored = checks.some(check => check.kind === "command") && ["recipe", "procedure"].includes(plan.proposal.kind);
+        // A symbol or command the writer named but the pinned tree doesn't declare is a wrong claim, not a repo-wide one.
+        const unverified = plan.supplied.some(check => (check.kind === "symbol" || check.kind === "command")
+          && !checks.some(kept => kept.kind === check.kind && isDeepStrictEqual(kept.target, check.target)));
+        if (!commandAnchored && (unverified || !repoWideAllowed(plan.proposal))) {
+          results.push(unverified ? "check-verification" : "no-anchor");
           continue;
         }
-        anchorKinds.push("doc-only");
+        scope.push("**");
+        // A command anchors a recipe or procedure at its command moment; anything else here is repo-wide.
+        if (!commandAnchored) anchorKinds.push("repo-wide");
       }
       results.push({ ...plan.proposal, anchors: { scope, ...(when.length ? { when } : {}) }, checks: [...supporting, ...checks], anchorKinds });
     }

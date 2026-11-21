@@ -153,7 +153,7 @@ it("quotes first, uses one logged model batch, and delivers a private rule throu
     const selected = DEFAULT_MODELS.codex.best;
     expect(learned.mex.source).toEqual({ type: "docs", ref: "README.md", producer: "learn-deeper",
       model: { id: selected, version: selected }, label: "Learned from 1 doc" });
-    expect(learned.mex.scope).toEqual(["package.json"]);
+    expect(learned.mex.scope).toEqual(["**"]);
     expect(writer.setting(start.projectId!, `knowledge.gate.${learned.mex.id}`)).toBeDefined();
     const results = listJobs({ all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never });
     expect(results.find(item => item.id === job.id)?.summary).toContain(`Writer model ${selected} (${selected}) · Learned from 1 doc.`);
@@ -230,7 +230,7 @@ it.each(correctRules)("anchors a human-Correct OSS-67 $repo rule and accepts it 
     const [proposal] = anchors;
     if (!proposal || typeof proposal === "string") throw new Error("Expected the archived rule to anchor");
     expect(proposal.anchors?.scope).toEqual(row.scope);
-    expect(proposal.anchorKinds).toEqual([row.repo === "mex" ? "code-scope" : "doc-only"]);
+    expect(proposal.anchorKinds).toEqual([row.repo === "mex" ? "code-scope" : "repo-wide"]);
     expect(proposal.source.text).toEqual(sources[0]!.text);
     return propose([proposal], { ...check, home: fixture, projectPath: repo });
   });
@@ -249,17 +249,17 @@ it.each([
     text: "Runtime changes need a regression test for stable snapshots.", modelScope: ["src/"], scope: ["src/**"], kinds: ["code-scope"] },
   { name: "a trailing-slash scope with no pinned file", quote: "Keep the examples under unpinned/ in sync.",
     text: "Update copied examples when their original behavior changes.", modelScope: ["unpinned/"], liveFile: "unpinned/example.ts",
-    scope: ["docs/guide.rst"], kinds: ["doc-only"] },
+    scope: ["**"], kinds: ["repo-wide"] },
   { name: "a pinned path elsewhere in the verified excerpt", quote: "Regression tests should cover runtime behavior.",
     body: "The implementation is in src/runtime.ts.", text: "Provide runtime regression tests when updating src/runtime.ts.",
     scope: ["src/runtime.ts"], kinds: ["code-scope"] },
   { name: "a named symbol", quote: "The function canonicalSnapshotId should preserve identifiers between releases.",
     text: "Keep snapshot IDs stable across releases in canonicalSnapshotId.", scope: ["src/ids.ts"], kinds: ["symbol"] },
   { name: "a declared Makefile target", quote: "Before release, run make verify-index to check generated fixtures.",
-    text: "Verify the generated index before releases.", scope: ["Makefile"], kinds: ["command"] },
-  { name: "the doc as a last resort", quote: "Record the intended audience and the reason when proposing a policy amendment.",
+    text: "Verify the generated index before releases.", scope: ["**"], kinds: ["command", "repo-wide"] },
+  { name: "no code anchor, so the doc rule is repo-wide", quote: "Record the intended audience and the reason when proposing a policy amendment.",
     text: "When proposing policy amendments, describe who the change affects and why it is needed.",
-    scope: ["docs/guide.rst"], kinds: ["doc-only"] },
+    scope: ["**"], kinds: ["repo-wide"] },
 ])("anchors a doc rule using $name through the real gate", async scenario => {
   mkdirSync(join(repo, "src"));
   mkdirSync(join(repo, "unrelated"));
@@ -310,7 +310,7 @@ it("uses pinned changed files from verified top-level reviews as code anchors", 
   });
 });
 
-it("drops an ungrounded scope and an unverified symbol instead of submitting anchorless entries", async () => {
+it("makes an ungrounded review rule repo-wide and drops an unverified symbol or an anchorless recipe", async () => {
   writeFileSync(join(repo, "unrelated.ts"), "export const actualName = 1;\n");
   git("add", "unrelated.ts"); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the unrelated file");
   const { pinned, plan } = await fixturePlan("example/memory");
@@ -323,10 +323,11 @@ it("drops an ungrounded scope and an unverified symbol instead of submitting anc
   const prepared = await prepareEntries(reply({ entries: [
     rule,
     { ...rule, checks: [{ kind: "symbol", role: "supporting", target: { file: "unrelated.ts", symbol: "missingName" } }] },
+    { ...rule, kind: "recipe", text: "Recipes from reviews still need a code or command anchor." },
   ] }).text, sources, plan, pinned, fixtureModel);
   expect(prepared.validation.rejected).toEqual([]);
   await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async anchors => {
-    expect(anchors).toEqual(["no-anchor", "check-verification"]);
+    expect(anchors).toEqual([expect.objectContaining({ anchors: { scope: ["**"] }, anchorKinds: ["repo-wide"] }), "check-verification", "no-anchor"]);
   });
 });
 
@@ -507,7 +508,7 @@ it("compares a 112 KB AGENTS.md and finishes with a gap when a rule file can't b
     // The 112 KB AGENTS.md was staged and compared: the proposal repeating its last line is dropped.
     expect(saved.gateSummary).toBe("1 saved, 0 to Review, 1 dropped (duplicate-rule-line 1)");
     const [learned] = [...snapshotNotes(writer, job.project_id!).files.values()].map(raw => parseEntry(raw));
-    expect(learned).toMatchObject({ text: other.text, mex: { scope: ["README.md"] } });
+    expect(learned).toMatchObject({ text: other.text, mex: { scope: ["**"] } });
   } finally { writer.close(); }
 });
 
@@ -518,7 +519,7 @@ it("matches line endings in doc quotes and records only rejection reasons", asyn
   git("add", "README.md");
   git("-c", "commit.gpgsign=false", "commit", "-qm", "Use CRLF in the documentation");
   await accept();
-  const rule = { ...answer, text: "Preserve snapshot identifiers to avoid invalidating the renderer cache.",
+  const rule = { ...answer, kind: "rule", text: "Preserve snapshot identifiers to avoid invalidating the renderer cache.",
     evidence: [{ id: "doc:README.md", quote: exact }], checks: [] };
   const model = vi.fn<typeof runModel>(async request => {
     expect(request.prompt).toContain("releases.\\r\\nThe renderer uses");

@@ -43,8 +43,7 @@
     ],
     "targetFiles": {},
     "scope": [
-      "docs/html/development/contributing.rst",
-      "docs/html/development/issue-triage.md"
+      "**"
     ]
   },
   {
@@ -66,7 +65,7 @@
       "AI_POLICY.md": "# AI Contribution Policy\n"
     },
     "scope": [
-      "AI_POLICY.md"
+      "**"
     ]
   }
 ]
