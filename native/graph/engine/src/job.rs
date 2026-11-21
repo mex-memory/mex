@@ -4,6 +4,7 @@
 //! stdin, then touch the repository. Every way out other than success deletes
 //! the candidate first.
 
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -219,6 +220,7 @@ fn build(request: &Request) -> Result<BuildCounts, JobError> {
     let mut counts = BuildCounts::default();
     let mut file_facts = Vec::new();
     let mut node_rows = Vec::new();
+    let mut file_rows = Vec::new();
     for (done, (file, extraction)) in request.files.iter().zip(extracted).enumerate() {
         match extraction {
             Ok(ExtractedPython { size, facts }) => {
@@ -249,6 +251,7 @@ fn build(request: &Request) -> Result<BuildCounts, JobError> {
                 };
                 file_facts.push(facts);
                 node_rows.push(nodes);
+                file_rows.push(id);
             }
             Err(reason) => {
                 writer.add_coverage(&file.path, reason).map_err(write)?;
@@ -261,10 +264,14 @@ fn build(request: &Request) -> Result<BuildCounts, JobError> {
             );
         }
     }
-    for edge in resolve_edges(&file_facts, &node_rows) {
-        writer.add_edge(&edge).map_err(write)?;
-        counts.edges += 1;
-    }
+    write_resolution(
+        &mut writer,
+        &file_facts,
+        &node_rows,
+        &file_rows,
+        &mut counts,
+    )
+    .map_err(write)?;
     writer
         .set_meta("engine", env!("CARGO_PKG_VERSION"))
         .map_err(write)?;
@@ -396,19 +403,78 @@ fn write_nodes(
             })?;
             counts.edges += 1;
         }
-        if let Some(sketch) = &def.sketch {
+    }
+    Ok(rows)
+}
+
+/// Resolve calls, bases and imports across every Python file, write the
+/// edges between written nodes and the per-file unresolved counts, then the
+/// fingerprints: a sketch's neighbours are its callers and callees, so they
+/// come after resolution. Neighbours are ordered by text id, as today.
+fn write_resolution(
+    writer: &mut Writer,
+    files: &[FileFacts],
+    node_rows: &[Vec<Option<i64>>],
+    file_rows: &[i64],
+    counts: &mut BuildCounts,
+) -> Result<(), store::Error> {
+    let resolution = mex_graph_python::resolve::resolve(files);
+    let row = |(f, d): (usize, usize)| node_rows.get(f).and_then(|r| r.get(d)).copied().flatten();
+    let mut written = HashSet::new();
+    let mut neighbours: HashMap<(usize, usize), BTreeSet<(usize, usize)>> = HashMap::new();
+    for edge in &resolution.edges {
+        let (Some(source), Some(target)) = (row(edge.from), row(edge.to)) else {
+            continue;
+        };
+        if !written.insert((source, edge.kind, target, edge.line, edge.col)) {
+            continue;
+        }
+        writer.add_edge(&EdgeRow {
+            source,
+            kind: edge.kind,
+            target,
+            line: edge.line,
+            col: edge.col,
+            provenance: "tree-sitter",
+            confidence: 1.0,
+        })?;
+        counts.edges += 1;
+        if edge.kind == "calls" {
+            neighbours.entry(edge.from).or_default().insert(edge.to);
+            neighbours.entry(edge.to).or_default().insert(edge.from);
+        }
+    }
+    for &(file, reason, count) in &resolution.unresolved {
+        writer.add_unresolved(file_rows[file], reason, count)?;
+    }
+    for (f, facts) in files.iter().enumerate() {
+        for (d, def) in facts.defs.iter().enumerate() {
+            let (Some(node), Some(sketch)) = (row((f, d)), &def.sketch) else {
+                continue;
+            };
             let minhash: Vec<u8> = sketch
                 .minhash
                 .iter()
                 .flat_map(|v| v.to_be_bytes())
                 .collect();
-            writer.add_fingerprint(node, &minhash, &[], sketch.token_count)?;
+            let mut ids: Vec<String> = neighbours
+                .get(&(f, d))
+                .into_iter()
+                .flatten()
+                .map(|&(nf, nd)| files[nf].defs[nd].signature_id(&files[nf].path))
+                .collect();
+            ids.sort();
+            let packed: Vec<u8> = ids
+                .iter()
+                .flat_map(|id| {
+                    let hex = &id[id.find(':').map_or(0, |i| i + 1)..];
+                    (0..hex.len() / 2)
+                        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap_or(0))
+                        .collect::<Vec<u8>>()
+                })
+                .collect();
+            writer.add_fingerprint(node, &minhash, &packed, sketch.token_count)?;
         }
     }
-    Ok(rows)
-}
-
-/// Cross-file resolution will use the facts and their parallel definition-to-row mapping.
-fn resolve_edges(_files: &[FileFacts], _node_rows: &[Vec<Option<i64>>]) -> Vec<EdgeRow<'static>> {
-    Vec::new()
+    Ok(())
 }
