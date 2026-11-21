@@ -4,7 +4,7 @@ import { discoverGraphReadPaths } from "./read-discovery.js";
 import { skippedByRule } from "../file-index/discover.js";
 import { graphCoverage } from "./read-coverage.js";
 import { currentGraphPath, graphStoragePathAllowed } from "./storage.js";
-import { graphManifest, configHashForSources, discoverGraphConfigSources, CORPUS_EXTRACTOR_VERSION, RESOLVER_VERSION, type GraphManifest } from "./manifest.js";
+import { graphManifest, configHashForSources, discoverGraphConfigSources, corpusExtractorVersion, RESOLVER_VERSION, type GraphManifest } from "./manifest.js";
 export { graphManifest, graphManifestHash, graphManifestDiffersOnlyByConfig, type GraphManifest, type GraphManifestInputs } from "./manifest.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
 export { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
@@ -29,8 +29,10 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
-  BuildResult, DeclinedCompilerInput, GraphEngine, GraphPublicationReport, GraphTypeScriptReport, NodeSearchOptions, SkippedSourceFile,
+  BuildResult, DeclinedCompilerInput, GraphEngine, GraphEngineReport, GraphPublicationReport, GraphTypeScriptReport, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
+import { engineExtractorSuffix, graphEngineLanguages } from "./engine-languages.js";
+import type { EngineStagedFile } from "./native-engine.js";
 import type { GraphCompilers } from "./extraction/compiler-policy.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
@@ -314,12 +316,19 @@ interface StagedFile {
   references: UnresolvedRefRecord[];
   imports: ImportBindingRecord[];
   compilerNodes?: CompilerExtractedNode[];
+  /**
+   * Present on files the Rust engine staged: its sketches by node id, which
+   * fingerprinting uses instead of tokenizing the file again.
+   */
+  sketches?: Map<string, { minhash: number[]; tokenCount: number }>;
 }
 
 interface StagedCorpus {
   files: StagedFile[];
   /** Which compilers built the TypeScript graph, for Health; absent without TypeScript files. */
   typescript?: GraphTypeScriptReport;
+  /** What the Rust graph engine built; absent unless it was asked to build a language. */
+  engine?: GraphEngineReport;
   /** Files discovered but not indexed, carried through to the build result. */
   skipped: GraphSkippedSourceFile[];
   /** Config inputs the containment policy declined during compiler extraction. */
@@ -480,7 +489,7 @@ class GraphEngineImpl implements GraphEngine {
       const { rebuildGraph } = await import("./maintenance.js");
       const result = await rebuildGraph(rootDir ?? this.rootDir);
       this.dbPath = currentGraphPath(this.rootDir);
-      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined };
+      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined, engine: result.engine ? { ...result.engine, languages: [...result.engine.languages] } : undefined };
     }
     if (this.readOnly) throw new Error("A read-only graph engine cannot build an index.");
     const started = Date.now();
@@ -510,7 +519,7 @@ class GraphEngineImpl implements GraphEngine {
       const { refreshGraph } = await import("./maintenance.js");
       const result = await refreshGraph(this.rootDir);
       this.dbPath = currentGraphPath(this.rootDir);
-      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined };
+      return { ...result, skipped: result.skipped ? [...result.skipped] : undefined, declinedInputs: result.declinedInputs ? [...result.declinedInputs] : undefined, typescript: result.typescript ? { ...result.typescript, projects: { ...result.typescript.projects }, notes: [...result.typescript.notes] } : undefined, engine: result.engine ? { ...result.engine, languages: [...result.engine.languages] } : undefined };
     }
     if (this.readOnly) throw new Error("A read-only graph engine cannot synchronize an index.");
     const started = Date.now();
@@ -674,7 +683,7 @@ class GraphEngineImpl implements GraphEngine {
       git,
       schemaVersion: DB_SCHEMA_VERSION,
       compilerVersion: staged.compiler.compilerVersion,
-      extractorVersion: CORPUS_EXTRACTOR_VERSION,
+      extractorVersion: corpusExtractorVersion(),
       resolverVersion: RESOLVER_VERSION,
       grammarHash: staged.grammarHash,
       configHash: staged.configHash,
@@ -737,7 +746,7 @@ class GraphEngineImpl implements GraphEngine {
       store.setMetadata("compiler_version", staged.compiler.compilerVersion);
       if (staged.typescript) store.setMetadata(TYPESCRIPT_REPORT_METADATA_KEY, JSON.stringify(staged.typescript));
       else store.deleteMetadata(TYPESCRIPT_REPORT_METADATA_KEY);
-      store.setMetadata("extractor_version", CORPUS_EXTRACTOR_VERSION);
+      store.setMetadata("extractor_version", corpusExtractorVersion());
       store.setMetadata("resolver_version", RESOLVER_VERSION);
       store.setMetadata("config_hash", staged.configHash);
       store.setMetadata("grammar_hash", staged.grammarHash);
@@ -764,6 +773,7 @@ class GraphEngineImpl implements GraphEngine {
         ? { declinedInputs: [...staged.declinedInputs] }
         : {}),
       ...(staged.typescript ? { typescript: staged.typescript } : {}),
+      ...(staged.engine ? { engine: staged.engine } : {}),
       ...(delta ? { [DELTA_AUDIT_SCOPE]: [...delta.rewritten.map((group) => group.path), ...delta.removed] } : {}),
       publication: delta
         ? { publication: "delta", filesRewritten: delta.rewritten.length + delta.removed.length }
@@ -1203,6 +1213,11 @@ async function stageCorpus(
         && !compilerByPath.has(file.relPath))
       .map((file) => detectLanguage(file.relPath)))];
     await timeGraphPhaseAsync("stage.loadGrammars", () => loadGrammars([...treeLanguages, ...fallbackLanguages]));
+    const engineLanguages = graphEngineLanguages();
+    const engine = engineLanguages.length > 0
+      ? await timeGraphPhaseAsync("stage.engine", () => stageWithGraphEngine(
+        root, discovered, engineLanguages, internal.sourceSpoolDirectory))
+      : undefined;
 
     // Compiler cache entries were encoded as captures arrived, before
     // resolution adds framework nodes and hydrates bindings in place.
@@ -1227,6 +1242,17 @@ async function stageCorpus(
         return timeGraphPhase("stage.compilerFiles", () => stageCompilerFile(file, source, compilerFile));
       }
       reportParsed(++parsed);
+      const engineFile = engine?.files.get(file.relPath);
+      if (engineFile) {
+        engine!.files.delete(file.relPath);
+        // The engine read the file itself; a file that changed since
+        // discovery is extracted from the spooled bytes as today.
+        if (engineFile.contentHash === file.contentHash) {
+          engine!.report.files++;
+          return stageEngineFile(file, engineFile);
+        }
+        engine!.report.fallbackFiles++;
+      }
       const cached = cachedTrees?.get(file.relPath);
       if (cached) {
         cacheEntries.set(file.relPath, {
@@ -1243,6 +1269,7 @@ async function stageCorpus(
       return staged;
     });
     compilerByPath.clear();
+    if (engine && engine.report.fallbackFiles > 0) demoteDanglingEngineEdges(files);
     // Release project/file extraction arrays after their durable staged shape
     // has been copied. Per-node compiler spans survive only until fingerprinting.
     compiler.files.length = 0;
@@ -1286,6 +1313,7 @@ async function stageCorpus(
             .flatMap(([project, notes]) => notes.map((note) => ({ project, note }))),
         },
       } : {}),
+      ...(engine ? { engine: engine.report } : {}),
       skipped,
       declinedInputs: [...compiler.declinedInputs],
       compiler: {
@@ -1625,13 +1653,35 @@ function stageFingerprints(
       file.compilerNodes = undefined;
       continue;
     }
-    const source = sourceSpool.read(file.discovered);
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    const compilerNodes = file.compilerNodes?.filter((node) => nodeIds.has(node.id));
-    const tokens = compilerNodes && compilerNodes.length > 0
-      ? normalizedCompilerTokens(source, compilerNodes)
-      : normalizedAstTokens(file.record.path, source, nodes);
+    // The engine sketched its own nodes; framework nodes added after it are
+    // tokenized as today.
+    const engineSketches = file.sketches;
+    const unsketched = engineSketches ? nodes.filter((node) => !engineSketches.has(node.id)) : nodes;
+    let tokens = new Map<string, string[]>();
+    if (unsketched.length > 0) {
+      const source = sourceSpool.read(file.discovered);
+      const nodeIds = new Set(unsketched.map((node) => node.id));
+      const compilerNodes = file.compilerNodes?.filter((node) => nodeIds.has(node.id));
+      tokens = compilerNodes && compilerNodes.length > 0
+        ? normalizedCompilerTokens(source, compilerNodes)
+        : normalizedAstTokens(file.record.path, source, unsketched);
+    }
     for (const node of nodes) {
+      const sketch = engineSketches?.get(node.id);
+      if (sketch) {
+        pending.push({
+          nodeId: node.id,
+          fingerprint: {
+            minhash: sketch.minhash,
+            neighbors: [...new Set([
+              ...(callersByTarget.get(node.id) ?? []),
+              ...(calleesBySource.get(node.id) ?? []),
+            ])].sort(),
+            tokenCount: sketch.tokenCount,
+          },
+        });
+        continue;
+      }
       pending.push({
         nodeId: node.id,
         fingerprint: fingerprintBuilder.create(
@@ -1763,6 +1813,115 @@ function stageCompilerFile(
     imports,
     compilerNodes: extraction.nodes,
   };
+}
+
+/** The Rust engine's staged rows by path, and the report the build carries. */
+interface EngineStaging {
+  files: Map<string, EngineStagedFile>;
+  report: GraphEngineReport;
+}
+
+/** Memory cap and deadline for one engine stage job. */
+const ENGINE_STAGE_LIMITS = { memoryMb: 2048, deadlineMs: 30 * 60_000 };
+
+/**
+ * Stage `languages` with the Rust engine (OSS-73), streamed as rows for
+ * today's schema v4 store. The engine extracts and resolves every file of
+ * those languages in one job. Any failure keeps today's extractors for every
+ * file and says why in the report; staging never fails because of it.
+ */
+async function stageWithGraphEngine(
+  root: string,
+  discovered: readonly DiscoveredFile[],
+  languages: string[],
+  requestDir: string | undefined,
+): Promise<EngineStaging | undefined> {
+  const paths = discovered.filter((file) => file.relPath.endsWith(".py")
+    && languages.includes(detectLanguage(file.relPath)));
+  if (paths.length === 0) return undefined;
+  const report: GraphEngineReport = { languages, files: 0, fallbackFiles: 0 };
+  const files = new Map<string, EngineStagedFile>();
+  const fellBack = (reason: string): EngineStaging => {
+    files.clear();
+    return { files, report: { ...report, fellBack: reason } };
+  };
+  const { graphEngineBinary, graphEngineVersion, runGraphEngine } = await import("./native-engine.js");
+  const binary = graphEngineBinary();
+  if (!binary) return fellBack("no mex-graph binary was found");
+  const version = graphEngineVersion(binary);
+  if ("problem" in version) return fellBack(version.problem);
+  const run = await runGraphEngine(binary, {
+    mode: "stage",
+    root,
+    files: paths.map((file) => ({ path: file.relPath, size: file.size })),
+    languages,
+    limits: ENGINE_STAGE_LIMITS,
+  }, {
+    requestDir,
+    onEvent: (event) => { if (event.type === "staged") files.set(event.path, event); },
+  });
+  if (run.exitCode !== 0 || !run.result) {
+    const why = run.error ? `${run.error.code}: ${run.error.message}` : `exit ${run.exitCode ?? run.signal}`;
+    return fellBack(`the engine stopped (${why})`);
+  }
+  return {
+    files,
+    report: { ...report, wallMs: run.result.usage.wallMs, peakRssMb: run.result.usage.peakRssMb },
+  };
+}
+
+/** One engine-staged file in the shape `stageTreeFile` produces. */
+function stageEngineFile(discovered: DiscoveredFile, staged: EngineStagedFile): StagedFile {
+  const now = Date.now();
+  const sketches = new Map<string, { minhash: number[]; tokenCount: number }>();
+  const nodes = staged.nodes.map(({ minhash, tokenCount, ...node }) => {
+    if (minhash && tokenCount !== undefined) sketches.set(node.id, { minhash, tokenCount });
+    return { ...node, updatedAt: now } as unknown as GraphNode;
+  });
+  const health = staged.health;
+  return {
+    discovered,
+    record: {
+      path: discovered.relPath,
+      contentHash: discovered.contentHash,
+      language: staged.language as Language,
+      size: discovered.size,
+      modifiedAt: discovered.modifiedAt,
+      indexedAt: now,
+      nodeCount: nodes.length,
+      errors: health.diagnostics.map((diagnostic) => ({ ...diagnostic })),
+      parseStatus: health.status,
+      diagnosticCount: health.diagnosticCount,
+      missingCount: health.missingCount,
+      errorCoverage: health.errorCoverage,
+      extractorVersion: TREE_SITTER_EXTRACTOR_VERSION + engineExtractorSuffix([staged.language]),
+    },
+    nodes,
+    edges: staged.edges as unknown as GraphEdge[],
+    references: staged.unresolved as unknown as UnresolvedRefRecord[],
+    imports: [],
+    sketches,
+  };
+}
+
+/**
+ * An engine edge can point at a file today's extractors built instead, whose
+ * node ids may differ; such an edge becomes an unresolved reference.
+ */
+function demoteDanglingEngineEdges(files: StagedFile[]): void {
+  const ids = new Set(files.flatMap((file) => file.nodes.map((node) => node.id)));
+  for (const file of files) {
+    if (!file.sketches) continue;
+    file.edges = file.edges.filter((edge) => {
+      if (ids.has(edge.target)) return true;
+      file.references.push({
+        fromNodeId: edge.source, referenceName: edge.target, referenceKind: edge.kind as ReferenceKind,
+        filePath: file.record.path, language: file.record.language, line: edge.line, column: edge.column,
+        status: "unresolved", resolver: "engine-python", metadata: { reason: "target_changed_during_build" },
+      });
+      return false;
+    });
+  }
 }
 
 function stageTreeFile(discovered: DiscoveredFile, source: string): StagedFile {
