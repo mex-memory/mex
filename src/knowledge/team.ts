@@ -95,6 +95,34 @@ function readAt(root: string, item: { id: string; path: string }): { entry: Know
   if (entry.mex.id !== item.id) throw new KnowledgeError("INVALID_ENTRY", "Team entry id does not match its filename.");
   return { entry, content };
 }
+/** Active claims as written, for save-time comparison. An unreadable file is skipped and counted. */
+export function teamClaims(root: string): { entries: KnowledgeEntry[]; invalid: number } {
+  let bytes = 0, invalid = 0;
+  const entries: KnowledgeEntry[] = [];
+  for (const item of teamFiles(root)) {
+    let found;
+    try { found = readAt(root, item); }
+    catch (error) {
+      if (!(error instanceof KnowledgeError) || !["INVALID_ENTRY", "ENTRY_TOO_LARGE"].includes(error.code)) throw error;
+      invalid++; continue;
+    }
+    if (!found) continue;
+    bytes += Buffer.byteLength(found.content);
+    if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Team entries exceed the byte scan limit.");
+    if (found.entry.mex.status === "active") entries.push(found.entry);
+  }
+  return { entries, invalid };
+}
+
+/**
+ * Tracked team files leave out producer, model and label. They are local
+ * provenance, and readers with the older strict schema refuse unknown fields.
+ */
+export function teamEntry(input: KnowledgeEntry): KnowledgeEntry {
+  const { producer: _producer, model: _model, label: _label, ...source } = input.mex.source;
+  return { ...input, mex: { ...input.mex, source } };
+}
+
 export function teamEntries(options: KnowledgeOptions, source?: References): { entries: TeamEntry[]; withheld: number } {
   const root = rootFor(options), files = teamFiles(root);
   if (!files.length) return { entries: [], withheld: 0 };
@@ -132,7 +160,7 @@ export function expandTeam(id: string, options: KnowledgeOptions): TeamEntry | u
 /** Pure preparation: callers must show the exact diff before applying it. */
 export function prepareTeamWrite(input: KnowledgeEntry, options: KnowledgeOptions, typedText?: string): TeamPreview {
   const root = rootFor(options), context = references(root);
-  const entry = gateEntry(input, context);
+  const entry = gateEntry(teamEntry(input), context);
   verifyEvidence(entry, root, typedText === undefined ? undefined : sanitizeText(typedText, context));
   const existing = teamFiles(root).find(item => item.id === entry.mex.id);
   const path = existing?.path ?? `${ROOT}/${entry.mex.id}.md`;

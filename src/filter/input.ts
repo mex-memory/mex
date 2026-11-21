@@ -194,16 +194,26 @@ export function statementsOn(writer: Pick<RecordWriter, "setting">): boolean {
 /**
  * With statement learning off, typed rows are never read by the filter, so
  * they count as handled: the journal prefix can still be pruned, and turning
- * learning on later starts from new text rather than old sessions.
+ * learning on later starts from new text rather than old sessions. Only rows
+ * after `journal.consumed` are read: consumed rows stay in the journal until
+ * retention, and the earliest sessions are acknowledged first so the cursor moves.
  */
 export function acknowledgeTyped(writer: RecordWriter, project: string, checkout: string): void {
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
     if (!hooks || hooks.diagnostic) return;
+    const consumed = Number(writer.setting(project, "journal.consumed") ?? 0);
+    const after = Number.isSafeInteger(consumed) && consumed > 0 ? consumed : 0;
     const rows = hooks.all<{ session_id: string; last: number }>(`SELECT j.session_id, MAX(j.id) AS last FROM journal j JOIN sessions s ON s.session_id=j.session_id
-      WHERE s.project_id=? AND s.checkout=? AND j.kind='typed' GROUP BY j.session_id LIMIT 4096`, project, checkout);
-    for (const row of rows) if (row.last > acknowledged(writer, project, row.session_id))
-      writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(project, ackKey(row.session_id), String(row.last));
+      WHERE s.project_id=? AND s.checkout=? AND j.kind='typed' AND j.id>? GROUP BY j.session_id ORDER BY MIN(j.id) LIMIT 4096`, project, checkout, after);
+    const due = rows.filter(row => row.last > acknowledged(writer, project, row.session_id));
+    if (due.length) {
+      // One transaction: a pass can acknowledge thousands of sessions.
+      const put = writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
+      writer.db.exec("BEGIN IMMEDIATE");
+      try { for (const row of due) put.run(project, ackKey(row.session_id), String(row.last)); writer.db.exec("COMMIT"); }
+      catch (error) { try { writer.db.exec("ROLLBACK"); } catch { /* already ended */ } throw error; }
+    }
   } finally { hooks?.close(); }
   advanceConsumed(writer, project);
 }

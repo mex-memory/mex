@@ -49,7 +49,7 @@ describe("setup recipe entries", () => {
       const found = expand(setupRecipeId("", role), f.options);
       expect(found.level).toBe("personal");
       expect(found.label).toBe("[repo, from package.json]");
-      expect(found.entry.mex).toMatchObject({ kind: "recipe", scope: ["**"], source: { type: "config", ref: "package.json" }, evidence: "docs", status: "active" });
+      expect(found.entry.mex).toMatchObject({ kind: "recipe", scope: ["**"], source: { type: "config", ref: "package.json", producer: "setup-recipe" }, evidence: "docs", status: "active" });
       expect(found.entry.text).toBe(found.entry.mex.one_line);
       expect(found.entry.mex.checks).toEqual([expect.objectContaining({ kind: "command", role: "complete", target: { file: "package.json", pointer: `/scripts/${role}`, run: `npm run ${role}` }, saw: { exists: true }, files: { "package.json": expect.stringMatching(/^sha256:/u) } })]);
     }

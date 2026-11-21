@@ -44,8 +44,12 @@ function text(value: unknown): string | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter(v => v && ["text", "input_text", "output_text"].includes(v.type) && typeof v.text === "string").map(v => v.text).join("\n");
 }
-/** Read only a regular host transcript under its own configured session directory. */
-export function transcriptTail(path: string, agent: "claude" | "codex", maxBytes = TAIL_BYTES, requireFull = false): string | undefined {
+/**
+ * Read only a regular host transcript under its own configured session directory.
+ * `appending` accepts a file the host is still appending to: the bytes read are
+ * a stable prefix, and a torn last line simply fails to parse.
+ */
+export function transcriptTail(path: string, agent: "claude" | "codex", maxBytes = TAIL_BYTES, requireFull = false, appending = false): string | undefined {
   let fd: number | undefined;
   try {
     const root = realpathSync(agent === "claude" ? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects")
@@ -61,7 +65,7 @@ export function transcriptTail(path: string, agent: "claude" | "codex", maxBytes
     let n = 0;
     while (n < bytes.length) { const got = readSync(fd, bytes, n, bytes.length - n, offset + n); if (!got) break; n += got; }
     const after = fstatSync(fd, { bigint: true });
-    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || n !== bytes.length) return undefined;
+    if ((!appending && (before.size !== after.size || before.mtimeNs !== after.mtimeNs)) || n !== bytes.length || after.size < before.size) return undefined;
     const body = bytes.toString("utf8");
     return offset ? body.slice(body.indexOf("\n") + 1) : body;
   } catch { return undefined; }

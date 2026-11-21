@@ -70,7 +70,7 @@ afterEach(() => {
   rmSync(fixture, { recursive: true, force: true });
 });
 
-function mockGithub() {
+function mockGithub(verifiedPulls = 2) {
   const at = new Date(Date.now() - 86_400_000).toISOString();
   return vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
     const url = new URL(String(input));
@@ -85,7 +85,7 @@ function mockGithub() {
       const page = (nodes: unknown[]) => ({ nodes, pageInfo: { hasNextPage: false } });
       const pr = (id: number) => ({ number: id, mergedAt: at, comments: page([]), reviewThreads: page([]), reviews: page([
         { fullDatabaseId: id, body: `${review} Run ${goTest} to exercise the user flow. Thanks, Test User (@testuser).`,
-          submittedAt: at, author: { login: "testuser", name: "Test User", __typename: "User" }, authorCanPushToRepository: true },
+          submittedAt: at, author: { login: "testuser", name: "Test User", __typename: "User" }, authorCanPushToRepository: id <= verifiedPulls },
         { fullDatabaseId: id + 10, body: "password=fixtureSecret123 before running this", submittedAt: at,
           author: { login: "testuser", name: "Test User", __typename: "User" }, authorCanPushToRepository: true },
       ]) });
@@ -116,6 +116,7 @@ it("quotes first, uses one logged model batch, and delivers a private rule throu
     expect(job.project_id).toBe(start.projectId);
     const plan = Plan.parse(JSON.parse(job.params));
     expect(plan.ceiling).toBe(Math.floor(plan.estimate * 1.5));
+    expect(plan.pullsPerBatch).toBe(8);
     const model = vi.fn<typeof runModel>(async request => {
       expect(request.prompt).toContain(`${review} Run ${goTest} to exercise the user flow. Thanks, [reviewer] ([reviewer]).`);
       expect(request.prompt).toContain(`${tech}\\nContact [reviewer] or [reviewer].`);
@@ -183,6 +184,111 @@ async function accept(ask = vi.fn(async () => true)) {
   return { result, lines, ask };
 }
 const only = (job: JobRow) => ({ only: new Set([job.id]) });
+
+it("records insufficient review evidence without spending on the batch", async () => {
+  git("rm", "README.md");
+  git("-c", "commit.gpgsign=false", "commit", "-qm", "Use review sources only");
+  vi.stubGlobal("fetch", mockGithub(1));
+  const writer = openRecord({ projectPath: repo });
+  try {
+    const projectId = writer.checkout(repo)!.project_id;
+    await offerLearning({ root: repo, projectId, write: () => {}, interactive: true,
+      sessions: false, weekly: false, confirm: async () => true });
+    const model = vi.fn<typeof runModel>();
+    registerJobKind(createLearnKind({ model }));
+    const job = jobRow(writer);
+    expect(await runOneBatch(writer, ownerId("foreground"), only(job))).toBe("ran");
+    expect(model).not.toHaveBeenCalled();
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", tokens_used: 0, results: 0 });
+    const saved = writer.setting(projectId, `learning.deep.batch.${job.id}.0`)!;
+    expect(JSON.parse(saved)).toMatchObject({
+      checkpoint: { pull: 2, gaps: expect.arrayContaining(["Some review batches lacked verified reviews from two merged changes."]) },
+      sources: [{ id: "github:pullrequestreview-:1" }, { id: "github:pullrequestreview-:2" }],
+      diagnostics: { reviewSources: 2, verifiedReviewSources: 1, verifiedPulls: 1, docs: 0, skip: "insufficient-review-evidence" },
+    });
+  } finally { writer.close(); }
+});
+
+it("matches line endings in doc quotes and records only rejection reasons", async () => {
+  const exact = "Keep snapshot IDs stable across releases.\nThe renderer uses their values as cache keys.";
+  git("config", "core.autocrlf", "false");
+  writeFileSync(join(repo, "README.md"), exact.replace("\n", "\r\n"));
+  git("add", "README.md");
+  git("-c", "commit.gpgsign=false", "commit", "-qm", "Use CRLF in the documentation");
+  await accept();
+  const rule = { ...answer, text: "Preserve snapshot identifiers to avoid invalidating the renderer cache.",
+    evidence: [{ id: "doc:README.md", quote: exact }], checks: [] };
+  const model = vi.fn<typeof runModel>(async request => {
+    expect(request.prompt).toContain("releases.\\r\\nThe renderer uses");
+    return reply({ entries: [
+      rule,
+      { ...rule, evidence: [{ id: "doc:README.md", quote: exact.replace("their values", "a different key") }] },
+      { ...rule, evidence: [{ id: "doc:unseen.md", quote: exact }] },
+      { ...rule, kind: "hint" },
+      { ...rule, checks: [{ kind: "source", role: "supporting", target: { file: "docs/missing.md" } }] },
+      { ...rule, evidence: [{ id: "github:pullrequestreview-:1", quote: review }] },
+    ] });
+  });
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    expect(await runOneBatch(writer, ownerId("foreground"), only(job))).toBe("ran");
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 1 });
+    const saved = writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!;
+    expect(JSON.parse(saved).diagnostics.validation).toEqual({ response: "valid", proposed: 6, rejected: [
+      { index: 2, reason: "quote-mismatch" }, { index: 3, reason: "unknown-source" },
+      { index: 4, reason: "non-rule-kind" }, { index: 5, reason: "check-target" },
+      { index: 6, reason: "insufficient-evidence" },
+    ] });
+    expect(saved).not.toContain("The renderer uses");
+  } finally { writer.close(); }
+});
+
+it("keeps pinned knowledge local and records duplicate proposals and skipped historical docs", async () => {
+  const history = "The retired extractor procedure targets the legacy branch.";
+  const canonical = "Extra context for local comparison only.";
+  mkdirSync(join(repo, ".mex/context"), { recursive: true });
+  mkdirSync(join(repo, "docs"));
+  const conventions = join(repo, ".mex/context/conventions.md");
+  writeFileSync(conventions, `# Rules\n\n${answer.text}\n\n${canonical}\n`);
+  writeFileSync(join(repo, "AGENTS.md"), "> This branch is the 0.9 rebuild; `main` stays on 0.8 for fixes.\n");
+  writeFileSync(join(repo, "docs/extractors.md"), `# Extractors\n\nThese interfaces are frozen for the 0.7.x contributor program.\n\n${history}\n`);
+  git("add", "AGENTS.md", "docs", ".mex/context");
+  git("-c", "commit.gpgsign=false", "commit", "-qm", "Add known and historical guidance");
+  const { lines } = await accept(vi.fn(async (offer: readonly string[], details: readonly string[]) => {
+    expect(details).toEqual(expect.arrayContaining(["Historical docs are screened out during the scan."]));
+    return true;
+  }));
+  expect(lines.join("\n")).toContain("queued");
+  writeFileSync(conventions, "The dirty worktree does not supply the approved knowledge.\n");
+  const model = vi.fn<typeof runModel>(async request => {
+    expect(request.prompt).toContain(quote);
+    expect(request.prompt).not.toContain(history);
+    expect(request.prompt).not.toContain(canonical);
+    return reply({ entries: [
+      answer,
+      { ...answer, text: "Before a release, investigate any changed renderer output.", one_line: "Investigate changed renderer output." },
+      { ...answer, checks: [{ kind: "source", role: "supporting", target: { file: ".mex/context/conventions.md" } }] },
+    ] });
+  });
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    expect(await runOneBatch(writer, ownerId("foreground"), only(job))).toBe("ran");
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 1 });
+    const receipt = JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+    expect(receipt.diagnostics).toMatchObject({
+      docs: 1, staleDocs: [{ path: "docs/extractors.md", reason: "version-scope" }],
+      validation: { proposed: 3, rejected: [{ index: 1, reason: "duplicate-existing" }, { index: 3, reason: "proposal-format" }] },
+    });
+    expect(receipt.sources.map((item: SourceRef) => item.id)).not.toContain("doc:docs/extractors.md");
+    const jobs = listJobs({ all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never });
+    expect(jobs.find(item => item.id === job.id)?.summary).toContain("Rejected proposals (1 proposal-format, 1 duplicate-existing). Skipped 1 historically scoped doc.");
+  } finally { writer.close(); }
+});
 
 it("reports a long doc as partial in the batch, note proof, and written source manifest", async () => {
   const end = "This is beyond the excerpt.";

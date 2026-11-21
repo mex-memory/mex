@@ -3,8 +3,11 @@ import { ForgeClient } from "../forge.js";
 import { PinnedTree } from "../git.js";
 import { githubReviews } from "../github.js";
 import { gitlabInventory, gitlabReviews } from "../gitlab.js";
+import { BACKFILL_PULLS_PER_BATCH, orderBackfillPulls, quoteTokens } from "../plan.js";
 import { Reviewers } from "../reviewers.js";
-import { cleanSourceText, documentExcerpt, prioritizeReviews, repositoryFromRemote, reviewRelevance, spreadPulls } from "../source.js";
+import { BACKFILL_REVIEW_LIMIT, cleanSourceText, documentExcerpt, prioritizeReviews, redactReviews, repositoryFromRemote, reviewRelevance,
+  spreadPulls,
+  type ReviewSource } from "../source.js";
 import { weeklyHead } from "../weekly.js";
 
 const then = "2026-06-10T15:12:30Z";
@@ -38,9 +41,29 @@ it("pins GitLab's hosted default branch using its nested namespace and branch na
 it("rejects suggestion-only reviews and short questions", () => {
   expect(reviewRelevance("```suggestion\nconst answer = true\n```\n")).toBeUndefined();
   expect(reviewRelevance("Did the compiler pass?")).toBeUndefined();
+  expect(reviewRelevance("LGTM!")).toBeUndefined();
+  expect(reviewRelevance("Looks good because the loader resolves imports before discovery.")).toBeDefined();
   expect(reviewRelevance("Generated snapshots need the renderer version because the format depends on it. Did you update it?")).toContain("Generated snapshots");
   expect(spreadPulls([[{ number: 1 }, { number: 2 }], [{ number: 9 }, { number: 8 }], [{ number: 19 }]], 4)
     .map(pull => pull.number)).toEqual([1, 9, 19, 2]);
+});
+
+it("groups the sampled PRs by merge date and quotes the wider model batches", () => {
+  const older = { number: 12, at: "2026-01-01T00:00:00Z" };
+  const recent = { number: 20, at: then };
+  expect(orderBackfillPulls([recent, older])).toEqual([older, recent]);
+  expect(quoteTokens(8, 6, "best-only", [], BACKFILL_PULLS_PER_BATCH))
+    .toBeLessThan(quoteTokens(8, 6, "best-only"));
+});
+
+it("preserves verified evidence from a second PR under the review source cap", () => {
+  const first: ReviewSource = { kind: "review", id: "first", hash: sha, link: "", text: "Keep stable snapshots.",
+    at: then, pull: 1, writer: true, topLevel: true, outdated: false };
+  const reviews = Array.from({ length: BACKFILL_REVIEW_LIMIT }, (_, i) => ({ ...first, id: String(i) }));
+  const second = { ...first, id: "second", pull: 2, topLevel: false };
+  const selected = redactReviews([...reviews, second], new Reviewers(), new Set(), [], true);
+  expect(selected).toHaveLength(BACKFILL_REVIEW_LIMIT);
+  expect(selected.map(review => review.id)).toContain(second.id);
 });
 
 it("redacts known reviewers in prose while preserving technical terms and code spans", () => {
@@ -75,7 +98,7 @@ it("reports a UTF-8-safe partial excerpt and checks the whole doc for secrets", 
 it("normalizes the public GitHub REST comment shape, withholding deleted files and bot reviews", async () => {
   // Fields projected from GitHub's public /pulls/comments response. IDs, actor and body are fixture values.
   const inline = { id: 101, path: "src/runtime.ts", body: "Keep the stable snapshot identifier. Nice work, @fern-owner.",
-    author_association: "OWNER", created_at: then, updated_at: then, line: null, position: null, original_position: 3,
+    author_association: "COLLABORATOR", created_at: then, updated_at: then, line: null, position: null, original_position: 3,
     user: { login: "fern-owner", type: "User" }, is_copilot_code_review: false };
   const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     expect(new Headers(init?.headers).has("authorization")).toBe(false);
@@ -83,7 +106,8 @@ it("normalizes the public GitHub REST comment shape, withholding deleted files a
     if (path.endsWith("/pulls/2")) return Response.json({ number: 2, merged_at: then });
     if (path.endsWith("/pulls/2/comments")) return Response.json([inline, { ...inline, id: 102, path: "src/deleted.ts" },
       { ...inline, id: 103, user: { login: "ci[bot]", type: "Bot" } }, { ...inline, id: 104, is_copilot_code_review: true }]);
-    if (path.endsWith("/issues/2/comments")) return Response.json([{ ...inline, id: 105, path: undefined, position: 1, body: "Before rendering, load the snapshot metadata because it defines stable IDs." }]);
+    if (path.endsWith("/issues/2/comments")) return Response.json([{ ...inline, id: 105, path: undefined, position: 1,
+      author_association: "MEMBER", body: "Before rendering, load the snapshot metadata because it defines stable IDs." }]);
     if (path.endsWith("/reviews")) return empty();
     throw new Error(`Unexpected URL in fixture: ${path}`);
   });
@@ -93,8 +117,52 @@ it("normalizes the public GitHub REST comment shape, withholding deleted files a
   expect(result.reviews[1]).toMatchObject({ writer: true, outdated: true, text: "Keep the stable snapshot identifier. Nice work, [reviewer].",
     link: "https://github.com/fiction/memory/pull/2#discussion_r101" });
   const [topLevel, outdated] = result.reviews;
+  expect(topLevel.writer).toBe(true);
   expect(prioritizeReviews([{ ...topLevel, writer: false }, { ...outdated, outdated: false, id: "fresh" }, outdated], []).map(item => item.id))
     .toEqual([outdated.id, "fresh", topLevel.id]);
+});
+
+it("falls back on GitHub association for 403 or 404 without overriding explicit permission", async () => {
+  const page = (nodes: unknown[]) => ({ nodes, pageInfo: { hasNextPage: false } });
+  const cases = [
+    { association: "NONE", push: true },
+    { association: "OWNER", push: false },
+    { association: "MEMBER", status: 403 },
+    { association: "COLLABORATOR", status: 404 },
+    { association: "OWNER", status: 403 },
+    { association: "MEMBER", status: 200 },
+    { association: "CONTRIBUTOR", status: 403 },
+    { association: "NONE", status: 404 },
+  ];
+  const reads: number[][] = [], permissions: number[] = [];
+  const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/graphql") {
+      const { query } = JSON.parse(String(init?.body));
+      const pulls = [...String(query).matchAll(/p\d+:pullRequest\(number:(\d+)\)/gu)].map(match => Number(match[1]));
+      reads.push(pulls);
+      const repository = Object.fromEntries(pulls.map((number, i) => {
+        const { association, push } = cases[number - 1]!;
+        const comment = { fullDatabaseId: number, createdAt: then, body: "Keep the shared snapshot ID stable between builds.",
+          author: { login: `writer-${number}`, __typename: "User" }, authorAssociation: association, authorCanPushToRepository: push };
+        return [`p${i}`, { number, mergedAt: then, reviews: page(push === undefined ? [] : [comment]),
+          comments: page(push === undefined && number !== 4 ? [comment] : []),
+          reviewThreads: page(number === 4 ? [{ path: "src/runtime.ts", comments: page([comment]) }] : []) }];
+      }));
+      return Response.json({ data: { repository } });
+    }
+    const number = Number(/\/collaborators\/writer-(\d+)\/permission/u.exec(path)?.[1]);
+    permissions.push(number);
+    const status = cases[number - 1]?.status;
+    if (!status) throw Error("Unexpected permission lookup.");
+    return status === 200 ? Response.json({ permission: "read" }) : new Response(null, { status });
+  });
+  const pulls = cases.map((_, index) => ({ number: index + 1, at: then }));
+  const result = await githubReviews(new ForgeClient(github, "fixture", request), { ...window, source: github, pulls, tree, preferred: [] });
+  expect(reads).toEqual([[1, 2, 3, 4], [5, 6, 7, 8]]);
+  expect(permissions).toEqual([3, 4, 5, 6, 7, 8]);
+  expect(result.reviews.filter(review => review.writer).map(review => review.pull).sort()).toEqual([1, 3, 4, 5]);
+  expect(result.reviews.find(review => review.pull === 4)).toMatchObject({ topLevel: false });
 });
 
 it("uses GitLab's upstream and nested project permissions, and omits raw identities and tokens", async () => {

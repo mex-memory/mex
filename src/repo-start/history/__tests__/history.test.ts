@@ -10,7 +10,7 @@ import { writeFactFile } from "../../facts.js";
 import { setCheckoutEnabled } from "../../../controls/index.js";
 import { queueJob } from "../../../record/background.js";
 import { buildCodeFacts, skippedFacts } from "../job.js";
-import { queueStaleCodeFacts, REMINE_MS } from "../freshness.js";
+import { ENTRIES_KEY, ENTRIES_VERSION, queueStaleCodeFacts, REMINE_MS } from "../freshness.js";
 import {
   attributeGenerated, changeTogether, hasGeneratedMarker, heldOutPrecision, historyGenerated, importTarget, isLockfile, isTestPath,
   layerRules, pairKind, PARAM_GRID, parseLog, precisionOn, testSplit, unitOf, validationSplit, wilsonLower, type Commit,
@@ -158,6 +158,10 @@ describe("keeping code facts fresh", () => {
       const queue = (w: typeof writer, options: Parameters<typeof queueJob>[1]) => { queued.push(`${options.kind}:${(options.params as { checkout: string }).checkout}`); return queueJob(w, options); };
       const moved = () => "b".repeat(40);
 
+      const proposed = (value: unknown) => writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+        .run(projectId, ENTRIES_KEY, JSON.stringify(value));
+      // Entries already proposed in full by this version at the mined HEAD.
+      proposed({ head: "b".repeat(40), version: ENTRIES_VERSION, complete: true });
       facts(REMINE_MS / 60_000 - 1);
       expect(queueStaleCodeFacts(writer, queue, now, moved)).toBe(0);
       facts(REMINE_MS / 60_000 + 1, "b".repeat(40));
@@ -170,6 +174,34 @@ describe("keeping code facts fresh", () => {
       expect(queued).toEqual([`code-facts:${root}`]);
       // An open job is not queued twice.
       expect(queueStaleCodeFacts(writer, queue, now, moved)).toBe(0);
+    } finally { writer.close(); }
+  });
+
+  it("queues at an unmoved HEAD when this version never proposed the facts as entries", () => {
+    const base = realPath(mkdtempSync(join(tmpdir(), "mex-code-facts-entries-"))); temps.push(base);
+    const root = join(base, "repo"); mkdirSync(root);
+    const writer = openRecord({ home: join(base, "home"), projectPath: root, isNetwork: () => false });
+    try {
+      const projectId = writer.checkout(root)!.project_id;
+      const now = Date.parse("2026-11-15T12:00:00Z"), head = "a".repeat(40);
+      writeFactFile(writer.location, projectId, "code-facts.json",
+        { ...skippedFacts("no git"), skipped: null, head, checkout: root, built_at: new Date(now - REMINE_MS - 60_000).toISOString() });
+      const proposed = (value: unknown) => writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+        .run(projectId, ENTRIES_KEY, JSON.stringify(value));
+      let jobs = 0;
+      const queue = (w: typeof writer, options: Parameters<typeof queueJob>[1]) => { jobs++; return { existing: false } as ReturnType<typeof queueJob>; };
+      const same = () => head;
+      // Facts mined before entries existed: queued once HEAD is read, though it hasn't moved.
+      expect(queueStaleCodeFacts(writer, queue, now, same)).toBe(1);
+      // An older entries version is proposed again.
+      proposed({ head, version: ENTRIES_VERSION - 1, complete: true });
+      expect(queueStaleCodeFacts(writer, queue, now, same)).toBe(1);
+      // Tried by this version but incomplete: left until HEAD moves, so history isn't re-read every pass.
+      proposed({ head, version: ENTRIES_VERSION, complete: false });
+      expect(queueStaleCodeFacts(writer, queue, now, same)).toBe(0);
+      proposed({ head, version: ENTRIES_VERSION, complete: true });
+      expect(queueStaleCodeFacts(writer, queue, now, same)).toBe(0);
+      expect(jobs).toBe(2);
     } finally { writer.close(); }
   });
 });

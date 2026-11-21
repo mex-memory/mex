@@ -1,5 +1,5 @@
 import { KnowledgeError, validateEntry, type KnowledgeEntry } from "./entry.js";
-import { commandExists, type References } from "./references.js";
+import { commandExists, ENV_ASSIGNMENTS, withoutEnvironment, type References } from "./references.js";
 
 export function stripHidden(text: string): string {
   return text.replace(/[\p{Cf}\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/gu, "");
@@ -9,8 +9,12 @@ const SECRETS = [
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/u,
   /\b(?:glpat|gldt|glrt|glsoat|glagent|glft)-[A-Za-z0-9_-]{12,}\b/u,
-  /\b(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization)["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
-  /https?:\/\/[^\s/@:]+:[^\s/@]+@/iu,
+  // A name may carry a prefix (DB_PASSWORD, STRIPE_API_KEY); a bare token or
+  // secret counts only as such a suffix (GITHUB_TOKEN), not as a plain word.
+  /\b(?:[A-Za-z0-9]+_)*(?:api[_ -]?key|secret[_ -]?key|private[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|passwd|pgpassword|authorization)["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9_+\/.=-]{8,}/iu,
+  /\b(?:[A-Za-z0-9]+_)+(?:token|secret|pwd)["']?\s*[:=]\s*["']?[A-Za-z0-9_+\/.=-]{8,}/iu,
+  // A password in a URL of any scheme: https, postgres, redis, amqp.
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s/@]+@/iu,
 ];
 export function hasSecret(text: string): boolean { return SECRETS.some(pattern => pattern.test(text)); }
 const secretKey = /^(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization|private[_ -]?key|aws_secret_access_key)$/iu;
@@ -42,7 +46,7 @@ const target = /^(?:--?\w|[\\/~]|[A-Za-z]:)|[\\/.]\w/u;
  * prose pass through: a shell never runs `a && !b` or "Could not connect".
  */
 export function looksLikeCommand(code: string): boolean {
-  const text = code.trim();
+  const text = withoutEnvironment(code.trim());
   if (commandStart.test(text) || /^(?:\.\/|\.\.\/)/u.test(text) || runsSomething.test(text)) return true;
   // Each part of a chain is judged alone: `check(x); deltree c:` still runs deltree.
   return text.split(/\s*(?:;|&&|\|\||\|)\s*/u).some(part => runnable(part));
@@ -90,7 +94,7 @@ export function sanitizeText(value: string, source: References): string {
     const rest = split < 0 ? "" : value.slice(split);
     // "use pnpm in this repo", "npm or yarn", "node 22 for builds": a sentence about a
     // tool, not a command. Its next word is prose or a version, never an argument.
-    const next = command.split(/\s+/u)[1]?.toLowerCase().replace(/[^a-z0-9.-]/gu, "") ?? "";
+    const next = withoutEnvironment(command).split(/\s+/u)[1]?.toLowerCase().replace(/[^a-z0-9.-]/gu, "") ?? "";
     if (!next || PROSE_AFTER_PROGRAM.has(next) || /^\d/u.test(next)) return prefix + value;
     if (commandExists(command, source)) return prefix + command + gateRest(rest);
     // "npm run test from the repo root": a repository command, then the
@@ -108,8 +112,8 @@ export function sanitizeText(value: string, source: References): string {
   // After a command, a plain word may lead to another one ("npm test before
   // rm -rf build"): that is checked too, but only a lowercase program name,
   // so prose such as "before Python changes" is left alone.
-  const gateRest = (input: string): string => input.replace(new RegExp(`(\\b(?:${words})\\s+)((?:${programs})\\s+[^\\n\\0]+)`, "gu"), (_all, prefix: string, value: string) => check(prefix, value));
-  text = text.replace(new RegExp(`(^|\\n|\\b(?:run|runs|running|execute|executes|using|with|use)\\s+)((?:${programs})\\s+[^\\n\\0]+)`, "giu"), (_all, prefix: string, value: string) => check(prefix, value));
+  const gateRest = (input: string): string => input.replace(new RegExp(`(\\b(?:${words})\\s+)(${ENV_ASSIGNMENTS}(?:${programs})\\s+[^\\n\\0]+)`, "gu"), (_all, prefix: string, value: string) => check(prefix, value));
+  text = text.replace(new RegExp(`(^|\\n|\\b(?:run|runs|running|execute|executes|using|with|use)\\s+)(${ENV_ASSIGNMENTS}(?:${programs})\\s+[^\\n\\0]+)`, "giu"), (_all, prefix: string, value: string) => check(prefix, value));
   return text.replace(/\0(\d+)\0/gu, (_all, index: string) => codes[Number(index)]);
 }
 
@@ -120,7 +124,7 @@ const PROSE_AFTER_PROGRAM = new Set(["in", "on", "at", "for", "to", "from", "wit
   "when", "before", "after", "because", "if", "version", "versions", "anymore", "any", "all", "everything"]);
 
 /** Gates apply on writes and reads; editing learned files by hand cannot bypass them. */
-export function gateEntry(input: KnowledgeEntry, source: References): KnowledgeEntry {
+export function gateEntry(input: KnowledgeEntry, source: References, keptCheck?: (index: number) => void): KnowledgeEntry {
   const clean = (value: unknown): unknown => typeof value === "string" ? stripHidden(value)
     : Array.isArray(value) ? value.map(clean)
       : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([k, v]) => [k, clean(v)])) : value;
@@ -131,7 +135,11 @@ export function gateEntry(input: KnowledgeEntry, source: References): KnowledgeE
   if (entry.mex.source.quote) entry.mex.source.quote = sanitizeText(entry.mex.source.quote, source);
   // source.ref is provenance (for example a reviewed PR), not a payload link.
   // Its source authority is checked by the store/capture boundary.
-  entry.mex.checks = entry.mex.checks.filter(check => check.kind === "command" ? commandExists(check.target.run, source)
-    : check.kind === "source" && "url" in check.target ? source.links.has(check.target.url) : true);
+  entry.mex.checks = entry.mex.checks.filter((check, index) => {
+    const kept = check.kind === "command" ? commandExists(check.target.run, source)
+      : check.kind === "source" && "url" in check.target ? source.links.has(check.target.url) : true;
+    if (kept) keptCheck?.(index);
+    return kept;
+  });
   return validateEntry(entry);
 }

@@ -23,7 +23,7 @@ import (
 // listing already carries. Text and checks are loaded with Load only when a
 // moment has found a candidate.
 
-const lightVersion = 2
+const lightVersion = 3
 
 type lightFile struct {
 	Version int    `json:"version"`
@@ -192,7 +192,7 @@ func LoadLight(directory, home, project, checkout string) (answer Snapshot, fail
 func lighten(it Item) Item {
 	e := *it.Entry
 	e.Text = ""
-	e.Source = Source{Type: e.Source.Type, Ref: e.Source.Ref}
+	e.Source = Source{Type: e.Source.Type, Ref: e.Source.Ref, Label: e.Source.Label}
 	var checks []Check
 	for _, c := range e.Checks {
 		if c.Kind == "command" {
@@ -226,6 +226,7 @@ func encodeLight(lf lightFile) []byte {
 		w.Strings(e.Scope)
 		w.String(e.Source.Type)
 		w.String(e.Source.Ref)
+		w.String(e.Source.Label)
 		w.String(e.Evidence)
 		w.String(e.OneLine)
 		w.Uint(uint64(len(e.When)))
@@ -262,7 +263,7 @@ func decodeLight(b []byte) (lightFile, error) {
 	for i := 0; i < n && r.Err() == nil; i++ {
 		it := Item{Level: r.String(), Path: r.String(), Hash: r.String(), Generated: r.Bool(), NeedsHintGate: r.Bool()}
 		e := &Entry{ID: r.String(), Kind: r.String(), Scope: r.Strings(maxList)}
-		e.Source = Source{Type: r.String(), Ref: r.String()}
+		e.Source = Source{Type: r.String(), Ref: r.String(), Label: r.String()}
 		e.Evidence, e.OneLine = r.String(), r.String()
 		for j, m := 0, r.Count(maxList); j < m; j++ {
 			e.When = append(e.When, Trigger{Type: r.String(), Match: r.String(), Pattern: r.String()})

@@ -116,6 +116,7 @@ export function documentExcerpt(raw: string, reviewers: Reviewers): Pick<DocSour
 export function reviewRelevance(text: string): string | undefined {
   const remaining = text.replace(/^\s*`{3,}suggestion[^\n]*\n[\s\S]*?^\s*`{3,}\s*$/gimu, "").trim();
   if (!remaining || (/\?\s*$/u.test(remaining) && remaining.length < 120 && !/[.!]\s+\S/u.test(remaining))) return undefined;
+  if (/^(?:lgtm|looks good(?: to me)?|approved|thanks(?: so much)?|thank you)[.!]*$/iu.test(remaining)) return undefined;
   return remaining;
 }
 
@@ -125,13 +126,14 @@ export function validAt(value: string, since: string, until: string): boolean {
 }
 
 export const REVIEW_LIMIT = 24;
+export const BACKFILL_REVIEW_LIMIT = 32;
 
 export function prioritizeReviews(reviews: readonly ReviewSource[], preferred: readonly string[]): ReviewSource[] {
   const near = (path?: string) => !!path && preferred.some(dir => path.startsWith(dir + "/"));
   const order = (a: ReviewSource, b: ReviewSource) => Number(b.writer) - Number(a.writer)
     || Number(b.topLevel) - Number(a.topLevel) || Number(b.outdated) - Number(a.outdated)
     || Number(near(b.path)) - Number(near(a.path));
-  // A stable sort keeps the already interleaved pull order inside each priority tier.
+  // A stable sort keeps the caller's pull order inside each priority tier.
   return [...reviews].sort(order);
 }
 
@@ -144,10 +146,25 @@ export function reviewSource(raw: string, fields: Omit<ReviewSource, "kind" | "h
 }
 
 export function redactReviews(reviews: readonly ReviewSource[], reviewers: Reviewers, gaps: Set<string>,
-  preferred: readonly string[]): ReviewSource[] {
+  preferred: readonly string[], preferDistinctPulls = false): ReviewSource[] {
   const distinct = [...new Map(reviews.map(review => [review.id, review])).values()];
-  if (distinct.length > REVIEW_LIMIT) gaps.add("Some reviews exceeded the batch limit.");
-  return prioritizeReviews(distinct, preferred).slice(0, REVIEW_LIMIT).flatMap(review => {
+  const limit = preferDistinctPulls ? BACKFILL_REVIEW_LIMIT : REVIEW_LIMIT;
+  if (distinct.length > limit) gaps.add("Some reviews exceeded the batch limit.");
+  const ordered = prioritizeReviews(distinct, preferred);
+  const selected = new Map<string, ReviewSource>();
+  if (preferDistinctPulls) {
+    const represented = new Set<number>();
+    for (const review of ordered) {
+      if (selected.size >= limit || !review.writer || represented.has(review.pull)) continue;
+      selected.set(review.id, review);
+      represented.add(review.pull);
+    }
+  }
+  for (const review of ordered) {
+    if (selected.size >= limit) break;
+    selected.set(review.id, review);
+  }
+  return [...selected.values()].flatMap(review => {
     const text = cleanSourceText(review.text, reviewers);
     return text ? [{ ...review, text }] : [];
   });

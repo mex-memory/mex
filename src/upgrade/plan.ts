@@ -10,7 +10,7 @@ import { references } from "../knowledge/references.js";
 import { defaultBase, git } from "../knowledge/share-plan.js";
 import { firstLink, removeWorktree } from "../knowledge/share-state.js";
 import { writeSharedKnowledgeFiles } from "../knowledge/share.js";
-import { applyTeamWrite, prepareTeamWrite } from "../knowledge/team.js";
+import { applyTeamWrite, prepareTeamWrite, teamEntry } from "../knowledge/team.js";
 import { upgradeDiff } from "./diff.js";
 import { planLegacyCleanup, type UpgradeFileChange } from "./cleanup-plan.js";
 import { convertLegacy } from "./convert-legacy.js";
@@ -104,7 +104,7 @@ export function prepareUpgrade(options: KnowledgeOptions, now = new Date()): Upg
       const shared = { ...options, projectPath: worktree };
       for (const entry of team) {
         const ownPath = `.mex/learned/${entry.mex.id}.md`;
-        if (readText(worktree, ownPath) === serializeEntry(entry)) { paths.add(ownPath); continue; }
+        if (readText(worktree, ownPath) === serializeEntry(teamEntry(entry))) { paths.add(ownPath); continue; }
         const preview = prepareTeamWrite(entry, shared);
         // An import never overwrites another stable identity, even if active.
         if (preview.before !== null && preview.before !== preview.after) throw new KnowledgeError("UPGRADE_COLLISION", `An entry already uses ${entry.mex.id}; review it before upgrading.`);

@@ -92,5 +92,5 @@ export async function gitlabReviews(client: ForgeClient, request: ReviewRequest)
       reviews.push({ ...candidate, writer: writer === true, outdated });
     }
   }
-  return { reviews: redactReviews(reviews, reviewers, gaps, request.preferred), reviewers, gaps: [...gaps] };
+  return { reviews: redactReviews(reviews, reviewers, gaps, request.preferred, request.preferDistinctPulls), reviewers, gaps: [...gaps] };
 }

@@ -31,6 +31,8 @@ type Pointer struct {
 	Snapshot string `json:"snapshot"`
 	Base     string `json:"base"`
 	AsOf     string `json:"as_of"`
+	// Head is the commit at HEAD when the files were listed ("" without git, or from an older build).
+	Head string `json:"head,omitempty"`
 }
 
 type Symbol = shift.Symbol
@@ -152,6 +154,9 @@ func (r *Reader) Close() error { return r.db.Close() }
 
 // AsOf is when the snapshot was written.
 func (r *Reader) AsOf() string { return r.pointer.AsOf }
+
+// Head is the commit HEAD named when the snapshot's files were listed; "" when unknown.
+func (r *Reader) Head() string { return r.pointer.Head }
 
 // relative turns a path into the index's form: relative to the checkout, '/'.
 func (r *Reader) relative(path string) (string, bool) {

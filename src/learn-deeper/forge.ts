@@ -20,6 +20,7 @@ export interface ReviewBatch { reviews: ReviewSource[]; reviewers: Reviewers; ga
 export type RepositoryAccess = Pick<Inventory, "source" | "visibility">;
 export interface ReviewRequest extends SourceWindow {
   source: Repository; pulls: readonly Pull[]; tree: PinnedTree; preferred: readonly string[];
+  preferDistinctPulls?: boolean;
 }
 export interface SourceHost {
   access(client: ForgeClient): Promise<RepositoryAccess>;

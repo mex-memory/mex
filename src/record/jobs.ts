@@ -95,6 +95,8 @@ export interface JobKind<P = unknown, C = unknown> {
    * one is queued. Default: any unfinished job of the kind serves it.
    */
   joins?(open: JobRow, params: P): boolean;
+  /** A reserved kind is registered but never queued: queuing it is refused with this reason. */
+  reserved?: string;
 }
 
 const kinds = new Map<string, JobKind<any, any>>();
@@ -138,6 +140,7 @@ export type EnqueueResult = { job: JobRow; existing: boolean };
 export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): EnqueueResult {
   const kind = kinds.get(options.kind);
   if (!kind) throw new Error(`Unknown job kind: ${options.kind}`);
+  if (kind.reserved) throw new Error(kind.reserved);
   const projectId = kind.scope === "project" ? options.projectId ?? null : null;
   if (kind.scope === "project" && !projectId) throw new Error(`${kind.label} needs a project.`);
   return inTransaction(writer.db, () => {

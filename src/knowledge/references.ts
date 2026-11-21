@@ -12,8 +12,15 @@ export interface References {
   root: string; commands: Set<string>; links: Set<string>;
   /** Package-script names from the root package and its workspaces. */
   scripts: Set<string>;
+  /** Script names per package, keyed by package folder ("" for the root) and by package name. */
+  packageScripts: Map<string, Set<string>>;
   /** A discovery bound was reached; anything not collected stays unverified. */
   truncated: boolean;
+  /**
+   * Exact commands the capture journal saw pass here. Only the producer gate
+   * sets this, for fail-pass proposals, from their own journal evidence.
+   */
+  exact?: ReadonlySet<string>;
 }
 export function repoFile(root: string, path: string): string | undefined {
   if (!path || /[\\\x00-\x1f]/u.test(path) || /^(?:\/|[A-Za-z]:)/u.test(path)) return undefined;
@@ -34,7 +41,9 @@ export function repoFile(root: string, path: string): string | undefined {
 /** Discovery bounds. Reaching one stops collecting; it never fails the caller. */
 export const REFERENCE_LIMITS = { files: 1024, paths: 4096, commands: 4096, scripts: 4096, links: 4096, depth: 8 } as const;
 /** Package-script runners that a script name may be written with. */
-const RUNNERS = /^(?:npm run|pnpm run|pnpm|yarn|yarn run|bun run|(?:pnpm|yarn)\s+(?:--filter|-F)[ =][\w@./*-]+(?:\s+run)?|yarn workspace [\w@./-]+(?:\s+run)?|npm run -w [\w@./-]+)\s+([^\s;&|<>$`]+)$/u;
+const RUNNERS = /^(?:npm run|pnpm run|pnpm|yarn|yarn run|bun run|(?:pnpm|yarn)\s+(?:--filter|-F)[ =][\w@./*-]+(?:\s+run)?|yarn workspace [\w@./-]+(?:\s+run)?)\s+([^\s;&|<>$`]+)$/u;
+/** npm's workspace flag, before or after the script name: `npm run -w <pkg> <script>`, `npm run <script> --workspace <pkg>`. */
+const NPM_WORKSPACE = /^npm run (?:(?:-w|--workspace)(?:=|\s+)([\w@./-]+)\s+([^\s;&|<>$`-][^\s;&|<>$`]*)|([^\s;&|<>$`-][^\s;&|<>$`]*)\s+(?:-w|--workspace)(?:=|\s+)([\w@./-]+))$/u;
 class Full extends Error {}
 
 /**
@@ -47,7 +56,7 @@ class Full extends Error {}
  * gates stricter. Redirected or linked sources still fail.
  */
 export function references(root: string): References {
-  const result: References = { root, commands: new Set(), links: new Set(), scripts: new Set(), truncated: false };
+  const result: References = { root, commands: new Set(), links: new Set(), scripts: new Set(), packageScripts: new Map(), truncated: false };
   let entries = 0, visited = 0, bytes = 0;
   const full = (): never => { result.truncated = true; throw new Full(); };
   const childrenOf = (path: string) => {
@@ -93,9 +102,15 @@ export function references(root: string): References {
     if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
     const scripts = (data as Record<string, unknown>).scripts;
     if (scripts && typeof scripts === "object" && !Array.isArray(scripts)) {
+      const name = (data as Record<string, unknown>).name;
+      const own = new Set<string>();
+      for (const key of [path.replace(/\/?package\.json$/u, ""), typeof name === "string" ? name : undefined]) {
+        if (key !== undefined && !result.packageScripts.has(key)) result.packageScripts.set(key, own);
+      }
       for (const [name, command] of Object.entries(scripts)) {
         if (result.scripts.size >= REFERENCE_LIMITS.scripts) full();
         result.scripts.add(name);
+        own.add(name);
         addRuns(command);
       }
     }
@@ -176,12 +191,25 @@ export function references(root: string): References {
   return result;
 }
 
+export const ENV_ASSIGNMENTS = String.raw`(?:[A-Za-z_][A-Za-z0-9_]*=(?:[A-Za-z0-9_./,:@%+~=-]*|"[A-Za-z0-9_ ./,:@%+~=-]*"|'[A-Za-z0-9_ ./,:@%+~=-]*')[ \t]+)*`;
+
+export function withoutEnvironment(command: string): string {
+  return command.replace(new RegExp(`^${ENV_ASSIGNMENTS}`, "u"), "");
+}
+
 export function commandExists(command: string, source: References): boolean {
-  const trimmed = command.trim();
-  if (source.commands.has(trimmed)) return true;
+  const original = command.trim();
+  if (source.commands.has(original) || source.exact?.has(original)) return true;
   if (/[;&|<>$`\r\n]/u.test(command)) return false;
+  const trimmed = withoutEnvironment(original);
+  if (source.commands.has(trimmed)) return true;
   const runner = RUNNERS.exec(trimmed)?.[1] ?? /^npm (test|start|stop|restart)$/u.exec(trimmed)?.[1];
   if (runner !== undefined && source.scripts.has(runner)) return true;
-  const script = /^(?:(?:node|python3?|bash|sh|pwsh)\s+)?((?:\.\/)?(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?js|py|sh|ps1))(?:\s+[^;&|<>$`\r\n]*)?$/u.exec(command.trim());
+  const workspace = NPM_WORKSPACE.exec(trimmed);
+  if (workspace) {
+    const pkg = (workspace[1] ?? workspace[4])!.replace(/^\.\//u, "").replace(/\/+$/u, "");
+    return !!source.packageScripts.get(pkg)?.has((workspace[2] ?? workspace[3])!);
+  }
+  const script = /^(?:(?:node|python3?|bash|sh|pwsh)\s+)?((?:\.\/)?(?:[A-Za-z0-9_-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?js|py|sh|ps1))(?:\s+[^;&|<>$`\r\n]*)?$/u.exec(trimmed);
   return !!script && !!repoFile(source.root, script[1]);
 }

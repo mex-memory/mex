@@ -2,13 +2,12 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { automaticWorkEnabled } from "../controls/index.js";
-import { EntryIdSchema, KnowledgeError, serializeEntry, parseEntry } from "../knowledge/entry.js";
+import { EntryIdSchema, KnowledgeError, serializeEntry, parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { stageReview, reviewQuiet } from "../review/state.js";
 import { learningMetadata } from "../filter/metadata.js";
 import { containedDirectory, replaceEntryFile } from "../knowledge/files.js";
-import { gateEntry } from "../knowledge/gates.js";
-import { references } from "../knowledge/references.js";
-import { prepareTeamWrite, applyTeamWrite } from "../knowledge/team.js";
+import { vetRewrite, type ObserveChecks } from "../knowledge/gate.js";
+import { prepareTeamWrite, applyTeamWrite, teamEntry } from "../knowledge/team.js";
 import type { NativeReport } from "../knowledge/check.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import type { JobRow } from "../record/jobs.js";
@@ -41,7 +40,7 @@ export function needsRouting(writer: RecordWriter, projectId: string, result: Ju
   return result.result !== "still-true" && writer.setting(projectId, keyFor(result)) === undefined;
 }
 
-/** Called in the judgement's transaction, so a lost checkpoint cannot lose a fix. */
+/** Queue drafts in the judgement transaction. Routing vets them before offering a preview or Review. */
 export function stageFixes(writer: RecordWriter, job: JobRow, results: Judgement[], candidates: Candidate[], params: JudgeParams, sessionId?: string): void {
   const keys: string[] = [];
   for (const result of results) {
@@ -124,8 +123,8 @@ function notice(writer: RecordWriter, key: string, fix: Fix, type: "preview" | "
     JSON.stringify({ version: 1, position: fix.judgement.position, text }), new Date().toISOString());
   wakeNotice(writer, actor, `${key}.${type}`);
 }
-function review(writer: RecordWriter, job: JobRow, key: string, fix: Fix, reason: string): void {
-  stageReview(writer, job.project_id!, key, fix.judgement.rewrite ?? parseEntry(fix.before),
+function review(writer: RecordWriter, job: JobRow, key: string, fix: Fix, reason: string, rewrite?: KnowledgeEntry): void {
+  stageReview(writer, job.project_id!, key, rewrite ?? parseEntry(fix.before),
     { producer: "judge", key, checkout: fix.judgement.checkout, level: fix.item.level, path: fix.item.path, original_hash: fix.judgement.entry_hash },
     `${reason} (checked by model)`, fix.item.level === "team" || !!learningMetadata(writer, job.project_id!, fix.item.id).sources?.length, Date.parse(fix.judgement.at));
   fix.state = "review"; set(writer, job.project_id!, key, fix);
@@ -133,7 +132,7 @@ function review(writer: RecordWriter, job: JobRow, key: string, fix: Fix, reason
 }
 
 /** Resume routing before spending again. Only this project's running job writes. */
-export async function routeFixes(writer: RecordWriter, job: JobRow, report: NativeReport): Promise<{ waiting: boolean; gaps: boolean }> {
+export async function routeFixes(writer: RecordWriter, job: JobRow, report: NativeReport, observeChecks?: ObserveChecks): Promise<{ waiting: boolean; gaps: boolean }> {
   let waiting = false, gaps = false;
   for (const key of pendingKeys(writer, job)) {
     const fix = readFix(writer, job, key), result = fix.judgement, checkout = result.checkout;
@@ -142,7 +141,7 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
     const branch = await existingFixBranch(checkout, fix.item.id);
     const at = await position(checkout);
     writer.db.exec("BEGIN IMMEDIATE");
-    let rolledBack = false;
+    let rolledBack = false, vettedRewrite: KnowledgeEntry | undefined;
     try {
       if (!enabled(writer, job, checkout, fix)) { waiting = true; continue; }
       if (reviewQuiet(writer, job.project_id!, fix.judgement.rewrite ?? parseEntry(fix.before))) {
@@ -152,13 +151,22 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
         // A retirement is final; no rewrite or Review resurrection.
         fix.state = "discarded"; set(writer, job.project_id!, key, fix); writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key)); continue;
       }
-      if (branch !== null) { review(writer, job, key, fix, branch ? `An existing mex/fix-${fix.item.id} branch already owns this fix` : "Fix branches could not be checked"); gaps = true; continue; }
       if (result.result !== "rewritten" || !result.rewrite) { review(writer, job, key, fix, "The judge could not resolve the entry"); gaps = true; continue; }
+      const vetted = vetRewrite(result.rewrite, parseEntry(fix.before), { id: result.model, version: result.model_version ?? result.model },
+        { projectPath: checkout, home: writer.location.home, observeChecks }, writer);
+      if (!("entry" in vetted)) {
+        review(writer, job, key, fix, `The rewrite did not pass the producer gate (${vetted.reason})`);
+        gaps = true; continue;
+      }
+      const rewrite = vettedRewrite = vetted.entry;
+      const reviewRewrite = (reason: string) => review(writer, job, key, fix, reason, rewrite);
+      if (branch !== null) { reviewRewrite(branch ? `An existing mex/fix-${fix.item.id} branch already owns this fix` : "Fix branches could not be checked"); gaps = true; continue; }
       if (!samePosition(result.position, at) || !samePosition(result.position, syncPosition(checkout)) || !filesMatch(fix)) {
-        review(writer, job, key, fix, "The checkout or judge inputs changed before the fix could land"); gaps = true; continue;
+        reviewRewrite("The checkout or judge inputs changed before the fix could land"); gaps = true; continue;
       }
       const found = original(fix, writer, job.project_id!);
-      const after = serializeEntry(result.rewrite);
+      // Team files are written without local provenance fields.
+      const after = serializeEntry(fix.item.level === "team" ? teamEntry(rewrite) : rewrite);
       // Recover a crash after atomic file publication but before the DB commit.
       if (found?.content === after) {
         notice(writer, key, fix, "updated", fix.item.level === "team"
@@ -167,30 +175,30 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
         fix.state = "applied"; set(writer, job.project_id!, key, fix); writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key)); continue;
       }
       if (!found || found.content !== fix.before || hash(found.content) !== result.entry_hash || !freshChecks(fix, report)) {
-        review(writer, job, key, fix, "The entry or its checks changed before the fix could land"); gaps = true; continue;
+        reviewRewrite("The entry or its checks changed before the fix could land"); gaps = true; continue;
       }
       if (fix.item.level === "team") {
         const owns = () => ownsChanges(writer.location.directory, job.project_id!, checkout, fix.agent, fix.sessionId, at,
           { entry: found.entry, files: [...new Set([...entryFiles(found.entry), ...Object.keys(report.results?.find(r => r.entry_id === fix.item.id)?.inputs ?? {})])] }, result.files);
         if (!owns()) {
-          review(writer, job, key, fix, "The code change was not proved to belong to this session; keep the team fix in Review"); gaps = true; continue;
+          reviewRewrite("The code change was not proved to belong to this session; keep the team fix in Review"); gaps = true; continue;
         }
-        const preview = prepareTeamWrite(result.rewrite, { projectPath: checkout, home: writer.location.home });
+        const preview = prepareTeamWrite(rewrite, { projectPath: checkout, home: writer.location.home });
         if (join(checkout, preview.path) !== fix.item.path || preview.before !== fix.before) throw new Error("The fix no longer names the same entry.");
         if (preview.after !== after || (fix.previewRevision && fix.previewRevision !== preview.revision)) {
-          review(writer, job, key, fix, "The proposed diff changed at the entry's write gates"); gaps = true; continue;
+          reviewRewrite("The proposed diff changed at the entry's write gates"); gaps = true; continue;
         }
         if (!shown(writer, key, fix.sessionId)) {
           if (fix.previewAt && Date.now() - Date.parse(fix.previewAt) >= PREVIEW_TIMEOUT_MS) {
-            review(writer, job, key, fix, "The editing session did not receive its preview; keep the fix in Review"); gaps = true; continue;
+            reviewRewrite("The editing session did not receive its preview; keep the fix in Review"); gaps = true; continue;
           }
           notice(writer, key, fix, "preview", `MEX proposes updating ${fix.item.id} in this working tree (checked by model). The exact diff follows; it will apply only while this session's branch and inputs still match.\n${preview.diff}`);
           fix.state = "preview"; fix.previewAt ??= new Date().toISOString(); fix.previewRevision = preview.revision;
           set(writer, job.project_id!, key, fix); waiting = true; continue;
         }
-        if (fix.previewRevision !== preview.revision) { review(writer, job, key, fix, "No receipt exists for this exact proposed diff"); gaps = true; continue; }
+        if (fix.previewRevision !== preview.revision) { reviewRewrite("No receipt exists for this exact proposed diff"); gaps = true; continue; }
         // Refuse a ref created while the asynchronous checks above were running.
-        if (fixBranchNow(checkout, fix.item.id)) { review(writer, job, key, fix, "A fix branch appeared before the update could land"); gaps = true; continue; }
+        if (fixBranchNow(checkout, fix.item.id)) { reviewRewrite("A fix branch appeared before the update could land"); gaps = true; continue; }
         await withCheckoutPublication(checkout, result.position, () => {
           if (!samePosition(result.position, syncPosition(checkout)) || !filesMatch(fix) || !enabled(writer, job, checkout, fix) || !owns()) {
             throw new KnowledgeError("STALE_PREVIEW", "The checkout or consent changed before publication.");
@@ -199,16 +207,15 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
         });
         notice(writer, key, fix, "updated", `MEX updated ${preview.path} in this working tree (checked by model); include it in the same PR.`);
       } else {
-        if (serializeEntry(gateEntry(result.rewrite, references(checkout))) !== after) throw new KnowledgeError("STALE_PREVIEW", "The proposed fix changed at the write gates.");
         const directory = containedDirectory(writer.location.home, ["projects", job.project_id!, "notes"]);
         if (!directory || dirname(fix.item.path) !== directory) throw new Error("Personal fix storage changed.");
         if (fixBranchNow(checkout, fix.item.id) || !samePosition(result.position, syncPosition(checkout)) || !filesMatch(fix)) {
-          review(writer, job, key, fix, "The checkout or fix branch changed before the personal update"); gaps = true; continue;
+          reviewRewrite("The checkout or fix branch changed before the personal update"); gaps = true; continue;
         }
         // A note the person wrote is never rewritten for them: it stays held
         // back by its own checks, and the proposed wording waits in Review.
         if (parseEntry(fix.before).mex.source.type === "person") {
-          review(writer, job, key, fix, `Your note ${fix.item.id} no longer matches the code. MEX holds it back; accept this wording, edit it with mex edit, or remove it with mex forget`);
+          reviewRewrite(`Your note ${fix.item.id} no longer matches the code. MEX holds it back; accept this wording, edit it with mex edit, or remove it with mex forget`);
           notice(writer, key, fix, "updated", `Your note ${fix.item.id} no longer matches the code, so MEX holds it back. A proposed update is in mex review.`);
           fix.state = "review"; set(writer, job.project_id!, key, fix);
           continue;
@@ -224,7 +231,7 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
       writer.db.exec("BEGIN IMMEDIATE");
       try {
         if (enabled(writer, job, checkout, fix) && !writer.setting(job.project_id!, `knowledge.retired.${fix.item.id}`)) {
-          review(writer, job, key, fix, error.code === "GIT_BUSY" ? "Git was busy or could not guard this checkout; keep the fix in Review" : "The fix no longer passes the entry's write gates"); gaps = true;
+          review(writer, job, key, fix, error.code === "GIT_BUSY" ? "Git was busy or could not guard this checkout; keep the fix in Review" : "The fix no longer passes the entry's write gates", filesMatch(fix) ? vettedRewrite : undefined); gaps = true;
         } else waiting = true;
         writer.db.exec("COMMIT");
       } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
