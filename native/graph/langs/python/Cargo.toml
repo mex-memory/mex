@@ -1,0 +1,16 @@
+[package]
+name = "mex-graph-python"
+description = "The Python adapter for the MEX graph engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mex-graph-core = { path = "../../core" }
+tree-sitter = "0.26"
+tree-sitter-python = "=0.21.0"
+
+[lints]
+workspace = true

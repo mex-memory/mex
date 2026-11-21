@@ -3,7 +3,7 @@
 # see docs/design/graph-engine-contract.md for the interface.
 [workspace]
 resolver = "3"
-members = ["core", "engine"]
+members = ["core", "engine", "langs/python"]
 
 [workspace.package]
 version = "0.1.0"
