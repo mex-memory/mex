@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 
 use mex_graph_core::CONTRACT_VERSION;
 use mex_graph_core::facts::{FileFacts, ParseStatus};
-use mex_graph_core::store::{self, FileRow, Writer};
-use mex_graph_python::{LANGUAGE, Python};
+use mex_graph_core::id::id_bytes;
+use mex_graph_core::store::{self, EdgeRow, FileRow, NodeRow, Writer};
+use mex_graph_python::{EXCLUDED, LANGUAGE, Python};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -184,8 +185,8 @@ pub fn run(request: Request) -> Result<(), JobError> {
     emit(serde_json::json!({
         "type": "result",
         "files": counts.files,
-        "nodes": 0,
-        "edges": 0,
+        "nodes": counts.nodes,
+        "edges": counts.edges,
         "coverageGaps": counts.coverage_gaps,
         "usage": {
             "wallMs": started.elapsed().as_millis() as u64,
@@ -198,6 +199,8 @@ pub fn run(request: Request) -> Result<(), JobError> {
 #[derive(Default)]
 struct BuildCounts {
     files: usize,
+    nodes: usize,
+    edges: usize,
     coverage_gaps: usize,
 }
 
@@ -214,10 +217,12 @@ fn build(request: &Request) -> Result<BuildCounts, JobError> {
     let extracted = extract_files(&root, request);
     let mut writer = Writer::create(&request.output).map_err(write)?;
     let mut counts = BuildCounts::default();
+    let mut file_facts = Vec::new();
+    let mut node_rows = Vec::new();
     for (done, (file, extraction)) in request.files.iter().zip(extracted).enumerate() {
         match extraction {
             Ok(ExtractedPython { size, facts }) => {
-                writer
+                let id = writer
                     .add_file(&FileRow {
                         path: &facts.path,
                         content_hash: &facts.content_hash,
@@ -233,12 +238,17 @@ fn build(request: &Request) -> Result<BuildCounts, JobError> {
                     })
                     .map_err(write)?;
                 counts.files += 1;
-                if facts.health.status == ParseStatus::Failed {
+                let nodes = if facts.health.status == ParseStatus::Failed {
                     writer
                         .add_coverage(&file.path, "parse failed")
                         .map_err(write)?;
                     counts.coverage_gaps += 1;
-                }
+                    vec![None; facts.defs.len()]
+                } else {
+                    write_nodes(&mut writer, id, &facts, &mut counts).map_err(write)?
+                };
+                file_facts.push(facts);
+                node_rows.push(nodes);
             }
             Err(reason) => {
                 writer.add_coverage(&file.path, reason).map_err(write)?;
@@ -250,6 +260,10 @@ fn build(request: &Request) -> Result<BuildCounts, JobError> {
                 serde_json::json!({ "type": "progress", "phase": "extract", "done": done + 1, "total": request.files.len() }),
             );
         }
+    }
+    for edge in resolve_edges(&file_facts, &node_rows) {
+        writer.add_edge(&edge).map_err(write)?;
+        counts.edges += 1;
     }
     writer
         .set_meta("engine", env!("CARGO_PKG_VERSION"))
@@ -331,4 +345,70 @@ fn extract_python(
         size: bytes.len() as u64,
         facts: python.extract(path, &text, hash),
     })
+}
+
+fn write_nodes(
+    writer: &mut Writer,
+    file: i64,
+    facts: &FileFacts,
+    counts: &mut BuildCounts,
+) -> Result<Vec<Option<i64>>, store::Error> {
+    let mut rows = vec![None; facts.defs.len()];
+    for (index, def) in facts.defs.iter().enumerate() {
+        if def.flags.iter().any(|flag| flag == EXCLUDED) {
+            continue;
+        }
+        // The adapter visits parents first. Skipped definitions leave empty slots.
+        let parent = usize::try_from(def.parent)
+            .ok()
+            .and_then(|index| rows.get(index).copied().flatten());
+        let start_line = def.range.start_line + 1;
+        let is_async = def.flags.iter().any(|flag| flag == "async");
+        let node = writer.add_node(&NodeRow {
+            public_id: &id_bytes(&def.signature_identity(&facts.path)),
+            kind: def.kind.as_str(),
+            file,
+            parent,
+            name: &def.name,
+            qualified_name: &def.qualified_name,
+            span: [
+                start_line,
+                def.range.start_col,
+                def.range.end_line + 1,
+                def.range.end_col,
+            ],
+            signature: (!def.signature.is_empty()).then_some(def.signature.as_str()),
+            flags: u32::from(def.exported) | (u32::from(is_async) << 1),
+            body_hash: def.body_hash.as_ref(),
+            docstring: def.docstring.as_deref(),
+        })?;
+        rows[index] = Some(node);
+        counts.nodes += 1;
+        if let Some(parent) = parent {
+            writer.add_edge(&EdgeRow {
+                source: parent,
+                kind: "contains",
+                target: node,
+                line: start_line,
+                col: 0,
+                provenance: "tree-sitter",
+                confidence: 1.0,
+            })?;
+            counts.edges += 1;
+        }
+        if let Some(sketch) = &def.sketch {
+            let minhash: Vec<u8> = sketch
+                .minhash
+                .iter()
+                .flat_map(|v| v.to_be_bytes())
+                .collect();
+            writer.add_fingerprint(node, &minhash, &[], sketch.token_count)?;
+        }
+    }
+    Ok(rows)
+}
+
+/// Cross-file resolution will use the facts and their parallel definition-to-row mapping.
+fn resolve_edges(_files: &[FileFacts], _node_rows: &[Vec<Option<i64>>]) -> Vec<EdgeRow<'static>> {
+    Vec::new()
 }
