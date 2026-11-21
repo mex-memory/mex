@@ -192,11 +192,17 @@ function reply(value: object) {
   return { text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } };
 }
 
-type CorrectFixture = {
-  repo: string; slug: string; id: string; revision: string; label: "Correct"; text: string; oneLine: string;
-  evidence: Array<{ path: string; link: string; quote: string }>; targetFiles: Record<string, string>; scope: string[];
+/**
+ * OSS-67 rules replayed at $0. Each row holds the doc excerpt its quotes come from and the pinned files the anchor
+ * code reads: paths and globs the quote or claim names, and the files that mention each identifier the quote marks
+ * (real content when at most 8 files do, stubs otherwise). The mex rows were rebuilt from mex at 515e034a; the pip and
+ * go-git rows are the human-Correct rules kept from the earlier fixture.
+ */
+type ReplayRule = {
+  repo: string; slug: string; revision: string; id: string; label: "Correct" | "Kept"; kind: string; text: string; oneLine: string;
+  evidence: Array<{ path: string; link: string; quote: string }>; sources: Record<string, string>; files: Record<string, string>;
 };
-const correctRules: CorrectFixture[] = JSON.parse(readFileSync(new URL("./fixtures/oss67-correct-anchors.json", import.meta.url), "utf8"));
+const replay: ReplayRule[] = JSON.parse(readFileSync(new URL("./fixtures/oss67-anchor-replay.json", import.meta.url), "utf8"));
 const fixtureModel = { id: "fixture", version: "fixture-2026-11" };
 
 async function fixturePlan(slug: string) {
@@ -207,36 +213,53 @@ async function fixturePlan(slug: string) {
   return { pinned, plan };
 }
 
-it.each(correctRules)("anchors a human-Correct OSS-67 $repo rule and accepts it through the real gate", async row => {
-  const sources: DocSource[] = row.evidence.map(({ path, link, quote }) => ({
-    id: "doc:" + path, kind: "docs", path, link, text: quote, hash: sourceDigest(quote), coverage: "partial",
-  }));
-  const files = { ...row.targetFiles, ...Object.fromEntries(sources.map(source => [source.path, source.text])) };
-  for (const [path, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), content);
+// Frozen from the replay. Code anchors come only from paths the quotes name; every other rule is repo-wide.
+const repoWide = ["repo-wide", "scope **"];
+const REPLAY_KINDS: Record<string, string[]> = {
+  mx_deep2d1ff0cb74224aa6b03a61c9ef574b45: ["code-scope", "scope .gitignore"], // mex: graph eval artifacts (evaluate/README.md)
+  mx_deep397d4cd1b05b63f28b8fdd3af5825ea8: repoWide, // mex: watch hook cleanup
+  mx_deep6be26c5dde592fb81485dc6aef0484c4: repoWide, // mex: automatic model work (`runModel` is in 16 files, so no symbol)
+  mx_deep6ece297b313cc8b07f4e86df02992685: repoWide, // mex: team-entry evidence gates
+  mx_deep753a7d851c8edcd528a9038da610293a: repoWide, // mex: runtime verdicts in the local record
+  mx_deepe740d73545708cd2377e38419155a795: repoWide, // mex: pure single-file extractors
+  mx_deepfc7b4569f40848e12bec69aac49486fe: repoWide, // mex: code-graph contribution scope
+  mx_deepfecb873071b891fcc3247023d009f506: repoWide, // mex: block conversion on complete: false
+  mx_deep4f78c5b8e89314355be98afe9f1f7fad: ["code-scope", "scope src/model-runner/models.ts"], // mex: model names (Correct)
+  mx_deep4edf88f972f4debe2c227f63146d72f6: repoWide, // pip: news entries (Correct)
+  mx_deep1a32010843b2eaf7111ef4d70586f935: repoWide, // go-git: AI policy (Correct)
+};
+const REPLAY_COUNTS = { rules: 11, codeScope: 2, when: 0, symbol: 0, command: 0, repoWide: 9 };
+
+it("replays the OSS-67 rules through propose() and counts each anchor kind", async () => {
+  const observed: Record<string, string[]> = {};
+  for (const [i, row] of replay.entries()) {
+    repo = join(fixture, `replay-${i}`); mkdirSync(repo);
+    git("init", "-qb", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
+    for (const [path, content] of Object.entries({ ...row.files, ...row.sources })) {
+      mkdirSync(dirname(join(repo, path)), { recursive: true });
+      writeFileSync(join(repo, path), content);
+    }
+    git("add", "-f", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", `Pin ${row.repo} at ${row.revision.slice(0, 8)}`);
+    const { pinned, plan } = await fixturePlan(row.slug);
+    const sources: DocSource[] = Object.entries(row.sources).map(([path, text]) => ({ id: "doc:" + path, kind: "docs", path, text,
+      hash: sourceDigest(text), coverage: "partial", link: row.evidence.find(item => item.path === path)!.link }));
+    const prepared = await prepareEntries(reply({ entries: [{ kind: row.kind, scope: [], text: row.text, one_line: row.oneLine, checks: [],
+      evidence: row.evidence.map(({ path, quote }) => ({ id: "doc:" + path, quote })) }] }).text, sources, plan, pinned, fixtureModel);
+    expect(prepared.validation.rejected, row.id).toEqual([]);
+    const saved = await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async ([proposal], check) => {
+      if (!proposal || typeof proposal === "string") throw new Error(`${row.id} did not anchor: ${String(proposal)}`);
+      observed[row.id] = [...proposal.anchorKinds, ...(proposal.anchors?.scope ?? []).map(glob => "scope " + glob),
+        ...(proposal.anchors?.when ?? []).map(item => "when " + item.pattern),
+        ...(proposal.checks ?? []).flatMap(item => item.kind === "symbol" ? ["symbol " + item.target.symbol] : [])];
+      return propose([proposal], { ...check, home: fixture, projectPath: repo });
+    });
+    expect(saved, row.id).toEqual([{ status: "accepted", entryId: row.id, change: "new" }]);
   }
-  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the OSS-67 source excerpts and anchor files");
-  const { pinned, plan } = await fixturePlan(row.slug);
-  const model = vi.fn(async () => reply({ entries: [{
-    kind: "rule", scope: ["**", "unrelated.ts"], text: row.text, one_line: row.oneLine, checks: [],
-    evidence: sources.map(source => ({ id: source.id, quote: source.text })),
-  }] }));
-  const output = await model();
-  const prepared = await prepareEntries(output.text, sources, plan, pinned, fixtureModel);
-  expect(prepared.validation.rejected).toEqual([]);
-  const saved = await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async (anchors, check) => {
-    expect(anchors).toHaveLength(1);
-    const [proposal] = anchors;
-    if (!proposal || typeof proposal === "string") throw new Error("Expected the archived rule to anchor");
-    expect(proposal.anchors?.scope).toEqual(row.scope);
-    expect(proposal.anchorKinds).toEqual([row.repo === "mex" ? "code-scope" : "repo-wide"]);
-    expect(proposal.source.text).toEqual(sources[0]!.text);
-    return propose([proposal], { ...check, home: fixture, projectPath: repo });
-  });
-  expect(saved).toEqual([{ status: "accepted", entryId: row.id, change: "new" }]);
-  expect(model).toHaveBeenCalledTimes(1);
-});
+  expect(observed).toEqual(REPLAY_KINDS);
+  const count = (kind: string) => Object.values(observed).filter(kinds => kinds.includes(kind)).length;
+  expect({ rules: replay.length, codeScope: count("code-scope"), when: count("when"), symbol: count("symbol"), command: count("command"),
+    repoWide: count("repo-wide") }).toEqual(REPLAY_COUNTS);
+}, 120_000);
 
 it.each([
   { name: "a cited code file", quote: "Commit a regression test when updating src/runtime.ts.",
