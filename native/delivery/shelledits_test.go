@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -43,6 +44,38 @@ func TestShellTargets(t *testing.T) {
 			got, write, bounded := shellTargets(event)
 			if !bounded || write != tc.write || !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("targets = %v, write = %v, bounded = %v; want %v, %v, true", got, write, bounded, tc.want, tc.write)
+			}
+		})
+	}
+}
+
+// From a live session: one perl loop updated every caller after a cd. The
+// cd folder is where the command runs, not a target, and the glob is in
+// that folder, not across the whole checkout.
+func TestShellTargetsFollowCd(t *testing.T) {
+	root := t.TempDir()
+	const dir = "apps/api/src/app/domains/usecases"
+	enter := dir
+	if runtime.GOOS == "windows" {
+		volume := filepath.VolumeName(root)
+		enter = "/" + strings.ToLower(volume[:1]) + filepath.ToSlash(root[len(volume):]) + "/" + dir
+	}
+	for _, tc := range []struct {
+		name, command string
+		want          []string
+	}{
+		{"perl loop", "cd " + enter + " && for f in $(grep -rl \"resolveDomainName({\" --include=*.usecase.ts .); do perl -0pi -e 's/a/b/' $f; done; git diff --stat", []string{dir + "/"}},
+		{"sed after cd", "cd apps/api && sed -i 's/a\\/b/c/' src/x.ts", []string{"apps/api/src/x.ts"}},
+		{"tests in a package", "cd apps/api && pnpm test", nil},
+		{"cd into a variable", "cd $ROOT && sed -i 's/a/b/' x.ts", []string{"x.ts"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := contract.Event{Checkout: root, Cwd: root, Tool: &contract.Tool{
+				Name: contract.ToolShell, Input: contract.ToolInput{Command: tc.command}, Output: &contract.ToolOutput{OK: true},
+			}}
+			got, write, bounded := shellTargets(event)
+			if !bounded || !write || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("targets = %v, write = %v, bounded = %v; want %v", got, write, bounded, tc.want)
 			}
 		})
 	}

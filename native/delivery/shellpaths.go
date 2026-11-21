@@ -3,6 +3,7 @@ package delivery
 import (
 	"iter"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mex-memory/mex/native/index"
@@ -30,8 +31,22 @@ func shellTargets(ev contract.Event) (targets []string, write, bounded bool) {
 			return true
 		}
 		write = true
+		dir, changeDir := cwd, false
 		for word := range shellPathWords(command) {
-			target, ok := shellTarget(ev.Checkout, cwd, word)
+			// `cd <dir> && ...` moves later relative paths. The folder it
+			// enters is where the command runs, not something it writes.
+			if changeDir {
+				changeDir = false
+				if next, ok := shellDirectory(dir, word); ok {
+					dir = next
+				}
+				continue
+			}
+			if changesDirectory(word) {
+				changeDir = true
+				continue
+			}
+			target, ok := shellTarget(ev.Checkout, dir, word)
 			if !ok || seen[target] {
 				continue
 			}
@@ -89,6 +104,10 @@ func shellPathWords(command string) iter.Seq[string] {
 				skipExpression = false
 				continue
 			}
+			if !quoted && (lastPart(word) == "sed" || lastPart(word) == "perl") {
+				editor = true // also after `cd x &&` or inside a loop
+				continue
+			}
 			if editor && (word == "-e" || word == "--expression") {
 				skipExpression = true
 				continue
@@ -109,7 +128,43 @@ func shellPathWords(command string) iter.Seq[string] {
 	}
 }
 
+func changesDirectory(word string) bool {
+	switch strings.ToLower(word) {
+	case "cd", "pushd", "set-location", "sl", "chdir":
+		return true
+	}
+	return false
+}
+
+// shellDirectory resolves the folder a cd enters, or reports that only the
+// shell's own state (a variable, ~, cd -) could say.
+func shellDirectory(cwd, word string) (string, bool) {
+	word = gitBashPath(word)
+	if word == "" || strings.HasPrefix(word, "-") || strings.ContainsAny(word, "\x00\r\n$\x60~*?") {
+		return "", false
+	}
+	name := filepath.FromSlash(strings.ReplaceAll(word, "\\", "/"))
+	if filepath.IsAbs(name) {
+		return filepath.Clean(name), true
+	}
+	if filepath.VolumeName(name) != "" || strings.HasPrefix(word, "/") {
+		return "", false
+	}
+	return filepath.Join(cwd, name), true
+}
+
+// gitBashPath reads Git Bash's /c/... form as C:/... on Windows, where
+// agents running bash name files that way.
+func gitBashPath(word string) string {
+	if runtime.GOOS == "windows" && len(word) >= 3 && word[0] == '/' && word[2] == '/' &&
+		(word[1] >= 'a' && word[1] <= 'z' || word[1] >= 'A' && word[1] <= 'Z') {
+		return strings.ToUpper(word[1:2]) + ":" + word[2:]
+	}
+	return word
+}
+
 func shellTarget(checkout, cwd, word string) (string, bool) {
+	word = gitBashPath(word)
 	if word == "" || strings.HasPrefix(word, "-") || strings.HasPrefix(word, "~") ||
 		strings.ContainsAny(word, "\x00\r\n$\x60?<>|") {
 		return "", false

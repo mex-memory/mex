@@ -173,10 +173,11 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	defer indexes.close()
 	var policies policyCache
 	env.policy = &policies
-	shellComplete := true
 	if isMoment && !env.Offline && ev.Kind != contract.Prompt {
-		changes, mtimes, complete := shellEdits(ev, env)
-		shellComplete = complete
+		// An unfinished scan records nothing. An edit tool's note in the same
+		// batch still goes out: its callers do use the definition, and at worst
+		// it lists one the command already updated.
+		changes, mtimes, _ := shellEdits(ev, env)
 		env.shellChanges = changes
 		if len(mtimes) > 0 {
 			updates := shellLineChanges(ev.Checkout, changes)
@@ -193,8 +194,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	var groups []*group
 	var anchors []Anchor
 	cards := searchCards(ev, env)
-	// An unfinished shell scan might have missed callers updated in this batch.
-	if isMoment && shellComplete {
+	if isMoment {
 		cards = append(cards, graphCards(ev, env)...)
 	}
 	if isTestRun {
