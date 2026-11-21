@@ -4,10 +4,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod facts_cmd;
 mod guard;
 mod job;
 
-const USAGE: &str = "usage: mex-graph version | languages | build --request <file>";
+const USAGE: &str =
+    "usage: mex-graph version | languages | build --request <file> | facts --root <dir> <path>...";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -25,6 +27,13 @@ fn main() -> ExitCode {
             println!("[]");
             ExitCode::SUCCESS
         }
+        Some("facts") => match facts_cmd::run(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("mex-graph facts: {message}");
+                ExitCode::from(2)
+            }
+        },
         Some(mode @ "build") => {
             let Some(request) = args
                 .iter()
