@@ -202,6 +202,22 @@ impl Writer {
         Ok(())
     }
 
+    pub fn add_fingerprint(
+        &mut self,
+        node: i64,
+        minhash: &[u8],
+        neighbours: &[u8],
+        token_count: u32,
+    ) -> rusqlite::Result<()> {
+        self.conn
+            .prepare_cached(
+                "INSERT INTO fingerprints(node, minhash, neighbours, token_count)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?
+            .execute(params![node, minhash, neighbours, token_count])?;
+        Ok(())
+    }
+
     pub fn add_coverage(&mut self, path: &str, reason: &str) -> rusqlite::Result<()> {
         self.conn
             .prepare_cached("INSERT OR REPLACE INTO coverage(path, reason) VALUES (?1, ?2)")?
@@ -287,6 +303,8 @@ mod tests {
         w.add_edge(&edge).unwrap();
         w.add_unresolved(file, "untyped_receiver", 2).unwrap();
         w.add_unresolved(file, "untyped_receiver", 1).unwrap();
+        let minhash = [0x6b; 256];
+        w.add_fingerprint(ids[0], &minhash, &[], 47).unwrap();
         w.finish().unwrap();
 
         let conn = Connection::open(&path).unwrap();
@@ -303,6 +321,21 @@ mod tests {
             5
         );
         assert_eq!(count("SELECT length(public_id) FROM nodes LIMIT 1"), 16);
+        let stored = conn
+            .query_row(
+                "SELECT node, minhash, neighbours, token_count FROM fingerprints",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, u32>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored, (ids[0], minhash.to_vec(), vec![], 47));
         assert!(Writer::create(&path).is_err(), "never writes over a file");
     }
 
