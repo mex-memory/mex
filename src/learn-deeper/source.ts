@@ -152,8 +152,9 @@ export const BACKFILL_REVIEW_LIMIT = 32;
 
 export function prioritizeReviews(reviews: readonly ReviewSource[], preferred: readonly string[]): ReviewSource[] {
   const near = (path?: string) => !!path && preferred.some(dir => path.startsWith(dir + "/"));
-  const order = (a: ReviewSource, b: ReviewSource) => Number(b.writer) - Number(a.writer)
-    || Number(b.topLevel) - Number(a.topLevel) || Number(b.outdated) - Number(a.outdated)
+  // A comment whose code was later changed (an outdated thread) led to a fix, so it ranks first.
+  const order = (a: ReviewSource, b: ReviewSource) => Number(b.outdated) - Number(a.outdated)
+    || Number(b.writer) - Number(a.writer) || Number(b.topLevel) - Number(a.topLevel)
     || Number(near(b.path)) - Number(near(a.path));
   // A stable sort keeps the caller's pull order inside each priority tier.
   return [...reviews].sort(order);

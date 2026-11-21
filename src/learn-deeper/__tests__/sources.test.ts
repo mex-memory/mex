@@ -85,6 +85,14 @@ it("preserves verified evidence from a second PR under the review source cap", (
   expect(selected.map(review => review.id)).toContain(second.id);
 });
 
+it("ranks a comment that led to a code change ahead of other verified reviews", () => {
+  const summary: ReviewSource = { kind: "review", id: "summary", hash: sha, link: "", text: "Keep stable snapshots.",
+    at: then, pull: 1, writer: true, topLevel: true, outdated: false };
+  const fixed = { ...summary, id: "fixed", topLevel: false, outdated: true, path: "src/runtime.ts" };
+  const open = { ...summary, id: "open", topLevel: false, path: "src/runtime.ts" };
+  expect(prioritizeReviews([summary, open, fixed], []).map(review => review.id)).toEqual(["fixed", "summary", "open"]);
+});
+
 it("redacts known reviewers in prose while preserving technical terms and code spans", () => {
   const reviewers = new Reviewers();
   reviewers.add("testuser", "Test User");
@@ -144,10 +152,11 @@ it("normalizes the public GitHub REST comment shape, withholding deleted files a
   });
   const result = await githubReviews(new ForgeClient(github, undefined, request, 0), { ...window, source: github, pulls: [{ number: 2, at: then }], tree, preferred: [] });
   expect(result.gaps).toEqual([]);
-  expect(result.reviews.map(item => item.id)).toEqual(["github:issuecomment-:105", "github:discussion_r:101"]);
-  expect(result.reviews[1]).toMatchObject({ writer: true, outdated: true, text: "Keep the stable snapshot identifier. Nice work, [reviewer].",
+  // The outdated inline comment led to a code change, so it ranks first.
+  expect(result.reviews.map(item => item.id)).toEqual(["github:discussion_r:101", "github:issuecomment-:105"]);
+  expect(result.reviews[0]).toMatchObject({ writer: true, outdated: true, text: "Keep the stable snapshot identifier. Nice work, [reviewer].",
     link: "https://github.com/fiction/memory/pull/2#discussion_r101" });
-  const [topLevel, outdated] = result.reviews;
+  const [outdated, topLevel] = result.reviews;
   expect(topLevel.writer).toBe(true);
   expect(topLevel.changedPaths).toEqual(["src/runtime.ts"]);
   expect(prioritizeReviews([{ ...topLevel, writer: false }, { ...outdated, outdated: false, id: "fresh" }, outdated], []).map(item => item.id))
