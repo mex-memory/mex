@@ -43,8 +43,8 @@ type Environment struct {
 	// Resolve finds the registered checkout of a touched path; nil means
 	// every tool uses the event's own checkout.
 	Resolve Resolver
-	// Changed is what this session edited, set only before a shell command,
-	// for the card before a full test run.
+	// Changed is what this session edited, set only after a shell command,
+	// for the card after a full test run.
 	Changed ChangedLines
 }
 

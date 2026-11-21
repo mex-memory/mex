@@ -71,21 +71,27 @@ func TestFullTestRun(t *testing.T) {
 		"ls":                                       false,
 	}
 	for command, want := range cases {
-		ev := contract.Event{Kind: contract.PreTool, Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: command}}}
+		ev := contract.Event{Kind: contract.PostTool, Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: command}, Output: &contract.ToolOutput{OK: true}}}
 		if got := fullTestRun(ev); got != want {
 			t.Errorf("%q: got %v, want %v", command, got, want)
 		}
 	}
-	after := contract.Event{Kind: contract.PostTool, Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: "npm test"}}}
-	if fullTestRun(after) {
-		t.Error("after the run is too late")
+	failed := contract.Event{Kind: contract.PostToolFailure, Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: "npm test"}, Output: &contract.ToolOutput{}}}
+	if !fullTestRun(failed) {
+		t.Error("a failing full run is a full run")
+	}
+	// Context added before a tool lands after its result, so the card waits
+	// for the run's output: it is for the runs that follow.
+	before := contract.Event{Kind: contract.PreTool, Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: "npm test"}}}
+	if fullTestRun(before) {
+		t.Error("a run that hasn't happened has no output to replace")
 	}
 }
 
 // Without a project, a file index or a graph the tests card says nothing.
 func TestTestRunCardsStaySilent(t *testing.T) {
-	ev := contract.Event{Kind: contract.PreTool, ProjectID: "g-000000000000000000000000", Checkout: t.TempDir(),
-		Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: "npm test"}}}
+	ev := contract.Event{Kind: contract.PostTool, ProjectID: "g-000000000000000000000000", Checkout: t.TempDir(),
+		Tool: &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: "npm test"}, Output: &contract.ToolOutput{OK: true}}}
 	env := Environment{RecordDirectory: t.TempDir(), Changed: ChangedLines{"x.ts": {{1, 3}}}}
 	if cards := testRunCards(ev, env); len(cards) != 0 {
 		t.Fatalf("%d cards without an index", len(cards))

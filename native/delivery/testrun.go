@@ -8,23 +8,28 @@ import (
 	"github.com/mex-memory/mex/native/graph"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
+	"github.com/mex-memory/mex/native/internal/tokens"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
-// The card before a full test run: once the session has edited code, the
+// The card after a full test run: once the session has edited code, the
 // tests that cover the definitions it changed, and a scoped command when the
-// runner takes files. It replaces a full run's output, whose usual size is
-// the card's value until the ledger measures a better one.
+// runner takes files, so the runs that follow are scoped. It goes out after
+// the run, not before it: context a host adds before a tool lands after the
+// tool's result (measured on Claude Code), so it could never replace that
+// run. Its value is what the run's output cost; it goes out only when that
+// is several times the card.
 
 const (
-	fullRunTokens     = 4000
 	maxChangedSymbols = 32
+	// testRunValueFactor: the run's output must cost this many times the card.
+	testRunValueFactor = 4
 )
 
-// fullTestRun reports a shell command about to run a whole test suite: a
-// test command that names no test files, directories or name filters.
+// fullTestRun reports a shell command that ran a whole test suite: a test
+// command that names no test files, directories or name filters.
 func fullTestRun(ev contract.Event) bool {
-	if ev.Kind != contract.PreTool || ev.Tool == nil || ev.Tool.Name != contract.ToolShell {
+	if (ev.Kind != contract.PostTool && ev.Kind != contract.PostToolFailure) || ev.Tool == nil || ev.Tool.Name != contract.ToolShell || ev.Tool.Output == nil {
 		return false
 	}
 	command := ev.Tool.Input.Command
@@ -71,20 +76,18 @@ func testRunCards(ev contract.Event, env Environment) []answerCard {
 	if len(changed) == 0 {
 		return nil
 	}
-	ix := openRescueIndex(env, ev)
-	if ix == nil {
+	view, ix, done := graphViewIndex(ev, env)
+	if done == nil {
 		return nil
 	}
-	defer closeRescueIndex(env, ix)
+	defer done()
 	isTest := func(path string) bool {
-		info, miss := ix.FileInfo(path)
-		return miss == nil && info.IsTest
+		if t, known := ix.TestFlag(path); known {
+			return t
+		}
+		return graph.TestPath(path)
 	}
-	store, err := graph.OpenStore(env.RecordDirectory, ev.ProjectID, ev.Checkout, isTest)
-	if err != nil {
-		return nil
-	}
-	defer store.Close()
+	store := view.R.(*graph.Store)
 
 	rels := make([]string, 0, len(changed))
 	for rel := range changed {
@@ -140,8 +143,9 @@ func testRunCards(ev contract.Event, env Environment) []answerCard {
 	if len(symbols) == 0 {
 		return nil
 	}
-	card, ok := graph.TestsCard(store, ix, symbols, ev.Tool.Input.Command, fullRunTokens, graph.Seen{})
-	if !ok {
+	value := tokens.Code(boundedText(ev.Tool.Output.Text, 1<<20))
+	card, ok := view.TestsCard(symbols, ev.Tool.Input.Command, value, graph.Seen{})
+	if !ok || card.Value < testRunValueFactor*card.Tokens {
 		return nil
 	}
 	return []answerCard{graphAnswerCard(card)}

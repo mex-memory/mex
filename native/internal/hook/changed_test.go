@@ -12,7 +12,7 @@ import (
 	"github.com/mex-memory/mex/native/internal/contract"
 )
 
-// Edits are kept per session and read back only before a shell command.
+// Edits are kept per session and read back only after a shell command.
 func TestChangedLinesPerSession(t *testing.T) {
 	dir := t.TempDir()
 	ev := contract.Event{Agent: "claude-code", SessionID: "s1", Kind: contract.PostTool}
@@ -20,7 +20,7 @@ func TestChangedLinesPerSession(t *testing.T) {
 	noteChanged(ev, dir, []fileEdit{{path: "/repo/b.ts", placed: false}})
 
 	pre := ev
-	pre.Kind = contract.PreTool
+	pre.Kind = contract.PostTool
 	pre.Tool = &contract.Tool{Name: contract.ToolShell, Input: contract.ToolInput{Command: "npm test"}}
 	got := sessionChanged(pre, dir)
 	if !reflect.DeepEqual(got["/repo/a.ts"], []delivery.LineSpan{{From: 3, To: 4}}) || len(got["/repo/b.ts"]) != 1 {

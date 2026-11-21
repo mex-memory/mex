@@ -12,9 +12,9 @@ import (
 	"github.com/mex-memory/mex/native/internal/contract"
 )
 
-// The lines a session's edits changed, for the card before a full test run.
+// The lines a session's edits changed, for the card after a full test run.
 // One small file per session in <record directory>/changed/<agent>/, written
-// on edits and read before shell commands. It is not lever state: it is kept
+// on edits and read after shell commands. It is not lever state: it is kept
 // whether or not the output levers are on, and like noteEdit it never opens a
 // database. Files a week old go at the next session start.
 
@@ -63,10 +63,11 @@ func noteChanged(ev contract.Event, recordDirectory string, edits []fileEdit) {
 	}
 }
 
-// sessionChanged is what delivery needs before a shell command: the lines
-// this session changed. Nil for anything else, so nothing is read.
+// sessionChanged is what delivery needs after a shell command: the lines
+// this session changed, for the card after a full test run. Nil for
+// anything else, so nothing is read.
 func sessionChanged(ev contract.Event, recordDirectory string) delivery.ChangedLines {
-	if ev.Kind != contract.PreTool || ev.Tool == nil || ev.Tool.Name != contract.ToolShell || recordDirectory == "" || ev.SessionID == "" {
+	if (ev.Kind != contract.PostTool && ev.Kind != contract.PostToolFailure) || ev.Tool == nil || ev.Tool.Name != contract.ToolShell || recordDirectory == "" || ev.SessionID == "" {
 		return nil
 	}
 	return loadChanged(changedPath(recordDirectory, ev))
