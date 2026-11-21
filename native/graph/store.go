@@ -424,11 +424,26 @@ func (s *Store) test(path string) bool {
 // Callers are the uses of a symbol: real calls, and the symbol passed as a
 // value (a callback), kept apart. Each site is where the use is and the
 // definition it's inside; a recursive call is a site inside the symbol itself.
+//
+// A call through an interface or a union whose one candidate in the graph is
+// this symbol is a call to it too: the extractor keeps such calls apart as
+// "ambiguous", since the type could have other implementations, but this is
+// the only one the graph holds. Those sites are marked Through.
 func (s *Store) Callers(id string) ([]Site, error) {
-	return s.sites(`SELECT `+symbolColumns+`, coalesce(e.line, n.start_line), e.kind FROM edges e
+	var name string
+	if s.db.QueryRow("SELECT name FROM nodes WHERE id=?", id).Scan(&name) != nil {
+		return nil, nil
+	}
+	// By name first: unresolved_refs is indexed on the name, not the candidates.
+	return s.sites(`SELECT * FROM (
+		SELECT `+symbolColumns+`, coalesce(e.line, n.start_line), e.kind, 0 FROM edges e
 		JOIN nodes n ON n.id = e.source
-		WHERE e.target=? AND e.kind IN ('calls','references')
-		ORDER BY n.file_path, e.line LIMIT 500`, []any{id}, nil)
+		WHERE e.target=?1 AND e.kind IN ('calls','references')
+		UNION ALL
+		SELECT `+symbolColumns+`, u.line, 'calls', 1 FROM unresolved_refs u
+		JOIN nodes n ON n.id = u.from_node_id
+		WHERE u.reference_name=?2 AND u.status='ambiguous' AND u.reference_kind='calls' AND u.candidates = '["' || ?1 || '"]'
+	) ORDER BY 3, 10 LIMIT 500`, []any{id, name}, nil)
 }
 
 // within is the definition and everything nested in it.
@@ -443,11 +458,17 @@ func (s *Store) Callees(id string) ([]Site, error) {
 	if !ok {
 		return nil, nil
 	}
-	return s.sites(within+`SELECT `+symbolColumns+`, coalesce(e.line, 0), e.kind FROM edges e
+	return s.sites(within+`SELECT * FROM (
+		SELECT `+symbolColumns+`, coalesce(e.line, 0), e.kind, 0 FROM edges e
 		JOIN nodes n ON n.id = e.target
 		WHERE e.source IN (SELECT id FROM inner) AND e.target NOT IN (SELECT id FROM inner)
 		AND e.kind IN ('calls','references')
-		ORDER BY e.line, n.name LIMIT 500`, []any{id}, &from)
+		UNION ALL
+		SELECT `+symbolColumns+`, u.line, 'calls', 1 FROM unresolved_refs u
+		JOIN nodes n ON n.id = json_extract(u.candidates, '$[0]')
+		WHERE u.from_node_id IN (SELECT id FROM inner) AND u.status='ambiguous' AND u.reference_kind='calls'
+		AND json_array_length(u.candidates) = 1 AND n.id NOT IN (SELECT id FROM inner)
+	) ORDER BY 10, 2 LIMIT 500`, []any{id}, &from)
 }
 
 func (s *Store) sites(query string, args []any, from *Symbol) ([]Site, error) {
@@ -459,15 +480,15 @@ func (s *Store) sites(query string, args []any, from *Symbol) ([]Site, error) {
 	seen := map[string]bool{}
 	for rows.Next() {
 		var sym Symbol
-		var exported, line int
+		var exported, line, through int
 		var kind string
 		if err := rows.Scan(&sym.ID, &sym.Name, &sym.Path, &sym.Start, &sym.End, &sym.Kind, &exported,
-			&sym.Signature, &sym.Hash, &line, &kind); err != nil {
+			&sym.Signature, &sym.Hash, &line, &kind, &through); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		sym.Exported = exported != 0
-		site := Site{Path: sym.Path, Line: line, In: sym, Kind: Call}
+		site := Site{Path: sym.Path, Line: line, In: sym, Kind: Call, Through: through != 0}
 		if kind == "references" {
 			site.Kind = Value
 		}
@@ -575,8 +596,10 @@ func (s *Store) Unresolved(id string) int {
 		return 0
 	}
 	var n int
+	// A call whose one candidate is this symbol is shown as a caller, not counted here.
 	if err := s.db.QueryRow(`SELECT count(*) FROM unresolved_refs
-		WHERE reference_name=? AND status IN ('pending','ambiguous','unresolved')`, sym.Name).Scan(&n); err != nil {
+		WHERE reference_name=?1 AND status IN ('pending','ambiguous','unresolved')
+		AND coalesce(candidates,'') <> '["' || ?2 || '"]'`, sym.Name, id).Scan(&n); err != nil {
 		return 0
 	}
 	return n
@@ -587,7 +610,8 @@ func (s *Store) Unresolved(id string) int {
 func (s *Store) UnresolvedIn(id string) int {
 	var n int
 	if err := s.db.QueryRow(within+`SELECT count(*) FROM unresolved_refs
-		WHERE from_node_id IN (SELECT id FROM inner) AND status IN ('pending','ambiguous','unresolved')`, id).Scan(&n); err != nil {
+		WHERE from_node_id IN (SELECT id FROM inner) AND status IN ('pending','ambiguous','unresolved')
+		AND NOT (status='ambiguous' AND reference_kind='calls' AND json_valid(candidates) AND json_array_length(candidates) = 1)`, id).Scan(&n); err != nil {
 		return 0
 	}
 	return n

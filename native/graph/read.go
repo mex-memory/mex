@@ -51,6 +51,9 @@ type Site struct {
 	// callback sits at the top of a file (a test file's describe/it bodies).
 	Owner *Symbol  `json:"owner,omitempty"`
 	Kind  EdgeKind `json:"kind"`
+	// Through: a call through an interface or union type, whose one
+	// implementation in the graph is this symbol.
+	Through bool `json:"through,omitempty"`
 }
 
 // Named is the definition a person would say the use is in: In, or its

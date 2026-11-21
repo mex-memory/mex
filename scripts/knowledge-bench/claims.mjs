@@ -115,3 +115,118 @@ export const CLAIMS = Object.freeze([
   behaviour('b13', 'src/utils/cookie.ts', 'parse', 'Cookie names are checked against validCookieNameRegEx when parsing.', t => /validCookieNameRegEx/.test(t)),
   behaviour('b14', 'src/hono-base.ts', 'Hono.onError', 'Errors without a handler go through the app errorHandler.', t => /errorHandler/.test(t)),
 ]);
+
+// ── The other check kinds (corpus revision eight-kinds-v1) ──
+//
+// Truth functions here also get `list(prefix)`: every path under prefix at
+// the checkpoint. Scoped claims (patterns, relations) are read over all the
+// files in scope, as the claim says, never through MEX's own index.
+
+// command claims: the script a command runs is still defined.
+function command(id, script, oneLine) {
+  return {
+    id, category: 'command', oneLine, file: pkg,
+    check: { kind: 'command', role: 'complete', target: { run: `npm run ${script}`, file: pkg, pointer: `/scripts/${script.replaceAll('~', '~0').replaceAll('/', '~1')}` } },
+    truth: show => typeof json(show, pkg)?.scripts?.[script] === 'string',
+  };
+}
+
+/** The text under a Markdown heading (by its text), up to the next heading of the same or a higher level. */
+function sectionText(text, heading) {
+  if (text === null) return null;
+  const lines = text.split('\n');
+  const start = lines.findIndex(l => /^#{1,6} /.test(l) && l.replace(/^#+ /, '').trim() === heading);
+  if (start < 0) return null;
+  const level = lines[start].match(/^#+/)[0].length;
+  const end = lines.findIndex((l, i) => i > start && /^#{1,6} /.test(l) && l.match(/^#+/)[0].length <= level);
+  return lines.slice(start + 1, end < 0 ? undefined : end).join('\n');
+}
+
+// section claims: what a document section says.
+function section(id, file, heading, oneLine, holds) {
+  return {
+    id, category: 'docs', oneLine, file,
+    check: { kind: 'section', role: 'complete', target: { file, heading } },
+    truth: show => { const t = sectionText(show(file), heading); return t !== null && holds(t); },
+  };
+}
+
+// source claims: what a whole file does.
+function source(id, file, oneLine, holds) {
+  return {
+    id, category: 'behaviour', oneLine, file,
+    check: { kind: 'source', role: 'complete', target: { file } },
+    truth: show => { const t = show(file); return t !== null && holds(t); },
+  };
+}
+
+const occurrences = (text, literal) => text.split(literal).length - 1;
+
+// pattern claims: how many times a literal appears in the files of a folder.
+function pattern(id, folder, literal, count, oneLine) {
+  return {
+    id, category: 'convention', oneLine, file: `${folder}/**`,
+    check: { kind: 'pattern', role: 'complete', target: { scope: `${folder}/**`, pattern: literal } },
+    truth: (show, list) => list(`${folder}/`).reduce((n, f) => n + occurrences(show(f) ?? '', literal), 0) === count,
+  };
+}
+
+/** Relative imports from code under `from` that resolve into `to` (a folder, or a file without its extension). */
+function importsInto(show, list, from, to) {
+  let n = 0;
+  for (const f of list(`${from}/`).filter(f => /\.(ts|tsx)$/.test(f))) {
+    for (const m of (show(f) ?? '').matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.{1,2}\/[^'"]+)['"]/g)) {
+      const parts = f.split('/').slice(0, -1);
+      for (const p of m[1].split('/')) { if (p === '..') parts.pop(); else if (p !== '.') parts.push(p); }
+      const target = parts.join('/').replace(/\.(ts|tsx|js)$/, '');
+      if (target === to.replace(/\.(ts|tsx)$/, '') || target.startsWith(`${to}/`)) n++;
+    }
+  }
+  return n;
+}
+
+// relation claims: a boundary between parts of the code, as an import or a
+// call count. A call needs an import, so no import proves no call.
+function boundary(id, query, from, to, oneLine) {
+  const toScope = /\.tsx?$/.test(to) ? to : `${to}/**`;
+  return {
+    id, category: 'architecture', oneLine, file: `${from}/**`,
+    check: { kind: 'relation', role: 'complete', target: { query, from: `${from}/**`, to: toScope } },
+    truth: (show, list) => importsInto(show, list, from, to) === 0,
+  };
+}
+
+export const KIND_CLAIMS = Object.freeze([
+  command('c01', 'build', '`npm run build` builds the package.'),
+  command('c02', 'lint:fix', '`npm run lint:fix` fixes lint errors in place.'),
+  command('c03', 'test:deno', '`npm run test:deno` runs the Deno tests.'),
+  command('c04', 'format:fix', '`npm run format:fix` formats the code in place.'),
+
+  section('s01', 'docs/CONTRIBUTING.md', 'Local Development', 'Local development runs in the devcontainer, started with `docker compose up -d --build`.', t => /docker compose up -d --build/.test(t)),
+  section('s02', 'docs/CONTRIBUTING.md', 'Third-party middleware', 'Third-party middleware may depend on other libraries or work only in some environments.', t => /depend on other libraries/.test(t)),
+  section('s03', 'docs/MIGRATION.md', 'Validator is changed', 'The migration guide explains the v3 validator change under "Validator is changed".', t => /validator/i.test(t)),
+  section('s04', 'docs/MIGRATION.md', 'StaticRouter is obsolete', 'The migration guide says StaticRouter is obsolete from v3.', t => /StaticRouter/.test(t)),
+  section('s05', 'docs/CONTRIBUTING.md', 'Installing dependencies', 'Contributors install dependencies with bun.', t => /bun/.test(t)),
+
+  source('f01', 'src/utils/compress.ts', 'JSON responses count as compressible.', t => /application\\\/\(\?:javascript\|json/.test(t)),
+  source('f02', 'src/utils/compress.ts', 'MessagePack responses are not treated as compressible.', t => !/msgpack/.test(t)),
+  source('f03', 'src/utils/filepath.ts', 'getFilePath turns only the first backslash into a slash.', t => /replace\(\/\\\\\/, '\/'\)/.test(t)),
+  source('f04', 'src/utils/constants.ts', 'The composed-handler marker is a shared constant.', t => /COMPOSED_HANDLER/.test(t)),
+  source('f05', 'src/http-exception.ts', 'HTTPException can carry its own Response.', t => /class HTTPException/.test(t) && /res\?: Response/.test(t)),
+
+  pattern('p01', 'src', 'console.log(', 22, '`src` has 22 `console.log(` calls.'),
+  pattern('p02', 'src/middleware', 'new HTTPException(', 14, 'Middleware throws `new HTTPException(` in 14 places.'),
+  pattern('p03', 'src', 'process.env', 1, '`process.env` is read in one place in `src`.'),
+  pattern('p04', 'src/adapter', 'Deno.', 6, 'The adapters touch the `Deno.` global in 6 places.'),
+  pattern('p05', 'src', '@ts-ignore', 24, '`src` has 24 `@ts-ignore` comments.'),
+
+  boundary('r01', 'imports', 'src/utils', 'src/middleware', '`src/utils` never imports `src/middleware`.'),
+  boundary('r02', 'imports', 'src/router', 'src/middleware', '`src/router` never imports `src/middleware`.'),
+  boundary('r03', 'imports', 'src/client', 'src/router', '`src/client` never imports `src/router`.'),
+  boundary('r04', 'imports', 'src/validator', 'src/request.ts', '`src/validator` never imports `src/request.ts`.'),
+  boundary('r05', 'imports', 'src/helper', 'src/http-exception.ts', '`src/helper` never imports `src/http-exception.ts`.'),
+  boundary('r06', 'imports', 'src/jsx', 'src/adapter', '`src/jsx` never imports `src/adapter`.'),
+  boundary('r07', 'calls', 'src/utils', 'src/middleware', 'Nothing in `src/utils` calls into `src/middleware`.'),
+  boundary('r08', 'calls', 'src/router', 'src/helper', 'Nothing in `src/router` calls into `src/helper`.'),
+  boundary('r09', 'calls', 'src/jsx', 'src/adapter', 'Nothing in `src/jsx` calls into `src/adapter`.'),
+]);

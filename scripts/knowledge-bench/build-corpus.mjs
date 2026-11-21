@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { CLAIMS, SUBJECT } from './claims.mjs';
+import { CLAIMS, KIND_CLAIMS, SUBJECT } from './claims.mjs';
 
 export const CHECKPOINTS = 6;
 export const REVIEW = JSON.parse(readFileSync(new URL('./reviewed-v2.json', import.meta.url), 'utf8'));
@@ -42,6 +42,18 @@ export function shower(repo, sha) {
   };
 }
 
+/** Every path under a prefix at a commit. */
+export function lister(repo, sha) {
+  const cache = new Map();
+  return prefix => {
+    if (!cache.has(prefix)) cache.set(prefix, git(repo, 'ls-tree', '-r', '--name-only', sha, '--', prefix).trim().split('\n').filter(Boolean));
+    return cache.get(prefix);
+  };
+}
+
+/** The revision with every check kind: the legacy claims and the other kinds' claims. */
+export const EIGHT_KINDS = 'eight-kinds-v1';
+
 const digest = text => createHash('sha256').update(text).digest('hex');
 
 export function datasetDigest(files) {
@@ -49,18 +61,19 @@ export function datasetDigest(files) {
 }
 
 export function buildCorpus(repo, { revision = 'legacy-v1' } = {}) {
-  if (!['legacy-v1', REVIEW.revision].includes(revision)) throw new Error('Unknown corpus revision');
+  if (!['legacy-v1', REVIEW.revision, EIGHT_KINDS].includes(revision)) throw new Error('Unknown corpus revision');
+  const all = revision === EIGHT_KINDS ? [...CLAIMS, ...KIND_CLAIMS] : CLAIMS;
   const cps = checkpoints(repo);
   const labels = [];
   for (const cp of cps) {
-    const show = shower(repo, cp.sha);
-    for (const c of CLAIMS) {
-      const truth = c.truth(show);
+    const show = shower(repo, cp.sha), list = lister(repo, cp.sha);
+    for (const c of all) {
+      const truth = c.truth(show, list);
       if (cp.id === 'C0' && !truth) throw new Error(`claim ${c.id} does not hold at T0`);
       labels.push({ claim: c.id, checkpoint: cp.id, truth });
     }
   }
-  const claims = CLAIMS.map(c => ({ id: c.id, source: 'hand', category: c.category, one_line: c.oneLine, file: c.file, check: c.check }));
+  const claims = all.map(c => ({ id: c.id, source: 'hand', category: c.category, one_line: c.oneLine, file: c.file, check: c.check }));
   let files = {
     'claims.json': JSON.stringify(claims, null, 1) + '\n',
     'checkpoints.json': JSON.stringify(cps, null, 1) + '\n',
@@ -71,6 +84,10 @@ export function buildCorpus(repo, { revision = 'legacy-v1' } = {}) {
     note: 'Hand-written claims with checks recorded by the evaluator at T0 and independent truth functions; not a corpus written by setup or capture.',
     claims: claims.length, checkpoints: cps.length, labels: labels.length, dataset_sha256: datasetDigest(files),
   };
+  if (revision === EIGHT_KINDS) {
+    manifest = { ...manifest, oracle_revision: EIGHT_KINDS,
+      note: `${manifest.note} Adds ${KIND_CLAIMS.length} claims checked by the other kinds (command, section, source, pattern, relation imports and calls); the legacy claims are unchanged and unreviewed here.` };
+  }
   if (revision === REVIEW.revision) {
     if (manifest.dataset_sha256 !== REVIEW.parent_dataset_sha256) throw new Error('Unreviewed parent corpus');
     for (const change of REVIEW.claim_changes) {
