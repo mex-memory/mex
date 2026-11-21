@@ -14,6 +14,8 @@ export const DOCS_PER_BATCH = 6;
 export const MAX_PULLS = 48;
 export const MAX_DOCS = 36;
 export const MAX_LEARNED_PROPOSALS = 16;
+// The plan asks for about ten rules in the first batch, so the first answer stays short and quick to check.
+export const FIRST_BATCH_PROPOSALS = 10;
 
 const baseOutputAllowance = 2400;
 const anchorOutputPerRule = 192;

@@ -14,14 +14,14 @@ import { refreshOwnUsage } from "../record/own-usage.js";
 import { readConflict } from "../review/conflicts.js";
 import { ANCHOR_KINDS, githubReviewLines, withVerifiedAnchors, type AnchorKind, type AnchorResult, type CheckContext, type ReadReviewLines } from "./anchors.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, saveSourceReads, SourceRef, sourceRead, sourceRef, type TeamCoverage } from "./coverage.js";
-import { filteringPrompt, hasLearningEvidence, prepareEntries, RejectionReason, selectedSources, ValidationDiagnostics, writingPrompt,
+import { filteringPrompt, hasLearningEvidence, prepareEntries, RejectionReason, retryPrompt, selectedSources, ValidationDiagnostics, writingPrompt,
   type EarlierEntry, type PreparedEntry, type WriterModel } from "./entries.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
 import { clearLearningChecks, origin, PinnedTree, repoPath } from "./git.js";
 import { hosts } from "./hosts.js";
 import { contextSources } from "./history.js";
 import { branchScope, StaleDoc, staleDoc } from "./history-docs.js";
-import { DOCS_PER_BATCH, LEARN_KIND, MAX_LEARNED_PROPOSALS, Plan, promptEstimate, PULLS_PER_BATCH, type LearningPlan } from "./plan.js";
+import { DOCS_PER_BATCH, FIRST_BATCH_PROPOSALS, LEARN_KIND, MAX_LEARNED_PROPOSALS, Plan, promptEstimate, PULLS_PER_BATCH, type LearningPlan } from "./plan.js";
 import type { Reviewers } from "./reviewers.js";
 import { importedSourceKey, importsEnabled, readImport, SESSIONS_PER_BATCH } from "./session-import.js";
 import { cleanSourceText, DOC_PRIVACY_REASONS, documentExcerpt, sourceDigest, type LearningSource } from "./source.js";
@@ -53,10 +53,11 @@ const batchDiagnostics = z.object({
   anchors: z.array(z.object({ id: EntryIdSchema, kinds: z.array(z.enum(ANCHOR_KINDS)).min(1).max(ANCHOR_KINDS.length) }).strict())
     .max(MAX_LEARNED_PROPOSALS).optional(),
   unreadRules: z.array(z.string().refine(repoPath)).max(8).optional(),
+  retry: ValidationDiagnostics.optional(),
 }).strict();
 type BatchDiagnostics = z.infer<typeof batchDiagnostics>;
 const receiptSchema = z.object({
-  checkpoint: checkpointSchema, count: z.number().int().nonnegative().max(16), spent: z.number().int().nonnegative(), done: z.boolean(),
+  checkpoint: checkpointSchema, count: z.number().int().nonnegative().max(32), spent: z.number().int().nonnegative(), done: z.boolean(),
   sources: z.array(SourceRef).max(48), diagnostics: batchDiagnostics.optional(),
   gateSummary: z.string().max(1024).optional(),
 }).strict();
@@ -108,6 +109,7 @@ function result(context: Context, plan: LearningPlan, saved: Receipt): BatchResu
     });
     summary.push(`Verified anchors (${counts.join(", ")}).`);
   }
+  if (saved.diagnostics?.retry) summary.push(`Writer retry · ${saved.diagnostics.retry.proposed} resubmitted.`);
   for (const { id, version, labels } of checkpoint.writers ?? []) {
     summary.push(`Writer model ${id} (${version})${labels.length ? ` · ${labels.join(", ")}` : ""}.`);
   }
@@ -120,81 +122,144 @@ function result(context: Context, plan: LearningPlan, saved: Receipt): BatchResu
   };
 }
 
+type RetryResult = { entries: PreparedEntry[]; validation: ValidationDiagnostics; model: WriterModel };
+export interface FailedEntry { entry: PreparedEntry; reason: string; detail?: string }
+type Retry = (failed: readonly FailedEntry[]) => Promise<RetryResult | undefined>;
+interface PublishOptions {
+  tree?: PinnedTree; readReview?: ReadReviewLines; team?: TeamCoverage; schedule?: WeeklySchedule; model?: WriterModel; retry?: Retry;
+}
+interface Round { receipt: Receipt; gated?: GateResult[]; failed?: FailedEntry[]; partial?: string }
+const RETRY_REASONS = new Set(["check-fails", "quote-not-found"]);
+const retryKey = (job: { id: string; batch: number }) => `learning.deep.retry.${job.id}.${job.batch}`;
+const addGap = (state: Checkpoint, gap: string) => { state.gaps = [...new Set([...state.gaps, gap])].slice(0, 24); };
+
+/** How strongly an anchor makes delivery fire: a `when:` literal, then code, then a command, then repo-wide. */
+function anchorStrength(kinds: readonly AnchorKind[]): number {
+  return Math.max(0, ...kinds.map(kind => kind === "when" ? 3 : kind === "symbol" || kind === "code-scope" ? 2 : kind === "command" ? 1 : 0));
+}
+function storedKinds(entry: KnowledgeEntry): AnchorKind[] {
+  const kinds: AnchorKind[] = [];
+  if (entry.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob))) kinds.push("code-scope");
+  if (entry.mex.checks.some(check => check.kind === "symbol")) kinds.push("symbol");
+  if (entry.mex.checks.some(check => check.kind === "command")) kinds.push("command");
+  if (entry.mex.when?.length) kinds.push("when");
+  return kinds.length ? kinds : ["repo-wide"];
+}
+function unionSources(earlier: readonly SourceRef[], later: readonly SourceRef[]): SourceRef[] {
+  return [...new Map([...earlier, ...later].map(source => [source.id, source])).values()].slice(0, 8);
+}
+const laterDay = (a: string | undefined, b: string) => a && a > b ? a : b;
+
+/**
+ * Save one batch through the producer gate. When the gate drops entries because a check failed or a quote
+ * wasn't found, the first round stores a partial receipt and the writer gets one retry for those entries.
+ */
 async function publish(context: Context, plan: LearningPlan, key: string, entries: PreparedEntry[], draft: Omit<Receipt, "count">,
-  options: { tree?: PinnedTree; readReview?: ReadReviewLines; team?: TeamCoverage; schedule?: WeeklySchedule; model?: WriterModel } = {}): Promise<Receipt> {
+  options: PublishOptions = {}): Promise<Receipt> {
+  const first = await gateRound(context, plan, key, entries, draft, options);
+  if (!first.failed) return first.receipt;
+  let retried: RetryResult | undefined;
+  try { retried = await options.retry!(first.failed); }
+  catch { addGap(first.receipt.checkpoint, "The writer retry could not run; the first answer was kept."); }
+  const base = { ...first.receipt, spent: recordedModelSpend(context.writer, context.job.id), diagnostics: first.receipt.diagnostics && retried
+    ? { ...first.receipt.diagnostics, retry: retried.validation } : first.receipt.diagnostics };
+  return (await gateRound(context, plan, key, retried?.entries ?? [], base,
+    { ...options, model: retried?.model ?? options.model, retry: undefined }, first)).receipt;
+}
+
+/** Finish a batch whose first round was saved before an interruption, without another model call. */
+async function finishPartial(context: Context, plan: LearningPlan, key: string, partial: string): Promise<Receipt> {
+  const receipt = receiptSchema.parse(JSON.parse(partial));
+  return (await gateRound(context, plan, key, [], receipt, {}, { receipt, partial })).receipt;
+}
+
+async function gateRound(context: Context, plan: LearningPlan, key: string, entries: PreparedEntry[], draft: Omit<Receipt, "count">,
+  options: PublishOptions, previous?: Round): Promise<Round> {
   const { writer, job } = context, project = job.project_id!;
   const { team, schedule } = options;
-  const complete = async (anchored: AnchorResult[], checked: CheckContext, unreadRules: readonly string[]): Promise<Receipt> => {
+  const state = draft.checkpoint;
+  const complete = async (anchored: AnchorResult[], checked: CheckContext, unreadRules: readonly string[]): Promise<Round> => {
     if (unreadRules.length) {
       // The gate compares against the rule files it can read, as it does in a checkout. Say which it couldn't.
-      draft.checkpoint.gaps = [...new Set([...draft.checkpoint.gaps, "Some rule files could not be read, so duplicate checks skipped them."])].slice(0, 24);
+      addGap(state, "Some rule files could not be read, so duplicate checks skipped them.");
       if (draft.diagnostics) draft.diagnostics.unreadRules = unreadRules.filter(repoPath).slice(0, 8);
     }
+    const validations = previous ? draft.diagnostics?.retry : draft.diagnostics?.validation;
     const candidates: Proposal[] = [];
     const pending = new Map<string, PreparedEntry>();
     const kinds = new Map<string, AnchorKind[]>();
     const excluded: GateResult[] = [];
-    const replaced = new Set<string>();
+    const kept = new Map<string, PreparedEntry>();
+    const earlierSources = new Map<string, SourceRef[]>();
+    const notes = snapshotNotes(writer, project).files;
+    const ownedActive = (id: string) => {
+      const raw = notes.get(id);
+      const proof = raw ? learningProof(plan, raw, writer.setting(project, noteKey(id))) : undefined;
+      const entry = raw && proof ? parseEntry(raw) : undefined;
+      return entry && proof && entry.mex.status === "active" ? { entry, proof } : undefined;
+    };
     for (const [i, result] of anchored.entries()) {
       const entry = entries[i]!;
       if (typeof result === "string") {
-        draft.diagnostics!.validation!.rejected.push({ index: entry.index, reason: result });
+        validations?.rejected.push({ index: entry.index, reason: result });
         continue;
       }
       const id = producerEntryId("learn-deeper", result.key);
       const claim = claimHash(result.text);
       if (team?.retired.has(claim)) { excluded.push({ status: "dropped", reason: "forgotten" }); continue; }
-      if (pending.has(id) || team?.claimed.has(claim)) { excluded.push({ status: "dropped", reason: "duplicate-entry" }); continue; }
+      if (pending.has(id) || kept.has(id) || team?.claimed.has(claim)) { excluded.push({ status: "dropped", reason: "duplicate-entry" }); continue; }
+      // The same claim from a later batch never weakens an owned active entry's anchor.
+      const owned = ownedActive(id);
+      if (owned && anchorStrength(result.anchorKinds) <= anchorStrength(storedKinds(owned.entry))) { kept.set(id, entry); continue; }
+      if (owned) earlierSources.set(id, owned.proof.sources);
+      if (result.replaces) {
+        // A replacement target that changed since the writer saw it drops only this proposal.
+        const target = ownedActive(result.replaces);
+        if (!target || (target.proof.evidenceDay ?? target.entry.mex.created) >= entry.evidenceDay) {
+          excluded.push({ status: "dropped", reason: "invalid", detail: "The replacement target changed before saving." });
+          continue;
+        }
+      }
       candidates.push(result);
       pending.set(id, entry);
       kinds.set(id, result.anchorKinds);
-      if (result.replaces) replaced.add(result.replaces);
     }
-    const validations = draft.diagnostics?.validation;
     validations?.rejected.sort((a, b) => a.index - b.index);
     const imported = draft.sources.filter(source => source.id.startsWith("session:"));
-    let saved: Receipt | undefined;
+    const swept = new Set<string>();
+    let round: Round | undefined;
 
     await propose(candidates, {
       projectPath: plan.checkout, home: writer.location.home, ...checked,
       ...(team?.retired.size ? { sweep: { producer: "learn-deeper" as const,
-        includes: (entry: KnowledgeEntry) => team.retired.has(claimHash(entry.text)),
+        includes: (entry: KnowledgeEntry) => {
+          const retired = team.retired.has(claimHash(entry.text));
+          if (retired) swept.add(entry.mex.id);
+          return retired;
+        },
         tombstone: { reason: "The matching rule was retired on the default branch.", by: "mex learn" },
       } } : {}),
       validate(gate) {
         const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
-        if (live?.owner !== job.owner || live?.state !== "running" || !learningOn(gate, project, plan) || gate.setting(project, key)) {
+        const partial = gate.setting(project, retryKey(job));
+        if (live?.owner !== job.owner || live?.state !== "running" || !learningOn(gate, project, plan) || gate.setting(project, key)
+          || partial !== previous?.partial) {
           throw new Error("Learning lost its job or project registration before saving.");
         }
         if (imported.length && !importsEnabled(gate, project)) throw new Error("Past-session capture was turned off before saving.");
-        if (replaced.size) {
-          const notes = readNotes(gate.location.home, project).files;
-          for (const id of replaced) {
-            const raw = notes.get(id);
-            const proof = raw && learningProof(plan, raw, gate.setting(project, noteKey(id)));
-            if (!raw || !proof) throw new Error("A replacement's source proof changed before saving.");
-            const old = parseEntry(raw);
-            const day = proof.evidenceDay ?? old.mex.created;
-            if (old.mex.status !== "active" || candidates.some(p => p.replaces === id
-              && day >= pending.get(producerEntryId("learn-deeper", p.key))!.evidenceDay)) {
-              throw new Error("A replacement's evidence is no longer newer.");
-            }
-          }
-        }
       },
       onAccepted(gate, accepted, results) {
-        const gated = [...excluded, ...results];
-        const state = draft.checkpoint;
+        const unchanged = [...kept.keys()].map((entryId): GateResult => ({ status: "accepted", entryId, change: "unchanged" }));
+        const gated = [...excluded, ...results, ...unchanged];
         const rejected = { ...state.rejected };
         for (const { reason } of validations?.rejected ?? []) rejected[reason] = (rejected[reason] ?? 0) + 1;
         if (Object.keys(rejected).length) state.rejected = rejected;
-        if ((validations && validations.response !== "valid") || validations?.rejected.some(item => item.reason !== "duplicate-existing")
-          || gated.some(item => item.status === "dropped" && !["duplicate-entry", "duplicate-rule-line", "forgotten"].includes(item.reason))) {
-          state.gaps = [...new Set([...state.gaps, "Some proposed entries could not be verified."])].slice(0, 24);
-        }
+        // Model rejections and gate drops are counted in the summary. Only an unreadable answer is a gap.
+        if (validations && validations.response !== "valid") addGap(state, "A model batch returned no readable entries.");
         const labels = accepted.flatMap(item => item.entry.mex.source.label ? [item.entry.mex.source.label] : []);
         if (draft.diagnostics && accepted.length) {
-          draft.diagnostics.anchors = accepted.map(item => ({ id: item.entryId, kinds: kinds.get(item.entryId)! }));
+          draft.diagnostics.anchors = [...(draft.diagnostics.anchors ?? []),
+            ...accepted.map(item => ({ id: item.entryId, kinds: kinds.get(item.entryId)! }))].slice(0, MAX_LEARNED_PROPOSALS);
         }
         if (options.model) {
           const { id, version } = options.model;
@@ -203,18 +268,32 @@ async function publish(context: Context, plan: LearningPlan, key: string, entrie
             id, version, labels: [...new Set([...(same?.labels ?? []), ...labels])].slice(0, 32),
           }].slice(-16);
         }
-        saved = { ...draft, count: accepted.filter(item => item.change !== "unchanged").length,
-          ...(validations || gated.length ? { gateSummary: summarizeResults(gated) } : {}),
+        const failed = previous || !options.retry ? [] : results.flatMap((item, i) => item.status === "dropped" && RETRY_REASONS.has(item.reason)
+          ? [{ entry: pending.get(producerEntryId("learn-deeper", candidates[i]!.key))!, reason: item.reason, detail: item.detail }] : []);
+        const all = previous?.gated ? [...previous.gated, ...gated] : gated;
+        const saved: Receipt = { ...draft, count: Math.min(32, (previous?.receipt.count ?? 0) + accepted.length + kept.size),
+          ...(previous && !previous.gated && !gated.length ? {}
+            : validations || all.length ? { gateSummary: summarizeResults(all) } : {}),
         };
         const set = gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
         const remove = gate.db.prepare("DELETE FROM settings WHERE scope=? AND key=?");
-        const saveProof = (entry: KnowledgeEntry, source: PreparedEntry) =>
-          set.run(project, noteKey(entry.mex.id), makeNoteProof(plan, serializeEntry(entry), source.sources, source.evidenceDay));
+        const saveProof = (entry: KnowledgeEntry, source: PreparedEntry, earlier: readonly SourceRef[] = [], day?: string) =>
+          set.run(project, noteKey(entry.mex.id), makeNoteProof(plan, serializeEntry(entry), unionSources(earlier, source.sources),
+            laterDay(day, source.evidenceDay)));
         for (const { entry, entryId } of accepted) {
           const source = pending.get(entryId)!;
-          saveProof(entry, source);
+          saveProof(entry, source, earlierSources.get(entryId));
           if (source.proposal.replaces) remove.run(project, noteKey(source.proposal.replaces));
         }
+        // A kept entry stays as it is; its proof gains the later batch's sources.
+        const current = kept.size ? readNotes(gate.location.home, project).files : new Map<string, string>();
+        for (const [id, source] of kept) {
+          const raw = current.get(id);
+          const proof = raw && learningProof(plan, raw, gate.setting(project, noteKey(id)));
+          if (raw && proof) set.run(project, noteKey(id), makeNoteProof(plan, raw, unionSources(proof.sources, source.sources),
+            laterDay(proof.evidenceDay, source.evidenceDay)));
+        }
+        for (const id of swept) remove.run(project, noteKey(id));
         // If a review is later approved unchanged, its body-free receipt is
         // already here. Never overwrite the proof for a still-active note.
         for (const item of results) if (item.status === "review") {
@@ -223,16 +302,26 @@ async function publish(context: Context, plan: LearningPlan, key: string, entrie
             saveProof(conflict.entry, pending.get(conflict.entry.mex.id)!);
           }
         }
-        gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(project, key, JSON.stringify(saved));
-        for (const source of imported) set.run(project, importedSourceKey(source.id), source.hash);
-        saveSourceReads(gate, project, plan, draft.sources);
-        remove.run(project, `learning.deep.shortlist.${job.id}.${job.batch}`);
-        if (schedule) saveWeeklySchedule(gate, project, schedule);
+        if (failed.length) {
+          const partial = JSON.stringify(saved);
+          gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(project, retryKey(job), partial);
+          round = { receipt: saved, gated: all, failed, partial };
+        } else {
+          gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(project, key, JSON.stringify(saved));
+          if (previous) remove.run(project, retryKey(job));
+          round = { receipt: saved };
+        }
+        if (!previous) {
+          for (const source of imported) set.run(project, importedSourceKey(source.id), source.hash);
+          saveSourceReads(gate, project, plan, draft.sources);
+          remove.run(project, `learning.deep.shortlist.${job.id}.${job.batch}`);
+          if (schedule) saveWeeklySchedule(gate, project, schedule);
+        }
       },
     });
-    if (schedule) publishWeeklyWake(writer);
-    if (!saved) throw new Error("The producer gate did not record the finished learning batch.");
-    return saved;
+    if (schedule && !previous) publishWeeklyWake(writer);
+    if (!round) throw new Error("The producer gate did not record the finished learning batch.");
+    return round;
   };
   if (!entries.length) return complete([], {}, []);
   let staged = false;
@@ -244,7 +333,7 @@ async function publish(context: Context, plan: LearningPlan, key: string, entrie
   } catch (error) {
     // The model call is already paid for. A staging failure finishes the batch with a gap instead of a redo.
     if (staged) throw error;
-    draft.checkpoint.gaps = [...new Set([...draft.checkpoint.gaps, "The pinned files for checking could not be staged."])].slice(0, 24);
+    addGap(state, "The pinned files for checking could not be staged.");
     return complete(entries.map(() => "check-verification" as const), {}, []);
   }
 }
@@ -266,14 +355,23 @@ function waitForIdle(state: Checkpoint, now: number): BatchResult<Checkpoint> {
   return { checkpoint: { ...state, retryAt: now + 60_000 }, wait: "Waiting for agent sessions to go idle" };
 }
 
-function writerModel(response: ModelResult): WriterModel {
+/** The model that did most of the work; never the alias that was requested. */
+export function writerModel(response: Pick<ModelResult, "selectedModel" | "usage">): WriterModel {
   const id = modelName.parse(response.selectedModel);
-  const observed = modelName.safeParse(response.usage.model);
-  return { id, version: observed.success && !["mixed", "unknown"].includes(observed.data) ? observed.data : id };
+  const named = (value: unknown) => {
+    const parsed = modelName.safeParse(value);
+    return parsed.success && !["mixed", "unknown"].includes(parsed.data) ? parsed.data : undefined;
+  };
+  let top: { model: string; tokens: number } | undefined;
+  for (const item of response.usage.byModel ?? []) {
+    const model = named(item.model), tokens = tokenCount(item);
+    if (model && (!top || tokens > top.tokens)) top = { model, tokens };
+  }
+  return { id, version: top?.model ?? named(response.usage.model) ?? "unknown" };
 }
 
 async function modelEntries(deps: Dependencies, context: Context, plan: LearningPlan, tree: PinnedTree, sources: LearningSource[],
-  gaps: Set<string>, reviewers: Reviewers | undefined, weekly?: WeeklySchedule): Promise<{ entries: PreparedEntry[]; diagnostics: BatchDiagnostics; model?: WriterModel }> {
+  gaps: Set<string>, reviewers: Reviewers | undefined, weekly?: WeeklySchedule): Promise<{ entries: PreparedEntry[]; diagnostics: BatchDiagnostics; model?: WriterModel; retry?: Retry }> {
   const reviews = sources.filter(source => source.kind === "review");
   const verified = reviews.filter(source => source.writer);
   const counts = { reviewSources: reviews.length, verifiedReviewSources: verified.length, verifiedPulls: new Set(verified.map(source => source.pull)).size,
@@ -298,10 +396,12 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
   }
   earlier.sort((a, b) => b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
   earlier.splice(12);
-  const call = async (prompt: string, role: "cheap" | "best") => {
+  // The first approved batch asks for about ten rules; later and weekly batches keep the full cap.
+  const limit = !weekly && job.batch === 0 ? FIRST_BATCH_PROPOSALS : MAX_LEARNED_PROPOSALS;
+  const call = async (prompt: string, role: "cheap" | "best", rules = limit) => {
     if (pastSessions && !importsEnabled(writer, project)) throw new Error("Past-session capture was turned off before the model batch.");
     if (weekly && sessionsActive(writer, deps.now())) throw new AgentActive();
-    const estimate = promptEstimate(prompt, plan.agent, role === "cheap" ? 0 : undefined);
+    const estimate = promptEstimate(prompt, plan.agent, role === "cheap" ? 0 : rules);
     if (!weekly && tokenCount(estimate) > plan.ceiling - recordedModelSpend(writer, job.id)) throw new ModelWaitError("cap", CEILING_WAIT);
     const output = await tree.withCheckFiles(writer.location.home, job.id, [], executionDirectory => deps.model({
       agent: plan.agent, setup: plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
@@ -325,7 +425,7 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
     if (!shortlist) {
       const prompt = filteringPrompt(sources);
       // Leave room for a writer call before spending on a new shortlist.
-      const pair = tokenCount(promptEstimate(prompt, plan.agent, 0)) + tokenCount(promptEstimate(writingPrompt(sources, earlier), plan.agent));
+      const pair = tokenCount(promptEstimate(prompt, plan.agent, 0)) + tokenCount(promptEstimate(writingPrompt(sources, earlier, limit), plan.agent, limit));
       if (!weekly && pair > plan.ceiling - recordedModelSpend(writer, job.id)) throw new ModelWaitError("cap", CEILING_WAIT);
       progress?.(`Filtering ${sources.length} sources`);
       const picked = selectedSources((await call(prompt, "cheap")).text, sources);
@@ -341,10 +441,25 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
     return skip("insufficient-shortlist");
   }
   progress?.(`Learning from ${selected.length} sources`);
-  const response = await call(writingPrompt(selected, earlier), "best");
+  const response = await call(writingPrompt(selected, earlier, limit), "best");
   const model = writerModel(response);
-  const validated = await prepareEntries(response.text, selected, plan, tree, model, earlier);
-  return { entries: validated.entries, diagnostics: { ...counts, validation: validated.validation }, model };
+  const validated = await prepareEntries(response.text, selected, plan, tree, model, earlier, limit);
+  // One retry for entries the gate drops on a failed check or a missing quote, only while the approved
+  // ceiling still covers it. Weekly runs spend from the automatic allowance and don't retry.
+  const retry: Retry | undefined = weekly ? undefined : async failed => {
+    const cited = [...new Map(failed.flatMap(({ entry }) => entry.citations.map(({ source }) => [source.id, source] as const))).values()];
+    const prompt = retryPrompt(cited, failed.map(({ entry, reason, detail }) => ({
+      kind: entry.proposal.kind, text: entry.proposal.text, oneLine: entry.proposal.oneLine ?? entry.proposal.text, scope: entry.scope,
+      checks: entry.proposal.checks ?? [], evidence: entry.citations.map(({ source, quote }) => ({ id: source.id, quote })), reason, detail,
+    })));
+    if (tokenCount(promptEstimate(prompt, plan.agent, failed.length)) > plan.ceiling - recordedModelSpend(writer, job.id)) return undefined;
+    progress?.(`Retrying ${failed.length} unverified ${failed.length === 1 ? "entry" : "entries"}`);
+    const reply = await call(prompt, "best", failed.length);
+    const retried = writerModel(reply);
+    const prepared = await prepareEntries(reply.text, cited, plan, tree, retried, earlier, failed.length);
+    return { entries: prepared.entries, validation: prepared.validation, model: retried };
+  };
+  return { entries: validated.entries, diagnostics: { ...counts, validation: validated.validation }, model, retry };
 }
 
 function deferWeekly(context: Context, schedule: WeeklySchedule, state: Checkpoint, due: number, why: string): BatchResult<Checkpoint> {
@@ -372,7 +487,9 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
     },
     interrupted(job, writer) {
       try {
-        if (writer.setting(job.project_id!, batchKey(job))) return { progress: "Finishing the saved batch after interruption" };
+        if (writer.setting(job.project_id!, batchKey(job)) || writer.setting(job.project_id!, retryKey(job))) {
+          return { progress: "Finishing the saved batch after interruption" };
+        }
         const state = checkpoint(job, weeklyMode ? [] : Plan.parse(JSON.parse(job.params)).gaps);
         return { checkpoint: JSON.stringify({ ...state, recovered: (state.recovered ?? 0) + 1 }), progress: "Resuming from the last finished batch" };
       } catch { return {}; }
@@ -397,6 +514,9 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       recoverNotes(writer, project);
       const previous = writer.setting(project, key);
       if (previous) return result(context, quoted ?? state.weeklyPlan!, receiptSchema.parse(JSON.parse(previous)));
+      // A first round saved before an interruption is finished as it is, without another model call.
+      const partial = writer.setting(project, retryKey(job));
+      if (partial) return result(context, quoted ?? state.weeklyPlan!, await finishPartial(context, quoted ?? state.weeklyPlan!, key, partial));
       const now = deps.now();
       if (weekly && weeklySchedule(writer, project) !== JSON.stringify(weekly)) return { checkpoint: state, done: true, summary: "A newer weekly schedule is in effect." };
       if (!learningOn(writer, project, params, now)) return { checkpoint: state, wait: "Waiting: MEX is off here" };
@@ -440,7 +560,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         const saveBatch = async (sources: LearningSource[], advanced: Pick<Checkpoint, "pull" | "doc" | "session">, reviewers?: Reviewers,
           staleDocs: z.infer<typeof StaleDoc>[] = [], privacy: z.infer<typeof docPrivacy>[] = []) => {
           const eligible = weekly ? sources.filter(source => !team?.read.has(coverageKey(source)) && !sourceRead(writer, project, activePlan, source)) : sources;
-          const { entries, diagnostics, model } = await modelEntries(deps, context, activePlan, pinned, eligible, gaps, reviewers, weekly);
+          const { entries, diagnostics, model, retry } = await modelEntries(deps, context, activePlan, pinned, eligible, gaps, reviewers, weekly);
           const spent = spend();
           if (!weekly && spent > activePlan.ceiling) gaps.add("The last model batch reported more tokens than the approved ceiling.");
           const done = advanced.pull >= activePlan.pulls.length && advanced.doc >= activePlan.docs.length && (advanced.session ?? 0) >= activePlan.sessions.length;
@@ -456,7 +576,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
             ...(staleCount ? { staleDocs: staleCount } : {}),
           }, spent, done,
             sources: eligible.map(sourceRef), diagnostics,
-          }, { tree: pinned, readReview, team, schedule, model });
+          }, { tree: pinned, readReview, team, schedule, model, retry });
           return result(context, activePlan, saved);
         };
         if (state.pull >= plan.pulls.length && state.doc >= plan.docs.length) {
