@@ -260,3 +260,26 @@ func FindCheckout(recordDirectory, file string) (Checkout, bool) {
 func MarkPending(recordDirectory string) {
 	_ = os.WriteFile(filepath.Join(recordDirectory, "index-pending"), nil, 0o600)
 }
+
+// Shifted is the set of path keys with any shift recorded for the checkout,
+// read with one directory listing, so a caller walking many files reads
+// Pending only for those that can have one. Has answers for a path.
+type Shifted map[string]bool
+
+// ShiftedPaths lists the checkout's shift directories once.
+func ShiftedPaths(indexDirectory, checkoutKey string) Shifted {
+	entries, err := os.ReadDir(filepath.Join(indexDirectory, "shifts", checkoutKey))
+	out := Shifted{}
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			out[entry.Name()] = true
+		}
+	}
+	return out
+}
+
+// Has reports whether the path can have a pending shift.
+func (s Shifted) Has(path string) bool { return s[place.ShortHash(path)] }

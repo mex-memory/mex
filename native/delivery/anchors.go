@@ -243,6 +243,12 @@ type answerCard struct {
 	arm               *candidate
 	surface, text, id string
 	target            record.SurfaceTarget
+	// value is the tokens of the reads a card replaces; detail names its kind.
+	value  int
+	detail string
+	// symPath and symName: the definition a card is about, so an entry about
+	// the same symbol goes out in the same card.
+	symPath, symName string
 }
 
 func anchorCard(anchors []Anchor) []answerCard {
@@ -298,7 +304,11 @@ func cardCandidate(card answerCard) record.DeliveryCandidate {
 		return record.DeliveryCandidate{EntryID: c.item.Entry.ID, Surface: "prompt-anchor", Moment: "prompt-arm", Form: "one-line", Action: "held-back", Detail: "prompt-anchor", Target: record.SurfaceTarget{Paths: c.anchorPaths}, ContentHash: contentHash(c.item.Hash + "\n"), Title: c.item.Entry.OneLine, Kind: c.item.Entry.Kind}
 	}
 
-	return record.DeliveryCandidate{EntryID: card.id, Surface: card.surface, Moment: card.surface, Form: "full", Tokens: tokens.Code(card.text) + 8, ContentHash: contentHash(card.text), Target: card.target, Title: card.surface, Kind: "pointer"}
+	c := record.DeliveryCandidate{EntryID: card.id, Surface: card.surface, Moment: card.surface, Form: "full", Tokens: tokens.Code(card.text) + 8, ContentHash: contentHash(card.text), Target: card.target, Title: card.surface, Kind: "pointer"}
+	if card.detail != "" {
+		c.Detail = valueDetail(card.detail, card.value)
+	}
+	return c
 }
 
 func cardLines(cards []answerCard, receipts []record.Receipt) string {

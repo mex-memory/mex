@@ -43,6 +43,9 @@ type Environment struct {
 	// Resolve finds the registered checkout of a touched path; nil means
 	// every tool uses the event's own checkout.
 	Resolve Resolver
+	// Changed is what this session edited, set only after a shell command,
+	// for the card after a full test run.
+	Changed ChangedLines
 }
 
 // EpochBudget uses conservative window anchors. An absent or unknown model
@@ -141,6 +144,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		env.RecordDirectory != "" && capture.CompactionPending(ev, env.RecordDirectory)
 	isEnd := ev.Kind == contract.SessionEnd
 	isSearch := searchEvent(ev)
+	isTestRun := len(env.Changed) > 0 && fullTestRun(ev)
 	var adviceIDs []string
 	if isMoment || ev.Kind == contract.SessionStart || ev.Kind == contract.SubagentStart || (ev.Kind == contract.Stop && ev.Agent == "claude-code") {
 		adviceIDs = record.AdviceIDs(env.RecordDirectory, ev.Checkout)
@@ -150,7 +154,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 			return contract.Reply{}, nil
 		}
 	}
-	if !isLifecycle && !isMoment && !isSearch && !isEnd && !lateRecovery && len(adviceIDs) == 0 {
+	if !isLifecycle && !isMoment && !isSearch && !isTestRun && !isEnd && !lateRecovery && len(adviceIDs) == 0 {
 		return contract.Reply{}, nil
 	}
 	if ev.SessionID == "" || env.RecordDirectory == "" {
@@ -170,6 +174,12 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	var groups []*group
 	var anchors []Anchor
 	cards := searchCards(ev, env)
+	if isMoment {
+		cards = append(cards, graphCards(ev, env)...)
+	}
+	if isTestRun {
+		cards = append(cards, testRunCards(ev, env)...)
+	}
 	if isMoment {
 		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-anchor") != "off" {
 			anchors = VerifyAnchors(ev, env)
@@ -320,6 +330,9 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 	}
 
+	if isMoment && ev.Kind != contract.Prompt {
+		cards = attachSymbolCards(groups, ev.Checkout, cards)
+	}
 	adviceHandled := false
 	for _, g := range groups {
 		if g.snap == nil {
@@ -383,7 +396,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		}
 		text, err := deliver(h, ev, env, g)
 		if g.cardsConsumed {
-			cards = nil
+			cards = withoutCards(cards, g.cards)
 		}
 		if err != nil {
 			return contract.Reply{}, err
@@ -945,13 +958,18 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(res.Receipts) == 0 {
 		return "", nil
 	}
-	text := render(res.Receipts[0].BlockID, plan, res.Receipts)
-	lines := cardLines(g.cards, res.Receipts)
-	if lines != "" {
-		if text == "" {
-			text = "[mex " + res.Receipts[0].BlockID + "]"
+	// Cards first: a card about a symbol carries the notes about it.
+	lines, folded := mergedCards(g.cards, plan, res.Receipts)
+	rest := plan[:0:0]
+	for _, p := range plan {
+		if !folded[p.item.Entry.ID] {
+			rest = append(rest, p)
 		}
-		text += "\n" + lines
+	}
+	text := render(res.Receipts[0].BlockID, rest, res.Receipts)
+	if lines != "" {
+		head := "[mex " + res.Receipts[0].BlockID + "]"
+		text = head + "\n" + lines + strings.TrimPrefix(text, head)
 	}
 	return text, nil
 }

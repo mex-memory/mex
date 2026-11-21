@@ -26,7 +26,7 @@ function codeLike(word: string, quoted: boolean): boolean {
   return quoted || /^[A-Z][A-Z0-9_]{2,}$/u.test(word) || /[a-z][A-Z]/u.test(word) || /[a-z]_[a-z]/iu.test(word) || /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$.]*$/u.test(word);
 }
 
-function symbolsIn(text: string): string[] {
+export function symbolsIn(text: string): string[] {
   const out = new Set<string>();
   for (const m of text.matchAll(/`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)`/gu)) if (codeLike(m[1], true)) out.add(m[1]);
   for (const m of text.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\b/gu)) if (codeLike(m[1], false)) out.add(m[1]);

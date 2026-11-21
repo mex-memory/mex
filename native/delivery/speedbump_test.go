@@ -343,3 +343,43 @@ func TestSpeedBumpCountsUses(t *testing.T) {
 		t.Fatalf("a second use: %+v", r)
 	}
 }
+
+// A layer rule mined for a folder reached by relative paths is held by an
+// import relation, not a literal: an edit inside its scope that adds an
+// import resolving into the banned folder is stopped once, whatever the
+// relative path looks like from the edited file.
+func TestSpeedBumpImportRelation(t *testing.T) {
+	layer := func(f *fixture) {
+		f.entry(spec{id: "mx_layer1", kind: "rule", scope: "core/**", evidence: "mined", source: "mined",
+			oneLine: "`core` never imports `app`; keep the dependency one-way.",
+			text:    "`core` never imports `app`: 3 imports go from `app` into `core` and none go back.",
+			checks:  []string{"    - kind: relation\n      role: complete\n      target: {query: imports, from: \"core/**\", to: \"app/**\"}\n      saw: {count: 0}\n      files: {}\n"}})
+		f.verdict("mx_layer1", "held")
+		f.start("startup")
+	}
+	f := newFixture(t)
+	layer(f)
+	for name, c := range map[string]struct{ rel, before, after string }{
+		"a package import":           {"core/a.ts", "export {}", "import x from 'app'"},
+		"an import within the scope": {"core/a.ts", "export {}", "import { b } from './b'"},
+		"an import already there":    {"core/a.ts", "import { m } from '../app/m'", "import { m } from '../app/m'\nexport const n = m"},
+		"outside the rule's scope":   {"lib/a.ts", "export {}", "import { m } from '../app/m'"},
+	} {
+		if r := preEdit(f, edited(f, c.rel, c.before, c.after)); r.Decision != "" {
+			t.Fatalf("%s: stopped: %+v", name, r)
+		}
+	}
+	r := preEdit(f, edited(f, "core/deep/a.ts", "export {}", "import { m } from '../../app/m'"))
+	if r.Decision != contract.Deny || !strings.Contains(r.Reason, "`core` never imports `app`") || !strings.Contains(r.Reason, "`../../app/m` is added in core/deep/a.ts") {
+		t.Fatalf("an import into app: %+v", r)
+	}
+	// Once per rule per epoch: making the edit again passes.
+	if r := preEdit(f, edited(f, "core/deep/a.ts", "export {}", "import { m } from '../../app/m'")); r.Decision != "" {
+		t.Fatalf("stopped twice: %+v", r)
+	}
+	g := newFixture(t)
+	layer(g)
+	if r := preEdit(g, edited(g, "core/a.ts", "export {}", "const m = require(\"../app\")")); r.Decision != contract.Deny {
+		t.Fatalf("a require of the folder: %+v", r)
+	}
+}
