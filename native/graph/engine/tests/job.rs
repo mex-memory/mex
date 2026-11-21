@@ -108,7 +108,9 @@ fn run(request: &Path, stdin_text: &str) -> Output {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(stdin_text.as_bytes()).unwrap();
+    // A refused request exits before reading stdin, so this write may meet
+    // a closed pipe; the exit code and events are what the tests check.
+    let _ = stdin.write_all(stdin_text.as_bytes());
     // Keep the parent pipe open for started jobs until the child exits.
     let _parent_stdin = (!stdin_text.is_empty()).then_some(stdin);
     child.wait_with_output().unwrap()
