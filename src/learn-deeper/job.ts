@@ -52,6 +52,7 @@ const batchDiagnostics = z.object({
   docPrivacy: z.array(docPrivacy).max(DOCS_PER_BATCH).optional(),
   anchors: z.array(z.object({ id: EntryIdSchema, kinds: z.array(z.enum(ANCHOR_KINDS)).min(1).max(ANCHOR_KINDS.length) }).strict())
     .max(MAX_LEARNED_PROPOSALS).optional(),
+  unreadRules: z.array(z.string().refine(repoPath)).max(8).optional(),
 }).strict();
 type BatchDiagnostics = z.infer<typeof batchDiagnostics>;
 const receiptSchema = z.object({
@@ -123,7 +124,12 @@ async function publish(context: Context, plan: LearningPlan, key: string, entrie
   options: { tree?: PinnedTree; readReview?: ReadReviewLines; team?: TeamCoverage; schedule?: WeeklySchedule; model?: WriterModel } = {}): Promise<Receipt> {
   const { writer, job } = context, project = job.project_id!;
   const { team, schedule } = options;
-  const complete = async (anchored: AnchorResult[], checked: CheckContext): Promise<Receipt> => {
+  const complete = async (anchored: AnchorResult[], checked: CheckContext, unreadRules: readonly string[]): Promise<Receipt> => {
+    if (unreadRules.length) {
+      // The gate compares against the rule files it can read, as it does in a checkout. Say which it couldn't.
+      draft.checkpoint.gaps = [...new Set([...draft.checkpoint.gaps, "Some rule files could not be read, so duplicate checks skipped them."])].slice(0, 24);
+      if (draft.diagnostics) draft.diagnostics.unreadRules = unreadRules.filter(repoPath).slice(0, 8);
+    }
     const candidates: Proposal[] = [];
     const pending = new Map<string, PreparedEntry>();
     const kinds = new Map<string, AnchorKind[]>();
@@ -228,9 +234,19 @@ async function publish(context: Context, plan: LearningPlan, key: string, entrie
     if (!saved) throw new Error("The producer gate did not record the finished learning batch.");
     return saved;
   };
-  return entries.length
-    ? withVerifiedAnchors(entries, options.tree!, writer.location.home, job.id, options.readReview, complete)
-    : complete([], {});
+  if (!entries.length) return complete([], {}, []);
+  let staged = false;
+  try {
+    return await withVerifiedAnchors(entries, options.tree!, writer.location.home, job.id, options.readReview, (anchored, checked, unread) => {
+      staged = true;
+      return complete(anchored, checked, unread);
+    });
+  } catch (error) {
+    // The model call is already paid for. A staging failure finishes the batch with a gap instead of a redo.
+    if (staged) throw error;
+    draft.checkpoint.gaps = [...new Set([...draft.checkpoint.gaps, "The pinned files for checking could not be staged."])].slice(0, 24);
+    return complete(entries.map(() => "check-verification" as const), {}, []);
+  }
 }
 
 function waitOn(error: unknown, state: Checkpoint, now: number): BatchResult<Checkpoint> | undefined {

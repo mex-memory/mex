@@ -483,6 +483,34 @@ it("leaves no gate publication or learning receipt when the job loses its owner"
   } finally { writer.close(); }
 });
 
+it("compares a 112 KB AGENTS.md and finishes with a gap when a rule file can't be staged", async () => {
+  const filler = Array.from({ length: 1600 }, (_, i) => `- Fixture guidance line ${i} keeps this rule file above the old staging bound.`).join("\n");
+  writeFileSync(join(repo, "AGENTS.md"), `# Instructions\n\n${filler}\n- ${answer.one_line}\n`);
+  expect(Buffer.byteLength(readFileSync(join(repo, "AGENTS.md")))).toBeGreaterThan(112 << 10);
+  mkdirSync(join(repo, ".claude/rules"), { recursive: true });
+  writeFileSync(join(repo, ".claude/rules/large.md"), "# Large\n" + "x".repeat(1 << 20) + "\n");
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Add large rule files");
+  await accept();
+  const other = { ...answer, kind: "rule", text: "Generated snapshot changes must be verified before each release.",
+    one_line: "Check generated snapshots before every release.", checks: [] };
+  const model = vi.fn<typeof runModel>(async () => reply({ entries: [answer, other] }));
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    expect(await runOneBatch(writer, ownerId("foreground"), only(job))).toBe("ran");
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 1 });
+    const saved = JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+    expect(saved.checkpoint.gaps).toContain("Some rule files could not be read, so duplicate checks skipped them.");
+    expect(saved.diagnostics.unreadRules).toEqual([".claude/rules/large.md"]);
+    // The 112 KB AGENTS.md was staged and compared: the proposal repeating its last line is dropped.
+    expect(saved.gateSummary).toBe("1 saved, 0 to Review, 1 dropped (duplicate-rule-line 1)");
+    const [learned] = [...snapshotNotes(writer, job.project_id!).files.values()].map(raw => parseEntry(raw));
+    expect(learned).toMatchObject({ text: other.text, mex: { scope: ["README.md"] } });
+  } finally { writer.close(); }
+});
+
 it("matches line endings in doc quotes and records only rejection reasons", async () => {
   const exact = "Keep snapshot IDs stable across releases.\nThe renderer uses their values as cache keys. Ask [reviewer] before rotating them.";
   git("config", "core.autocrlf", "false");

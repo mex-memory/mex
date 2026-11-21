@@ -184,14 +184,15 @@ async function verifiedPatterns(plan: AnchorPlan, scope: string[], tree: PinnedT
 
 /** Stage verified inputs once, then keep the same tree alive for the gate's observations. */
 export async function withVerifiedAnchors<T>(drafts: readonly AnchorDraft[], tree: PinnedTree, home: string, jobId: string,
-  readReview: ReadReviewLines | undefined, run: (results: AnchorResult[], context: CheckContext) => Promise<T>): Promise<T> {
-  if (!drafts.length) return run([], {});
+  readReview: ReadReviewLines | undefined,
+  run: (results: AnchorResult[], context: CheckContext, unreadRules: readonly string[]) => Promise<T>): Promise<T> {
+  if (!drafts.length) return run([], {}, []);
   const lookups = new Map<string, string[]>();
   const plans: AnchorPlan[] = [];
   for (const draft of drafts) plans.push(await planAnchors(draft, tree, lookups));
   const areas = plans.flatMap(plan => plan.area.length <= MAX_PATTERN_AREA ? plan.area : []);
   const symbolFiles = plans.flatMap(plan => plan.symbols.flatMap(symbol => symbol.checks.map(check => check.target.file)));
-  return tree.withCheckTree(home, jobId, [...plans.flatMap(plan => plan.files), ...symbolFiles, ...areas], async (checkTree, staged) => {
+  return tree.withCheckTree(home, jobId, [...plans.flatMap(plan => plan.files), ...symbolFiles, ...areas], async (checkTree, staged, unreadRules) => {
     const recordDirectory = join(checkTree, ".mex");
     const projectId = "f-" + shortHash(checkTree);
     const checkIndex = { projectId, recordDirectory };
@@ -236,6 +237,6 @@ export async function withVerifiedAnchors<T>(drafts: readonly AnchorDraft[], tre
       }
       results.push({ ...plan.proposal, anchors: { scope, ...(when.length ? { when } : {}) }, checks: [...supporting, ...checks], anchorKinds });
     }
-    return run(results, { checkTree, ...(needsIndex ? { checkIndex } : {}) });
+    return run(results, { checkTree, ...(needsIndex ? { checkIndex } : {}) }, unreadRules);
   });
 }
