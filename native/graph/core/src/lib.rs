@@ -12,3 +12,5 @@ pub mod id;
 pub mod facts;
 
 pub mod store;
+
+pub mod text;
