@@ -29,7 +29,7 @@ test('diff uses the merge base, NUL paths, and both sides of renames', () => {
 });
 
 function needs(docsOnly = false) {
-  return Object.fromEntries(['changes', 'check', 'package', 'go', 'storage-portability', 'hub-browser'].map((job) => [job, { result: 'success', ...(job === 'changes' ? { outputs: { docs_only: String(docsOnly) } } : {}) }]));
+  return Object.fromEntries(['changes', 'check', 'package', 'go', 'rust', 'storage-portability', 'hub-browser'].map((job) => [job, { result: 'success', ...(job === 'changes' ? { outputs: { docs_only: String(docsOnly) } } : {}) }]));
 }
 
 test('aggregate refuses failures, cancellations and unexpected skips', () => {
@@ -39,7 +39,7 @@ test('aggregate refuses failures, cancellations and unexpected skips', () => {
     assert.throws(() => assertPassed(jobs), undefined, `${job}: ${result}`);
   }
   const docs = needs(true);
-  for (const job of ['check', 'package', 'go', 'storage-portability', 'hub-browser']) docs[job].result = 'skipped';
+  for (const job of ['check', 'package', 'go', 'rust', 'storage-portability', 'hub-browser']) docs[job].result = 'skipped';
   assertPassed(docs);
   docs.go.result = 'failure'; assert.throws(() => assertPassed(docs));
   docs.go.result = 'skipped'; docs.changes.result = 'skipped'; assert.throws(() => assertPassed(docs));

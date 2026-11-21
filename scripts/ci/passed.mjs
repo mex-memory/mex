@@ -5,7 +5,7 @@ export function assertPassed(needs) {
   const docsOnly = needs.changes.outputs.docs_only === 'true';
   for (const [job, value] of Object.entries(needs)) {
     if (value.result === 'success') continue;
-    if (docsOnly && ['check', 'package', 'go', 'storage-portability', 'hub-browser'].includes(job) && value.result === 'skipped') continue;
+    if (docsOnly && ['check', 'package', 'go', 'rust', 'storage-portability', 'hub-browser'].includes(job) && value.result === 'skipped') continue;
     throw new Error(`${job}: ${value.result}`);
   }
 }
