@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, rmdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path";
 import { backgroundEnvironment } from "../filter/environment.js";
 import { containedDirectory } from "../knowledge/files.js";
+import { ruleFormat } from "../knowledge/rule-files.js";
 import { repositoryFromRemote, type Repository } from "./source.js";
 
 export async function command(root: string, executable: string, args: string[], input?: string, limit = 64 << 10): Promise<string | undefined> {
@@ -85,6 +86,18 @@ export class PinnedTree {
 
   has(path: string): boolean { return this.blobs.has(path); }
 
+  paths(): Iterable<string> { return this.blobs.keys(); }
+
+  /** Candidate files only. A matching word is not proof of a declaration. */
+  async filesMentioning(identifier: string): Promise<string[]> {
+    if (!/^[A-Za-z_$][\w$]{1,79}$/u.test(identifier)) return [];
+    const output = await command(this.root, "git", ["grep", "-l", "-z", "-I", "-F", "-w", "--no-textconv", "-e", identifier, this.head, "--"],
+      undefined, 256 << 10);
+    const prefix = this.head + ":";
+    return (output ?? "").split("\0").flatMap(item => item.startsWith(prefix) && this.has(item.slice(prefix.length))
+      ? [item.slice(prefix.length)] : []);
+  }
+
   hasWorkflows(): boolean { return [...this.blobs.keys()].some(path => /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path)); }
 
   async changedSince(path: string, original: string): Promise<boolean> {
@@ -127,21 +140,59 @@ export class PinnedTree {
 
   /** The native record-check command needs a directory. Stage only the declared dependencies. */
   async withCheckFiles<T>(home: string, jobId: string, paths: readonly string[], run: (checkout: string) => Promise<T>): Promise<T | undefined> {
-    const parent = scratchPath(home, jobId, true)!;
-    const dir = await mkdtemp(join(parent, "batch-"));
-    try {
+    return this.withScratch(home, jobId, async dir => {
       for (const path of new Set(paths)) {
         if (!repoPath(path)) return undefined;
         const content = await this.read(path);
         if (content === undefined) return undefined;
-        const file = join(dir, path);
-        await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-        await writeFile(file, content, { flag: "wx", mode: 0o600 });
+        await stage(dir, path, content);
       }
+      return run(dir);
+    });
+  }
+
+  /** Project the pinned regular files needed by the gate. Live or untracked files never enter it. */
+  async withCheckTree<T>(home: string, jobId: string, paths: readonly string[],
+    run: (checkout: string, files: ReadonlySet<string>) => Promise<T>): Promise<T> {
+    const rules = [...this.paths()].filter(path => ruleFormat(path));
+    const references = [...this.paths()].filter(path =>
+      /(?:^|\/)(?:package\.json|pnpm-workspace\.yaml|pyproject\.toml|setup\.cfg|tox\.ini|Cargo\.toml|GNUmakefile|Makefile|(?:build|settings)\.gradle(?:\.kts)?|gradlew)$/iu.test(path)
+      || /^(?:\.github\/workflows\/[^/]+|\.gitlab-ci)\.ya?ml$/u.test(path)
+      || /^(?:docs\/.*|(?:readme|contributing|agents|claude)(?:[._-][^/]*)?)\.md$/iu.test(path));
+    return this.withScratch(home, jobId, async dir => {
+      const staged = new Set<string>();
+      const files = [...new Set([...rules, ...paths, ...references])].slice(0, 512);
+      let bytes = 0;
+      for (let offset = 0; offset < files.length && bytes < 12 << 20; offset += 8) {
+        const chunk = files.slice(offset, offset + 8);
+        const bodies = await Promise.all(chunk.map(path => this.read(path)));
+        for (const [i, path] of chunk.entries()) {
+          const body = bodies[i];
+          if (body === undefined || bytes + Buffer.byteLength(body) > 12 << 20) continue;
+          await stage(dir, path, body);
+          staged.add(path);
+          bytes += Buffer.byteLength(body);
+        }
+      }
+      if (rules.some(path => !staged.has(path))) throw new Error("The pinned rule files exceed the learning check limits or could not be read.");
+      return run(dir, staged);
+    });
+  }
+
+  private async withScratch<T>(home: string, jobId: string, run: (dir: string) => Promise<T>): Promise<T> {
+    const parent = scratchPath(home, jobId, true)!;
+    const dir = await mkdtemp(join(parent, "batch-"));
+    try {
       return await run(dir);
     } finally {
       await rm(dir, { recursive: true, force: true });
       await rmdir(parent);
     }
   }
+}
+
+async function stage(dir: string, path: string, content: string): Promise<void> {
+  const file = join(dir, path);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, content, { flag: "wx", mode: 0o600 });
 }

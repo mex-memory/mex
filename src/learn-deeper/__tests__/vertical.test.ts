@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +9,7 @@ import { literalPattern } from "../../file-index/classify.js";
 import { openIndex } from "../../file-index/read.js";
 import { indexDirectory, writePatterns } from "../../file-index/store.js";
 import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
+import { propose } from "../../knowledge/gate.js";
 import { snapshotNotes } from "../../knowledge/personal-store.js";
 import { prepareShare } from "../../knowledge/share-plan.js";
 import { writeSharedKnowledgeFiles } from "../../knowledge/share.js";
@@ -16,17 +18,21 @@ import { runModel } from "../../model-runner/index.js";
 import { CEILING_WAIT, recordedModelSpend } from "../../model-runner/consent.js";
 import { claimModelBatch, enqueueModelBatch, recoverModelBatches, withModelJob } from "../../model-runner/budget-queue.js";
 import { ModelRunError } from "../../model-runner/errors.js";
+import { DEFAULT_MODELS } from "../../model-runner/models.js";
 import { queueJob } from "../../record/background.js";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob, listJobs, ownerId, recoverInterruptedJobs, registerJobKind, requeueReadyJobs, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { ZERO } from "../../record/usage.js";
 import { runRepoStart } from "../../repo-start/command.js";
+import { githubReviewLines, withVerifiedAnchors } from "../anchors.js";
 import { approvedCoverage, coverageKey, noteKey, parseManifest, readTeamCoverage, sourceRead, type SourceRef } from "../coverage.js";
+import { prepareEntries } from "../entries.js";
 import { ForgeClient } from "../forge.js";
+import { PinnedTree } from "../git.js";
 import { createLearnKind } from "../job.js";
 import { offerLearning } from "../offer.js";
 import { LEARN_KIND, Plan } from "../plan.js";
-import { sourceDigest } from "../source.js";
+import { sourceDigest, type DocSource, type ReviewSource } from "../source.js";
 import { DAY_MS, nextWeeklyAt, queueDueWeekly, saveWeeklySchedule, WEEKLY_KIND, weeklySchedule, weeklyWakeDue } from "../weekly-schedule.js";
 
 let suite: string, binary: string, fixture: string, repo: string;
@@ -143,11 +149,19 @@ it("quotes first, uses one logged model batch, and delivers a private rule throu
     expect(weeklyWakeDue(writer.location.home, schedule.due + 10)).toBe(true);
     const notes = [...snapshotNotes(writer, start.projectId!).files.values()];
     expect(notes).toHaveLength(1);
-    expect(parseEntry(notes[0]!).mex.source).toEqual({ type: "docs", ref: "README.md" });
+    const learned = parseEntry(notes[0]!);
+    const selected = DEFAULT_MODELS.codex.best;
+    expect(learned.mex.source).toEqual({ type: "docs", ref: "README.md", producer: "learn-deeper",
+      model: { id: selected, version: selected }, label: "Learned from 1 doc" });
+    expect(learned.mex.scope).toEqual(["package.json"]);
+    expect(writer.setting(start.projectId!, `knowledge.gate.${learned.mex.id}`)).toBeDefined();
+    const results = listJobs({ all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never });
+    expect(results.find(item => item.id === job.id)?.summary).toContain(`Writer model ${selected} (${selected}) · Learned from 1 doc.`);
     expect(notes[0]).not.toContain(quote);
     const receipt = writer.db.prepare("SELECT value FROM settings WHERE key LIKE 'learning.deep.batch.%'").get()?.value;
     expect(String(receipt)).not.toContain(review);
     expect(JSON.parse(String(receipt)).sources).toHaveLength(3);
+    expect(JSON.parse(String(receipt)).diagnostics.anchors).toEqual([{ id: learned.mex.id, kinds: ["command"] }]);
     expect(readdirSync(join(writer.location.home, "learn-checks"))).toEqual([]);
     const hook = execFileSync(binary, ["codex", "SessionStart"], {
       cwd: repo, encoding: "utf8", input: JSON.stringify({ cwd: repo, source: "startup", hook_event_name: "SessionStart", session_id: "new-session" }),
@@ -175,8 +189,192 @@ function jobRow(writer: RecordWriter): JobRow {
   return writer.db.prepare("SELECT * FROM jobs WHERE kind=?").get(LEARN_KIND) as unknown as JobRow;
 }
 function reply(value: object) {
-  return { text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture", estimated: false } };
+  return { text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } };
 }
+
+type CorrectFixture = {
+  repo: string; slug: string; id: string; revision: string; label: "Correct"; text: string; oneLine: string;
+  evidence: Array<{ path: string; link: string; quote: string }>; targetFiles: Record<string, string>; scope: string[];
+};
+const correctRules: CorrectFixture[] = JSON.parse(readFileSync(new URL("./fixtures/oss67-correct-anchors.json", import.meta.url), "utf8"));
+const fixtureModel = { id: "fixture", version: "fixture-2026-11" };
+
+async function fixturePlan(slug: string) {
+  const pinned = (await PinnedTree.open(repo, git("rev-parse", "HEAD")))!;
+  const origin = { host: "github.com", slug };
+  const plan = Plan.parse({ checkout: repo, head: pinned.head, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
+    since: "2025-01-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z", preferred: [], docs: [], pulls: [], gaps: [], estimate: 100, ceiling: 150 });
+  return { pinned, plan };
+}
+
+it.each(correctRules)("anchors a human-Correct OSS-67 $repo rule and accepts it through the real gate", async row => {
+  const sources: DocSource[] = row.evidence.map(({ path, link, quote }) => ({
+    id: "doc:" + path, kind: "docs", path, link, text: quote, hash: sourceDigest(quote), coverage: "partial",
+  }));
+  const files = { ...row.targetFiles, ...Object.fromEntries(sources.map(source => [source.path, source.text])) };
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), content);
+  }
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the OSS-67 source excerpts and anchor files");
+  const { pinned, plan } = await fixturePlan(row.slug);
+  const model = vi.fn(async () => reply({ entries: [{
+    kind: "rule", scope: ["**", "unrelated.ts"], text: row.text, one_line: row.oneLine, checks: [],
+    evidence: sources.map(source => ({ id: source.id, quote: source.text })),
+  }] }));
+  const output = await model();
+  const prepared = await prepareEntries(output.text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  const saved = await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async (anchors, check) => {
+    expect(anchors).toHaveLength(1);
+    const [proposal] = anchors;
+    if (!proposal || typeof proposal === "string") throw new Error("Expected the archived rule to anchor");
+    expect(proposal.anchors?.scope).toEqual(row.scope);
+    expect(proposal.anchorKinds).toEqual([row.repo === "mex" ? "code-scope" : "doc-only"]);
+    expect(proposal.source.text).toEqual(sources[0]!.text);
+    return propose([proposal], { ...check, home: fixture, projectPath: repo });
+  });
+  expect(saved).toEqual([{ status: "accepted", entryId: row.id, change: "new" }]);
+  expect(model).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  { name: "a cited code file", quote: "Commit a regression test when updating src/runtime.ts.",
+    text: "Changes to the runtime need a regression test that checks stable snapshots.", modelScope: ["src/*.ts"], scope: ["src/*.ts"], kinds: ["code-scope"] },
+  { name: "a cited code glob", quote: "Update the regression fixtures when modifying src/*.ts.",
+    text: "Refresh the regression fixtures when editing a top-level runtime module.", scope: ["src/*.ts"], kinds: ["code-scope"] },
+  { name: "a cited directory with a trailing slash", quote: "Update regression fixtures when modifying files under src/.",
+    text: "Changes to source modules require a refresh of the regression fixtures.", scope: ["src/**"], kinds: ["code-scope"] },
+  { name: "a model's trailing-slash scope", quote: "Commit a regression test when updating src/runtime.ts.",
+    text: "Runtime changes need a regression test for stable snapshots.", modelScope: ["src/"], scope: ["src/**"], kinds: ["code-scope"] },
+  { name: "a trailing-slash scope with no pinned file", quote: "Keep the examples under unpinned/ in sync.",
+    text: "Update copied examples when their original behavior changes.", modelScope: ["unpinned/"], liveFile: "unpinned/example.ts",
+    scope: ["docs/guide.rst"], kinds: ["doc-only"] },
+  { name: "a pinned path elsewhere in the verified excerpt", quote: "Regression tests should cover runtime behavior.",
+    body: "The implementation is in src/runtime.ts.", text: "Provide runtime regression tests when updating src/runtime.ts.",
+    scope: ["src/runtime.ts"], kinds: ["code-scope"] },
+  { name: "a named symbol", quote: "The function canonicalSnapshotId should preserve identifiers between releases.",
+    text: "Keep snapshot IDs stable across releases in canonicalSnapshotId.", scope: ["src/ids.ts"], kinds: ["symbol"] },
+  { name: "a declared Makefile target", quote: "Before release, run make verify-index to check generated fixtures.",
+    text: "Verify the generated index before releases.", scope: ["Makefile"], kinds: ["command"] },
+  { name: "the doc as a last resort", quote: "Record the intended audience and the reason when proposing a policy amendment.",
+    text: "When proposing policy amendments, describe who the change affects and why it is needed.",
+    scope: ["docs/guide.rst"], kinds: ["doc-only"] },
+])("anchors a doc rule using $name through the real gate", async scenario => {
+  mkdirSync(join(repo, "src"));
+  mkdirSync(join(repo, "unrelated"));
+  mkdirSync(join(repo, "docs"));
+  writeFileSync(join(repo, "src/runtime.ts"), "export function startRuntime() { return true; }\n");
+  writeFileSync(join(repo, "src/ids.ts"), "export function canonicalSnapshotId() { return 'fixture'; }\n");
+  writeFileSync(join(repo, "unrelated/other.ts"), "export const unrelated = true;\n");
+  writeFileSync(join(repo, "Makefile"), "verify-index:\n\t@printf fixture\n");
+  const path = "docs/guide.rst", content = [scenario.quote, scenario.body].filter(Boolean).join("\n\n");
+  writeFileSync(join(repo, path), content);
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin docs, definitions, and command targets");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  // A model glob needs both a real pinned file and evidence linking it to the rule.
+  const proposals = [{ kind: "rule", scope: [...(scenario.modelScope ?? []), "unrelated/**"],
+    text: scenario.text, one_line: scenario.text, evidence: [{ id: "doc:" + path, quote: scenario.quote }], checks: [] }];
+  const sources: DocSource[] = [{ id: "doc:" + path, kind: "docs", path, text: content, hash: sourceDigest(content), coverage: "full",
+    link: `https://github.com/example/memory/blob/${plan.head}/${path}` }];
+  const prepared = await prepareEntries(reply({ entries: proposals }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  writeFileSync(join(repo, "src/ids.ts"), "export function renamedInTheWorkingTree() { return ''; }\n");
+  if (scenario.liveFile) {
+    mkdirSync(dirname(join(repo, scenario.liveFile)));
+    writeFileSync(join(repo, scenario.liveFile), "export const example = true;\n");
+  }
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async ([anchor], options) => {
+    if (!anchor || typeof anchor === "string") throw new Error("Expected the doc proposal to anchor");
+    expect(anchor.anchors?.scope).toEqual(scenario.scope);
+    expect(anchor.anchorKinds).toEqual(scenario.kinds);
+    expect(await propose([anchor], { ...options, home: fixture, projectPath: repo })).toEqual([expect.objectContaining({ status: "accepted" })]);
+  });
+});
+
+it("uses pinned changed files from verified top-level reviews as code anchors", async () => {
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, "src/runtime.ts"), "export const version = 1;\n");
+  git("add", "src"); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the changed code");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  const sources: ReviewSource[] = [1, 2].map(pull => ({
+    id: "review:" + pull, kind: "review", link: `https://github.com/example/memory/pull/${pull}`,
+    hash: sourceDigest(review), text: review, writer: true, pull, at: plan.until, topLevel: true, outdated: false,
+    changedPaths: ["src/runtime.ts", "src/deleted.ts"],
+  }));
+  const prepared = await prepareEntries(reply({ entries: [{ ...answer, kind: "rule", checks: [],
+    evidence: sources.map(source => ({ id: source.id, quote: source.text })) }] }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async ([anchor]) => {
+    expect(anchor).toMatchObject({ anchors: { scope: ["src/runtime.ts"] }, anchorKinds: ["code-scope"] });
+  });
+});
+
+it("drops an ungrounded scope and an unverified symbol instead of submitting anchorless entries", async () => {
+  writeFileSync(join(repo, "unrelated.ts"), "export const actualName = 1;\n");
+  git("add", "unrelated.ts"); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the unrelated file");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  const sources: ReviewSource[] = [1, 2].map(pull => ({
+    id: "review:" + pull, kind: "review", link: `https://github.com/example/memory/pull/${pull}`,
+    hash: sourceDigest(review), text: review, writer: true, pull, at: plan.until, topLevel: true, outdated: false,
+  }));
+  const rule = { kind: "rule", scope: ["**", "**/*", "unrelated.ts", "../README.md"], text: answer.text, one_line: answer.one_line,
+    evidence: sources.map(source => ({ id: source.id, quote: source.text })), checks: [] };
+  const prepared = await prepareEntries(reply({ entries: [
+    rule,
+    { ...rule, checks: [{ kind: "symbol", role: "supporting", target: { file: "unrelated.ts", symbol: "missingName" } }] },
+  ] }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async anchors => {
+    expect(anchors).toEqual(["no-anchor", "check-verification"]);
+  });
+});
+
+it("keeps only edit patterns verified on a review's actual lines and the pinned fix", async () => {
+  const path = "src/renderer.ts", body = "Use the shared date formatting conventions inside the `render` function.";
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, path), "import { format } from 'date-fns';\nexport const render = format;\n");
+  git("add", path); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the code after the fix");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  // A dirty file must not turn the reviewed pattern into current code.
+  writeFileSync(join(repo, path), "import moment from 'moment';\n");
+  const sources: ReviewSource[] = [1, 2].map(pull => ({
+    id: `github:discussion_r:${pull}`, kind: "review", link: `https://github.com/example/memory/pull/${pull}#discussion_r${pull}`,
+    hash: sourceDigest(body), text: body, writer: true, pull, at: plan.until, topLevel: false, outdated: true, path,
+  }));
+  const request = vi.fn(async (input: RequestInfo | URL) => {
+    const id = String(input).split("/").at(-1);
+    expect(["1", "2"]).toContain(id);
+    return Response.json({ html_url: sources.find(source => source.id.endsWith(":" + id))!.link, path, body, side: "RIGHT", original_line: 2,
+      diff_hunk: "@@ -1,0 +1,3 @@\n+import { helper } from 'another-lib';\n+import moment from 'moment';\n+export const render = moment;\n" });
+  });
+  const client = new ForgeClient(plan.source, "fixture-forge-token", request);
+  const pattern = { type: "anti", match: "literal", pattern: "from 'moment'" };
+  const prepared = await prepareEntries(reply({ entries: [{
+    kind: "rule", scope: ["src/**", "unrelated/**"], text: "Centralize date handling in the shared formatter to keep renderer output consistent.",
+    one_line: "Use the shared date formatter when updating the renderer.",
+    evidence: sources.map(source => ({ id: source.id, quote: source.text })), when: [pattern, { ...pattern, pattern: "from 'another-lib'" }],
+    checks: [{ kind: "symbol", role: "complete", target: { file: path, symbol: "render" } }],
+  }] }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), source => githubReviewLines(client, plan.source, source), async (anchors, check) => {
+    const [proposal] = anchors;
+    if (!proposal || typeof proposal === "string") throw new Error("Expected a verified review anchor");
+    expect(proposal.anchors).toEqual({ scope: ["src/**"], when: [pattern] });
+    expect(proposal.anchorKinds).toEqual(["code-scope", "symbol", "when"]);
+    const accepted = await propose([proposal], { ...check, home: fixture, projectPath: repo });
+    expect(accepted).toEqual([expect.objectContaining({ status: "accepted" })]);
+    const writer = openRecord({ home: fixture, projectPath: repo });
+    try {
+      const note = parseEntry([...snapshotNotes(writer, writer.checkout(repo)!.project_id).files.values()][0]!);
+      expect(note.mex.when).toEqual([pattern]);
+      expect(note.mex.checks[0]).toMatchObject({ kind: "symbol", role: "complete", target: { file: path, symbol: "render" } });
+      expect(note.mex.source).toMatchObject({ type: "review", producer: "learn-deeper", label: "Learned from 2 reviews" });
+      expect(note.mex.source.quote).toBeUndefined();
+    } finally { writer.close(); }
+  });
+  expect(request).toHaveBeenCalled();
+});
 async function accept(ask = vi.fn(async () => true)) {
   vi.stubGlobal("fetch", mockGithub());
   const lines: string[] = [];
@@ -184,6 +382,44 @@ async function accept(ask = vi.fn(async () => true)) {
   return { result, lines, ask };
 }
 const only = (job: JobRow) => ({ only: new Set([job.id]) });
+
+it("learns from a scanned pinned excerpt and reports a doc whose secret leaves no safe excerpt", async () => {
+  git("rm", "README.md");
+  mkdirSync(join(repo, "docs"));
+  const flagged = "https://fixture-user:fixture-password@example.invalid/simple/";
+  const suffix = "Withheld material after the flagged example.";
+  writeFileSync(join(repo, "docs/guide.rst"), quote + "\n\n" + flagged + "\n" + suffix + "\n");
+  writeFileSync(join(repo, "docs/no-safe.rst"), flagged + "\n" + suffix + "\n");
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin docs with a fixture credential-like example");
+  await accept();
+  const model = vi.fn<typeof runModel>(async request => {
+    expect(request.prompt).toContain(quote);
+    expect(request.prompt).not.toContain(flagged);
+    expect(request.prompt).not.toContain(suffix);
+    expect(request.prompt).not.toContain("docs/no-safe.rst");
+    return reply({ entries: [
+      { ...answer, evidence: [{ id: "doc:docs/guide.rst", quote }] },
+      { ...answer, evidence: [{ id: "doc:docs/guide.rst", quote: suffix }] },
+    ] });
+  });
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 1 });
+    const receipt = JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+    expect(receipt.sources).toContainEqual(expect.objectContaining({ id: "doc:docs/guide.rst", coverage: "partial" }));
+    expect(receipt.diagnostics.docPrivacy).toEqual([
+      { path: "docs/guide.rst", status: "excerpt", reason: "possible-secret" },
+      { path: "docs/no-safe.rst", status: "skipped", reason: "possible-secret" },
+    ]);
+    expect(receipt.diagnostics.validation.rejected).toEqual([{ index: 2, reason: "quote-mismatch" }]);
+    const summary = writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(job.id)?.summary;
+    expect(summary).toContain("Some docs were skipped because no safe excerpt remained after secret scanning.");
+  } finally { writer.close(); }
+});
 
 it("records insufficient review evidence without spending on the batch", async () => {
   git("rm", "README.md");
@@ -209,10 +445,48 @@ it("records insufficient review evidence without spending on the batch", async (
   } finally { writer.close(); }
 });
 
+it("records the no-anchor drop and publishes no note for a corroborated but unanchored review claim", async () => {
+  git("rm", "README.md");
+  git("-c", "commit.gpgsign=false", "commit", "-qm", "Use top-level review sources only");
+  await accept();
+  const model = vi.fn<typeof runModel>(async () => reply({ entries: [{ ...answer, scope: ["**/*.js", "package.json"],
+    evidence: [1, 2].map(pull => ({ id: `github:pullrequestreview-:${pull}`, quote: review })), checks: [],
+  }] }));
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 0 });
+    const saved = JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+    expect(saved.diagnostics.validation.rejected).toEqual([{ index: 1, reason: "no-anchor" }]);
+    expect(writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(job.id)?.summary).toContain("Rejected proposals (1 no-anchor).");
+    expect(snapshotNotes(writer, job.project_id!).files.size).toBe(0);
+  } finally { writer.close(); }
+});
+
+it("leaves no gate publication or learning receipt when the job loses its owner", async () => {
+  await accept();
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    const model = vi.fn<typeof runModel>(async () => {
+      writer.db.prepare("UPDATE jobs SET owner=? WHERE id=?").run("other-runner", job.id);
+      return reply({ entries: [answer] });
+    });
+    registerJobKind(createLearnKind({ model }));
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(snapshotNotes(writer, job.project_id!).files.size).toBe(0);
+    expect(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)).toBeUndefined();
+    expect(writer.db.prepare("SELECT key FROM settings WHERE key LIKE 'knowledge.gate.%'").all()).toEqual([]);
+  } finally { writer.close(); }
+});
+
 it("matches line endings in doc quotes and records only rejection reasons", async () => {
-  const exact = "Keep snapshot IDs stable across releases.\nThe renderer uses their values as cache keys.";
+  const exact = "Keep snapshot IDs stable across releases.\nThe renderer uses their values as cache keys. Ask [reviewer] before rotating them.";
   git("config", "core.autocrlf", "false");
-  writeFileSync(join(repo, "README.md"), exact.replace("\n", "\r\n"));
+  writeFileSync(join(repo, "README.md"), exact.replace("[reviewer]", "@testuser").replace("\n", "\r\n"));
   git("add", "README.md");
   git("-c", "commit.gpgsign=false", "commit", "-qm", "Use CRLF in the documentation");
   await accept();
@@ -242,6 +516,12 @@ it("matches line endings in doc quotes and records only rejection reasons", asyn
       { index: 6, reason: "insufficient-evidence" },
     ] });
     expect(saved).not.toContain("The renderer uses");
+    const learned = parseEntry([...snapshotNotes(writer, job.project_id!).files.values()][0]!);
+    expect(learned.mex.source.model).toEqual(fixtureModel);
+    expect(learned.mex.source.label).toBe("Learned from 1 doc");
+    const summary = writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(job.id)?.summary;
+    expect(summary).toContain("1 saved, 0 to Review, 0 dropped");
+    expect(summary).toContain("Writer model fixture (fixture-2026-11) · Learned from 1 doc.");
   } finally { writer.close(); }
 });
 

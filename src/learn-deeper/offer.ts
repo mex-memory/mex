@@ -169,7 +169,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     if (inventory.more) gaps.push("Some merged changes were outside the source scan limit.");
     if (docs.length > MAX_DOCS) gaps.push("Some docs were outside the source scan limit.");
     const setup = options.modelSetup ?? "best-only";
-    const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), setup, sessions, BACKFILL_PULLS_PER_BATCH);
+    const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), agent, setup, sessions, BACKFILL_PULLS_PER_BATCH);
     plan = Plan.parse({ checkout: root, head, origin: repo, source: inventory.source, visibility: inventory.visibility, agent,
       setup, ...window, preferred, pulls: orderBackfillPulls(inventory.pulls), pullsPerBatch: BACKFILL_PULLS_PER_BATCH,
       docs: docs.slice(0, MAX_DOCS), sessions, refresh: options.weekly !== false,

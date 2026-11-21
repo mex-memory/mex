@@ -1,30 +1,36 @@
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { automaticWorkEnabled, checkoutOn } from "../controls/index.js";
-import { KnowledgeError, parseEntry, serializeEntry } from "../knowledge/entry.js";
-import { publishNotes, recoverNotes, snapshotNotes } from "../knowledge/personal-store.js";
-import { claimHash, retiredClaimHashes, saveTombstone } from "../knowledge/state.js";
-import { ModelRunError, ModelWaitError, runModel } from "../model-runner/index.js";
+import { EntryIdSchema, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "../knowledge/entry.js";
+import { propose, summarizeResults, type GateResult, type Proposal } from "../knowledge/gate.js";
+import { readNotes, recoverNotes, snapshotNotes } from "../knowledge/personal-store.js";
+import { producerEntryId } from "../knowledge/producers.js";
+import { claimHash } from "../knowledge/state.js";
+import { ModelRunError, ModelWaitError, runModel, type ModelResult } from "../model-runner/index.js";
 import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/consent.js";
 import { registerJobKind, type BatchContext, type BatchResult, type JobKind } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
 import { refreshOwnUsage } from "../record/own-usage.js";
-import { coverageKey, makeNoteProof, matchesProof, noteKey, saveSourceReads, SourceRef, sourceRead, sourceRef, type TeamCoverage } from "./coverage.js";
-import { filteringPrompt, hasLearningEvidence, RejectionReason, selectedSources, validatedEntries, ValidationDiagnostics, writingPrompt,
-  type EarlierEntry, type LearnedEntry } from "./entries.js";
+import { readConflict } from "../review/conflicts.js";
+import { ANCHOR_KINDS, githubReviewLines, withVerifiedAnchors, type AnchorKind, type AnchorResult, type CheckContext, type ReadReviewLines } from "./anchors.js";
+import { coverageKey, learningProof, makeNoteProof, noteKey, saveSourceReads, SourceRef, sourceRead, sourceRef, type TeamCoverage } from "./coverage.js";
+import { filteringPrompt, hasLearningEvidence, prepareEntries, RejectionReason, selectedSources, ValidationDiagnostics, writingPrompt,
+  type EarlierEntry, type PreparedEntry, type WriterModel } from "./entries.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
-import { clearLearningChecks, origin, PinnedTree } from "./git.js";
+import { clearLearningChecks, origin, PinnedTree, repoPath } from "./git.js";
 import { hosts } from "./hosts.js";
 import { contextSources } from "./history.js";
 import { branchScope, StaleDoc, staleDoc } from "./history-docs.js";
-import { DOCS_PER_BATCH, fitsQuote, LEARN_KIND, Plan, promptEstimate, PULLS_PER_BATCH, type LearningPlan } from "./plan.js";
+import { DOCS_PER_BATCH, LEARN_KIND, MAX_LEARNED_PROPOSALS, Plan, promptEstimate, PULLS_PER_BATCH, type LearningPlan } from "./plan.js";
 import type { Reviewers } from "./reviewers.js";
 import { importedSourceKey, importsEnabled, readImport, SESSIONS_PER_BATCH } from "./session-import.js";
-import { cleanSourceText, documentExcerpt, sourceDigest, type LearningSource } from "./source.js";
+import { cleanSourceText, DOC_PRIVACY_REASONS, documentExcerpt, sourceDigest, type LearningSource } from "./source.js";
 import { readGitHubWorkflows, saveGitHubWorkflows } from "./workflows.js";
 import { queuePatternRecount, quoteRefresh, RefreshDeferred, weeklySources } from "./weekly.js";
 import { DAY_MS, nextWeeklyAt, publishWeeklyWake, saveWeeklySchedule, scheduleFromPlan, sessionsActive, WEEKLY_KIND, WeeklySchedule, weeklySchedule } from "./weekly-schedule.js";
 
+const modelName = z.string().regex(/^[A-Za-z\d][A-Za-z\d./_:@+-]{0,127}$/u);
+const writerSchema = z.object({ id: modelName, version: modelName, labels: z.array(z.string().min(1).max(80)).max(32) }).strict();
 const checkpointSchema = z.object({
   pull: z.number().int().nonnegative(), doc: z.number().int().nonnegative(), gaps: z.array(z.string().max(180)).max(24),
   session: z.number().int().nonnegative().optional(),
@@ -32,20 +38,26 @@ const checkpointSchema = z.object({
   weeklyPlan: Plan.optional(),
   rejected: z.record(RejectionReason, z.number().int().positive()).optional(),
   staleDocs: z.number().int().positive().optional(),
+  writers: z.array(writerSchema).max(16).optional(),
 }).strict();
 type Checkpoint = z.infer<typeof checkpointSchema>;
 type Context = BatchContext<unknown, Checkpoint>;
+const docPrivacy = z.object({ path: z.string().refine(repoPath), status: z.enum(["excerpt", "skipped"]), reason: z.enum(DOC_PRIVACY_REASONS) }).strict();
 const batchDiagnostics = z.object({
   reviewSources: z.number().int().nonnegative(), verifiedReviewSources: z.number().int().nonnegative(),
   verifiedPulls: z.number().int().nonnegative(), docs: z.number().int().nonnegative(), sessions: z.number().int().nonnegative(),
   skip: z.enum(["no-sources", "insufficient-review-evidence", "changed-after-shortlist", "insufficient-shortlist"]).optional(),
   validation: ValidationDiagnostics.optional(),
   staleDocs: z.array(StaleDoc).max(DOCS_PER_BATCH).optional(),
+  docPrivacy: z.array(docPrivacy).max(DOCS_PER_BATCH).optional(),
+  anchors: z.array(z.object({ id: EntryIdSchema, kinds: z.array(z.enum(ANCHOR_KINDS)).min(1).max(ANCHOR_KINDS.length) }).strict())
+    .max(MAX_LEARNED_PROPOSALS).optional(),
 }).strict();
 type BatchDiagnostics = z.infer<typeof batchDiagnostics>;
 const receiptSchema = z.object({
   checkpoint: checkpointSchema, count: z.number().int().nonnegative().max(16), spent: z.number().int().nonnegative(), done: z.boolean(),
   sources: z.array(SourceRef).max(48), diagnostics: batchDiagnostics.optional(),
+  gateSummary: z.string().max(1024).optional(),
 }).strict();
 type Receipt = z.infer<typeof receiptSchema>;
 const Shortlist = z.object({
@@ -87,6 +99,17 @@ function result(context: Context, plan: LearningPlan, saved: Receipt): BatchResu
     if (reasons.length) summary.push(`Rejected proposals (${reasons.join(", ")}).`);
   }
   if (checkpoint.staleDocs) summary.push(`Skipped ${checkpoint.staleDocs} historically scoped ${checkpoint.staleDocs === 1 ? "doc" : "docs"}.`);
+  if (saved.gateSummary) summary.push(`Producer gate · ${saved.gateSummary}.`);
+  if (saved.diagnostics?.anchors?.length) {
+    const counts = ANCHOR_KINDS.flatMap(kind => {
+      const count = saved.diagnostics!.anchors!.filter(item => item.kinds.includes(kind)).length;
+      return count ? [`${count} ${kind}`] : [];
+    });
+    summary.push(`Verified anchors (${counts.join(", ")}).`);
+  }
+  for (const { id, version, labels } of checkpoint.writers ?? []) {
+    summary.push(`Writer model ${id} (${version})${labels.length ? ` · ${labels.join(", ")}` : ""}.`);
+  }
   return {
     checkpoint, results: count, tokens: Math.max(0, spent - context.job.tokens_used), done,
     gaps: done && checkpoint.gaps.length > 0,
@@ -96,75 +119,118 @@ function result(context: Context, plan: LearningPlan, saved: Receipt): BatchResu
   };
 }
 
-function publish(context: Context, plan: LearningPlan, key: string, entries: LearnedEntry[], draft: Omit<Receipt, "count">,
-  team?: TeamCoverage, schedule?: WeeklySchedule): Receipt {
+async function publish(context: Context, plan: LearningPlan, key: string, entries: PreparedEntry[], draft: Omit<Receipt, "count">,
+  options: { tree?: PinnedTree; readReview?: ReadReviewLines; team?: TeamCoverage; schedule?: WeeklySchedule; model?: WriterModel } = {}): Promise<Receipt> {
   const { writer, job } = context, project = job.project_id!;
-  const before = snapshotNotes(writer, project);
-  const existing = new Set(team?.claimed);
-  const forgotten = retiredClaimHashes(writer, project);
-  for (const claim of team?.retired ?? []) forgotten.add(claim);
-  const next = new Map(before.files);
-  const added: string[] = [];
-  const newNotes = new Map<string, string>(), replaced: ReturnType<typeof parseEntry>[] = [];
-  for (const [id, raw] of before.files) {
-    const note = parseEntry(raw), claim = claimHash(note.text);
-    existing.add(claim);
-    if (note.mex.status !== "active" || !team?.retired.has(claim) || !/^mx_deep[a-f0-9]{32}$/u.test(id)) continue;
-    const retired = { reason: "The matching rule was retired on the default branch.", by: "mex learn", at: plan.until.slice(0, 10) };
-    replaced.push({ ...note, mex: { ...note.mex, status: "retired", retired } });
-    next.set(id, serializeEntry(replaced.at(-1)!));
-  }
-  for (const { entry, sources, replaces } of entries) {
-    const claim = claimHash(entry.text);
-    if (existing.has(claim) || forgotten.has(claim) || next.has(entry.mex.id)) continue;
-    if (replaces) {
-      const raw = next.get(replaces);
-      if (!raw || !matchesProof(plan, raw, writer.setting(project, noteKey(replaces)))) continue;
-      const old = parseEntry(raw);
-      if (old.mex.status !== "active" || old.mex.created >= entry.mex.created) continue;
-      const retired = { reason: "Superseded by later verified sources.", by: "mex learn", at: entry.mex.created };
-      replaced.push({ ...old, mex: { ...old.mex, status: "retired", retired } });
-      next.set(replaces, serializeEntry(replaced.at(-1)!));
+  const { team, schedule } = options;
+  const complete = async (anchored: AnchorResult[], checked: CheckContext): Promise<Receipt> => {
+    const candidates: Proposal[] = [];
+    const pending = new Map<string, PreparedEntry>();
+    const kinds = new Map<string, AnchorKind[]>();
+    const excluded: GateResult[] = [];
+    const replaced = new Set<string>();
+    for (const [i, result] of anchored.entries()) {
+      const entry = entries[i]!;
+      if (typeof result === "string") {
+        draft.diagnostics!.validation!.rejected.push({ index: entry.index, reason: result });
+        continue;
+      }
+      const id = producerEntryId("learn-deeper", result.key);
+      const claim = claimHash(result.text);
+      if (team?.retired.has(claim)) { excluded.push({ status: "dropped", reason: "forgotten" }); continue; }
+      if (pending.has(id) || team?.claimed.has(claim)) { excluded.push({ status: "dropped", reason: "duplicate-entry" }); continue; }
+      candidates.push(result);
+      pending.set(id, entry);
+      kinds.set(id, result.anchorKinds);
+      if (result.replaces) replaced.add(result.replaces);
     }
-    existing.add(claim);
-    const raw = serializeEntry(entry);
-    next.set(entry.mex.id, raw);
-    newNotes.set(entry.mex.id, makeNoteProof(plan, raw, sources));
-    added.push(claim);
-  }
-  const saved: Receipt = { ...draft, count: added.length };
-  const imported = draft.sources.filter(source => source.id.startsWith("session:"));
-  const validate = () => {
-    const live = writer.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
-    if (live?.owner !== job.owner || live?.state !== "running" || !learningOn(writer, project, plan)) {
-      throw new Error("Learning lost its job or project registration before saving.");
-    }
-    const retired = retiredClaimHashes(writer, project);
-    if (added.some(claim => retired.has(claim))) throw new Error("A rule was forgotten while learning was saving it.");
-    if (imported.length && !importsEnabled(writer, project)) throw new Error("Past-session capture was turned off before saving.");
+    const validations = draft.diagnostics?.validation;
+    validations?.rejected.sort((a, b) => a.index - b.index);
+    const imported = draft.sources.filter(source => source.id.startsWith("session:"));
+    let saved: Receipt | undefined;
+
+    await propose(candidates, {
+      projectPath: plan.checkout, home: writer.location.home, ...checked,
+      ...(team?.retired.size ? { sweep: { producer: "learn-deeper" as const,
+        includes: (entry: KnowledgeEntry) => team.retired.has(claimHash(entry.text)),
+        tombstone: { reason: "The matching rule was retired on the default branch.", by: "mex learn" },
+      } } : {}),
+      validate(gate) {
+        const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
+        if (live?.owner !== job.owner || live?.state !== "running" || !learningOn(gate, project, plan) || gate.setting(project, key)) {
+          throw new Error("Learning lost its job or project registration before saving.");
+        }
+        if (imported.length && !importsEnabled(gate, project)) throw new Error("Past-session capture was turned off before saving.");
+        if (replaced.size) {
+          const notes = readNotes(gate.location.home, project).files;
+          for (const id of replaced) {
+            const raw = notes.get(id);
+            const proof = raw && learningProof(plan, raw, gate.setting(project, noteKey(id)));
+            if (!raw || !proof) throw new Error("A replacement's source proof changed before saving.");
+            const old = parseEntry(raw);
+            const day = proof.evidenceDay ?? old.mex.created;
+            if (old.mex.status !== "active" || candidates.some(p => p.replaces === id
+              && day >= pending.get(producerEntryId("learn-deeper", p.key))!.evidenceDay)) {
+              throw new Error("A replacement's evidence is no longer newer.");
+            }
+          }
+        }
+      },
+      onAccepted(gate, accepted, results) {
+        const gated = [...excluded, ...results];
+        const state = draft.checkpoint;
+        const rejected = { ...state.rejected };
+        for (const { reason } of validations?.rejected ?? []) rejected[reason] = (rejected[reason] ?? 0) + 1;
+        if (Object.keys(rejected).length) state.rejected = rejected;
+        if ((validations && validations.response !== "valid") || validations?.rejected.some(item => item.reason !== "duplicate-existing")
+          || gated.some(item => item.status === "dropped" && !["duplicate-entry", "duplicate-rule-line", "forgotten"].includes(item.reason))) {
+          state.gaps = [...new Set([...state.gaps, "Some proposed entries could not be verified."])].slice(0, 24);
+        }
+        const labels = accepted.flatMap(item => item.entry.mex.source.label ? [item.entry.mex.source.label] : []);
+        if (draft.diagnostics && accepted.length) {
+          draft.diagnostics.anchors = accepted.map(item => ({ id: item.entryId, kinds: kinds.get(item.entryId)! }));
+        }
+        if (options.model) {
+          const { id, version } = options.model;
+          const same = state.writers?.find(model => model.id === id && model.version === version);
+          state.writers = [...(state.writers ?? []).filter(model => model !== same), {
+            id, version, labels: [...new Set([...(same?.labels ?? []), ...labels])].slice(0, 32),
+          }].slice(-16);
+        }
+        saved = { ...draft, count: accepted.filter(item => item.change !== "unchanged").length,
+          ...(validations || gated.length ? { gateSummary: summarizeResults(gated) } : {}),
+        };
+        const set = gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
+        const remove = gate.db.prepare("DELETE FROM settings WHERE scope=? AND key=?");
+        const saveProof = (entry: KnowledgeEntry, source: PreparedEntry) =>
+          set.run(project, noteKey(entry.mex.id), makeNoteProof(plan, serializeEntry(entry), source.sources, source.evidenceDay));
+        for (const { entry, entryId } of accepted) {
+          const source = pending.get(entryId)!;
+          saveProof(entry, source);
+          if (source.proposal.replaces) remove.run(project, noteKey(source.proposal.replaces));
+        }
+        // If a review is later approved unchanged, its body-free receipt is
+        // already here. Never overwrite the proof for a still-active note.
+        for (const item of results) if (item.status === "review") {
+          const conflict = readConflict(gate, project, item.reviewId);
+          if (conflict && !gate.setting(project, noteKey(conflict.entry.mex.id))) {
+            saveProof(conflict.entry, pending.get(conflict.entry.mex.id)!);
+          }
+        }
+        gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(project, key, JSON.stringify(saved));
+        for (const source of imported) set.run(project, importedSourceKey(source.id), source.hash);
+        saveSourceReads(gate, project, plan, draft.sources);
+        remove.run(project, `learning.deep.shortlist.${job.id}.${job.batch}`);
+        if (schedule) saveWeeklySchedule(gate, project, schedule);
+      },
+    });
+    if (schedule) publishWeeklyWake(writer);
+    if (!saved) throw new Error("The producer gate did not record the finished learning batch.");
+    return saved;
   };
-  const save = () => {
-    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(project, key, JSON.stringify(saved));
-    const set = writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)");
-    const remove = writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?");
-    for (const [id, proof] of newNotes) set.run(project, noteKey(id), proof);
-    for (const source of imported) set.run(project, importedSourceKey(source.id), source.hash);
-    saveSourceReads(writer, project, plan, draft.sources);
-    for (const old of replaced) {
-      saveTombstone(writer, project, old, old.mex.retired!);
-      remove.run(project, noteKey(old.mex.id));
-    }
-    writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, `learning.deep.shortlist.${job.id}.${job.batch}`);
-    if (schedule) saveWeeklySchedule(writer, project, schedule);
-  };
-  if (added.length || replaced.length) publishNotes(writer, project, before, next, save, { validate });
-  else {
-    writer.db.exec("BEGIN IMMEDIATE");
-    try { validate(); save(); writer.db.exec("COMMIT"); }
-    catch (error) { writer.db.exec("ROLLBACK"); throw error; }
-  }
-  if (schedule) publishWeeklyWake(writer);
-  return saved;
+  return entries.length
+    ? withVerifiedAnchors(entries, options.tree!, writer.location.home, job.id, options.readReview, complete)
+    : complete([], {});
 }
 
 function waitOn(error: unknown, state: Checkpoint, now: number): BatchResult<Checkpoint> | undefined {
@@ -184,8 +250,14 @@ function waitForIdle(state: Checkpoint, now: number): BatchResult<Checkpoint> {
   return { checkpoint: { ...state, retryAt: now + 60_000 }, wait: "Waiting for agent sessions to go idle" };
 }
 
+function writerModel(response: ModelResult): WriterModel {
+  const id = modelName.parse(response.selectedModel);
+  const observed = modelName.safeParse(response.usage.model);
+  return { id, version: observed.success && !["mixed", "unknown"].includes(observed.data) ? observed.data : id };
+}
+
 async function modelEntries(deps: Dependencies, context: Context, plan: LearningPlan, tree: PinnedTree, sources: LearningSource[],
-  gaps: Set<string>, reviewers: Reviewers | undefined, weekly?: WeeklySchedule): Promise<{ entries: LearnedEntry[]; diagnostics: BatchDiagnostics }> {
+  gaps: Set<string>, reviewers: Reviewers | undefined, weekly?: WeeklySchedule): Promise<{ entries: PreparedEntry[]; diagnostics: BatchDiagnostics; model?: WriterModel }> {
   const reviews = sources.filter(source => source.kind === "review");
   const verified = reviews.filter(source => source.writer);
   const counts = { reviewSources: reviews.length, verifiedReviewSources: verified.length, verifiedPulls: new Set(verified.map(source => source.pull)).size,
@@ -201,19 +273,20 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
   const pastSessions = sources.some(source => source.kind === "person");
   const earlier: EarlierEntry[] = [];
   for (const [id, raw] of snapshotNotes(writer, project).files) {
-    if (!matchesProof(plan, raw, writer.setting(project, noteKey(id)))) continue;
+    const proof = learningProof(plan, raw, writer.setting(project, noteKey(id)));
+    if (!proof) continue;
     const entry = parseEntry(raw);
     if (entry.mex.status !== "active" || entry.mex.source.type === "person" || pastSessions) continue;
     const text = cleanSourceText(entry.text, reviewers);
-    if (text) earlier.push({ id, text: text.slice(0, 600), created: entry.mex.created });
+    if (text) earlier.push({ id, text: text.slice(0, 600), created: proof.evidenceDay ?? entry.mex.created });
   }
   earlier.sort((a, b) => b.created.localeCompare(a.created) || a.id.localeCompare(b.id));
   earlier.splice(12);
   const call = async (prompt: string, role: "cheap" | "best") => {
     if (pastSessions && !importsEnabled(writer, project)) throw new Error("Past-session capture was turned off before the model batch.");
     if (weekly && sessionsActive(writer, deps.now())) throw new AgentActive();
-    if (!weekly && !fitsQuote(prompt, plan.ceiling - recordedModelSpend(writer, job.id))) throw new ModelWaitError("cap", CEILING_WAIT);
-    const estimate = promptEstimate(prompt);
+    const estimate = promptEstimate(prompt, plan.agent, role === "cheap" ? 0 : undefined);
+    if (!weekly && tokenCount(estimate) > plan.ceiling - recordedModelSpend(writer, job.id)) throw new ModelWaitError("cap", CEILING_WAIT);
     const output = await tree.withCheckFiles(writer.location.home, job.id, [], executionDirectory => deps.model({
       agent: plan.agent, setup: plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
       purpose: role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
@@ -236,7 +309,7 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
     if (!shortlist) {
       const prompt = filteringPrompt(sources);
       // Leave room for a writer call before spending on a new shortlist.
-      const pair = tokenCount(promptEstimate(prompt)) + tokenCount(promptEstimate(writingPrompt(sources, earlier)));
+      const pair = tokenCount(promptEstimate(prompt, plan.agent, 0)) + tokenCount(promptEstimate(writingPrompt(sources, earlier), plan.agent));
       if (!weekly && pair > plan.ceiling - recordedModelSpend(writer, job.id)) throw new ModelWaitError("cap", CEILING_WAIT);
       progress?.(`Filtering ${sources.length} sources`);
       const picked = selectedSources((await call(prompt, "cheap")).text, sources);
@@ -253,11 +326,9 @@ async function modelEntries(deps: Dependencies, context: Context, plan: Learning
   }
   progress?.(`Learning from ${selected.length} sources`);
   const response = await call(writingPrompt(selected, earlier), "best");
-  const validated = await validatedEntries(response.text, selected, plan, tree, writer.location.home, job.id, earlier);
-  if (validated.validation.response !== "valid" || validated.validation.rejected.some(item => item.reason !== "duplicate-existing")) {
-    gaps.add("Some proposed entries could not be verified.");
-  }
-  return { entries: validated.entries, diagnostics: { ...counts, validation: validated.validation } };
+  const model = writerModel(response);
+  const validated = await prepareEntries(response.text, selected, plan, tree, model, earlier);
+  return { entries: validated.entries, diagnostics: { ...counts, validation: validated.validation }, model };
 }
 
 function deferWeekly(context: Context, schedule: WeeklySchedule, state: Checkpoint, due: number, why: string): BatchResult<Checkpoint> {
@@ -316,9 +387,9 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       if (weekly && sessionsActive(writer, now)) return waitForIdle(state, now);
       const spend = () => recordedModelSpend(writer, job.id);
       if (quoted && spend() >= quoted.ceiling) throw new ModelWaitError("cap", CEILING_WAIT);
-      const finishGap = (why: string, retry = now + DAY_MS): BatchResult<Checkpoint> => weekly
+      const finishGap = async (why: string, retry = now + DAY_MS): Promise<BatchResult<Checkpoint>> => weekly
         ? deferWeekly(context, weekly, state, retry, why)
-        : result(context, quoted!, publish(context, quoted!, key, [], {
+        : result(context, quoted!, await publish(context, quoted!, key, [], {
           checkpoint: { ...state, gaps: [...new Set([why, ...state.gaps])].slice(0, 24) }, done: true, sources: [], spent: spend(),
         }));
       if (!isDeepStrictEqual(await origin(params.checkout), params.origin)) return finishGap("The checkout's source repository changed.");
@@ -351,22 +422,25 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         const activePlan = plan, pinned = tree;
         const gaps = new Set(state.gaps);
         const saveBatch = async (sources: LearningSource[], advanced: Pick<Checkpoint, "pull" | "doc" | "session">, reviewers?: Reviewers,
-          staleDocs: z.infer<typeof StaleDoc>[] = []) => {
+          staleDocs: z.infer<typeof StaleDoc>[] = [], privacy: z.infer<typeof docPrivacy>[] = []) => {
           const eligible = weekly ? sources.filter(source => !team?.read.has(coverageKey(source)) && !sourceRead(writer, project, activePlan, source)) : sources;
-          const { entries, diagnostics } = await modelEntries(deps, context, activePlan, pinned, eligible, gaps, reviewers, weekly);
+          const { entries, diagnostics, model } = await modelEntries(deps, context, activePlan, pinned, eligible, gaps, reviewers, weekly);
           const spent = spend();
           if (!weekly && spent > activePlan.ceiling) gaps.add("The last model batch reported more tokens than the approved ceiling.");
           const done = advanced.pull >= activePlan.pulls.length && advanced.doc >= activePlan.docs.length && (advanced.session ?? 0) >= activePlan.sessions.length;
           const schedule = done && (weekly || activePlan.refresh) ? scheduleFromPlan(activePlan, deps.next(deps.now())) : undefined;
-          const rejected = { ...state.rejected };
-          for (const { reason } of diagnostics.validation?.rejected ?? []) rejected[reason] = (rejected[reason] ?? 0) + 1;
           const staleCount = (state.staleDocs ?? 0) + staleDocs.length;
           if (staleDocs.length) diagnostics.staleDocs = staleDocs;
-          const saved = publish(context, activePlan, key, entries, { checkpoint: { ...advanced, weeklyPlan: state.weeklyPlan, gaps: [...gaps].slice(0, 24), recovered: state.recovered,
-            ...(Object.keys(rejected).length ? { rejected } : {}), ...(staleCount ? { staleDocs: staleCount } : {}),
+          if (privacy.length) diagnostics.docPrivacy = privacy;
+          const reviewClient = client;
+          const readReview = reviewClient && activePlan.source.host === "github.com"
+            ? (source: Parameters<ReadReviewLines>[0]) => githubReviewLines(reviewClient, activePlan.source, source) : undefined;
+          const saved = await publish(context, activePlan, key, entries, { checkpoint: { ...advanced, weeklyPlan: state.weeklyPlan,
+            gaps: [...gaps].slice(0, 24), recovered: state.recovered, rejected: state.rejected, writers: state.writers,
+            ...(staleCount ? { staleDocs: staleCount } : {}),
           }, spent, done,
             sources: eligible.map(sourceRef), diagnostics,
-          }, team, schedule);
+          }, { tree: pinned, readReview, team, schedule, model });
           return result(context, activePlan, saved);
         };
         if (state.pull >= plan.pulls.length && state.doc >= plan.docs.length) {
@@ -393,6 +467,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         const sources: LearningSource[] = [...reviews.reviews];
         const scope = branchScope(docs.length ? await tree.read("AGENTS.md") : undefined);
         const staleDocs: z.infer<typeof StaleDoc>[] = [];
+        const docsPrivacy: z.infer<typeof docPrivacy>[] = [];
         for (const path of docs) {
           const raw = await tree.read(path);
           const reason = raw === undefined ? undefined : staleDoc(path, raw, scope);
@@ -400,17 +475,23 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
             staleDocs.push({ path, reason });
             continue;
           }
-          const excerpt = raw === undefined ? undefined : documentExcerpt(raw, reviews.reviewers);
+          const { excerpt, privacy } = raw === undefined ? {} : documentExcerpt(raw, reviews.reviewers);
+          if (privacy) {
+            docsPrivacy.push({ path, ...privacy });
+            gaps.add(privacy.status === "excerpt" ? "Some docs contributed only an excerpt that passed secret scanning."
+              : privacy.reason === "private-marker" ? "Some docs were skipped because they contained a private marker."
+                : "Some docs were skipped because no safe excerpt remained after secret scanning.");
+          }
           if (raw !== undefined && excerpt) {
-            if (excerpt.coverage === "partial") gaps.add("Some long docs were only partly read.");
+            if (!privacy && excerpt.coverage === "partial") gaps.add("Some long docs were only partly read.");
             sources.push({ id: `doc:${path}`, kind: "docs", path, ...excerpt, hash: sourceDigest(raw), at: await tree.lastChanged(path),
               link: `https://${plan.origin.host}/${plan.origin.slug}/${plan.origin.host === "gitlab.com" ? "-/" : ""}blob/${plan.head}/${path.split("/").map(encodeURIComponent).join("/")}` });
-          } else if (raw === undefined || raw.trim()) gaps.add("Some docs could not be safely read.");
+          } else if (!privacy && (raw === undefined || raw.trim())) gaps.add("Some docs could not be safely read.");
         }
         if (!weekly && job.batch === 0 && sources.length) {
           sources.push(...await contextSources(client, plan.source, plan.origin, tree, plan, reviews.reviewers, gaps));
         }
-        return await saveBatch(sources, { pull: state.pull + pulls.length, doc: state.doc + docs.length }, reviews.reviewers, staleDocs);
+        return await saveBatch(sources, { pull: state.pull + pulls.length, doc: state.doc + docs.length }, reviews.reviewers, staleDocs, docsPrivacy);
       } catch (error) {
         if (weekly) {
           if (error instanceof AgentActive) return waitForIdle(state, deps.now());

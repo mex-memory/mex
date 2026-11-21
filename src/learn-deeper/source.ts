@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { hasSecret, stripHidden } from "../knowledge/gates.js";
+import { firstSecretOffset, hasSecret, stripHidden } from "../knowledge/gates.js";
 import type { Reviewers } from "./reviewers.js";
 
 export type Forge = "github.com" | "gitlab.com";
@@ -17,6 +17,7 @@ export interface ReviewSource {
   topLevel: boolean;
   outdated: boolean;
   path?: string;
+  changedPaths?: readonly string[];
 }
 
 export interface DocSource {
@@ -109,8 +110,29 @@ export function cleanSourceText(raw: string, reviewers?: Reviewers): string | un
   return sourceExcerpt(raw, reviewers)?.text;
 }
 
-export function documentExcerpt(raw: string, reviewers: Reviewers): Pick<DocSource, "text" | "coverage"> | undefined {
-  return sourceExcerpt(raw, reviewers, "mentions-only");
+export const DOC_PRIVACY_REASONS = ["private-marker", "possible-secret"] as const;
+export interface DocumentPrivacy {
+  status: "excerpt" | "skipped";
+  reason: typeof DOC_PRIVACY_REASONS[number];
+}
+type DocExcerpt = Pick<DocSource, "text" | "coverage">;
+
+export function documentExcerpt(raw: string, reviewers: Reviewers): { excerpt?: DocExcerpt; privacy?: DocumentPrivacy } {
+  const clean = stripHidden(raw);
+  if (PRIVATE.test(raw) || PRIVATE.test(clean)) return { privacy: { status: "skipped", reason: "private-marker" } };
+  const rawSecret = firstSecretOffset(raw);
+  const cleanSecret = firstSecretOffset(clean);
+  if (rawSecret === undefined && cleanSecret === undefined) return { excerpt: sourceExcerpt(clean, reviewers, "mentions-only") };
+
+  // End at a full line before the earliest finding, including findings
+  // revealed by hidden-character removal. The suffix can contain additional
+  // credential lines (for example the body of a private key).
+  const secret = Math.min(rawSecret === undefined ? Infinity : stripHidden(raw.slice(0, rawSecret)).length, cleanSecret ?? Infinity);
+  const end = secret === 0 ? 0 : clean.lastIndexOf("\n", secret - 1) + 1;
+  const excerpt = end ? sourceExcerpt(clean.slice(0, end), reviewers, "mentions-only") : undefined;
+  return excerpt && /[\p{L}\p{N}]/u.test(excerpt.text) && !hasSecret(excerpt.text)
+    ? { excerpt: { ...excerpt, coverage: "partial" }, privacy: { status: "excerpt", reason: "possible-secret" } }
+    : { privacy: { status: "skipped", reason: "possible-secret" } };
 }
 
 export function reviewRelevance(text: string): string | undefined {
