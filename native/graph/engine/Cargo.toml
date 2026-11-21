@@ -1,0 +1,18 @@
+[package]
+name = "mex-graph"
+description = "The MEX graph engine binary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mex-graph"
+path = "src/main.rs"
+
+[dependencies]
+mex-graph-core = { path = "../core" }
+
+[lints]
+workspace = true

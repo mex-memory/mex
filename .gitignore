@@ -61,3 +61,6 @@ npm/hook-*/bin/
 
 # Checkout-local hook builds and offline replay scratch.
 /native/.scratch/
+
+# The Rust graph engine build output.
+/native/graph/target/

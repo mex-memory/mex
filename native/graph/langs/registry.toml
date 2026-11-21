@@ -1,0 +1,6 @@
+# One line per language adapter: its id, its folder under langs/, and its level
+# ("full": config plus Rust code; "basic": config only). Adapters arrive from M2.
+# [[language]]
+# id = "python"
+# folder = "python"
+# level = "full"

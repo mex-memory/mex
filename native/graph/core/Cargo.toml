@@ -1,0 +1,11 @@
+[package]
+name = "mex-graph-core"
+description = "Facts, node identity, interning and resolution for the MEX graph engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
