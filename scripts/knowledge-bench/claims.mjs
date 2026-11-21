@@ -142,20 +142,22 @@ function sectionText(text, heading) {
   return lines.slice(start + 1, end < 0 ? undefined : end).join('\n');
 }
 
-// section claims: what a document section says.
+// section claims: what a document section says. The section's hash supports
+// the claim without pinning it (a reworded section can still say it), so the
+// check is supporting, as a note records it.
 function section(id, file, heading, oneLine, holds) {
   return {
     id, category: 'docs', oneLine, file,
-    check: { kind: 'section', role: 'complete', target: { file, heading } },
+    check: { kind: 'section', role: 'supporting', target: { file, heading } },
     truth: show => { const t = sectionText(show(file), heading); return t !== null && holds(t); },
   };
 }
 
-// source claims: what a whole file does.
+// source claims: what a whole file does. Supporting, like a section's hash.
 function source(id, file, oneLine, holds) {
   return {
     id, category: 'behaviour', oneLine, file,
-    check: { kind: 'source', role: 'complete', target: { file } },
+    check: { kind: 'source', role: 'supporting', target: { file } },
     truth: show => { const t = show(file); return t !== null && holds(t); },
   };
 }
@@ -171,15 +173,21 @@ function pattern(id, folder, literal, count, oneLine) {
   };
 }
 
-/** Relative imports from code under `from` that resolve into `to` (a folder, or a file without its extension). */
+/**
+ * Relative imports from code under `from` that resolve into `to` (a folder,
+ * or a file). An import resolves as a bundler resolves it: to `x.ts` or
+ * `x.tsx` when that file exists, else to the folder's index file.
+ */
 function importsInto(show, list, from, to) {
+  const exists = path => list(path).includes(path);
+  const resolveTo = stem => ['', '.ts', '.tsx', '/index.ts', '/index.tsx'].map(ext => stem + ext).find(exists);
   let n = 0;
   for (const f of list(`${from}/`).filter(f => /\.(ts|tsx)$/.test(f))) {
     for (const m of (show(f) ?? '').matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.{1,2}\/[^'"]+)['"]/g)) {
       const parts = f.split('/').slice(0, -1);
       for (const p of m[1].split('/')) { if (p === '..') parts.pop(); else if (p !== '.') parts.push(p); }
-      const target = parts.join('/').replace(/\.(ts|tsx|js)$/, '');
-      if (target === to.replace(/\.(ts|tsx)$/, '') || target.startsWith(`${to}/`)) n++;
+      const target = resolveTo(parts.join('/').replace(/\.js$/, ''));
+      if (target && (target === to || target.startsWith(`${to}/`))) n++;
     }
   }
   return n;

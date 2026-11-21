@@ -654,20 +654,44 @@ func itoa(n int) string {
 
 var _ Reader = (*Store)(nil)
 
+// GlobPrefix is the literal start of a path glob: the folder every match
+// is under, or the whole path when it has no wildcard.
+func GlobPrefix(glob string) string {
+	i := strings.IndexAny(glob, "*?[{")
+	if i < 0 {
+		return glob
+	}
+	return glob[:strings.LastIndex(glob[:i], "/")+1]
+}
+
 // CallsBetween counts resolved calls from code in files from accepts into
 // code in files to accepts, with the first one found (in path and line
-// order) for the reason. Complete reports that every file is indexed, so a
-// count lower than expected is proof and not a gap.
-func (s *Store) CallsBetween(from, to func(path string) bool) (n int, fromPath, toPath string, line int, complete bool, err error) {
-	rows, err := s.db.Query(`SELECT s.file_path, t.file_path, e.line FROM edges e
-		JOIN nodes s ON s.id=e.source JOIN nodes t ON t.id=e.target
-		WHERE e.kind='calls' AND s.file_path <> t.file_path ORDER BY s.file_path, e.line`)
+// order) for the reason. fromPrefix and toPrefix narrow the read to the
+// files under them, so only those scopes' calls are read. A call through an
+// interface whose one candidate is in the to scope counts, as it does for
+// callers. Complete reports that every file is indexed, so a count lower
+// than expected is proof and not a gap.
+func (s *Store) CallsBetween(fromPrefix, toPrefix string, from, to func(path string) bool) (n int, fromPath, toPath string, line int, complete bool, err error) {
+	rows, err := s.db.Query(`SELECT * FROM (
+		SELECT src.file_path, dst.file_path, coalesce(e.line, 0) FROM nodes src
+		CROSS JOIN edges e ON e.source = src.id AND e.kind = 'calls'
+		CROSS JOIN nodes dst ON dst.id = e.target
+		WHERE src.file_path >= ?1 AND src.file_path < ?1 || char(1114111)
+		AND dst.file_path >= ?2 AND dst.file_path < ?2 || char(1114111) AND src.file_path <> dst.file_path
+		UNION ALL
+		SELECT src.file_path, dst.file_path, u.line FROM unresolved_refs u
+		JOIN nodes src ON src.id = u.from_node_id
+		JOIN nodes dst ON dst.id = json_extract(u.candidates, '$[0]')
+		WHERE u.file_path >= ?1 AND u.file_path < ?1 || char(1114111)
+		AND u.status = 'ambiguous' AND u.reference_kind = 'calls' AND json_valid(u.candidates) AND json_array_length(u.candidates) = 1
+		AND dst.file_path >= ?2 AND dst.file_path < ?2 || char(1114111) AND src.file_path <> dst.file_path
+	) ORDER BY 1, 3`, fromPrefix, toPrefix)
 	if err != nil {
 		return 0, "", "", 0, false, err
 	}
 	for rows.Next() {
 		var src, dst string
-		var at sql.NullInt64
+		var at int
 		if err := rows.Scan(&src, &dst, &at); err != nil {
 			rows.Close()
 			return 0, "", "", 0, false, err
@@ -676,7 +700,7 @@ func (s *Store) CallsBetween(from, to func(path string) bool) (n int, fromPath, 
 			continue
 		}
 		if n == 0 {
-			fromPath, toPath, line = src, dst, int(at.Int64)
+			fromPath, toPath, line = src, dst, at
 		}
 		n++
 	}

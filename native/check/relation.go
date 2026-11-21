@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mex-memory/mex/native/graph"
 	"github.com/mex-memory/mex/native/index"
 	pathscope "github.com/mex-memory/mex/native/internal/scope"
 )
@@ -33,7 +34,8 @@ type relationCount struct {
 // Graph is the part of the code graph relation checks read.
 type Graph interface {
 	AsOf() string
-	CallsBetween(from, to func(string) bool) (n int, fromPath, toPath string, line int, complete bool, err error)
+	// The prefixes are the scopes' literal starts, to narrow the read.
+	CallsBetween(fromPrefix, toPrefix string, from, to func(string) bool) (n int, fromPath, toPath string, line int, complete bool, err error)
 }
 
 // UseGraph lets calls relations read the code graph.
@@ -152,7 +154,8 @@ func (ev *Evaluator) callCount(target, saw map[string]any) (relationCount, Check
 	if err != nil {
 		return relationCount{}, CheckResult{Status: Floor, Reason: "invalid relation target"}, false
 	}
-	n, fromPath, toPath, line, complete, err := ev.graph.CallsBetween(from.MatchString, to.MatchString)
+	fromGlob, toGlob := pathscope.Normalize(str(target, "from")), pathscope.Normalize(str(target, "to"))
+	n, fromPath, toPath, line, complete, err := ev.graph.CallsBetween(graph.GlobPrefix(fromGlob), graph.GlobPrefix(toGlob), from.MatchString, to.MatchString)
 	if err != nil {
 		return relationCount{}, CheckResult{Status: Floor, Reason: "the code graph can't be read"}, false
 	}

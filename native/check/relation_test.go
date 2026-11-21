@@ -86,7 +86,7 @@ type fakeCalls struct {
 }
 
 func (g *fakeCalls) AsOf() string { return "2026-11-20T10:00:00Z" }
-func (g *fakeCalls) CallsBetween(from, to func(string) bool) (int, string, string, int, bool, error) {
+func (g *fakeCalls) CallsBetween(_, _ string, from, to func(string) bool) (int, string, string, int, bool, error) {
 	n, fp, tp := 0, "", ""
 	for _, c := range g.calls {
 		if from(c[0]) && to(c[1]) {
