@@ -17,7 +17,7 @@ use super::{
     incremental::{self, Corpus, FactLoader, Plan, Publication, PublishedOverlay},
     refresh,
 };
-use crate::facts_cache::{FactsCache, ResidentDecoder, ResidentFacts};
+use crate::facts_cache::{FactsCache, ResidentDecoder, ResidentFacts, ResidentFileCache};
 use crate::job::{
     JobCounts, JobError, Request, RequestConfig, RequestFile, decode_hash, extract_files,
     read_configs, remove_candidate, repository_path, request_facts_key,
@@ -40,6 +40,7 @@ pub(crate) struct Session {
     overlay: Option<PublishedOverlay>,
     facts: HashMap<String, ResidentFacts>,
     decoder: RefCell<ResidentDecoder>,
+    decoded_files: RefCell<ResidentFileCache>,
     modules: ModuleResolver,
     context: String,
 }
@@ -126,7 +127,7 @@ impl Session {
         let configs = read_configs(&request.root, &request.configs);
         let modules = incremental::project_modules(&request.root, &request, &configs);
         let context = build::resolution_context(&request.root, &request, &configs);
-        let decoder = ResidentDecoder::new(32 * 1024 * 1024)
+        let decoder = ResidentDecoder::new(8 * 1024 * 1024)
             .ok_or_else(|| JobError::request("Unable to allocate a resident facts decoder"))?;
         Ok(Self {
             request,
@@ -135,6 +136,7 @@ impl Session {
             overlay,
             facts,
             decoder: RefCell::new(decoder),
+            decoded_files: RefCell::default(),
             modules,
             context,
         })
@@ -279,13 +281,20 @@ impl Session {
         let missing = std::cell::RefCell::new(HashMap::new());
         let load = |file: &RequestFile| {
             if let Some(facts) = changed.get(&file.path) {
-                return Ok(facts.clone());
+                return Ok(incremental::activate(facts.clone(), &enabled));
             }
-            if let Some(facts) = self.facts.get(&file.path).and_then(|entry| {
-                timing::measure("resident.unpack", || {
+            if let Some(facts) = self.decoded_files.borrow().get(&file.path) {
+                return Ok(facts);
+            }
+            if let Some(entry) = self.facts.get(&file.path)
+                && let Some(facts) = timing::measure("resident.unpack", || {
                     self.decoder.borrow_mut().unpack(entry)
                 })
-            }) {
+            {
+                let facts = incremental::activate(facts, &enabled);
+                self.decoded_files
+                    .borrow_mut()
+                    .insert(&file.path, &facts, entry.encoded_size());
                 return Ok(facts);
             }
             let extracted = extract_files(&request.root, &request, &[file], None);
@@ -299,9 +308,9 @@ impl Session {
             missing
                 .borrow_mut()
                 .insert(file.path.clone(), pack(&facts)?);
-            Ok(facts)
+            Ok(incremental::activate(facts, &enabled))
         };
-        let loader = FactLoader::new(&request, &enabled, &load, MAX_RESIDENT_SOURCE_BYTES);
+        let loader = FactLoader::new(&request, &load, MAX_RESIDENT_SOURCE_BYTES);
         let in_process = if complete {
             false
         } else {
@@ -496,8 +505,22 @@ impl Session {
         overlay: PathBuf,
     ) -> Result<(), JobError> {
         let overlay = PublishedOverlay::open(overlay, self.base_path())?;
+        let mut decoded = self.decoded_files.borrow_mut();
+        let previous = self
+            .overlay
+            .as_ref()
+            .map_or(&self.base, |overlay| &overlay.db);
+        if previous.frameworks().map_err(JobError::write)?
+            != overlay.db.frameworks().map_err(JobError::write)?
+        {
+            *decoded = ResidentFileCache::default();
+        }
         for path in pending.discard_facts {
             self.facts.remove(&path);
+            decoded.remove(&path);
+        }
+        for path in pending.facts.keys() {
+            decoded.remove(path);
         }
         self.facts.extend(pending.facts);
         for file in &mut pending.request.files {

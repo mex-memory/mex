@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use mex_graph_core::facts::{FileFacts, ParseStatus};
 use mex_graph_core::resolve::{Access, Files};
@@ -989,9 +990,8 @@ impl<'a> NodeKeys<'a> {
 }
 
 pub(super) struct FactLoader<'a> {
-    enabled: &'a Enabled,
-    load: &'a dyn Fn(&RequestFile) -> Result<FileFacts, JobError>,
-    slots: HashMap<&'a str, (&'a RequestFile, std::cell::OnceCell<FileFacts>)>,
+    load: &'a dyn Fn(&RequestFile) -> Result<Rc<FileFacts>, JobError>,
+    slots: HashMap<&'a str, (&'a RequestFile, std::cell::OnceCell<Rc<FileFacts>>)>,
     problem: RefCell<Option<JobError>>,
     byte_limit: u64,
     loaded_bytes: Cell<u64>,
@@ -1001,12 +1001,10 @@ pub(super) struct FactLoader<'a> {
 impl<'a> FactLoader<'a> {
     pub(super) fn new(
         request: &'a Request,
-        enabled: &'a Enabled,
-        load: &'a dyn Fn(&RequestFile) -> Result<FileFacts, JobError>,
+        load: &'a dyn Fn(&RequestFile) -> Result<Rc<FileFacts>, JobError>,
         byte_limit: u64,
     ) -> Self {
         Self {
-            enabled,
             load,
             slots: request
                 .files
@@ -1031,23 +1029,20 @@ impl<'a> FactLoader<'a> {
             } else {
                 self.loaded_bytes.set(bytes);
                 match (self.load)(file) {
-                    Ok(mut facts) => {
-                        self.enabled.activate(std::slice::from_mut(&mut facts));
-                        return facts;
-                    }
+                    Ok(facts) => return facts,
                     Err(error) => {
                         *self.problem.borrow_mut() = Some(error);
                     }
                 }
             }
-            FileFacts {
+            Rc::new(FileFacts {
                 path: path.into(),
                 health: mex_graph_core::facts::Health {
                     status: ParseStatus::Failed,
                     ..Default::default()
                 },
                 ..Default::default()
-            }
+            })
         })
     }
 
@@ -1058,6 +1053,11 @@ impl<'a> FactLoader<'a> {
     pub(super) fn finish(self) -> Result<(), JobError> {
         self.problem.into_inner().map_or(Ok(()), Err)
     }
+}
+
+pub(super) fn activate(mut facts: FileFacts, enabled: &Enabled) -> Rc<FileFacts> {
+    enabled.activate(std::slice::from_mut(&mut facts));
+    Rc::new(facts)
 }
 
 pub(super) fn framework_set(

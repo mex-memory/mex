@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::Duration;
@@ -72,6 +73,12 @@ struct DiskRecord {
 }
 
 impl ResidentFacts {
+    pub fn encoded_size(&self) -> usize {
+        self.record
+            .as_ref()
+            .map_or(self.block.size, |record| record.span.len())
+    }
+
     pub fn pack(facts: &FileFacts) -> Option<Self> {
         let bytes = bincode::encode_to_vec(facts, codec()).ok()?;
         Some(Self {
@@ -148,6 +155,50 @@ fn unpack_record(resident: &ResidentFacts, bytes: &[u8]) -> Option<FileFacts> {
     } else {
         let (facts, len) = bincode::decode_from_slice(bytes, codec()).ok()?;
         (len == bytes.len()).then_some(facts)
+    }
+}
+
+/// Retain the checked, decoded facts repeatedly used by the resident resolver.
+/// A multiple of the serialized size accounts for sparse Rust fields and
+/// allocation overhead. Resolver indexes and projections remain edit-local.
+#[derive(Default)]
+pub struct ResidentFileCache {
+    files: HashMap<String, (Rc<FileFacts>, usize)>,
+    order: VecDeque<String>,
+    weight: usize,
+}
+
+impl ResidentFileCache {
+    const BUDGET: usize = 64 * 1024 * 1024;
+    const MAX_FILES: usize = 1_024;
+
+    pub fn get(&self, path: &str) -> Option<Rc<FileFacts>> {
+        self.files.get(path).map(|(facts, _)| Rc::clone(facts))
+    }
+
+    pub fn insert(&mut self, path: &str, facts: &Rc<FileFacts>, encoded_size: usize) {
+        let weight = encoded_size.saturating_mul(6);
+        if weight > Self::BUDGET {
+            return;
+        }
+        while self.weight + weight > Self::BUDGET || self.files.len() >= Self::MAX_FILES {
+            let Some(first) = self.order.pop_front() else {
+                break;
+            };
+            if let Some((_, weight)) = self.files.remove(&first) {
+                self.weight -= weight;
+            }
+        }
+        self.order.push_back(path.into());
+        self.files.insert(path.into(), (Rc::clone(facts), weight));
+        self.weight += weight;
+    }
+
+    pub fn remove(&mut self, path: &str) {
+        if let Some((_, weight)) = self.files.remove(path) {
+            self.weight -= weight;
+            self.order.retain(|entry| entry != path);
+        }
     }
 }
 

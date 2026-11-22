@@ -105,7 +105,7 @@ pub(crate) fn write(
     let reextracted_new = RefCell::new(HashSet::new());
     let load = |input: &RequestFile| {
         if let Some(facts) = changed.get(&input.path) {
-            return Ok(facts.clone());
+            return Ok(incremental::activate(facts.clone(), &enabled));
         }
         let cached = timing::measure("worker.cacheRead", || {
             let (language, version) = request_facts_key(&input.path, &request.languages)?;
@@ -115,7 +115,7 @@ pub(crate) fn write(
             decoder.unpack(&reader.pin(&input.path, language, version, hash)?)
         });
         if let Some(facts) = cached {
-            return Ok(facts);
+            return Ok(incremental::activate(facts, &enabled));
         }
         let extracted = extract_files(root, request, &[input], cache);
         for entry in &extracted.files {
@@ -125,9 +125,10 @@ pub(crate) fn write(
         extracted
             .into_facts()
             .next()
+            .map(|facts| incremental::activate(facts, &enabled))
             .ok_or_else(|| JobError::request("Unable to load resolver facts"))
     };
-    let loader = FactLoader::new(request, &enabled, &load, u64::MAX);
+    let loader = FactLoader::new(request, &load, u64::MAX);
     {
         let load = |path: &str| loader.get(path);
         let corpus = Corpus {
