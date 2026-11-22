@@ -47,9 +47,11 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
   const languages = graphEngineLanguages();
   if (languages.length === 0) return undefined;
   const git = readGraphGitProvenance(root);
-  const repo = inspectRepoState(root, new Date().toISOString());
+  const observedAt = new Date().toISOString();
   const owned = (path: string) => languages.includes(graphEngineLanguageFamily(detectLanguage(path)));
   const spool = new GraphSourceSpool(undefined, true);
+  const repoInspection = new AbortController();
+  const fullRepo = inspectRepoState(root, observedAt, { signal: repoInspection.signal });
   const staged = new Set<string>();
   let handedOff = false;
   try {
@@ -64,6 +66,14 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
     }, observed?.sources));
     if (corpus.files.some(file => !owned(file.relPath))) return undefined;
 
+    const paths = old ? [...staged].slice(0, 4) : [];
+    const repo = paths.length === 0 ? fullRepo : Promise.race([
+      fullRepo,
+      // A dirty path makes the worktree dirty. A clean subset still needs the
+      // complete status, for example after switching to a different commit.
+      inspectRepoState(root, observedAt, { paths, signal: repoInspection.signal })
+        .then(status => status.complete && status.state.dirty ? status : fullRepo),
+    ]).finally(() => repoInspection.abort());
     const configs = timeGraphPhase("native.config", () => discoverGraphConfigSources(root));
     const walkObservation = timeGraphPhase("native.saveWalk", () => {
       const walks = graphWalkObservations(root);
@@ -199,10 +209,16 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
         },
       },
       assertInputsUnchanged,
-      dispose: () => spool.dispose(),
+      dispose: () => {
+        repoInspection.abort();
+        spool.dispose();
+      },
     };
   } finally {
-    if (!handedOff) spool.dispose();
+    if (!handedOff) {
+      repoInspection.abort();
+      spool.dispose();
+    }
   }
 }
 

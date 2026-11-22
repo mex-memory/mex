@@ -3041,11 +3041,13 @@ function inspectCurrentManifest(
 export async function inspectRepoState(
   projectRoot: string,
   observedAt: string,
+  options: { paths?: readonly string[]; signal?: AbortSignal } = {},
 ): Promise<RepoObservation> {
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
   try {
     const result = await execFileAsync("git", [
       "--no-optional-locks",
+      ...(options.paths ? ["--literal-pathspecs"] : []),
       "-c",
       "core.fsmonitor=false",
       "-c",
@@ -3056,11 +3058,13 @@ export async function inspectRepoState(
       "--porcelain=v2",
       "--branch",
       "--untracked-files=normal",
+      ...(options.paths ? ["--", ...options.paths] : []),
     ], {
       cwd: projectRoot,
       env,
       encoding: "utf8",
       timeout: 5_000,
+      signal: options.signal,
       maxBuffer: 4 * 1024 * 1024,
     });
     let branch: string | null = null;
