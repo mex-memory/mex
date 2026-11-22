@@ -3,13 +3,17 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use mex_graph_core::store::{EdgeEvidence, EdgeRow, FileRow, NodeRow, UnresolvedRow, Writer};
+use mex_graph_core::facts::{FileFacts, Kind, ParseStatus};
+use mex_graph_core::store::{
+    EdgeEvidence, EdgeRow, FileRow, NodeRow, RefreshBase, UnresolvedRow, Writer,
+};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::{StagedEdge, StagedFile, StagedNode, declared_nodes, node_ids, project};
 use crate::frameworks::Enabled;
 use crate::job::{
-    ConfigSource, ExtractedFile, ExtractedFiles, JobCounts, JobError, Request, emit, read_source,
+    ConfigSource, ExtractedFiles, JobCounts, JobError, Request, RequestFile, emit, read_source,
 };
 
 pub(crate) fn write(
@@ -25,22 +29,15 @@ pub(crate) fn write(
     let mut counts = JobCounts::default();
     let mut file_keys = HashMap::new();
     let mut node_keys = HashMap::new();
-    // The facts already include synthesized routes. Resolve every integer key
-    // before writing relationships, so SQLite can check endpoints without
-    // scanning for deferred references before the secondary indexes exist.
+    let mut by_path = HashMap::new();
+    // Register every declaration before writing cross-file references.
     for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
         if index.is_multiple_of(256) {
             progress("parse", index, request.files.len())?;
         }
-        let (facts, size) = match *entry {
-            ExtractedFile::Python { index, size } => (&extracted.facts[index], size),
-            ExtractedFile::EcmaScript { index, size } => (&extracted.ecmascript[index], size),
-            ExtractedFile::Syntax {
-                language,
-                index,
-                size,
-            } => (&extracted.syntax[language as usize][index], size),
-            ExtractedFile::Skipped { path, reason } => {
+        let (facts, size) = match extracted.file(entry) {
+            Ok(file) => file,
+            Err((path, reason)) => {
                 if request.build_metadata.is_some() {
                     return Err(JobError::request(format!(
                         "Unable to build input {path}: {reason}"
@@ -51,9 +48,181 @@ pub(crate) fn write(
                 continue;
             }
         };
-        let health = &facts.health;
-        let file = writer
-            .add_file(&FileRow {
+        let ids = node_ids(facts);
+        register_nodes(&ids, &mut node_keys, None)?;
+        let file = write_file(
+            &mut writer,
+            root,
+            request,
+            input,
+            facts,
+            size,
+            &ids,
+            &node_keys,
+            None,
+        )?;
+        file_keys.insert(facts.path.as_str(), file);
+        by_path.insert(facts.path.as_str(), facts);
+        counts.files += 1;
+        counts.coverage_gaps += usize::from(facts.health.status == ParseStatus::Failed);
+    }
+    counts.nodes = node_keys.len();
+
+    progress("resolve", 0, counts.files)?;
+    let mut written = 0_usize;
+    project(
+        extracted,
+        root,
+        configs,
+        Some(frameworks),
+        false,
+        |file| {
+            let digest = resolution_digest(by_path[file.path], &file)?;
+            writer
+                .set_file_resolution(file_keys[file.path], &digest)
+                .map_err(write)?;
+            counts.edges +=
+                write_relationships(&mut writer, &file, &file_keys, &node_keys).map_err(write)?;
+            written += 1;
+            if written.is_multiple_of(256) || written == counts.files {
+                progress("resolve", written, counts.files)?;
+            }
+            Ok(())
+        },
+        |_, _| Ok(()),
+    )?;
+
+    writer
+        .set_meta("refresh_format", &crate::job::refresh_format())
+        .map_err(write)?;
+    writer
+        .set_meta(
+            "resolution_context",
+            &resolution_context(root, request, configs),
+        )
+        .map_err(write)?;
+    writer
+        .set_meta("frameworks", &frameworks.names())
+        .map_err(write)?;
+    finish(writer, request, &mut counts)?;
+    Ok(counts)
+}
+
+pub(super) fn finish(
+    writer: Writer,
+    request: &Request,
+    counts: &mut JobCounts,
+) -> Result<(), JobError> {
+    let write = JobError::write;
+    if let Some(root) = &request.observation_root {
+        writer.set_meta("observation_root", root).map_err(write)?;
+        for file in &request.files {
+            if let (Some(identity), Some(size)) = (&file.source_identity, file.utf8_size) {
+                writer
+                    .add_source_observation(&file.path, identity, size)
+                    .map_err(write)?;
+            }
+        }
+    }
+    if let Some(metadata) = &request.build_metadata {
+        counts.coverage_gaps += metadata.skipped.len();
+        writer.set_build_metadata(metadata).map_err(write)?;
+    }
+    writer
+        .set_meta("engine", env!("CARGO_PKG_VERSION"))
+        .map_err(write)?;
+    writer.finish().map_err(write)
+}
+
+// The resolver's complete dependency inputs for the same-facts shortcut.
+// Root matters for absolute module references. Hash the engine's actual config
+// texts, including fields not needed for the public freshness manifest.
+pub(super) fn resolution_context(
+    root: &Path,
+    request: &Request,
+    configs: &[ConfigSource<'_>],
+) -> String {
+    let mut hash = Sha256::new();
+    let mut append = |input: &str| {
+        hash.update(input.len().to_le_bytes());
+        hash.update(input.as_bytes());
+    };
+    append(&root.to_string_lossy());
+    for language in &request.languages {
+        append(language);
+    }
+    for file in &request.files {
+        append(&file.path);
+    }
+    for (path, text) in configs {
+        append(path);
+        append(text);
+    }
+    crate::hex(&hash.finalize())
+}
+
+pub(super) fn resolution_digest(
+    facts: &FileFacts,
+    file: &StagedFile<'_>,
+) -> Result<[u8; 32], JobError> {
+    // Activation can add route declarations to a file whose source has not
+    // changed. The remaining declarations and health are file-local facts.
+    let routes: Vec<_> = facts
+        .defs
+        .iter()
+        .filter(|def| def.kind == Kind::Route)
+        .collect();
+    let unresolved_keys: Vec<_> = file
+        .unresolved
+        .iter()
+        .map(|row| (row.called_name, row.candidate_id))
+        .collect();
+    let rows = serde_json::to_vec(&(routes, &file.edges, &file.unresolved, unresolved_keys))
+        .map_err(JobError::write)?;
+    Ok(Sha256::digest(rows).into())
+}
+
+pub(super) fn register_nodes(
+    ids: &[Option<String>],
+    keys: &mut HashMap<String, i64>,
+    base: Option<&RefreshBase>,
+) -> Result<(), JobError> {
+    for id in ids.iter().flatten() {
+        let key = match base {
+            Some(base) => base
+                .node_key(id)
+                .map_err(JobError::write)?
+                .unwrap_or_else(|| Writer::next_overlay_key(keys.len())),
+            None => 1 + keys.len() as i64,
+        };
+        if keys.insert(id.clone(), key).is_some() {
+            return Err(JobError::request("Duplicate public node id"));
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one file's captured source and allocated keys"
+)]
+pub(super) fn write_file(
+    writer: &mut Writer,
+    root: &Path,
+    request: &Request,
+    input: &RequestFile,
+    facts: &FileFacts,
+    size: u64,
+    ids: &[Option<String>],
+    nodes: &HashMap<String, i64>,
+    key: Option<i64>,
+) -> Result<i64, JobError> {
+    let write = JobError::write;
+    let health = &facts.health;
+    let file = writer
+        .add_file(
+            key,
+            &FileRow {
                 path: &facts.path,
                 content_hash: &facts.content_hash,
                 language: &facts.language,
@@ -68,86 +237,41 @@ pub(crate) fn write(
                 missing_count: health.missing_count,
                 error_coverage: health.error_coverage,
                 extractor_version: input.extractor_version.as_deref().unwrap_or("mex-graph"),
-            })
+            },
+        )
+        .map_err(write)?;
+    for (def, id, parent) in declared_nodes(facts, ids) {
+        write_node(writer, StagedNode::new(facts, def, id, parent), file, nodes).map_err(write)?;
+    }
+    if health.status == ParseStatus::Failed {
+        writer
+            .add_coverage(&facts.path, "parse failed")
             .map_err(write)?;
-        file_keys.insert(facts.path.as_str(), file);
-        counts.files += 1;
-        let ids = node_ids(facts);
-        for id in ids.iter().flatten() {
-            counts.nodes += 1;
-            if node_keys.insert(id.clone(), counts.nodes as i64).is_some() {
-                return Err(JobError::request("Duplicate public node id"));
-            }
-        }
-        for (def, id, parent) in declared_nodes(facts, &ids) {
-            write_node(
-                &mut writer,
-                StagedNode::new(facts, def, id, parent),
+    }
+    for (index, diagnostic) in health.diagnostics.iter().enumerate() {
+        writer
+            .add_diagnostic(
                 file,
-                &node_keys,
+                index,
+                &diagnostic.code,
+                diagnostic.range.start_line + 1,
+                diagnostic.range.end_line + 1,
             )
             .map_err(write)?;
-        }
-        if health.status == mex_graph_core::facts::ParseStatus::Failed {
-            counts.coverage_gaps += 1;
-            writer
-                .add_coverage(&facts.path, "parse failed")
-                .map_err(write)?;
-        }
-        for (index, diagnostic) in health.diagnostics.iter().enumerate() {
-            writer
-                .add_diagnostic(
-                    file,
-                    index,
-                    &diagnostic.code,
-                    diagnostic.range.start_line + 1,
-                    diagnostic.range.end_line + 1,
-                )
-                .map_err(write)?;
-        }
-        let (source, _, hash) = request
-            .source_path(root, input)
-            .and_then(|path| read_source(&path, input))
-            .map_err(|reason| {
-                JobError::request(format!("Unable to index source {}: {reason}", input.path))
-            })?;
-        if hash != facts.content_hash {
-            return Err(JobError::request(
-                "Source changed before full-text indexing",
-            ));
-        }
-        write_source_chunks(&writer, file, &facts.path, &source).map_err(write)?;
     }
-
-    progress("resolve", 0, counts.files)?;
-    let mut written = 0_usize;
-    project(
-        extracted,
-        root,
-        configs,
-        Some(frameworks),
-        false,
-        |file| {
-            counts.edges +=
-                write_relationships(&mut writer, &file, &file_keys, &node_keys).map_err(write)?;
-            written += 1;
-            if written.is_multiple_of(256) || written == counts.files {
-                progress("resolve", written, counts.files)?;
-            }
-            Ok(())
-        },
-        |_, _| Ok(()),
-    )?;
-
-    if let Some(metadata) = &request.build_metadata {
-        counts.coverage_gaps += metadata.skipped.len();
-        writer.set_build_metadata(metadata).map_err(write)?;
+    let (source, _, hash) = request
+        .source_path(root, input)
+        .and_then(|path| read_source(&path, input))
+        .map_err(|reason| {
+            JobError::request(format!("Unable to index source {}: {reason}", input.path))
+        })?;
+    if hash != facts.content_hash {
+        return Err(JobError::request(
+            "Source changed before full-text indexing",
+        ));
     }
-    writer
-        .set_meta("engine", env!("CARGO_PKG_VERSION"))
-        .map_err(write)?;
-    writer.finish().map_err(write)?;
-    Ok(counts)
+    write_source_chunks(writer, file, &facts.path, &source).map_err(write)?;
+    Ok(file)
 }
 
 fn progress(phase: &str, done: usize, total: usize) -> Result<(), JobError> {
@@ -201,7 +325,7 @@ fn write_node(
     Ok(())
 }
 
-fn write_relationships(
+pub(super) fn write_relationships(
     writer: &mut Writer,
     file: &StagedFile,
     files: &HashMap<&str, i64>,
@@ -276,7 +400,7 @@ fn edge_evidence<'a>(
 }
 
 fn write_source_chunks(
-    writer: &Writer,
+    writer: &mut Writer,
     file: i64,
     path: &str,
     source: &str,

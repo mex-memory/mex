@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod facts_cache;
 mod facts_cmd;
 mod frameworks;
 mod guard;
@@ -12,10 +13,16 @@ mod stage;
 mod syntax_language;
 
 const USAGE: &str = "usage: mex-graph version | languages | build --request <file> | \
-    stage --request <file> | facts --root <dir> <path>...";
+    refresh --request <file> | stage --request <file> | facts --root <dir> <path>...";
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const DIGITS: &[u8] = b"0123456789abcdef";
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        text.push(DIGITS[(byte >> 4) as usize] as char);
+        text.push(DIGITS[(byte & 15) as usize] as char);
+    }
+    text
 }
 
 fn is_compiler_language(language: &str) -> bool {
@@ -45,7 +52,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Some(mode @ ("build" | "stage")) => {
+        Some(mode @ ("build" | "refresh" | "stage")) => {
             let Some(request) = args
                 .iter()
                 .position(|a| a == "--request")

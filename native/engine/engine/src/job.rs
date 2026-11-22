@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use mex_graph_core::CONTRACT_VERSION;
-use mex_graph_core::facts::FileFacts;
+use mex_graph_core::facts::{FACTS_VERSION, FileFacts};
 use mex_graph_core::store::BuildMetadata;
 use mex_graph_csharp::CSharp;
 use mex_graph_ecmascript::modules::ModuleResolver;
@@ -23,6 +23,7 @@ use mex_graph_rust::Rust;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::facts_cache::{CacheWorker, FactsCache};
 use crate::frameworks::{self, Enabled};
 use crate::guard::{Breach, Guard, Limits, ProcessSampler};
 use crate::stage;
@@ -32,7 +33,6 @@ const GUARD_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[expect(dead_code, reason = "contract fields the adapters read from M2")]
 pub struct Request {
     pub contract: u32,
     pub mode: String,
@@ -44,7 +44,7 @@ pub struct Request {
     pub languages: Vec<String>,
     #[serde(default)]
     frameworks: bool,
-    // Validated for build and cleared for stage before starting the job.
+    // A database job writes here. Stage ignores the output field.
     output: Option<PathBuf>,
     #[serde(default)]
     pub base: Option<PathBuf>,
@@ -55,6 +55,7 @@ pub struct Request {
     pub limits: RequestLimits,
     pub(super) build_metadata: Option<BuildMetadata>,
     source_directory: Option<PathBuf>,
+    pub(super) observation_root: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +74,9 @@ pub struct RequestFile {
     pub(super) modified_at: Option<f64>,
     pub(super) extractor_version: Option<String>,
     staged: Option<String>,
-    content_hash: Option<String>,
+    pub(super) content_hash: Option<String>,
+    pub(super) source_identity: Option<String>,
+    pub(super) utf8_size: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +178,36 @@ pub fn load(path: &Path, mode: &str) -> Result<Request, JobError> {
             return Err(JobError::request("output's folder must exist"));
         }
     }
+    if mode == "refresh" {
+        let base = request
+            .base
+            .as_deref()
+            .ok_or_else(|| JobError::request("base is required for refresh"))?;
+        if !base.is_absolute()
+            || !std::fs::symlink_metadata(base).is_ok_and(|entry| entry.is_file())
+        {
+            return Err(JobError::request(
+                "base must be an existing absolute regular file",
+            ));
+        }
+        if request
+            .changed
+            .iter()
+            .chain(request.files.iter().map(|file| &file.path))
+            .any(|path| {
+                path.is_empty()
+                    || path.contains('\\')
+                    || path
+                        .split('/')
+                        .any(|part| part.is_empty() || matches!(part, "." | ".."))
+                    || Path::new(path).is_absolute()
+            })
+        {
+            return Err(JobError::request(
+                "refresh paths must be repository-relative and normalized",
+            ));
+        }
+    }
     Ok(request)
 }
 
@@ -240,6 +273,8 @@ pub fn run(request: Request) -> Result<(), JobError> {
         "nodes": counts.nodes,
         "edges": counts.edges,
         "coverageGaps": counts.coverage_gaps,
+        "filesReextracted": counts.reextracted,
+        "shadowedFiles": counts.shadowed,
         "usage": {
             "wallMs": started.elapsed().as_millis() as u64,
             "peakRssMb": guard.peak_bytes() / (1024 * 1024),
@@ -257,6 +292,8 @@ pub(super) struct JobCounts {
     pub(super) nodes: usize,
     pub(super) edges: usize,
     pub(super) coverage_gaps: usize,
+    pub(super) reextracted: usize,
+    pub(super) shadowed: Option<usize>,
 }
 
 fn run_started(request: &Request) -> Result<JobCounts, JobError> {
@@ -264,8 +301,13 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
         .root
         .canonicalize()
         .map_err(|e| JobError::request(format!("root: {e}")))?;
-    let mut extracted = extract_files(&root, request);
+    let cache = request.facts_cache.as_deref().and_then(FactsCache::open);
     let configs = read_configs(&root, &request.configs);
+    if request.mode == "refresh" {
+        return stage::refresh::write(&root, request, &configs, cache.as_ref());
+    }
+    let inputs: Vec<_> = request.files.iter().collect();
+    let mut extracted = extract_files(&root, request, &inputs, cache.as_ref());
     let enabled = if request.frameworks || request.output.is_some() {
         let package = configs
             .iter()
@@ -278,7 +320,7 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
     } else {
         Enabled::default()
     };
-    match request.output.as_deref() {
+    let mut counts = match request.output.as_deref() {
         Some(output) => stage::build::write(output, &extracted, &root, request, &configs, &enabled),
         None => stage::write(
             &extracted,
@@ -286,12 +328,15 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
             &configs,
             request.frameworks.then_some(&enabled),
         ),
-    }
+    }?;
+    counts.reextracted = extracted.reextracted.len();
+    Ok(counts)
 }
 
 struct Extracted {
     size: u64,
     facts: FileFacts,
+    reextracted: bool,
 }
 
 pub(super) enum ExtractedFile<'a> {
@@ -321,9 +366,30 @@ pub(super) struct ExtractedFiles<'a> {
     pub(super) syntax: [Vec<FileFacts>; 2],
     /// One entry per requested path, including skips, in request order.
     pub(super) files: Vec<ExtractedFile<'a>>,
+    pub(super) reextracted: Vec<&'a str>,
 }
 
 impl ExtractedFiles<'_> {
+    pub(super) fn file<'a>(
+        &'a self,
+        entry: &'a ExtractedFile<'a>,
+    ) -> Result<(&'a FileFacts, u64), (&'a str, &'static str)> {
+        match *entry {
+            ExtractedFile::Python { index, size } => Ok((&self.facts[index], size)),
+            ExtractedFile::EcmaScript { index, size } => Ok((&self.ecmascript[index], size)),
+            ExtractedFile::Syntax {
+                language,
+                index,
+                size,
+            } => Ok((&self.syntax[language as usize][index], size)),
+            ExtractedFile::Skipped { path, reason } => Err((path, reason)),
+        }
+    }
+
+    pub(super) fn activate(&mut self, enabled: &Enabled) {
+        enabled.activate(&mut self.facts);
+        enabled.activate(&mut self.ecmascript);
+    }
     pub(super) fn resolve(&self) -> Resolution {
         resolve(&self.facts)
     }
@@ -345,14 +411,73 @@ enum Adapter {
     Syntax(SyntaxLanguage),
 }
 
+const FRAMEWORK_CAPTURE_VERSION: u32 = 1;
+
+/// Bump the prefix when persisted projection or digest semantics change.
+pub(super) fn refresh_format() -> String {
+    format!(
+        "1:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
+        mex_graph_python::ADAPTER_VERSION,
+        mex_graph_ecmascript::ADAPTER_VERSION,
+        mex_graph_rust::ADAPTER_VERSION,
+        mex_graph_csharp::ADAPTER_VERSION
+    )
+}
+
+impl Adapter {
+    fn version(self, path: &str, frameworks: bool) -> (&'static str, String) {
+        // The capture version covers framework extraction before activation.
+        let (language, adapter) = match self {
+            Self::Python => (LANGUAGE, mex_graph_python::ADAPTER_VERSION),
+            Self::EcmaScript => (
+                language_for_path(path).unwrap(),
+                mex_graph_ecmascript::ADAPTER_VERSION,
+            ),
+            Self::Syntax(SyntaxLanguage::Rust) => {
+                (mex_graph_rust::LANGUAGE, mex_graph_rust::ADAPTER_VERSION)
+            }
+            Self::Syntax(SyntaxLanguage::CSharp) => (
+                mex_graph_csharp::LANGUAGE,
+                mex_graph_csharp::ADAPTER_VERSION,
+            ),
+        };
+        (
+            language,
+            format!(
+                "{language}:{FACTS_VERSION}:{adapter}:{}",
+                if frameworks {
+                    FRAMEWORK_CAPTURE_VERSION
+                } else {
+                    0
+                }
+            ),
+        )
+    }
+}
+
+pub(super) fn captured_facts_key(language: &str, path: &str) -> (&'static str, String) {
+    let adapter = match language {
+        LANGUAGE => Adapter::Python,
+        mex_graph_rust::LANGUAGE => Adapter::Syntax(SyntaxLanguage::Rust),
+        mex_graph_csharp::LANGUAGE => Adapter::Syntax(SyntaxLanguage::CSharp),
+        _ => Adapter::EcmaScript,
+    };
+    adapter.version(path, true)
+}
+
 /// Resolve inputs in request order and retain one extraction result per input.
-fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
+pub(super) fn extract_files<'a>(
+    root: &Path,
+    request: &Request,
+    files: &[&'a RequestFile],
+    cache: Option<&FactsCache>,
+) -> ExtractedFiles<'a> {
     let enabled = |language: &str| request.languages.iter().any(|name| name == language);
     let python_enabled = enabled(LANGUAGE);
-    let inputs: Vec<_> = request
-        .files
+    let capture_frameworks = request.frameworks || request.output.is_some();
+    let inputs: Vec<_> = files
         .iter()
-        .map(|file| {
+        .map(|&file| {
             let adapter = if python_enabled
                 && file
                     .path
@@ -367,11 +492,13 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
                     .filter(|language| enabled(language.name()))
                     .map(Adapter::Syntax)
             };
-            request.source_path(root, file).and_then(|path| {
-                adapter
-                    .map(|adapter| (file, path, adapter, OnceLock::new()))
-                    .ok_or("no adapter yet")
-            })
+            match adapter {
+                Some(adapter) => Ok((file, adapter, OnceLock::new())),
+                None => {
+                    request.source_path(root, file)?;
+                    Err("no adapter yet")
+                }
+            }
         })
         .collect();
 
@@ -390,31 +517,45 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
                     let mut ecmascript = None;
                     let mut rust = None;
                     let mut csharp = None;
+                    let mut cache = cache.and_then(FactsCache::worker);
                     while let Some(input) = inputs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                        if let Ok((file, canonical, adapter, result)) = input {
+                        if let Ok((file, adapter, result)) = input {
                             result.get_or_init(|| {
-                                extract(file, canonical, |path, text, hash| {
-                                    let mut facts = match adapter {
-                                        Adapter::Python => python
-                                            .get_or_insert_with(Python::new)
-                                            .extract(path, text, hash),
-                                        Adapter::EcmaScript => ecmascript
-                                            .get_or_insert_with(EcmaScript::new)
-                                            .extract(path, text, hash),
-                                        Adapter::Syntax(SyntaxLanguage::Rust) => rust
-                                            .get_or_insert_with(Rust::new)
-                                            .extract(path, text, hash),
-                                        Adapter::Syntax(SyntaxLanguage::CSharp) => csharp
-                                            .get_or_insert_with(CSharp::new)
-                                            .extract(path, text, hash),
-                                    };
-                                    if request.frameworks || request.output.is_some() {
-                                        frameworks::capture(&mut facts, text);
-                                    }
-                                    facts
-                                })
+                                let key = cache
+                                    .as_ref()
+                                    .map(|_| adapter.version(&file.path, capture_frameworks));
+                                extract(
+                                    request,
+                                    root,
+                                    file,
+                                    key.as_ref(),
+                                    cache.as_mut(),
+                                    |path, text, hash| {
+                                        let mut facts = match adapter {
+                                            Adapter::Python => python
+                                                .get_or_insert_with(Python::new)
+                                                .extract(path, text, hash),
+                                            Adapter::EcmaScript => ecmascript
+                                                .get_or_insert_with(EcmaScript::new)
+                                                .extract(path, text, hash),
+                                            Adapter::Syntax(SyntaxLanguage::Rust) => rust
+                                                .get_or_insert_with(Rust::new)
+                                                .extract(path, text, hash),
+                                            Adapter::Syntax(SyntaxLanguage::CSharp) => csharp
+                                                .get_or_insert_with(CSharp::new)
+                                                .extract(path, text, hash),
+                                        };
+                                        if capture_frameworks {
+                                            frameworks::capture(&mut facts, text);
+                                        }
+                                        facts
+                                    },
+                                )
                             });
                         }
+                    }
+                    if let Some(mut cache) = cache {
+                        cache.flush();
                     }
                 });
             }
@@ -424,15 +565,21 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
     let mut facts = Vec::new();
     let mut ecmascript = Vec::new();
     let mut syntax = [Vec::new(), Vec::new()];
+    let mut reextracted = Vec::new();
     let files = inputs
         .into_iter()
-        .zip(&request.files)
+        .zip(files)
         .map(|(input, file)| {
-            let result = input.and_then(|(_, _, adapter, result)| {
+            let result = input.and_then(|(_, adapter, result)| {
                 result
                     .into_inner()
                     .expect("every input was processed")
-                    .map(|extracted| (adapter, extracted))
+                    .map(|extracted| {
+                        if extracted.reextracted {
+                            reextracted.push(file.path.as_str());
+                        }
+                        (adapter, extracted)
+                    })
             });
             match result {
                 Ok((Adapter::Python, extracted)) => {
@@ -473,22 +620,78 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
         ecmascript,
         syntax,
         files,
+        reextracted,
     }
 }
 
 fn extract(
+    request: &Request,
+    root: &Path,
     file: &RequestFile,
-    canonical: &Path,
+    key: Option<&(&str, String)>,
+    cache: Option<&mut CacheWorker>,
     adapter: impl FnOnce(&str, &str, [u8; 32]) -> FileFacts,
 ) -> Result<Extracted, &'static str> {
-    let (text, size, hash) = read_source(canonical, file)?;
+    // Node captured these hashes under the maintenance lease. A standalone
+    // job without that capture hashes the source before its cache lookup.
+    let cached = |cache: Option<&CacheWorker>, hash: &[u8; 32]| {
+        let (language, version) = key?;
+        cache?.get(&file.path, language, version, hash)
+    };
+    if request.source_directory.is_some()
+        && let Some(hash) = file.content_hash.as_deref().and_then(decode_hash)
+        && let Some(facts) = cached(cache.as_deref(), &hash)
+    {
+        return Ok(Extracted {
+            size: file.size,
+            facts,
+            reextracted: false,
+        });
+    }
+    let canonical = request.source_path(root, file)?;
+    let (text, size, hash) = read_source(&canonical, file)?;
+    if let Some(facts) = cached(cache.as_deref(), &hash) {
+        return Ok(Extracted {
+            size,
+            facts,
+            reextracted: false,
+        });
+    }
+    let facts = adapter(&file.path, &text, hash);
+    if let (Some(cache), Some((_, version))) = (cache, key) {
+        cache.put(version, &facts);
+    }
     Ok(Extracted {
         size,
-        facts: adapter(&file.path, &text, hash),
+        facts,
+        reextracted: true,
     })
 }
 
+pub(super) fn decode_hash(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (out, pair) in bytes.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
+        *out = ((pair[0] as char).to_digit(16)? as u8) << 4 | (pair[1] as char).to_digit(16)? as u8;
+    }
+    Some(bytes)
+}
+
 impl Request {
+    pub(super) fn captured_hashes(&self) -> bool {
+        self.source_directory.is_some()
+            && self
+                .files
+                .iter()
+                .all(|file| file.content_hash.as_deref().and_then(decode_hash).is_some())
+    }
+
+    pub(super) fn candidate_path(&self) -> &Path {
+        self.output.as_deref().expect("database job has an output")
+    }
+
     pub(super) fn source_path(
         &self,
         root: &Path,
@@ -504,7 +707,7 @@ impl Request {
             {
                 (directory.as_path(), directory.join(staged))
             }
-            (None, None) if !Path::new(&file.path).is_absolute() => (root, root.join(&file.path)),
+            (_, None) if !Path::new(&file.path).is_absolute() => (root, root.join(&file.path)),
             _ => return Err("invalid staged source path"),
         };
         let canonical = path.canonicalize().map_err(|_| "missing")?;
@@ -546,7 +749,7 @@ pub(super) fn read_source(
     if file
         .content_hash
         .as_ref()
-        .is_some_and(|expected| crate::hex(&hash) != *expected)
+        .is_some_and(|expected| decode_hash(expected) != Some(hash))
     {
         return Err("source changed");
     }

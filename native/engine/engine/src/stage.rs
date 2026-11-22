@@ -17,6 +17,7 @@ use crate::{hex, is_compiler_language};
 pub(super) mod build;
 mod ecmascript;
 mod framework;
+pub(super) mod refresh;
 mod syntax;
 
 pub(super) fn write(

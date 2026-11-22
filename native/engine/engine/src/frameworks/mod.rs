@@ -105,6 +105,23 @@ pub(crate) fn capture(facts: &mut FileFacts, source: &str) {
 pub(crate) struct Enabled(Vec<&'static Framework>);
 
 impl Enabled {
+    pub(crate) fn names(&self) -> String {
+        self.0
+            .iter()
+            .map(|framework| framework.name)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    pub(crate) fn from_names(names: &str) -> Self {
+        Self(
+            FRAMEWORKS
+                .iter()
+                .filter(|framework| names.split(',').any(|name| name == framework.name))
+                .collect(),
+        )
+    }
+
     pub(crate) fn detect(
         python: &[FileFacts],
         ecmascript: &[FileFacts],

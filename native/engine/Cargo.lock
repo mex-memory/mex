@@ -163,6 +163,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac34a2669aea5e5a89a9c979652342c2ad557af1c690d43251702a924d11cf73"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -182,6 +188,7 @@ dependencies = [
 name = "mex-graph"
 version = "0.1.0"
 dependencies = [
+ "lz4_flex",
  "memory-stats",
  "mex-graph-core",
  "mex-graph-csharp",

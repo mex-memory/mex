@@ -24,6 +24,33 @@ CREATE TABLE files (
     extractor_version TEXT NOT NULL
 ) STRICT;
 
+-- The digest covers the file's resolved outgoing rows and synthesized nodes
+-- in public-id space. Source identity covers its file-local rows. Refresh
+-- also compares incoming call neighbours of fingerprints independently.
+CREATE TABLE file_resolution (
+    file INTEGER PRIMARY KEY REFERENCES files(id),
+    digest BLOB NOT NULL CHECK(length(digest) = 32)
+) STRICT;
+
+-- Publication provenance for the checkout that captured the inputs. The
+-- parent can reuse a hash from the audited graph when a precise source stamp
+-- still matches. These observations travel with the snapshot, rather than
+-- inheriting the base checkout's filesystem identities through the overlay.
+CREATE TABLE source_observations (
+    path      TEXT PRIMARY KEY,
+    identity  TEXT NOT NULL CHECK(length(identity) BETWEEN 1 AND 160),
+    utf8_size INTEGER NOT NULL CHECK(utf8_size BETWEEN 0 AND 4194304)
+) STRICT, WITHOUT ROWID;
+
+-- The overlay-only shadow_files and overlay_info tables are created by
+-- store/overlay.rs. A shadow hides every row owned by the base file, even
+-- when that path was deleted. File and node keys are reused by path and
+-- 16-byte public id respectively; keys with no base match start at 2^40.
+-- Interned names reuse base keys by name, with the same range for new codes.
+-- Cross-file references may point to either side. Readers attach the base
+-- read-only and resolve integer references against the live union. Foreign
+-- keys in an overlay are checked across that union at publication.
+
 CREATE TABLE file_diagnostics (
     file       INTEGER NOT NULL REFERENCES files(id),
     position   INTEGER NOT NULL CHECK(position BETWEEN 0 AND 99),
