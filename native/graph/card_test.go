@@ -493,6 +493,24 @@ func TestTestsCard(t *testing.T) {
 	}
 }
 
+// A live Codex session got "Tests covering your changes: 8 files": past the
+// card's size, name what fits rather than only counting.
+func TestFitNames(t *testing.T) {
+	names := []string{"a/one.spec.ts", "a/two.spec.ts", "a/three.spec.ts"}
+	for _, c := range []struct {
+		limit int
+		want  string
+	}{
+		{200, "T: a/one.spec.ts, a/two.spec.ts, a/three.spec.ts"},
+		{45, "T: a/one.spec.ts, a/two.spec.ts and 1 more"},
+		{20, "T: 3 files"},
+	} {
+		if got := fitNames("T: ", names, c.limit); got != c.want {
+			t.Errorf("limit %d: got %q, want %q", c.limit, got, c.want)
+		}
+	}
+}
+
 func TestScopedCommand(t *testing.T) {
 	for _, c := range []struct {
 		command string

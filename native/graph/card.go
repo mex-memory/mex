@@ -414,13 +414,39 @@ func (v View) TestsCard(changed []Symbol, command string, value int, seen Seen) 
 		text += "\nTo rerun only those: `" + scoped + "`"
 	}
 	if len(text) > maxCardChars {
-		text = "Tests covering your changes: " + fmt.Sprintf("%d files", len(reach))
+		// Name as many as fit, direct ones first: a bare count gives the
+		// agent nothing to open or run.
+		text = fitNames("Tests covering your changes: ", append(append([]string{}, direct...), via...), maxCardChars-60)
 		if scoped, ok := ScopedCommand(command, direct); ok && len(text)+len(scoped) < maxCardChars-30 {
 			text += "\nTo rerun the direct ones: `" + scoped + "`"
 		}
 	}
 	sort.Strings(hashes)
 	return finish(&Card{Kind: "tests", Key: key(append([]string{"tests"}, hashes...)...), Text: text, Value: value, AsOf: v.R.AsOf()}, seen)
+}
+
+// fitNames lists names after prefix, as many as fit in limit characters,
+// then "and N more"; with none fitting, just the count.
+func fitNames(prefix string, names []string, limit int) string {
+	shown := 0
+	for shown < len(names) {
+		next := prefix + strings.Join(names[:shown+1], ", ")
+		if rest := len(names) - shown - 1; rest > 0 {
+			next += fmt.Sprintf(" and %d more", rest)
+		}
+		if len(next) > limit {
+			break
+		}
+		shown++
+	}
+	if shown == 0 {
+		return prefix + fmt.Sprintf("%d files", len(names))
+	}
+	text := prefix + strings.Join(names[:shown], ", ")
+	if shown < len(names) {
+		text += fmt.Sprintf(" and %d more", len(names)-shown)
+	}
+	return text
 }
 
 // ScopedCommand narrows a full test command to the given test files, for
