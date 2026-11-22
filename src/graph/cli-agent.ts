@@ -1,4 +1,4 @@
-import { ENGINE_GRAPH_SCHEMA_VERSION, readsV5Graph, v5NodeKey } from "./db/v5.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, readsV5Graph, v5NodeKey, v5Rows } from "./db/v5.js";
 import { currentGraphPath } from "./storage.js";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -2939,23 +2939,23 @@ function potentialCallSites(db: SqliteDatabase, node: GraphNode, limit: number):
     `SELECT reference_name, reference_kind, status, file_path, line, col,
             from_node_id, receiver, qualifier, candidate_id
      FROM temp.unresolved_refs WHERE id IN (
-       SELECT id FROM main.unresolved_calls WHERE name = (SELECT id FROM main.unresolved_names WHERE name = ?)
+       SELECT id FROM ${v5Rows(db, "unresolved_calls")} WHERE name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?)
        UNION
-       SELECT id FROM main.unresolved_calls WHERE candidate = ?
+       SELECT id FROM ${v5Rows(db, "unresolved_calls")} WHERE candidate = ?
      ) ORDER BY file_path, line, col, from_node_id LIMIT ?`,
   ).all(node.name, key, limit) as UnresolvedCallSite[];
 }
 
 // Keep the legacy exact written-spelling lookup indexed. Symbol-level checks
 // use the called name instead, so obj["method"] can still be a caller of method.
-const V5_UNRESOLVED_SPELLING = `id IN (
-  SELECT id FROM main.unresolved_calls
-    WHERE name = (SELECT id FROM main.unresolved_names WHERE name = ?) AND written_name IS NULL
+const v5UnresolvedSpelling = (db: SqliteDatabase) => `id IN (
+  SELECT id FROM ${v5Rows(db, "unresolved_calls")}
+    WHERE name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?) AND written_name IS NULL
   UNION ALL
-  SELECT id FROM main.unresolved_calls
-    WHERE written_name = (SELECT id FROM main.unresolved_names WHERE name = ?)
+  SELECT id FROM ${v5Rows(db, "unresolved_calls")}
+    WHERE written_name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?)
   UNION ALL
-  SELECT -id FROM main.unresolved_other WHERE name = (SELECT id FROM main.unresolved_names WHERE name = ?)
+  SELECT -id FROM ${v5Rows(db, "unresolved_other")} WHERE name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?)
 )`;
 
 /** Total matching call sites, so the summary can report what it capped. */
@@ -2963,7 +2963,7 @@ function unresolvedCallSiteCount(db: SqliteDatabase, name: string): number {
   const native = readsV5Graph(db);
   const row = db.prepare(
     `SELECT COUNT(*) AS total FROM unresolved_refs
-      WHERE ${native ? V5_UNRESOLVED_SPELLING : "reference_name = ? AND status <> 'resolved'"}`,
+      WHERE ${native ? v5UnresolvedSpelling(db) : "reference_name = ? AND status <> 'resolved'"}`,
   ).get(...(native ? [name, name, name] : [name])) as { total?: unknown } | undefined;
   return typeof row?.total === "number" ? row.total : 0;
 }
@@ -2979,7 +2979,7 @@ function unresolvedCallSites(
     `SELECT reference_name, reference_kind, status, file_path, line, col,
             from_node_id, receiver, qualifier${native ? ", candidate_id" : ""}
        FROM unresolved_refs
-      WHERE ${native ? V5_UNRESOLVED_SPELLING : "reference_name = ? AND status <> 'resolved'"}
+      WHERE ${native ? v5UnresolvedSpelling(db) : "reference_name = ? AND status <> 'resolved'"}
       ORDER BY file_path, line, col, from_node_id
       LIMIT ?`,
   ).all(...(native ? [name, name, name] : [name]), Math.max(0, limit)) as UnresolvedCallSite[];

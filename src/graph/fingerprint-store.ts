@@ -2,7 +2,7 @@ import type { GroundedSource, GroundingBaseline, GroundingSubject } from "./grou
 import { assertFingerprint, bandHashInts, decodeMinhash, encodeMinhash, indexedInLsh } from "./fingerprint.js";
 import { BANDS, K, ROWS } from "./config.js";
 import type { Fingerprint } from "./reconcile.js";
-import { parseV5PublicId, readsV5Graph, v5NodeKey } from "./db/v5.js";
+import { parseV5PublicId, readsV5Graph, v5NodeKey, v5Rows } from "./db/v5.js";
 import type { SQLInputValue } from "node:sqlite";
 
 export interface SqliteDatabase {
@@ -53,7 +53,7 @@ export function readFileFingerprints(db: SqliteDatabase, filePath: string): Stor
   if (readsV5Graph(db)) {
     const rows = db.prepare(
       `SELECT n.id AS node_id, f.node AS ref, f.minhash, f.token_count
-       FROM temp.nodes n JOIN main.fingerprints f ON f.node = n.node_key WHERE n.file_path = ?`,
+       FROM temp.nodes n JOIN ${v5Rows(db, "fingerprints")} f ON f.node = n.node_key WHERE n.file_path = ?`,
     ).all(filePath) as Array<V5FingerprintRow & { node_id: string }>;
     const neighbours = v5FingerprintNeighbours(db);
     return rows.map(row => ({
@@ -160,8 +160,8 @@ export class FingerprintStore {
       if (!id) return null;
       const row = this.db.prepare(
         `SELECT ref, minhash, token_count FROM temp.node_fingerprints WHERE ref = coalesce(
-          (SELECT n.id FROM main.nodes n JOIN main.node_kinds k ON k.id = n.kind
-           JOIN main.fingerprints f ON f.node = n.id WHERE n.public_id = ? AND k.name = ?),
+          (SELECT n.id FROM ${v5Rows(this.db, "nodes")} n JOIN ${v5Rows(this.db, "node_kinds")} k ON k.id = n.kind
+           JOIN ${v5Rows(this.db, "fingerprints")} f ON f.node = n.id WHERE n.public_id = ? AND k.name = ?),
           (SELECT node_key FROM temp.node_aliases WHERE alias_digest = ? AND alias_kind = ?)
         )`,
       ).get(id.digest, id.kind, id.digest, id.kind) as V5FingerprintRow | undefined;
@@ -234,11 +234,11 @@ export class FingerprintStore {
       const keys = JSON.stringify(ids);
       const rows = this.db.prepare(
         `SELECT n.id AS node_id FROM (
-           SELECT target AS node, source AS neighbour FROM main.edges
-           WHERE kind = (SELECT id FROM main.edge_kinds WHERE name = 'calls') AND source IN (SELECT value FROM json_each(?))
+           SELECT target AS node, source AS neighbour FROM ${v5Rows(this.db, "edges")}
+           WHERE kind = (SELECT id FROM ${v5Rows(this.db, "edge_kinds")} WHERE name = 'calls') AND source IN (SELECT value FROM json_each(?))
            UNION
-           SELECT source, target FROM main.edges
-           WHERE kind = (SELECT id FROM main.edge_kinds WHERE name = 'calls') AND target IN (SELECT value FROM json_each(?))
+           SELECT source, target FROM ${v5Rows(this.db, "edges")}
+           WHERE kind = (SELECT id FROM ${v5Rows(this.db, "edge_kinds")} WHERE name = 'calls') AND target IN (SELECT value FROM json_each(?))
          ) edge JOIN temp.nodes n ON n.node_key = edge.node
          GROUP BY edge.node HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC, n.id LIMIT ?`,
       ).all(keys, keys, minShared, limit) as Array<{ node_id: string }>;
@@ -488,8 +488,8 @@ interface V5FingerprintRow {
 function v5FingerprintNeighbours(db: SqliteDatabase): ReturnType<SqliteDatabase["prepare"]> {
   return db.prepare(
     `SELECT k.name || ':' || lower(hex(n.public_id)) AS id
-     FROM main.fingerprint_neighbours f JOIN main.nodes n ON n.id = f.neighbour
-     JOIN main.node_kinds k ON k.id = n.kind WHERE f.node = ? ORDER BY id`,
+     FROM ${v5Rows(db, "fingerprint_neighbours")} f JOIN ${v5Rows(db, "nodes")} n ON n.id = f.neighbour
+     JOIN ${v5Rows(db, "node_kinds")} k ON k.id = n.kind WHERE f.node = ? ORDER BY id`,
   );
 }
 

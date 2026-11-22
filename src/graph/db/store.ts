@@ -11,7 +11,8 @@ import { createHash } from "node:crypto";
 import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind, ReferenceKind } from "../types.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "../retrieval/query.js";
 import type { SqliteDatabase, SqliteStatement } from "./sqlite.js";
-import { parseV5PublicId, readsV5Graph, v5NodeKey } from "./v5.js";
+import { parseV5PublicId, readsV5Graph, readsV5Overlay, v5NodeKey, v5Rows } from "./v5.js";
+import { rankV5Overlay } from "./v5-search.js";
 import { timeGraphPhase } from "../phase-timing.js";
 
 /** An unresolved reference row: a name a node points at, bound after indexing. */
@@ -563,14 +564,18 @@ export class GraphStore {
       const alias = parseV5PublicId(aliasId);
       const node = v5NodeKey(this.db, canonicalNodeId);
       if (!alias || node === undefined) return false;
-      this.db.prepare("INSERT OR IGNORE INTO main.node_kinds(name) VALUES (?)").run(alias.kind);
+      const kinds = v5Rows(this.db, "node_kinds");
+      const key = this.db.prepare(`SELECT id FROM ${kinds} WHERE name = ?`).get(alias.kind) as { id: number } | undefined;
+      const kind = key?.id ?? this.db.prepare(readsV5Overlay(this.db)
+        ? "INSERT INTO main.node_kinds(id,name) VALUES ((SELECT max(coalesce(max(id),0),1099511627776)+1 FROM main.node_kinds),?)"
+        : "INSERT INTO main.node_kinds(name) VALUES (?)").run(alias.kind).lastInsertRowid;
       return this.db.prepare(
         `INSERT INTO main.aliases(old_public_id, old_kind, node, match_method, confidence)
-         VALUES (?, (SELECT id FROM main.node_kinds WHERE name = ?), ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(old_public_id) DO UPDATE SET
            old_kind = excluded.old_kind, node = excluded.node, match_method = excluded.match_method,
            confidence = excluded.confidence`,
-      ).run(alias.digest, alias.kind, node, matchMethod, confidence).changes > 0;
+      ).run(alias.digest, kind, node, matchMethod, confidence).changes > 0;
     }
     return this.statement(
       "insertAlias",
@@ -631,14 +636,18 @@ export class GraphStore {
     for (const term of terms) {
       const escaped = term.term.replaceAll('"', '');
       const match = term.term.length <= 3 ? `"${escaped}"` : `"${escaped}"*`;
-      const rows = sides.flatMap(({ schema, hidden }) => (this.db.prepare(
+      type RankedChunk = { id: number; file_path: string; start_line: number; end_line: number; content_hash: string; rank: number; side: string };
+      const rows = (readsV5Overlay(this.db) ? this.db.prepare(
+        `SELECT c.*, CAST(r.value ->> 1 AS REAL) AS rank, '' AS side
+         FROM json_each(?) r CROSS JOIN temp.source_chunks c ON c.id = r.value ->> 0
+         ORDER BY rank, c.file_path, c.start_line LIMIT ?`,
+      ).all(JSON.stringify(rankV5Overlay(this.db, "source_chunks", [match])), Math.max(20, limit)) as RankedChunk[]
+        : sides.flatMap(({ schema, hidden }) => (this.db.prepare(
         `SELECT c.id, c.file_path, c.start_line, c.end_line, c.content_hash,
                 bm25(source_chunks_fts, 4, 2, 1, 3) AS rank, '${schema}' AS side
          FROM ${schema}source_chunks_fts AS source_chunks_fts JOIN ${schema}source_chunks c ON c.id = source_chunks_fts.rowid
          WHERE source_chunks_fts MATCH ?${hidden} ORDER BY rank, c.file_path, c.start_line LIMIT ?`,
-      ).all(match, Math.max(20, limit)) as Array<{
-        id: number; file_path: string; start_line: number; end_line: number; content_hash: string; rank: number; side: string;
-      }>)).sort((left, right) => left.rank - right.rank || left.file_path.localeCompare(right.file_path) || left.start_line - right.start_line)
+      ).all(match, Math.max(20, limit)) as RankedChunk[]))).sort((left, right) => left.rank - right.rank || left.file_path.localeCompare(right.file_path) || left.start_line - right.start_line)
         .slice(0, Math.max(20, limit));
       rows.forEach((row, index) => {
         const key = `${row.side}${row.id}`;
@@ -811,7 +820,7 @@ export class GraphStore {
       const row = this.statement("getNodeById",
         `SELECT * FROM temp.nodes
          WHERE node_key = coalesce(
-           (SELECT n.id FROM main.nodes n JOIN main.node_kinds k ON k.id = n.kind
+           (SELECT n.id FROM ${v5Rows(this.db, "nodes")} n JOIN ${v5Rows(this.db, "node_kinds")} k ON k.id = n.kind
             WHERE n.public_id = ? AND k.name = ?),
            (SELECT node_key FROM temp.node_aliases WHERE alias_digest = ? AND alias_kind = ?)
          )`,
@@ -1045,7 +1054,7 @@ export class GraphStore {
     if (key === undefined) return [];
     const selected = kinds?.length ? kinds : [];
     const filter = selected.length
-      ? ` AND kind_key IN (SELECT id FROM main.edge_kinds WHERE name IN (${selected.map(() => "?").join(",")}))`
+      ? ` AND kind_key IN (SELECT id FROM ${v5Rows(this.db, "edge_kinds")} WHERE name IN (${selected.map(() => "?").join(",")}))`
       : "";
     return (this.db.prepare(
       `SELECT * FROM temp.edges WHERE ${side}_key = ?${filter} ORDER BY source, target, kind, id`,
@@ -1068,7 +1077,7 @@ export class GraphStore {
       if (bindings.length === 0) continue;
       const placeholders = bindings.map(() => "?").join(",");
       const predicate = native
-        ? `node_key IN (SELECT id FROM main.nodes WHERE public_id IN (${placeholders}))`
+        ? `node_key IN (SELECT id FROM ${v5Rows(this.db, "nodes")} WHERE public_id IN (${placeholders}))`
         : `id IN (${placeholders})`;
       const rows = this.db.prepare(`SELECT * FROM nodes WHERE ${predicate}`).all(...bindings) as NodeRow[];
       for (const row of rows) if (!requested || requested.has(row.id)) out.set(row.id, rowToNode(row));
@@ -1088,9 +1097,8 @@ export class GraphStore {
     const { kinds, languages, limit = 100 } = options;
     const plan = planGraphQuery(query);
     const searchableTerms = [...new Set(plan.terms.map((entry) => entry.term))];
-    const ftsQuery = searchableTerms
-      .map((term) => `"${term.replaceAll('"', '')}"*`)
-      .join(" OR ");
+    const phrases = searchableTerms.map(term => `"${term.replaceAll('"', '')}"*`);
+    const ftsQuery = phrases.join(" OR ");
 
     const filterSql: string[] = [];
     const filterParams: Array<string | number> = [];
@@ -1109,14 +1117,20 @@ export class GraphStore {
     if (ftsQuery) {
       // bm25 column weights bias toward name matches over incidental docstring
       // mentions. bm25 returns negative scores (more negative = better).
-      const rows = this.ftsSides("nodes.file_path").flatMap(({ schema, hidden }) => this.db
+      type RankedNode = NodeRow & { fts_rank: number };
+      const rows = (readsV5Overlay(this.db) ? this.db.prepare(
+        `SELECT nodes.*, CAST(r.value ->> 1 AS REAL) AS fts_rank
+         FROM json_each(?) r CROSS JOIN temp.nodes AS nodes ON nodes.node_key = r.value ->> 0
+         WHERE 1${filterClause} ORDER BY fts_rank, nodes.id LIMIT ?`,
+      ).all(JSON.stringify(rankV5Overlay(this.db, "nodes", phrases)), ...filterParams, fetchLimit) as RankedNode[]
+        : this.ftsSides("nodes.file_path").flatMap(({ schema, hidden }) => this.db
         .prepare(
           `SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) AS fts_rank FROM ${schema}nodes_fts AS nodes_fts
              JOIN ${schema}nodes AS nodes ON ${readsV5Graph(this.db) ? "nodes_fts.rowid = nodes.node_key" : "nodes_fts.id = nodes.id"}
              WHERE nodes_fts MATCH ?${hidden}${filterClause}
              ORDER BY fts_rank, nodes.id LIMIT ?`,
         )
-        .all(ftsQuery, ...filterParams, fetchLimit) as Array<NodeRow & { fts_rank: number }>)
+        .all(ftsQuery, ...filterParams, fetchLimit) as RankedNode[]))
         .sort((left, right) => left.fts_rank - right.fts_rank || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
         .slice(0, fetchLimit);
       rows.forEach((row, index) => candidates.set(row.id, { row, ftsRank: index, exact: false }));

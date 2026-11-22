@@ -10,12 +10,13 @@
  * record is local, ignored with `graph.db*`, and bound to the audit version,
  * the canonical database path and the size; any doubt runs the full audit.
  */
-import { rememberDigest } from "./source-memo.js";
+import { recallDigest, rememberDigest } from "./source-memo.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
   openSync,
   readFileSync,
   readSync,
@@ -29,11 +30,15 @@ import {
 const STRUCTURE_AUDIT_VERSION = 1;
 const HASH_CHUNK_BYTES = 1024 * 1024;
 
-interface AuditRecord {
-  version: number;
+interface AuditedArtifact {
   canonicalDbPath: string;
   size: number;
   digest: string;
+}
+
+interface AuditRecord extends AuditedArtifact {
+  version: number;
+  base?: AuditedArtifact;
 }
 
 function recordPath(canonicalDbPath: string): string {
@@ -41,8 +46,8 @@ function recordPath(canonicalDbPath: string): string {
 }
 
 /** Record that the database at `canonicalDbPath` with these bytes passed the full audit. */
-export function recordAuditedDatabase(canonicalDbPath: string, size: number, digest: string): void {
-  const record: AuditRecord = { version: STRUCTURE_AUDIT_VERSION, canonicalDbPath, size, digest };
+export function recordAuditedDatabase(canonicalDbPath: string, size: number, digest: string, base?: AuditedArtifact): void {
+  const record: AuditRecord = { version: STRUCTURE_AUDIT_VERSION, canonicalDbPath, size, digest, ...(base ? { base } : {}) };
   const path = recordPath(canonicalDbPath);
   const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   try {
@@ -64,7 +69,7 @@ export function recordAuditedDatabase(canonicalDbPath: string, size: number, dig
  * file hashes to its digest, and its stat identity is unchanged from before
  * the caller's open through the end of the hash.
  */
-export function holdsAuditedBytes(canonicalDbPath: string, statBeforeOpen: Stats): boolean {
+export function holdsAuditedBytes(canonicalDbPath: string, statBeforeOpen: Stats, basePath?: string): boolean {
   let record: AuditRecord;
   try {
     record = JSON.parse(readFileSync(recordPath(canonicalDbPath), "utf8")) as AuditRecord;
@@ -73,8 +78,24 @@ export function holdsAuditedBytes(canonicalDbPath: string, statBeforeOpen: Stats
   }
   if (record?.version !== STRUCTURE_AUDIT_VERSION
     || record.canonicalDbPath !== canonicalDbPath
-    || record.size !== statBeforeOpen.size
-    || typeof record.digest !== "string") return false;
+    || record.base?.canonicalDbPath !== basePath) return false;
+  if (basePath && record.base) {
+    const stat = lstatSync(basePath, { throwIfNoEntry: false });
+    if (!stat?.isFile() || !holdsBytes(record.base, stat)) return false;
+  }
+  const holds = holdsBytes(record, statBeforeOpen);
+  if (holds) provenInProcess = { canonicalDbPath, stat: statBeforeOpen };
+  return holds;
+}
+
+function holdsBytes(record: AuditedArtifact, statBeforeOpen: Stats): boolean {
+  if (record.size !== statBeforeOpen.size || typeof record.digest !== "string") return false;
+  const { canonicalDbPath } = record;
+  const memo = recallDigest(canonicalDbPath, statBeforeOpen);
+  if (memo !== undefined) {
+    const current = lstatSync(canonicalDbPath, { throwIfNoEntry: false });
+    return !!current?.isFile() && sameStat(statBeforeOpen, current) && memo === record.digest;
+  }
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   let fd: number;
   try {
@@ -94,9 +115,7 @@ export function holdsAuditedBytes(canonicalDbPath: string, statBeforeOpen: Stats
     const after = fstatSync(fd);
     const digest = hash.digest("hex");
     if (sameStat(statBeforeOpen, after)) rememberDigest(canonicalDbPath, after, digest);
-    const holds = sameStat(statBeforeOpen, after) && digest === record.digest;
-    if (holds) provenInProcess = { canonicalDbPath, stat: statBeforeOpen };
-    return holds;
+    return sameStat(statBeforeOpen, after) && digest === record.digest;
   } catch {
     return false;
   } finally {

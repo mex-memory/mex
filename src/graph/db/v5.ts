@@ -4,6 +4,42 @@ import type { SqliteDatabase } from "./sqlite.js";
 
 export const ENGINE_GRAPH_SCHEMA_VERSION = 5;
 const projected = new WeakSet<object>();
+const layered = new WeakSet<object>();
+
+export function readsV5Overlay(db: object): boolean {
+  return layered.has(db);
+}
+
+const CODE_TABLES = ["languages", "node_kinds", "edge_kinds", "provenances", "resolution_methods", "unresolved_reasons", "unresolved_names"];
+const OWNED_KEYS = {
+  files: "id", file_diagnostics: "file", file_resolution: "file", nodes: "file", node_attributes: "node",
+  edges: "source", unresolved_calls: "source", unresolved_other: "source", fingerprints: "node",
+  fingerprint_neighbours: "node", source_chunks: "file",
+};
+
+/** The engine's logical rows, including their integer-key joins. */
+export function v5Rows(db: object, table: string): string {
+  return layered.has(db) && (Object.hasOwn(OWNED_KEYS, table) || CODE_TABLES.includes(table))
+    ? `temp.v5_${table}` : `main.${table}`;
+}
+
+function installV5Union(db: SqliteDatabase): void {
+  db.exec(`CREATE TEMP VIEW v5_shadowed_files AS
+     SELECT f.id FROM main.shadow_files s CROSS JOIN base.files f ON f.path = s.path;
+    CREATE TEMP VIEW v5_shadowed_nodes AS
+     SELECT n.id FROM temp.v5_shadowed_files f CROSS JOIN base.nodes n ON n.file = f.id;`);
+  const ownersByFile = new Set(["files", "file_diagnostics", "file_resolution", "nodes", "source_chunks"]);
+  for (const [table, key] of Object.entries(OWNED_KEYS)) {
+    const owners = ownersByFile.has(table) ? "files" : "nodes";
+    db.exec(`CREATE TEMP VIEW v5_${table} AS
+      SELECT * FROM main.${table} UNION ALL
+      SELECT * FROM base.${table} WHERE ${key} NOT IN (SELECT id FROM temp.v5_shadowed_${owners})`);
+  }
+  for (const table of CODE_TABLES) {
+    db.exec(`CREATE TEMP VIEW v5_${table} AS SELECT * FROM main.${table} UNION ALL SELECT * FROM base.${table}`);
+  }
+  layered.add(db);
+}
 
 export function hasV5GraphSchema(db: Pick<SqliteDatabase, "prepare">): boolean {
   const row = db.prepare("PRAGMA main.user_version").get() as { user_version?: number };
@@ -26,15 +62,15 @@ export function v5NodeKey(
   const parts = parseV5PublicId(id);
   if (!parts) return undefined;
   const row = db.prepare(
-    `SELECT n.id FROM main.nodes n JOIN main.node_kinds k ON k.id = n.kind
+    `SELECT n.id FROM ${v5Rows(db, "nodes")} n JOIN ${v5Rows(db, "node_kinds")} k ON k.id = n.kind
      WHERE n.public_id = ? AND k.name = ?`,
   ).get(parts.digest, parts.kind) as { id: number } | undefined;
   return row?.id;
 }
 
 /** A shape check on the native tables before any view or reader uses them. */
-export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
-  const columns: Readonly<Record<string, string>> = {
+export function inspectV5GraphSchema(db: SqliteDatabase, schema: "main" | "base" = "main"): string[] {
+  const columns: Record<string, string> = {
     meta: "key value",
     languages: "id name",
     node_kinds: "id name",
@@ -63,7 +99,14 @@ export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
     coverage_extensions: "extension files",
     coverage_directories: "path stamp",
   };
-  const inventory = db.prepare("PRAGMA main.table_list").iterate() as Iterable<{
+  if (db.prepare(`SELECT 1 FROM ${schema}.sqlite_schema WHERE name = 'meta' AND type = 'table'`).get()
+    && db.prepare(`SELECT 1 FROM ${schema}.meta WHERE key = 'refresh_format'`).get()) columns.file_resolution = "file digest";
+  if (schema === "main" && db.prepare("SELECT 1 FROM main.sqlite_schema WHERE name = 'overlay_info'").get()) {
+    columns.overlay_info = "key value";
+    columns.shadow_files = "path";
+    columns.file_resolution = "file digest";
+  }
+  const inventory = db.prepare(`PRAGMA ${schema}.table_list`).iterate() as Iterable<{
     name: string; type: string; strict: number;
   }>;
   const expected = new Map(Object.keys(columns).map((table) => [table, false]));
@@ -80,12 +123,12 @@ export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
   for (const [table, valid] of expected) if (!valid) failures.push(`missing or invalid table ${table}`);
   if (failures.length > 0) return failures;
 
-  const tableColumns = db.prepare("SELECT group_concat(name, ' ') AS names FROM pragma_table_info(?, 'main')");
+  const tableColumns = db.prepare(`SELECT group_concat(name, ' ') AS names FROM pragma_table_info(?, '${schema}')`);
   for (const [table, required] of Object.entries(columns)) {
     const row = tableColumns.get(table) as { names: string | null };
     if (row.names !== required) failures.push(`incompatible columns in ${table}`);
   }
-  const foreignKeys = db.prepare("SELECT [from] AS owner, [table] AS target FROM pragma_foreign_key_list(?, 'main')");
+  const foreignKeys = db.prepare(`SELECT [from] AS owner, [table] AS target FROM pragma_foreign_key_list(?, '${schema}')`);
   for (const [table, required] of Object.entries({
     files: "language:languages", file_diagnostics: "file:files",
     nodes: "file:files kind:node_kinds parent:nodes", node_attributes: "node:nodes",
@@ -99,7 +142,7 @@ export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
       .map(key => `${key.owner}:${key.target}`));
     if (required.split(" ").some(key => !actual.has(key))) failures.push(`incompatible foreign keys in ${table}`);
   }
-  const index = db.prepare("SELECT tbl_name FROM main.sqlite_schema WHERE type = 'index' AND name = ?");
+  const index = db.prepare(`SELECT tbl_name FROM ${schema}.sqlite_schema WHERE type = 'index' AND name = ?`);
   for (const [name, table] of Object.entries({
     nodes_file_line: "nodes", nodes_name: "nodes", nodes_lower_name: "nodes", nodes_parent: "nodes",
     edges_target: "edges", unresolved_calls_name: "unresolved_calls", unresolved_calls_candidate: "unresolved_calls",
@@ -112,9 +155,10 @@ export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
   return failures;
 }
 
-export function inspectV5GraphInvariants(db: SqliteDatabase): string[] {
+export function inspectV5GraphInvariants(db: SqliteDatabase, schema: "main" | "base" = "main"): string[] {
+  const overlay = schema === "main" && readsV5Overlay(db);
   const failures: string[] = [];
-  if (db.prepare("PRAGMA main.foreign_key_check").get()) failures.push("dangling integer reference");
+  if (!overlay && db.prepare(`PRAGMA ${schema}.foreign_key_check`).get()) failures.push("dangling integer reference");
   // quick_check checks SQLite's records and CHECKs. These checks bind facts
   // used across tables and ensure every indexed row can be searched.
   const checks: Record<string, string> = {
@@ -151,7 +195,7 @@ export function inspectV5GraphInvariants(db: SqliteDatabase): string[] {
       WHERE length(CAST(subject_id AS BLOB)) > 4096 OR length(CAST(node_kind AS BLOB)) > 64
         OR length(CAST(source AS BLOB)) > 4194304 OR length(CAST(fingerprint AS BLOB)) > 4194304`,
     "oversized coverage observation": `SELECT 1 WHERE
-      (SELECT count(*) FROM main.coverage_directories) > 2048
+      (SELECT count(*) FROM main.coverage_directories) > 4096
       OR (SELECT sum(length(CAST(path AS BLOB)) + length(CAST(stamp AS BLOB))) FROM main.coverage_directories) > 524288
       OR (SELECT count(*) FROM main.coverage_extensions) > 64`,
   };
@@ -163,19 +207,103 @@ export function inspectV5GraphInvariants(db: SqliteDatabase): string[] {
     checks[`orphan ${fts} row`] = `SELECT 1 FROM main.${fts}_docsize AS fts LEFT JOIN main.${table} AS row USING(id) WHERE row.id IS NULL`;
   }
   for (const [failure, sql] of Object.entries(checks)) {
-    if (db.prepare(`${sql} LIMIT 1`).get()) failures.push(failure);
+    if (overlay && (failure.includes("neighbour") || failure.includes("kind") || failure === "call stored outside unresolved_calls")) continue;
+    const query = schema === "base" ? sql.replaceAll("main.", "base.") : sql;
+    if (db.prepare(`${query} LIMIT 1`).get()) failures.push(failure);
   }
+  if (overlay) failures.push(...inspectV5OverlayInvariants(db));
   return failures;
 }
 
-export function installV5GraphViews(db: SqliteDatabase, uncovered: readonly string[] = []): void {
+/** A validated base can only acquire dangling references at its shadow boundary. */
+function inspectV5OverlayInvariants(db: SqliteDatabase): string[] {
+  const offset = 2 ** 40;
+  const checks: Record<string, string> = {
+    "overlay file without a shadow": `SELECT 1 FROM main.files f WHERE NOT EXISTS (SELECT 1 FROM main.shadow_files s WHERE s.path = f.path)`,
+    "shadow without a file": `SELECT 1 FROM main.shadow_files s WHERE NOT EXISTS (SELECT 1 FROM main.files f WHERE f.path = s.path)
+      AND NOT EXISTS (SELECT 1 FROM base.files f WHERE f.path = s.path)`,
+    "invalid overlay file key": `SELECT 1 FROM main.files f LEFT JOIN base.files b ON b.path = f.path
+      WHERE (b.id IS NULL AND f.id <= ${offset}) OR (b.id IS NOT NULL AND f.id <> b.id)`,
+    "invalid overlay node key": `SELECT 1 FROM main.nodes n LEFT JOIN base.nodes b ON b.public_id = n.public_id
+      WHERE (b.id IS NULL AND n.id <= ${offset}) OR (b.id IS NOT NULL AND (n.id <> b.id OR n.file <> b.file OR n.kind <> b.kind))`,
+    "invalid overlay unresolved call kind": `SELECT 1 FROM main.unresolved_calls u JOIN temp.v5_edge_kinds k ON k.id = u.kind
+      WHERE k.name NOT IN ('calls', 'instantiates')`,
+    "call stored outside overlay unresolved_calls": `SELECT 1 FROM main.unresolved_other u JOIN temp.v5_edge_kinds k ON k.id = u.kind
+      WHERE k.name IN ('calls', 'instantiates')`,
+    "retained edge targets a removed node": `SELECT 1 FROM temp.v5_shadowed_nodes n
+      CROSS JOIN base.edges e ON e.target = n.id
+      WHERE NOT EXISTS (SELECT 1 FROM main.nodes r WHERE r.id = n.id)
+        AND e.source NOT IN (SELECT id FROM temp.v5_shadowed_nodes)`,
+    "retained candidate targets a removed node": `SELECT 1 FROM temp.v5_shadowed_nodes n
+      CROSS JOIN base.unresolved_calls u ON u.candidate = n.id
+      WHERE NOT EXISTS (SELECT 1 FROM main.nodes r WHERE r.id = n.id)
+        AND u.source NOT IN (SELECT id FROM temp.v5_shadowed_nodes)`,
+    "retained callback site in a removed file": `SELECT 1 FROM temp.v5_shadowed_files f
+      CROSS JOIN base.edges e ON e.site_file = f.id
+      WHERE NOT EXISTS (SELECT 1 FROM main.files r WHERE r.id = f.id)
+        AND e.source NOT IN (SELECT id FROM temp.v5_shadowed_nodes)`,
+    "retained fingerprint neighbour is removed": `SELECT 1 FROM temp.v5_shadowed_nodes n
+      CROSS JOIN base.fingerprint_neighbours f ON f.neighbour = n.id
+      WHERE NOT EXISTS (SELECT 1 FROM main.nodes r WHERE r.id = n.id)
+        AND f.node NOT IN (SELECT id FROM temp.v5_shadowed_nodes)`,
+    "changed fingerprint neighbourhood is inconsistent": overlayNeighbourCheck(),
+  };
+  for (const table of CODE_TABLES) {
+    checks[`invalid overlay ${table} code`] = `SELECT 1 FROM main.${table} a WHERE a.id <= ${offset}
+      OR EXISTS (SELECT 1 FROM base.${table} b WHERE b.id = a.id OR b.name = a.name)
+      ${table === "unresolved_names" ? "" : "OR length(CAST(a.name AS BLOB)) NOT BETWEEN 1 AND 128"}`;
+  }
+  const logicalReferences = new Set([
+    "edges:target", "edges:site_file", "unresolved_calls:candidate", "fingerprint_neighbours:neighbour", "aliases:node",
+    ...Object.keys(OWNED_KEYS).flatMap(table => CODE_TABLES.map(code => `${table}:${code}`)),
+    "aliases:node_kinds",
+  ]);
+  for (const table of [...Object.keys(OWNED_KEYS), "aliases"]) {
+    const keys = db.prepare(`SELECT [from] AS owner, [table] AS target FROM pragma_foreign_key_list(?, 'main')`)
+      .all(table) as Array<{ owner: string; target: string }>;
+    for (const { owner, target } of keys) {
+      const logical = logicalReferences.has(`${table}:${owner}`) || logicalReferences.has(`${table}:${target}`);
+      checks[`dangling overlay ${table}.${owner}`] = `SELECT 1 FROM main.${table} row WHERE row.${owner} IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM ${logical ? v5Rows(db, target) : `main.${target}`} parent WHERE parent.${target === "fingerprints" ? "node" : "id"} = row.${owner})`;
+    }
+  }
+  return Object.entries(checks).flatMap(([failure, sql]) => db.prepare(`${sql} LIMIT 1`).get() ? [failure] : []);
+}
+
+function overlayNeighbourCheck(): string {
+  const calls = (["main", "base"] as const).flatMap(schema => (["source", "target"] as const).map(side =>
+    `SELECT t.node, e.${side === "source" ? "target" : "source"} FROM touched t
+      CROSS JOIN ${schema}.edges e ON e.${side} = t.node WHERE e.kind = (SELECT id FROM call_kind)
+      ${schema === "base" ? "AND e.source NOT IN (SELECT id FROM temp.v5_shadowed_nodes)" : ""}`,
+  )).join(" UNION ");
+  return `WITH call_kind(id) AS (SELECT id FROM temp.v5_edge_kinds WHERE name = 'calls'),
+    old_calls AS MATERIALIZED (SELECT DISTINCT source, target FROM base.edges
+      WHERE kind = (SELECT id FROM call_kind) AND source IN (SELECT id FROM temp.v5_shadowed_nodes)),
+    new_calls AS MATERIALIZED (SELECT DISTINCT source, target FROM main.edges WHERE kind = (SELECT id FROM call_kind)),
+    removed AS (SELECT * FROM old_calls EXCEPT SELECT * FROM new_calls),
+    added AS (SELECT * FROM new_calls EXCEPT SELECT * FROM old_calls),
+    touched AS MATERIALIZED (
+      SELECT node FROM main.fingerprints
+      UNION SELECT target FROM removed WHERE EXISTS (SELECT 1 FROM temp.v5_fingerprints f WHERE f.node = removed.target)
+      UNION SELECT target FROM added WHERE EXISTS (SELECT 1 FROM temp.v5_fingerprints f WHERE f.node = added.target)
+    ), expected(node, neighbour) AS MATERIALIZED (${calls}), stored AS MATERIALIZED (
+      SELECT f.node, f.neighbour FROM touched t CROSS JOIN main.fingerprint_neighbours f ON f.node = t.node
+      UNION ALL SELECT f.node, f.neighbour FROM touched t CROSS JOIN base.fingerprint_neighbours f ON f.node = t.node
+        WHERE f.node NOT IN (SELECT id FROM temp.v5_shadowed_nodes)
+    )
+    SELECT 1 FROM (SELECT * FROM expected EXCEPT SELECT * FROM stored)
+    UNION ALL SELECT 1 FROM (SELECT * FROM stored EXCEPT SELECT * FROM expected)`;
+}
+
+export function installV5GraphViews(db: SqliteDatabase, uncovered: readonly string[] = [], overlay = false): void {
   if (projected.has(db) && uncovered.length === 0) return;
   const readOnly = (db.prepare("PRAGMA query_only").get() as { query_only: number }).query_only;
   if (readOnly) db.pragma("query_only = OFF");
   try {
     if (!projected.has(db)) {
       db.pragma("temp_store = MEMORY");
-      db.exec(VIEWS);
+      if (overlay) installV5Union(db);
+      db.exec(overlay ? VIEWS.replace(/\bmain\.(\w+)/g, (_, table: string) => v5Rows(db, table)) : VIEWS);
       projected.add(db);
     }
     if (uncovered.length > 0) {

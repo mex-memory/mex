@@ -1,4 +1,4 @@
-import { installGraphViews } from "./overlay.js";
+import { attachedV5Base, installGraphViews, v5BaseIsCurrent } from "./overlay.js";
 import { assertTextSource, unavailableFileReason } from "./source-errors.js";
 import { collectGraphGarbage, graphLocation, graphStoragePathAllowed, withGraphStorageContext } from "./storage.js";
 import { currentGraphPath } from "./storage.js";
@@ -241,6 +241,8 @@ export function inspectGraphSidecars(dbPath: string): GraphSidecarProbe {
 
 export interface InspectGraphStatusOptions {
   projectRoot: string;
+  /** Native maintenance supplies its captured inputs and re-proves them at publication. */
+  maintenanceInputs?: GraphMaintenanceInputs;
   /** @internal Apply owns this growing set; other consumers prove the full corpus. */
   sourceScope?: ReadonlySet<string>;
   dbPath?: string;
@@ -257,7 +259,7 @@ export interface InspectGraphStatusOptions {
    * open is still exactly that file; every other check still runs. Nothing is
    * cached or written: the caller carries it for one read.
    */
-  auditedDatabase?: Pick<InternalGraphFreshObservationToken, "canonicalDbPath" | "databaseIdentity">;
+  auditedDatabase?: Pick<InternalGraphFreshObservationToken, "canonicalDbPath" | "databaseIdentity" | "baseIdentity">;
   /**
    * @internal Which persisted-structure audit this inspection runs.
    *
@@ -304,6 +306,7 @@ export interface InspectGraphStatusOptions {
 export interface InternalGraphFreshObservationToken {
   readonly canonicalDbPath: string;
   readonly databaseIdentity: string;
+  readonly baseIdentity?: string;
   readonly snapshotRaw: string;
   readonly snapshotHash: string;
 }
@@ -377,6 +380,12 @@ interface RepoObservation {
   diagnostics: Diagnostic[];
 }
 
+export interface GraphMaintenanceInputs {
+  repo: Promise<RepoObservation>;
+  live: LiveSources;
+  manifest: ReturnType<typeof graphManifest>;
+}
+
 interface ContainedDatabasePath {
   requestedPath: string;
   canonicalPath: string;
@@ -436,6 +445,7 @@ interface FreshObservation {
   snapshotRaw: string;
   database: ContainedDatabasePath;
   databaseIdentity: string;
+  baseIdentity?: string;
 }
 
 interface FreshValidation {
@@ -553,10 +563,11 @@ async function inspectGraphStatusAttempt(
   }
   const database = contained.database;
   const diagnostics: Diagnostic[] = [];
-  const repo = await timeGraphPhaseAsync("inspect.repo", () => inspectRepoState(projectRoot, observedAt));
+  const captured = context.options.maintenanceInputs;
+  const repo = await timeGraphPhaseAsync("inspect.repo", () => captured?.repo ?? inspectRepoState(projectRoot, observedAt));
   const currentRepo = repo.state;
   diagnostics.push(...repo.diagnostics);
-  const live = await timeGraphPhaseAsync("inspect.sources", () => inspectLiveSources(
+  const live = captured?.live ?? await timeGraphPhaseAsync("inspect.sources", () => inspectLiveSources(
     projectRoot,
     database.projectRootRealPath,
     maxChangedPaths,
@@ -565,7 +576,8 @@ async function inspectGraphStatusAttempt(
     context.options.sourceScope,
   ));
   diagnostics.push(...live.diagnostics);
-  let manifest = timeGraphPhase("inspect.manifest", () => inspectCurrentManifest(projectRoot, diagnostics));
+  let manifest = captured ? graphManifestForSchema(captured.manifest, DB_SCHEMA_VERSION)
+    : timeGraphPhase("inspect.manifest", () => inspectCurrentManifest(projectRoot, diagnostics));
   let buildPrerequisitesComplete = repo.complete && live.complete && manifest !== null;
 
   let fileStat: ReturnType<typeof statSync>;
@@ -829,16 +841,19 @@ async function inspectGraphStatusAttempt(
         }));
     }
 
+    // Bind both artifacts before reusing an overlay's audit.
+    installGraphViews(db, database.canonicalPath);
+    const base = attachedV5Base(db);
     // Revalidating a read re-audits nothing it could learn from: SQLite holds
     // this file open immutable, and a changed identity fails the caller's
     // observation comparison regardless. Any doubt runs the full audit.
     // A file holding exactly the bytes of a database that already passed the
     // full audit cannot fail it (issue #209); proven by SHA-256, not by stat.
-    const structureAudited = timeGraphPhase("inspect.auditIdentity", () => isAuditedDatabase(
+    const structureAudited = timeGraphPhase("inspect.auditIdentity", () => (base?.identity === context.options.auditedDatabase?.baseIdentity && isAuditedDatabase(
       context.options.auditedDatabase,
       database.canonicalPath,
       databaseFileIdentity(fileStat),
-    ) || holdsAuditedBytes(database.canonicalPath, fileStat!));
+    )) || holdsAuditedBytes(database.canonicalPath, fileStat!, base?.path));
     const integrity = structureAudited ? [] : timeGraphPhase("inspect.quickCheck", () => quickCheck(db!));
     if (integrity.length > 0) {
       diagnostics.push({
@@ -858,12 +873,10 @@ async function inspectGraphStatusAttempt(
         }));
     }
 
-    // Structure was checked on the file itself; invariants and data are read
-    // through the overlay, as every reader sees them.
-    installGraphViews(db, database.canonicalPath);
-
     const coreInvariantFailures = structureAudited ? [] : timeGraphPhase("inspect.invariants", () => native
-      ? inspectV5GraphInvariants(db!) : inspectCoreInvariants(db!, {
+      ? [...(base && !holdsAuditedBytes(base.path, statSync(base.path))
+        ? [...inspectV5GraphSchema(db!, "base"), ...quickCheck(db!, "base"), ...inspectV5GraphInvariants(db!, "base")] : []),
+        ...inspectV5GraphInvariants(db!)] : inspectCoreInvariants(db!, {
       fingerprints: context.options.structuralAudit !== "graph",
       bandHashMemo: context.options.bandHashMemo,
       ...(context.options.fingerprintScope ? { fingerprintScope: context.options.fingerprintScope } : {}),
@@ -1163,7 +1176,9 @@ async function inspectGraphStatusAttempt(
     // produce here; any other kind was returned long before this point.
     const bindable = status === "fresh"
       || (boundable && degradations.length > 0 && (status === "stale" || status === "degraded"));
-    if (!bindable || !snapshot || !snapshotRaw || !manifest) {
+    if (captured || !bindable || !snapshot || !snapshotRaw || !manifest) {
+      if (!v5BaseIsCurrent(base)) return { retry: true, status: graphStatus({ ...result, status: "degraded",
+        diagnostics: [...result.diagnostics, observationRaceDiagnostic(["overlay base"])] }) };
       return { ...finishDatabaseResult(result), configDriftTolerated };
     }
 
@@ -1177,6 +1192,7 @@ async function inspectGraphStatusAttempt(
       snapshotRaw,
       database,
       databaseIdentity: databaseFileIdentity(fileStat),
+      ...(base ? { baseIdentity: base.identity } : {}),
     };
     const validation = await timeGraphPhaseAsync("inspect.validateObservation", () =>
       validateFreshObservation(context, observation, degradations));
@@ -1610,11 +1626,13 @@ async function validateFreshObservation(
 
   let snapshotRaw: string;
   let identity: string;
+  let baseIdentity: string | undefined;
   try {
     const snapshotIdentity = timeGraphPhase("inspect.validation.snapshot", () =>
       readSnapshotIdentity(contained.database.canonicalPath));
     snapshotRaw = snapshotIdentity.snapshotRaw;
     identity = snapshotIdentity.databaseIdentity;
+    baseIdentity = snapshotIdentity.baseIdentity;
   } catch {
     return {
       stable: false,
@@ -1677,7 +1695,7 @@ async function validateFreshObservation(
     changed.push("compiler semantic inputs");
   }
   if (!sameManifest(before.manifest, manifest)) changed.push("graph manifest");
-  if (before.snapshotRaw !== snapshotRaw || before.databaseIdentity !== identity) changed.push("graph snapshot");
+  if (before.snapshotRaw !== snapshotRaw || before.databaseIdentity !== identity || before.baseIdentity !== baseIdentity) changed.push("graph snapshot");
   if (finalContained.database.canonicalPath !== contained.database.canonicalPath
     || finalContained.database.projectRootRealPath !== contained.database.projectRootRealPath) {
     changed.push("database path");
@@ -1692,6 +1710,7 @@ async function validateFreshObservation(
       freshObservation: Object.freeze({
         canonicalDbPath: finalContained.database.canonicalPath,
         databaseIdentity: identity,
+        ...(baseIdentity ? { baseIdentity } : {}),
         snapshotRaw,
         snapshotHash: sha256(snapshotRaw),
       }),
@@ -1707,7 +1726,7 @@ async function validateFreshObservation(
   };
 }
 
-function readSnapshotIdentity(dbPath: string): { snapshotRaw: string; databaseIdentity: string } {
+function readSnapshotIdentity(dbPath: string): { snapshotRaw: string; databaseIdentity: string; baseIdentity?: string } {
   const before = statSync(dbPath);
   if (!before.isFile()
     || !Number.isSafeInteger(before.size)
@@ -1717,6 +1736,7 @@ function readSnapshotIdentity(dbPath: string): { snapshotRaw: string; databaseId
   }
   const db = openSqlite(dbPath, { readOnly: true, immutable: true });
   let snapshotRaw: string;
+  let baseIdentity: string | undefined;
   try {
     if (hasV5GraphSchema(db)) installGraphViews(db, dbPath);
     const row = db.prepare(
@@ -1727,6 +1747,9 @@ function readSnapshotIdentity(dbPath: string): { snapshotRaw: string; databaseId
     ).get(GRAPH_CORPUS_LIMITS.maxSnapshotMetadataBytes, GRAPH_SNAPSHOT_METADATA_KEY) as { value?: unknown } | undefined;
     if (typeof row?.value !== "string") throw new Error("Missing graph snapshot identity");
     snapshotRaw = row.value;
+    const base = attachedV5Base(db);
+    if (!v5BaseIsCurrent(base)) throw new Error("The overlay base changed while its snapshot identity was read.");
+    baseIdentity = base?.identity;
   } finally {
     db.close();
   }
@@ -1740,7 +1763,7 @@ function readSnapshotIdentity(dbPath: string): { snapshotRaw: string; databaseId
   if (databaseFileIdentity(before) !== databaseFileIdentity(after)) {
     throw new Error("The graph database changed while its snapshot identity was read.");
   }
-  return { snapshotRaw, databaseIdentity: databaseFileIdentity(after) };
+  return { snapshotRaw, databaseIdentity: databaseFileIdentity(after), ...(baseIdentity ? { baseIdentity } : {}) };
 }
 
 function unstableObservation(
@@ -2964,8 +2987,8 @@ function readSnapshot(raw: string | undefined): { snapshot?: GraphSnapshot; erro
     : { error: "graph_snapshot_v1 has invalid JSON, fields, or version." };
 }
 
-function quickCheck(db: SqliteDatabase): string[] {
-  const rows = db.prepare("PRAGMA quick_check(100)").all() as Array<Record<string, unknown>>;
+function quickCheck(db: SqliteDatabase, schema: "main" | "base" = "main"): string[] {
+  const rows = db.prepare(`PRAGMA ${schema}.quick_check(100)`).all() as Array<Record<string, unknown>>;
   return rows.map((row) => String(row.quick_check ?? Object.values(row)[0] ?? ""))
     .filter((result) => result.toLowerCase() !== "ok");
 }
@@ -3015,7 +3038,7 @@ function inspectCurrentManifest(
   }
 }
 
-async function inspectRepoState(
+export async function inspectRepoState(
   projectRoot: string,
   observedAt: string,
 ): Promise<RepoObservation> {

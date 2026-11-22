@@ -1,5 +1,5 @@
 import { processGraphSizing } from "../sizing.js";
-import { installGraphViews, OVERLAY_NAME } from "../overlay.js";
+import { installGraphViews, overlayBase, OVERLAY_NAME } from "../overlay.js";
 // ============================================================================
 // mex code-graph — database open / schema init  (A3)
 // ============================================================================
@@ -50,6 +50,8 @@ export interface OpenGraphDatabaseOptions {
    * establish that no non-empty WAL contains authoritative graph data.
    */
   immutable?: boolean;
+  /** The real overlay location when SQLite opens the file through a descriptor. */
+  overlayPath?: string;
   /** A private clone may explicitly update v5 continuity data. */
   allowV5ContinuityWrites?: boolean;
 }
@@ -99,11 +101,12 @@ export function openGraphDatabase(
   assertFts5Available();
 
   if (options.readOnly) {
-    const db = options.immutable || OVERLAY_NAME.test(basename(dbPath))
-      ? openImmutableGraphDatabase(dbPath)
+    const overlayPath = options.overlayPath ?? dbPath;
+    const db = options.immutable || OVERLAY_NAME.test(basename(overlayPath))
+      ? openImmutableGraphDatabase(dbPath, overlayPath)
       : openReadOnlyGraphDatabase(dbPath);
-    if (OVERLAY_NAME.test(basename(dbPath))) {
-      try { installGraphViews(db, dbPath); } catch (error) { db.close(); throw error; }
+    if (OVERLAY_NAME.test(basename(overlayPath))) {
+      try { installGraphViews(db, overlayPath); } catch (error) { db.close(); throw error; }
     }
     return db;
   }
@@ -112,7 +115,7 @@ export function openGraphDatabase(
     if (hasV5GraphSchema(db)) {
       if (!options.allowV5ContinuityWrites) throw incompatibleSchema("schema v5 graph facts are written by the Rust engine.");
       assertV5Readable(db);
-      db.pragma("foreign_keys = ON");
+      db.pragma(`foreign_keys = ${overlayBase(db) ? "OFF" : "ON"}`);
       installGraphViews(db, dbPath);
       return db;
     }
@@ -175,11 +178,11 @@ function initializeWritableGraphDatabase(
   }
 }
 
-function validateReadOnlyGraphDatabase(db: SqliteDatabase): SqliteDatabase {
+function validateReadOnlyGraphDatabase(db: SqliteDatabase, path: string): SqliteDatabase {
   configureReadOnlyConnection(db);
   if (hasV5GraphSchema(db)) {
     assertV5Readable(db);
-    installGraphViews(db, undefined);
+    installGraphViews(db, path);
     return db;
   }
   if (!tableExists(db, "schema_versions") || readSchemaVersion(db) !== DB_SCHEMA_VERSION) {
@@ -197,10 +200,10 @@ function assertV5Readable(db: SqliteDatabase): void {
   }
 }
 
-function openImmutableGraphDatabase(dbPath: string): SqliteDatabase {
+function openImmutableGraphDatabase(dbPath: string, overlayPath: string): SqliteDatabase {
   const db = openSqlite(dbPath, { readOnly: true, immutable: true });
   try {
-    return validateReadOnlyGraphDatabase(db);
+    return validateReadOnlyGraphDatabase(db, overlayPath);
   } catch (error) {
     db.close();
     throw error;
@@ -210,7 +213,7 @@ function openImmutableGraphDatabase(dbPath: string): SqliteDatabase {
 function openReadOnlyGraphDatabase(dbPath: string): SqliteDatabase {
   let db = openSqlite(dbPath, { readOnly: true });
   try {
-    return validateReadOnlyGraphDatabase(db);
+    return validateReadOnlyGraphDatabase(db, dbPath);
   } catch (error) {
     db.close();
     const message = error instanceof Error ? error.message : String(error);
@@ -226,7 +229,7 @@ function openReadOnlyGraphDatabase(dbPath: string): SqliteDatabase {
     // first read. Immutable mode is safe only when no WAL payload exists.
     db = openSqlite(dbPath, { readOnly: true, immutable: true });
     try {
-      return validateReadOnlyGraphDatabase(db);
+      return validateReadOnlyGraphDatabase(db, dbPath);
     } catch (immutableError) {
       db.close();
       throw immutableError;
