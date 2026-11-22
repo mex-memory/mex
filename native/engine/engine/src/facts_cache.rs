@@ -25,6 +25,24 @@ const MAX_PAGES: u32 = 81_920;
 // Bump the filename when changing the codec or the SQLite layout. The facts
 // version in the key also covers changes to the serialized Rust types.
 const CACHE_FILE: &str = "facts-v2.db";
+const WINDOW_LOG: u32 = 22;
+const TABLE_LOG: u32 = 19;
+
+/// Level 11 with smaller match-finder tables. Every extraction thread holds a
+/// compressor, and level 11's default tables for a 3 MiB block cost about
+/// 90 MiB of peak memory on Hono against 1% of the cache's size on novu.
+fn compressor() -> Option<zstd::bulk::Compressor<'static>> {
+    use zstd::zstd_safe::CParameter;
+    let mut encoder = zstd::bulk::Compressor::new(11).ok()?;
+    for parameter in [
+        CParameter::WindowLog(WINDOW_LOG),
+        CParameter::HashLog(TABLE_LOG),
+        CParameter::ChainLog(TABLE_LOG),
+    ] {
+        encoder.set_parameter(parameter).ok()?;
+    }
+    Some(encoder)
+}
 
 fn codec() -> impl bincode::config::Config {
     bincode::config::standard().with_limit::<MAX_DECODED>()
@@ -124,7 +142,7 @@ impl FactsCache {
     pub fn worker(&self, blocks: SyncSender<Block>) -> Option<CacheWorker> {
         Some(CacheWorker {
             reader: self.reader()?,
-            encoder: zstd::bulk::Compressor::new(11).ok()?,
+            encoder: compressor()?,
             encoded: Vec::new(),
             entries: Vec::new(),
             block: Vec::new(),
