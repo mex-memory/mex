@@ -1,5 +1,13 @@
-import { KnowledgeError, validateEntry, type KnowledgeEntry } from "./entry.js";
+import { isLearnedEntry, KnowledgeError, validateEntry, type KnowledgeEntry } from "./entry.js";
 import { commandExists, ENV_ASSIGNMENTS, withoutEnvironment, type References } from "./references.js";
+
+const PULL_LINK = /^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/pull\/\d+(?=[/?#]|$)/u;
+
+/** The repository part of a GitHub pull request link ("https://github.com/o/r"), or undefined. */
+export function pullRepository(url: string): string | undefined {
+  const match = PULL_LINK.exec(url);
+  return match ? match[0].slice(0, match[0].lastIndexOf("/pull/")) : undefined;
+}
 
 export function stripHidden(text: string): string {
   return text.replace(/[\p{Cf}\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/gu, "");
@@ -140,9 +148,15 @@ export function gateEntry(input: KnowledgeEntry, source: References, keptCheck?:
   if (entry.mex.source.quote) entry.mex.source.quote = sanitizeText(entry.mex.source.quote, source);
   // source.ref is provenance (for example a reviewed PR), not a payload link.
   // Its source authority is checked by the store/capture boundary.
+  // A learned review rule cites the pull requests it was learned from. Those links
+  // never appear in tracked text, so they are kept only when they point into the
+  // same repository as the entry's own source: a check, never delivered text.
+  const ownPulls = isLearnedEntry(entry.mex) && entry.mex.evidence === "review" ? pullRepository(entry.mex.source.ref) : undefined;
   entry.mex.checks = entry.mex.checks.filter((check, index) => {
     const kept = check.kind === "command" ? commandExists(check.target.run, source)
-      : check.kind === "source" && "url" in check.target ? source.links.has(check.target.url) : true;
+      : check.kind === "source" && "url" in check.target
+        ? source.links.has(check.target.url) || (ownPulls !== undefined && pullRepository(check.target.url) === ownPulls)
+        : true;
     if (kept) keptCheck?.(index);
     return kept;
   });
