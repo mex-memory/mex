@@ -1,11 +1,12 @@
 //! Resolve only through lexical scopes, written module paths, and named uses.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 
 use mex_graph_core::facts::{
     Def, FileFacts, Import, ImportBinding, Kind, ReferenceKind, SyntaxReference,
 };
+use mex_graph_core::resolve::Files;
 use mex_graph_core::text::js_trim;
 use mex_graph_syntax::resolve::{
     DefRef, FileResolution, ImportTarget, Index, Site, Target, accepts, unique, visible,
@@ -15,103 +16,100 @@ const MAX_LOOKUP_STEPS: u16 = 128;
 const MISSING: &str = "no_visible_declaration";
 
 pub fn resolve(files: &[FileFacts]) -> Vec<FileResolution<'_>> {
-    let scope = Scope::new(files);
-    files
-        .iter()
-        .enumerate()
-        .map(|(file, facts)| {
-            let mut result = FileResolution::default();
-            for import in &facts.imports {
-                let owner = (file, scope.import_owner(file, import));
-                let binding = import.bindings.first().expect("a Rust use binds a name");
-                let target = scope.import(owner, import, &any, &Cell::new(MAX_LOOKUP_STEPS));
-                // An import edge names the written module. The binding can
-                // separately point through a re-export to its definition.
-                let module = scope
-                    .module_prefix(owner, &import.specifier)
-                    .or_else(|| target.ok().map(|(module, _)| module));
-                let edge = module
-                    .filter(|&module| module != file)
-                    .map(|module| (module, 0));
-                if let Some(edge) = edge {
-                    result.push((file, 0), Site::Import(import), Ok(edge), "explicit-import");
-                } else if target.is_err() {
-                    result.push((file, 0), Site::Import(import), target, "explicit-import");
-                }
-                result.imports.push(ImportTarget {
-                    import,
-                    module,
-                    target: target.ok().filter(|&id| {
-                        binding.imported != "*" || scope.index.def(id).kind == Kind::File
-                    }),
-                });
-            }
-            for reference in &facts.syntax_references {
-                let from = (file, reference.from);
-                if !visible(scope.index.def(from)) {
-                    continue;
-                }
-                let target = scope.bind(from, reference);
-                let method = if target.is_ok_and(|to| to.0 != file) {
-                    "explicit-import"
-                } else {
-                    "lexical-scope"
-                };
-                result.push(from, Site::Symbol(reference), target, method);
-            }
-            result
-        })
+    let scope = Resolver::new(Files::Dense(files));
+    (0..files.len())
+        .map(|file| scope.resolve_file(file))
         .collect()
 }
 
-struct Scope<'a> {
+type Imports<'a> = HashMap<usize, Vec<(&'a Import, &'a ImportBinding)>>;
+
+pub struct Resolver<'a> {
     index: Index<'a>,
-    imports: HashMap<DefRef, Vec<(&'a Import, &'a ImportBinding)>>,
-    returns: HashMap<DefRef, &'a str>,
-    members: HashMap<String, Option<usize>>,
+    imports: Vec<OnceCell<Imports<'a>>>,
+    members: HashMap<String, Vec<usize>>,
 }
 
-impl<'a> Scope<'a> {
-    fn new(facts: &'a [FileFacts]) -> Self {
-        let index = Index::new(facts);
-        let mut result = Self {
-            index,
-            imports: HashMap::new(),
-            returns: HashMap::new(),
-            members: HashMap::new(),
-        };
-        for (&path, &file) in &result.index.files {
+impl<'a> Resolver<'a> {
+    pub fn new(facts: Files<'a>) -> Self {
+        let mut members: HashMap<String, Vec<usize>> = HashMap::new();
+        for (file, path) in facts.paths().enumerate() {
             if let Some(member) = path.strip_suffix("/src/lib.rs") {
                 let name = member
                     .rsplit('/')
                     .next()
                     .unwrap_or(member)
                     .replace('-', "_");
-                result
-                    .members
-                    .entry(name)
-                    .and_modify(|prior| *prior = None)
-                    .or_insert(Some(file));
+                members.entry(name).or_default().push(file);
             }
         }
-        for (file, facts) in facts.iter().enumerate() {
-            for reference in &facts.syntax_references {
-                if reference.kind == ReferenceKind::Returns {
-                    result
-                        .returns
-                        .insert((file, reference.from), &reference.name);
-                }
+        Self {
+            index: Index::new(facts),
+            imports: (0..facts.len()).map(|_| OnceCell::new()).collect(),
+            members,
+        }
+    }
+
+    pub fn resolve_file(&self, file: usize) -> FileResolution<'a> {
+        self.index.facts.origin(file);
+        let facts = self.index.facts.get(file);
+        let mut result = FileResolution::default();
+        for import in &facts.imports {
+            let owner = (file, self.import_owner(file, import));
+            let binding = import.bindings.first().expect("a Rust use binds a name");
+            let target = self.import(owner, import, &any, &Cell::new(MAX_LOOKUP_STEPS));
+            // An import edge names the written module. The binding can
+            // separately point through a re-export to its definition.
+            let module = self
+                .module_prefix(owner, &import.specifier)
+                .or_else(|| target.ok().map(|(module, _)| module));
+            let edge = module
+                .filter(|&module| module != file)
+                .map(|module| (module, 0));
+            if let Some(edge) = edge {
+                result.push((file, 0), Site::Import(import), Ok(edge), "explicit-import");
+            } else if target.is_err() {
+                result.push((file, 0), Site::Import(import), target, "explicit-import");
             }
-            for import in &facts.imports {
-                let owner = (file, result.import_owner(file, import));
-                result
-                    .imports
-                    .entry(owner)
-                    .or_default()
-                    .extend(import.bindings.iter().map(|binding| (import, binding)));
+            result.imports.push(ImportTarget {
+                import,
+                module,
+                target: target
+                    .ok()
+                    .filter(|&id| binding.imported != "*" || self.index.def(id).kind == Kind::File),
+            });
+        }
+        for reference in &facts.syntax_references {
+            let from = (file, reference.from);
+            if !visible(self.index.def(from)) {
+                continue;
             }
+            let target = self.bind(from, reference);
+            let method = if target.is_ok_and(|to| to.0 != file) {
+                "explicit-import"
+            } else {
+                "lexical-scope"
+            };
+            result.push(from, Site::Symbol(reference), target, method);
         }
         result
+    }
+
+    fn imports(&self, (file, def): DefRef) -> &[(&'a Import, &'a ImportBinding)] {
+        let facts = self.index.facts.get(file);
+        self.imports[file]
+            .get_or_init(|| {
+                let mut imports: Imports<'_> = HashMap::new();
+                for import in &facts.imports {
+                    imports
+                        .entry(self.import_owner(file, import))
+                        .or_default()
+                        .extend(import.bindings.iter().map(|binding| (import, binding)));
+                }
+                imports
+            })
+            .get(&def)
+            .map_or(&[], Vec::as_slice)
     }
 
     fn import_owner(&self, file: usize, import: &Import) -> usize {
@@ -159,7 +157,18 @@ impl<'a> Scope<'a> {
         let target = self.bind_path(from, &path, &|def| {
             def.kind == Kind::Function || path.len() > 1 && def.kind == Kind::Method
         })?;
-        let returned = self.returns.get(&target).ok_or("untyped_receiver")?;
+        let returned = self
+            .index
+            .facts
+            .get(target.0)
+            .syntax_references
+            .iter()
+            .rev()
+            .find(|reference| {
+                reference.from == target.1 && reference.kind == ReferenceKind::Returns
+            })
+            .map(|reference| reference.name.as_str())
+            .ok_or("untyped_receiver")?;
         let path = split_path(returned).ok_or("untyped_receiver")?;
         self.bind_path(target, &path, &is_type)
     }
@@ -213,7 +222,7 @@ impl<'a> Scope<'a> {
                 .ancestors(module)
                 .find(|&owner| is_module(self.index.def(owner)));
         }
-        let path = &self.index.facts[module.0].path;
+        let path = self.index.facts.path(module.0);
         let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
         if let Some(entry) = self.integration_root(module.0) {
             return (entry != module.0).then_some((entry, 0));
@@ -223,10 +232,7 @@ impl<'a> Scope<'a> {
         }
         if file != "mod.rs" {
             for stem in ["mod", "lib", "main"] {
-                if let Some(&candidate) = self
-                    .index
-                    .files
-                    .get(join(dir, &format!("{stem}.rs")).as_str())
+                if let Some(candidate) = self.index.file(join(dir, &format!("{stem}.rs")).as_str())
                     && candidate != module.0
                 {
                     return Some((candidate, 0));
@@ -236,15 +242,13 @@ impl<'a> Scope<'a> {
         if dir.is_empty() {
             return None;
         }
-        if let Some(&parent) = self.index.files.get(format!("{dir}.rs").as_str()) {
+        if let Some(parent) = self.index.file(format!("{dir}.rs").as_str()) {
             return Some((parent, 0));
         }
         let parent = dirname(dir);
         ["mod", "lib", "main"].into_iter().find_map(|stem| {
             self.index
-                .files
-                .get(join(parent, &format!("{stem}.rs")).as_str())
-                .copied()
+                .file(&join(parent, &format!("{stem}.rs")))
                 .map(|file| (file, 0))
         })
     }
@@ -253,14 +257,14 @@ impl<'a> Scope<'a> {
         if let Some(entry) = self.integration_root(from) {
             return (entry, 0);
         }
-        let path = &self.index.facts[from].path;
+        let path = self.index.facts.path(from);
         if matches!(path.rsplit('/').next(), Some("lib.rs" | "main.rs")) {
             return (from, 0);
         }
         let mut dir = dirname(path);
         loop {
             for root in ["lib.rs", "main.rs"] {
-                if let Some(&file) = self.index.files.get(join(dir, root).as_str()) {
+                if let Some(file) = self.index.file(join(dir, root).as_str()) {
                     return (file, 0);
                 }
             }
@@ -274,16 +278,15 @@ impl<'a> Scope<'a> {
     /// Cargo's top-level integration tests, examples, benches and bin targets
     /// are roots. An adjacent aggregate entry can explicitly own a sibling.
     fn integration_root(&self, file: usize) -> Option<usize> {
-        let path = &self.index.facts[file].path;
+        let path = self.index.facts.path(file);
         let (directory, filename) = path.rsplit_once('/')?;
         let kind = directory.rsplit('/').next()?;
         if !matches!(kind, "tests" | "examples" | "benches" | "bin") || filename == "mod.rs" {
             return None;
         }
-        if let Some(&root) = self
+        if let Some(root) = self
             .index
-            .files
-            .get(join(directory, &format!("{kind}.rs")).as_str())
+            .file(join(directory, &format!("{kind}.rs")).as_str())
             && self.index.children((root, 0)).iter().any(|&child| {
                 let def = self.index.def(child);
                 is_module(def) && filename.strip_suffix(".rs") == Some(def.name.as_str())
@@ -312,7 +315,19 @@ impl<'a> Scope<'a> {
                 }
                 return Some((module, rest));
             }
-            member if !rest.is_empty() => (self.members.get(member).copied().flatten()?, 0),
+            member if !rest.is_empty() => {
+                self.index.facts.lookup("rust-crate", member);
+                let mut candidates = self
+                    .members
+                    .get(member)?
+                    .iter()
+                    .filter_map(|&file| self.index.file(self.index.facts.path(file)));
+                let file = candidates.next()?;
+                if candidates.next().is_some() {
+                    return None;
+                }
+                (file, 0)
+            }
             _ => return None,
         };
         Some((start, rest))
@@ -376,7 +391,7 @@ impl<'a> Scope<'a> {
             return target;
         }
         let mut matches = Vec::new();
-        for &(import, binding) in self.imports.get(&owner).into_iter().flatten() {
+        for &(import, binding) in self.imports(owner) {
             // The imported name must equal the first written segment. A glob
             // can supply names from its explicitly named module.
             let glob = binding.imported == "*";
@@ -423,30 +438,36 @@ impl<'a> Scope<'a> {
     }
 
     fn child(&self, owner: DefRef, name: &str, accept: &impl Fn(&Def) -> bool) -> Target {
-        unique(self.index.named(name).iter().copied().filter_map(|child| {
-            let def = self.index.def(child);
-            if self.index.parent(child) != Some(owner) {
-                return None;
-            }
-            let target = if def.flags.iter().any(|flag| flag == "rust_external_module") {
-                let mut directory = if self.crate_root(owner.0).0 == owner.0 {
-                    dirname(&self.index.facts[owner.0].path).into()
-                } else {
-                    module_directory(&self.index.facts[owner.0].path)
-                };
-                if let Some(inline) = (owner.1 != 0).then(|| self.index.def(owner)) {
-                    directory = join(&directory, &inline.qualified_name.replace("::", "/"));
-                }
-                let path = join(&directory, name);
-                [format!("{path}.rs"), format!("{path}/mod.rs")]
-                    .iter()
-                    .find_map(|path| self.index.files.get(path.as_str()).copied())
-                    .map_or(child, |file| (file, 0))
-            } else {
-                child
-            };
-            accept(self.index.def(target)).then_some(target)
-        }))
+        unique(
+            self.index
+                .children(owner)
+                .iter()
+                .copied()
+                .filter_map(|child| {
+                    let def = self.index.def(child);
+                    if def.name != name {
+                        return None;
+                    }
+                    let target = if def.flags.iter().any(|flag| flag == "rust_external_module") {
+                        let mut directory = if self.crate_root(owner.0).0 == owner.0 {
+                            dirname(self.index.facts.path(owner.0)).into()
+                        } else {
+                            module_directory(self.index.facts.path(owner.0))
+                        };
+                        if let Some(inline) = (owner.1 != 0).then(|| self.index.def(owner)) {
+                            directory = join(&directory, &inline.qualified_name.replace("::", "/"));
+                        }
+                        let path = join(&directory, name);
+                        [format!("{path}.rs"), format!("{path}/mod.rs")]
+                            .iter()
+                            .find_map(|path| self.index.file(path))
+                            .map_or(child, |file| (file, 0))
+                    } else {
+                        child
+                    };
+                    accept(self.index.def(target)).then_some(target)
+                }),
+        )
     }
 }
 

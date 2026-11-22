@@ -11,14 +11,27 @@ use super::{Lane, Lookup, Resolver, Site, Value, check_depth};
 
 type Substitutions<'a> = HashMap<&'a str, Option<Value>>;
 
-impl<'a> Resolver<'a> {
-    pub(super) fn index_contextual_this(&mut self) {
-        for file in 0..self.files.len() {
-            let Some(model) = &self.index[file] else {
-                continue;
-            };
-            for contextual in &model.facts.contextual_calls {
-                let call = &self.files[file].calls[contextual.call];
+impl<'a> Resolver<'a, '_> {
+    pub(super) fn prepare_context(&mut self, file: usize) {
+        if !self.context_ready.insert(file) {
+            return;
+        }
+        let Some(model) = self.index(file) else {
+            return;
+        };
+        let calls = &model.facts.contextual_calls;
+        if calls.is_empty() {
+            return;
+        }
+        // The cold pass sees the current file and earlier files while
+        // building contextual types. Load earlier dependencies on demand.
+        let files = self.files;
+        files.within(file, || {
+            let previous = self.preparing_context.replace(file);
+            let stack = std::mem::take(&mut self.export_stack);
+            let cache = std::mem::take(&mut self.export_cache);
+            for contextual in calls {
+                let call = &self.files.get(file).calls[contextual.call];
                 let Ok((target_file, target_def)) = self.resolve_call(file, call) else {
                     continue;
                 };
@@ -59,8 +72,10 @@ impl<'a> Resolver<'a> {
                     }
                 }
             }
-        }
-        self.export_cache.clear();
+            self.export_stack = stack;
+            self.export_cache = cache;
+            self.preparing_context = previous;
+        });
     }
 
     pub(super) fn type_symbol(

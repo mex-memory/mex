@@ -17,9 +17,12 @@
 //! A call nothing proves stays unresolved, counted under a named reason. A
 //! name that only matches somewhere in the repository is never a target.
 
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 
 use mex_graph_core::facts::{CallForm, FileFacts, Kind, NONE, Receiver, TypeBasis};
+
+use mex_graph_core::resolve::Files;
 
 use crate::EXCLUDED;
 
@@ -215,12 +218,12 @@ struct FileTables {
 }
 
 pub struct Resolver<'a> {
-    files: &'a [FileFacts],
+    files: Files<'a>,
     /// Dotted module name -> file index. Names claimed twice are left out.
     modules: HashMap<String, usize>,
     /// Repository path -> file index.
     paths: HashMap<&'a str, usize>,
-    tables: Vec<FileTables>,
+    tables: Vec<OnceCell<FileTables>>,
 }
 
 fn is_node(facts: &FileFacts, def: usize) -> bool {
@@ -271,6 +274,25 @@ fn module_name(path: &str, packages: &HashSet<String>) -> String {
     parts.join(".")
 }
 
+/// The same path-only index is used when comparing checkout topologies.
+pub fn module_index<'a>(paths: impl Iterator<Item = &'a str> + Clone) -> HashMap<String, usize> {
+    let packages: HashSet<String> = paths
+        .clone()
+        .filter_map(|path| path.strip_suffix("/__init__.py").map(str::to_owned))
+        .collect();
+    let mut claimed: HashMap<String, Option<usize>> = HashMap::new();
+    for (i, path) in paths.enumerate() {
+        claimed
+            .entry(module_name(path, &packages))
+            .and_modify(|entry| *entry = None)
+            .or_insert(Some(i));
+    }
+    claimed
+        .into_iter()
+        .filter_map(|(name, file)| Some((name, file?)))
+        .collect()
+}
+
 /// Strip an annotation to the class it names: quotes, `Optional[...]`,
 /// generic arguments and `| None` removed.
 fn annotation_class(text: &str) -> Option<String> {
@@ -289,63 +311,64 @@ fn annotation_class(text: &str) -> Option<String> {
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(files: &'a [FileFacts]) -> Resolver<'a> {
-        let paths: HashMap<&str, usize> = files
-            .iter()
+    pub fn new(files: &'a [FileFacts]) -> Self {
+        Self::with_files(Files::Dense(files))
+    }
+
+    pub fn with_files(files: Files<'a>) -> Self {
+        let paths = files
+            .paths()
             .enumerate()
-            .map(|(i, f)| (f.path.as_str(), i))
+            .map(|(i, path)| (path, i))
             .collect();
-        let packages: HashSet<String> = files
-            .iter()
-            .filter_map(|f| f.path.strip_suffix("/__init__.py").map(str::to_owned))
-            .collect();
-        let mut claimed: HashMap<String, Vec<usize>> = HashMap::new();
-        for (i, f) in files.iter().enumerate() {
-            claimed
-                .entry(module_name(&f.path, &packages))
-                .or_default()
-                .push(i);
-        }
-        let modules = claimed
-            .into_iter()
-            .filter_map(|(name, files)| (files.len() == 1).then(|| (name, files[0])))
-            .collect();
-        let mut resolver = Resolver {
+        Self {
             files,
-            modules,
+            modules: module_index(files.paths()),
             paths,
-            tables: Vec::new(),
-        };
-        resolver.tables = (0..files.len()).map(|i| resolver.build_tables(i)).collect();
-        resolver
+            tables: (0..files.len()).map(|_| OnceCell::new()).collect(),
+        }
+    }
+
+    fn tables(&self, file: usize) -> &FileTables {
+        // A cached table represents a read of the file as well.
+        self.files.get(file);
+        self.tables[file].get_or_init(|| self.files.within(file, || self.build_tables(file)))
     }
 
     /// The file a module path names: a module or a package's `__init__.py`.
     fn file_at(&self, dir_path: &str) -> Option<usize> {
-        self.paths
-            .get(format!("{dir_path}.py").as_str())
-            .or_else(|| self.paths.get(format!("{dir_path}/__init__.py").as_str()))
-            .copied()
+        self.path_at(&format!("{dir_path}.py"))
+            .or_else(|| self.path_at(&format!("{dir_path}/__init__.py")))
+    }
+
+    fn path_at(&self, path: &str) -> Option<usize> {
+        self.files.lookup("path", path);
+        self.paths.get(path).copied()
+    }
+
+    fn module_at(&self, name: &str) -> Option<usize> {
+        self.files.lookup("python-module", name);
+        self.modules.get(name).copied()
     }
 
     /// The module an import statement names, from the importing file.
     fn import_target(&self, file: usize, specifier: &str, level: u32) -> Option<usize> {
         if level == 0 {
-            return self.modules.get(specifier).copied();
+            return self.module_at(specifier);
         }
-        let path = &self.files[file].path;
+        let path = self.files.path(file);
         let mut dir = dir_of(path).to_owned();
         for _ in 1..level {
             dir = dir_of(&dir).to_owned();
         }
         if specifier.is_empty() {
-            return self.paths.get(join(&dir, "__init__.py").as_str()).copied();
+            return self.path_at(&join(&dir, "__init__.py"));
         }
         self.file_at(&join(&dir, &specifier.replace('.', "/")))
     }
 
     fn build_tables(&self, file: usize) -> FileTables {
-        let facts = &self.files[file];
+        let facts = self.files.get(file);
         let mut scopes: HashMap<usize, HashMap<String, Sym>> = HashMap::new();
         let mut members: HashMap<usize, HashMap<String, usize>> = HashMap::new();
         let mut fields: HashMap<usize, Fields> = HashMap::new();
@@ -489,7 +512,7 @@ impl<'a> Resolver<'a> {
     /// The definitions whose scopes a lookup from `scope` walks: the scope,
     /// then enclosing functions (skipping classes), then the module.
     fn scope_chain(&self, file: usize, scope: usize) -> Vec<usize> {
-        let defs = &self.files[file].defs;
+        let defs = &self.files.get(file).defs;
         let mut chain = vec![scope];
         let mut cur = defs.get(scope).map_or(NONE, |d| d.parent);
         while cur != NONE {
@@ -511,11 +534,11 @@ impl<'a> Resolver<'a> {
             return Value::Unknown("depth_limit");
         }
         for s in self.scope_chain(file, scope) {
-            if let Some(sym) = self.tables[file].scopes.get(&s).and_then(|m| m.get(name)) {
+            if let Some(sym) = self.tables(file).scopes.get(&s).and_then(|m| m.get(name)) {
                 return self.sym_value(file, s, sym, depth);
             }
         }
-        for &star in &self.tables[file].star_imports {
+        for &star in &self.tables(file).star_imports {
             let v = self.module_member(star, name, depth + 1);
             if !matches!(v, Value::Unknown(_)) {
                 return v;
@@ -535,14 +558,14 @@ impl<'a> Resolver<'a> {
             Sym::Binding { type_name, basis } => {
                 self.typed_value(file, scope, type_name.as_deref(), *basis, depth)
             }
-            Sym::ModulePath(path) => match self.modules.get(path) {
-                Some(&m) => Value::Module(m),
+            Sym::ModulePath(path) => match self.module_at(path) {
+                Some(m) => Value::Module(m),
                 None => Value::Unknown("external_module"),
             },
             Sym::From(ii, bi) => {
-                let import = &self.files[file].imports[*ii];
+                let import = &self.files.get(file).imports[*ii];
                 let binding = &import.bindings[*bi];
-                match self.tables[file].import_targets[*ii] {
+                match self.tables(file).import_targets[*ii] {
                     Some(module) => self.module_member(module, &binding.imported, depth + 1),
                     None => Value::Unknown("external_module"),
                 }
@@ -553,7 +576,7 @@ impl<'a> Resolver<'a> {
     /// A definition as a value: a variable that only aliases another name
     /// (`handler = other_function`) stands for that name.
     fn def_value(&self, file: usize, def: usize, depth: usize) -> Value {
-        let d = &self.files[file].defs[def];
+        let d = &self.files.get(file).defs[def];
         if matches!(d.kind, Kind::Variable | Kind::Constant) {
             let alias = d.signature.trim();
             let is_name = !alias.is_empty()
@@ -564,7 +587,7 @@ impl<'a> Resolver<'a> {
                 return self.dotted(file, d.parent.max(0) as usize, alias, depth + 1);
             }
         }
-        if !is_node(&self.files[file], def) {
+        if !is_node(self.files.get(file), def) {
             return Value::Unknown("excluded_target");
         }
         Value::Def((file, def))
@@ -598,7 +621,9 @@ impl<'a> Resolver<'a> {
 
     fn instance_of(&self, v: Value) -> Value {
         match v {
-            Value::Def(d) if self.files[d.0].defs[d.1].kind == Kind::Class => Value::Instance(d),
+            Value::Def(d) if self.files.get(d.0).defs[d.1].kind == Kind::Class => {
+                Value::Instance(d)
+            }
             Value::Unknown(r) => Value::Unknown(r),
             _ => Value::Unknown("not_a_class"),
         }
@@ -609,7 +634,7 @@ impl<'a> Resolver<'a> {
     fn call_result(&self, callee: Value, depth: usize) -> Value {
         match callee {
             Value::Def(d) => {
-                let def = &self.files[d.0].defs[d.1];
+                let def = &self.files.get(d.0).defs[d.1];
                 match def.kind {
                     Kind::Class => Value::Instance(d),
                     Kind::Function | Kind::Method => {
@@ -647,19 +672,19 @@ impl<'a> Resolver<'a> {
         if depth > MAX_DEPTH {
             return Value::Unknown("depth_limit");
         }
-        if let Some(sym) = self.tables[module].scopes.get(&0).and_then(|m| m.get(name)) {
+        if let Some(sym) = self.tables(module).scopes.get(&0).and_then(|m| m.get(name)) {
             let v = self.sym_value(module, 0, sym, depth);
             if !matches!(v, Value::Unknown("external_module")) {
                 return v;
             }
         }
-        let path = &self.files[module].path;
+        let path = &self.files.get(module).path;
         if let Some(pkg) = path.strip_suffix("/__init__.py")
             && let Some(sub) = self.file_at(&join(pkg, name))
         {
             return Value::Module(sub);
         }
-        for &star in &self.tables[module].star_imports {
+        for &star in &self.tables(module).star_imports {
             let v = self.module_member(star, name, depth + 1);
             if !matches!(v, Value::Unknown(_)) {
                 return v;
@@ -672,7 +697,7 @@ impl<'a> Resolver<'a> {
     fn attribute(&self, v: Value, name: &str, depth: usize) -> Value {
         match v {
             Value::Module(m) => self.module_member(m, name, depth),
-            Value::Def(d) if self.files[d.0].defs[d.1].kind == Kind::Class => {
+            Value::Def(d) if self.files.get(d.0).defs[d.1].kind == Kind::Class => {
                 match self.member(d, name, depth) {
                     Some(m) => self.def_value(m.0, m.1, depth),
                     None => Value::Unknown("unknown_member"),
@@ -688,7 +713,7 @@ impl<'a> Resolver<'a> {
     /// bases, or a `self.x` field with a known type.
     fn instance_attribute(&self, class: DefRef, name: &str, depth: usize) -> Value {
         if let Some(m) = self.member(class, name, depth) {
-            let def = &self.files[m.0].defs[m.1];
+            let def = &self.files.get(m.0).defs[m.1];
             return if matches!(def.kind, Kind::Variable | Kind::Constant) {
                 Value::Unknown("attribute_value")
             } else {
@@ -697,7 +722,7 @@ impl<'a> Resolver<'a> {
         }
         for c in self.mro(class, depth) {
             if let Some((type_name, basis)) =
-                self.tables[c.0].fields.get(&c.1).and_then(|f| f.get(name))
+                self.tables(c.0).fields.get(&c.1).and_then(|f| f.get(name))
             {
                 // A field's evidence is read in the scope of its class's methods.
                 return self.typed_value(c.0, c.1, type_name.as_deref(), *basis, depth + 1);
@@ -715,12 +740,12 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             out.push(c);
-            let def = &self.files[c.0].defs[c.1];
+            let def = &self.files.get(c.0).defs[c.1];
             let scope = def.parent.max(0) as usize;
             let mut bases = Vec::new();
             for h in &def.heritage {
                 if let Value::Def(b) = self.dotted(c.0, scope, &h.name, depth + 1)
-                    && self.files[b.0].defs[b.1].kind == Kind::Class
+                    && self.files.get(b.0).defs[b.1].kind == Kind::Class
                 {
                     bases.push(b);
                 }
@@ -734,7 +759,7 @@ impl<'a> Resolver<'a> {
 
     fn member(&self, class: DefRef, name: &str, depth: usize) -> Option<DefRef> {
         self.mro(class, depth).into_iter().find_map(|c| {
-            self.tables[c.0]
+            self.tables(c.0)
                 .members
                 .get(&c.1)
                 .and_then(|m| m.get(name))
@@ -744,7 +769,7 @@ impl<'a> Resolver<'a> {
 
     /// The class `self` (or `cls`) names in a method scope.
     fn self_class(&self, file: usize, scope: usize) -> Option<DefRef> {
-        let def = self.files[file].defs.get(scope)?;
+        let def = self.files.get(file).defs.get(scope)?;
         (def.kind == Kind::Method).then_some((file, def.parent as usize))
     }
 
@@ -759,7 +784,7 @@ impl<'a> Resolver<'a> {
                 let Some((first, rest)) = path.split_first() else {
                     return Value::Unknown("dynamic_receiver");
                 };
-                let mut v = match self.tables[file].self_names.get(&scope) {
+                let mut v = match self.tables(file).self_names.get(&scope) {
                     Some(s) if s == first => match self.self_class(file, scope) {
                         Some(c) => Value::Instance(c),
                         None => Value::Unknown("unknown_self"),
@@ -786,8 +811,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn resolve_file(&self, file: usize, out: &mut Resolution) {
-        let facts = &self.files[file];
+    pub fn resolve_file(&self, file: usize, out: &mut Resolution) {
+        self.files.origin(file);
+        let facts = self.files.get(file);
+        if facts.defs.is_empty() {
+            return;
+        }
         let mut reasons: HashMap<&'static str, u32> = HashMap::new();
         for (call_index, call) in facts.calls.iter().enumerate() {
             let scope = call.scope.max(0) as usize;
@@ -799,7 +828,7 @@ impl<'a> Resolver<'a> {
                         .into_iter()
                         .skip(1)
                         .find_map(|b| {
-                            self.tables[b.0]
+                            self.tables(b.0)
                                 .members
                                 .get(&b.1)
                                 .and_then(|m| m.get(&call.name))
@@ -827,7 +856,7 @@ impl<'a> Resolver<'a> {
             };
             let resolved = match target {
                 Value::Def(d) => {
-                    let kind = self.files[d.0].defs[d.1].kind;
+                    let kind = self.files.get(d.0).defs[d.1].kind;
                     match kind {
                         Kind::Class => Some((d, "instantiates")),
                         Kind::Function | Kind::Method => Some((d, "calls")),
@@ -857,7 +886,10 @@ impl<'a> Resolver<'a> {
                         Value::Def(def) => Some(def),
                         Value::Instance(class) => {
                             self.member(class, "__call__", 0).filter(|&(f, d)| {
-                                matches!(self.files[f].defs[d].kind, Kind::Function | Kind::Method)
+                                matches!(
+                                    self.files.get(f).defs[d].kind,
+                                    Kind::Function | Kind::Method
+                                )
                             })
                         }
                         _ => None,
@@ -876,7 +908,7 @@ impl<'a> Resolver<'a> {
             let scope = def.parent.max(0) as usize;
             for h in &def.heritage {
                 if let Value::Def(b) = self.dotted(file, scope, &h.name, 0)
-                    && self.files[b.0].defs[b.1].kind == Kind::Class
+                    && self.files.get(b.0).defs[b.1].kind == Kind::Class
                 {
                     out.edges.push(Edge {
                         from: (file, i),
@@ -892,12 +924,12 @@ impl<'a> Resolver<'a> {
         let mut seen = HashSet::new();
         for (ii, import) in facts.imports.iter().enumerate() {
             let mut targets = Vec::new();
-            if let Some(t) = self.tables[file].import_targets[ii] {
+            if let Some(t) = self.tables(file).import_targets[ii] {
                 targets.push(t);
             }
             // `from pkg import sub` imports the submodule file too.
-            if let Some(t) = self.tables[file].import_targets[ii]
-                && let Some(pkg) = self.files[t].path.strip_suffix("/__init__.py")
+            if let Some(t) = self.tables(file).import_targets[ii]
+                && let Some(pkg) = self.files.get(t).path.strip_suffix("/__init__.py")
             {
                 for b in &import.bindings {
                     if let Some(sub) = self.file_at(&join(pkg, &b.imported)) {
@@ -906,7 +938,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             for t in targets {
-                if t != file && seen.insert(t) && is_node(&self.files[t], 0) {
+                if t != file && seen.insert(t) && is_node(self.files.get(t), 0) {
                     out.edges.push(Edge {
                         from: (file, 0),
                         to: (t, 0),

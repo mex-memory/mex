@@ -1,18 +1,15 @@
 use mex_graph_core::facts::ecmascript::ExportValue;
-use mex_graph_core::facts::{Import, ImportForm, Kind, NONE};
+use mex_graph_core::facts::{ImportForm, Kind, NONE};
 
-use crate::modules::{ModuleResolver, ModuleTarget, Syntax};
+use crate::modules::{ModuleTarget, Syntax};
 
 use super::index::ExportEntry;
 use super::{Lane, Lookup, Resolver, Value, check_depth, def_ref};
 
-impl Resolver<'_> {
-    pub(super) fn import_target(
-        &self,
-        file: usize,
-        import: &Import,
-        modules: &ModuleResolver,
-    ) -> Lookup {
+impl Resolver<'_, '_> {
+    pub(super) fn import(&self, file: usize, index: usize) -> Lookup {
+        let facts = self.files.get(file);
+        let import = &facts.imports[index];
         let require = import.form == ImportForm::CommonJs;
         if require
             && import.bindings.is_empty()
@@ -25,14 +22,26 @@ impl Resolver<'_> {
         } else {
             Syntax::Import
         };
-        match modules.resolve(&self.files[file].path, &import.specifier, syntax) {
+        let key = if require { "ts-require" } else { "ts-import" };
+        // The unresolved lookup is a dependency too: adding a previously
+        // missing module can change this answer with no old graph edge.
+        self.files
+            .lookup(key, &format!("{}\0{}", facts.path, import.specifier));
+        let targets = self.imports[file].get_or_init(|| {
+            (0..facts.imports.len())
+                .map(|_| Default::default())
+                .collect()
+        });
+        match targets[index]
+            .get_or_init(|| self.modules.resolve(&facts.path, &import.specifier, syntax))
+        {
             ModuleTarget::File { path, .. } => {
                 let file = self
                     .paths
                     .get(path.as_str())
                     .copied()
                     .ok_or("module_not_indexed")?;
-                if self.index[file].is_none() {
+                if self.index(file).is_none() {
                     return Err("module_not_indexed");
                 }
                 Ok(Value::Module { file, require })
@@ -62,11 +71,12 @@ impl Resolver<'_> {
         check_depth(depth)?;
         let root = self.export_stack.is_empty();
         let key = (file, name.to_owned(), lane);
+        let cache_key = (file, name.to_owned(), lane, depth);
         // CJS member fallback differs for `require` and an ES namespace's
         // `default` view, so only ES lookup enters the export cache.
         if root
             && !require
-            && let Some(&value) = self.export_cache.get(&key)
+            && let Some(&value) = self.export_cache.get(&cache_key)
         {
             return value;
         }
@@ -75,12 +85,11 @@ impl Resolver<'_> {
         }
         self.export_stack.push(key);
         let result = self.compute_export(file, name, lane, require, depth + 1);
-        let key = self
-            .export_stack
+        self.export_stack
             .pop()
             .expect("the export query on this stack");
         if root && !require && result != Err("resolution_depth_limit") {
-            self.export_cache.insert(key, result);
+            self.export_cache.insert(cache_key, result);
         }
         result
     }
@@ -182,7 +191,7 @@ impl Resolver<'_> {
         lane: Lane,
         depth: usize,
     ) -> Lookup {
-        let value = self.imports[file][import]?;
+        let value = self.import(file, import)?;
         if name == "*" {
             Ok(value)
         } else {

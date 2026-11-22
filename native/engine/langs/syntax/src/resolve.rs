@@ -1,10 +1,13 @@
 //! Shared reference rows and indexes for the syntax-only resolvers.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mex_graph_core::facts::{
-    Def, FileFacts, Import, Kind, ParseStatus, Range, ReferenceKind, SyntaxReference,
+    Def, Import, Kind, ParseStatus, Range, ReferenceKind, SyntaxReference,
 };
+
+use mex_graph_core::resolve::Files;
 
 use crate::EXCLUDED;
 
@@ -105,42 +108,37 @@ pub fn unresolved_counts(files: &[FileResolution<'_>]) -> Vec<(usize, &'static s
         .collect()
 }
 
+type Children = HashMap<usize, Vec<DefRef>>;
+
 pub struct Index<'a> {
-    pub facts: &'a [FileFacts],
-    pub files: HashMap<&'a str, usize>,
-    names: HashMap<&'a str, Vec<DefRef>>,
-    children: HashMap<DefRef, Vec<DefRef>>,
+    pub facts: Files<'a>,
+    paths: HashMap<&'a str, usize>,
+    children: Vec<OnceCell<Children>>,
 }
 
 impl<'a> Index<'a> {
-    pub fn new(facts: &'a [FileFacts]) -> Self {
-        let mut index = Self {
+    pub fn new(facts: Files<'a>) -> Self {
+        Self {
             facts,
-            files: HashMap::new(),
-            names: HashMap::new(),
-            children: HashMap::new(),
-        };
-        for (file, facts) in facts.iter().enumerate() {
-            if facts.health.status == ParseStatus::Failed || facts.defs.is_empty() {
-                continue;
-            }
-            index.files.insert(&facts.path, file);
-            for (def, definition) in facts.defs.iter().enumerate().skip(1) {
-                if !visible(definition) {
-                    continue;
-                }
-                let id = (file, def);
-                index.names.entry(&definition.name).or_default().push(id);
-                if let Some(parent) = index.parent(id) {
-                    index.children.entry(parent).or_default().push(id);
-                }
-            }
+            paths: facts
+                .paths()
+                .enumerate()
+                .map(|(i, path)| (path, i))
+                .collect(),
+            children: (0..facts.len()).map(|_| OnceCell::new()).collect(),
         }
-        index
+    }
+
+    pub fn file(&self, path: &str) -> Option<usize> {
+        self.facts.lookup("path", path);
+        self.paths.get(path).copied().filter(|&index| {
+            let facts = self.facts.get(index);
+            facts.health.status != ParseStatus::Failed && !facts.defs.is_empty()
+        })
     }
 
     pub fn def(&self, (file, def): DefRef) -> &'a Def {
-        &self.facts[file].defs[def]
+        &self.facts.get(file).defs[def]
     }
 
     pub fn parent(&self, id: DefRef) -> Option<DefRef> {
@@ -148,12 +146,22 @@ impl<'a> Index<'a> {
         visible(self.def(parent)).then_some(parent)
     }
 
-    pub fn named(&self, name: &str) -> &[DefRef] {
-        self.names.get(name).map_or(&[], Vec::as_slice)
-    }
-
-    pub fn children(&self, id: DefRef) -> &[DefRef] {
-        self.children.get(&id).map_or(&[], Vec::as_slice)
+    pub fn children(&self, (file, def): DefRef) -> &[DefRef] {
+        let facts = self.facts.get(file);
+        self.children[file]
+            .get_or_init(|| {
+                let mut children = HashMap::<_, Vec<_>>::new();
+                for (child, node) in facts.defs.iter().enumerate().skip(1) {
+                    if visible(node)
+                        && let Some((_, parent)) = self.parent((file, child))
+                    {
+                        children.entry(parent).or_default().push((file, child));
+                    }
+                }
+                children
+            })
+            .get(&def)
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn ancestors(&self, id: DefRef) -> impl Iterator<Item = DefRef> {

@@ -2,89 +2,85 @@
 
 use std::collections::{HashMap, HashSet};
 
-use mex_graph_core::facts::{FileFacts, Kind, ReferenceKind, SyntaxReference};
+use mex_graph_core::facts::{FileFacts, Kind, ParseStatus, ReferenceKind, SyntaxReference};
+use mex_graph_core::resolve::Files;
 use mex_graph_core::text::js_trim;
 use mex_graph_syntax::resolve::{
     DefRef, FileResolution, Index, Site, Target, accepts, last_segment, unique, visible,
 };
 
 pub fn resolve(files: &[FileFacts]) -> Vec<FileResolution<'_>> {
-    let index = Index::new(files);
-    let mut namespaces = HashMap::new();
+    let mut types: HashMap<&str, Vec<DefRef>> = HashMap::new();
     for (file, facts) in files.iter().enumerate() {
-        for (def, node) in facts
-            .defs
-            .iter()
-            .enumerate()
-            .filter(|(_, def)| visible(def))
-        {
-            let enclosing = index.parent((file, def)).map_or("", |parent| {
-                let parent_def = index.def(parent);
-                if parent_def.kind == Kind::Namespace {
-                    parent_def.qualified_name.as_str()
-                } else {
-                    namespaces.get(&parent).copied().unwrap_or("")
+        if facts.health.status != ParseStatus::Failed {
+            for (def, node) in facts.defs.iter().enumerate() {
+                if visible(node) && is_type(node.kind) {
+                    types.entry(&node.name).or_default().push((file, def));
                 }
-            });
-            if node.kind != Kind::File {
-                namespaces.insert((file, def), enclosing);
             }
         }
     }
-    let scope = Scope {
-        index: &index,
-        namespaces,
-    };
-    files
-        .iter()
-        .enumerate()
-        .map(|(file, facts)| {
-            let mut result = FileResolution::default();
-            let usings: HashSet<_> = facts
-                .imports
-                .iter()
-                .filter_map(|import| {
-                    let name = js_trim(
-                        import
-                            .specifier
-                            .strip_prefix("global::")
-                            .unwrap_or(&import.specifier),
-                    );
-                    (!name.starts_with("static ") && !name.contains('=')).then_some(name)
-                })
-                .collect();
-            for import in &facts.imports {
-                result.push(
-                    (file, 0),
-                    Site::Import(import),
-                    Err("namespace_import"),
-                    "explicit-import",
-                );
-            }
-            for reference in &facts.syntax_references {
-                let from = (file, reference.from);
-                if !visible(index.def(from)) {
-                    continue;
-                }
-                let target = scope.bind(from, reference, &usings);
-                let method = if target.is_ok_and(|to| to.0 != file) {
-                    "namespace-scope"
-                } else {
-                    "lexical-scope"
-                };
-                result.push(from, Site::Symbol(reference), target, method);
-            }
-            result
-        })
+    let lookup = |name: &str| types.get(name).cloned().unwrap_or_default();
+    let scope = Resolver::new(Files::Dense(files), &lookup);
+    (0..files.len())
+        .map(|file| scope.resolve_file(file))
         .collect()
 }
 
-struct Scope<'a> {
-    index: &'a Index<'a>,
-    namespaces: HashMap<DefRef, &'a str>,
+pub struct Resolver<'a, 'index> {
+    index: Index<'a>,
+    types: &'index dyn Fn(&str) -> Vec<DefRef>,
 }
 
-impl Scope<'_> {
+impl<'a, 'index> Resolver<'a, 'index> {
+    pub fn new(files: Files<'a>, types: &'index dyn Fn(&str) -> Vec<DefRef>) -> Self {
+        Self {
+            index: Index::new(files),
+            types,
+        }
+    }
+
+    pub fn resolve_file(&self, file: usize) -> FileResolution<'a> {
+        self.index.facts.origin(file);
+        let facts = self.index.facts.get(file);
+        let mut result = FileResolution::default();
+        let usings: HashSet<_> = facts
+            .imports
+            .iter()
+            .filter_map(|import| {
+                let name = js_trim(
+                    import
+                        .specifier
+                        .strip_prefix("global::")
+                        .unwrap_or(&import.specifier),
+                );
+                (!name.starts_with("static ") && !name.contains('=')).then_some(name)
+            })
+            .collect();
+        for import in &facts.imports {
+            result.push(
+                (file, 0),
+                Site::Import(import),
+                Err("namespace_import"),
+                "explicit-import",
+            );
+        }
+        for reference in &facts.syntax_references {
+            let from = (file, reference.from);
+            if !visible(self.index.def(from)) {
+                continue;
+            }
+            let target = self.bind(from, reference, &usings);
+            let method = if target.is_ok_and(|to| to.0 != file) {
+                "namespace-scope"
+            } else {
+                "lexical-scope"
+            };
+            result.push(from, Site::Symbol(reference), target, method);
+        }
+        result
+    }
+
     fn bind(&self, from: DefRef, reference: &SyntaxReference, usings: &HashSet<&str>) -> Target {
         let name = reference.name.as_str();
         let type_reference = matches!(
@@ -133,16 +129,22 @@ impl Scope<'_> {
             return Err("unproven_qualifier");
         }
 
-        let index = self.index;
+        let index = &self.index;
         let container = index.parent(from);
         let candidates = index
-            .named(last_segment(name))
+            .facts
+            .get(from.0)
+            .defs
             .iter()
-            .copied()
-            .filter(|&id| {
-                id.0 == from.0
+            .enumerate()
+            .skip(1)
+            .filter_map(|(def, node)| {
+                let id = (from.0, def);
+                (node.name == last_segment(name)
+                    && visible(node)
                     && (reference.kind == ReferenceKind::Calls || id != from)
-                    && accepts(reference.kind, index.def(id))
+                    && accepts(reference.kind, node))
+                .then_some(id)
             });
         let target = unique(candidates.clone().filter(|&id| {
             let parent = index.parent(id);
@@ -159,7 +161,7 @@ impl Scope<'_> {
     }
 
     fn resolve_type(&self, raw: &str, from: DefRef, usings: &HashSet<&str>) -> Target {
-        let index = self.index;
+        let index = &self.index;
         let trimmed = js_trim(raw);
         let global = trimmed.starts_with("global::");
         let name = trimmed.strip_prefix("global::").unwrap_or(trimmed);
@@ -169,11 +171,9 @@ impl Scope<'_> {
             return Err("unproven_type_path");
         }
         let (qualifier, simple) = name.rsplit_once('.').unwrap_or(("", name));
-        let types = index
-            .named(simple)
-            .iter()
-            .copied()
-            .filter(|&id| is_type(index.def(id).kind));
+        self.index.facts.lookup("csharp-type", simple);
+        let candidates = (self.types)(simple);
+        let types = candidates.iter().copied();
         let global_types = types.clone().filter(|&id| {
             index
                 .parent(id)
@@ -215,12 +215,18 @@ impl Scope<'_> {
         }))
     }
 
-    fn namespace(&self, id: DefRef) -> &str {
-        self.namespaces.get(&id).copied().unwrap_or("")
+    fn namespace(&self, id: DefRef) -> &'a str {
+        self.index
+            .ancestors(id)
+            .find_map(|owner| {
+                let def = self.index.def(owner);
+                (def.kind == Kind::Namespace).then_some(def.qualified_name.as_str())
+            })
+            .unwrap_or("")
     }
 }
 
-fn is_type(kind: Kind) -> bool {
+pub fn is_type(kind: Kind) -> bool {
     matches!(
         kind,
         Kind::Class | Kind::Struct | Kind::Interface | Kind::Enum

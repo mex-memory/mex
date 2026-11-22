@@ -14,5 +14,6 @@ pub mod facts;
 pub mod store;
 
 pub mod fingerprint;
+pub mod resolve;
 pub mod text;
 pub mod timing;

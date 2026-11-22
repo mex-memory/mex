@@ -2,6 +2,7 @@
 //! Start each lookup at a lexical binding or an explicit module. Every member
 //! lookup then needs a known receiver; absence is retained as an unresolved call.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mex_graph_core::facts::ecmascript::{ExprId, Expression, ImportSite, Owner, Space};
@@ -9,7 +10,9 @@ use mex_graph_core::facts::{
     Call, CallForm, Def, FileFacts, ImportForm, Kind, NONE, Range, Receiver, ScopeKind,
 };
 
-use crate::modules::ModuleResolver;
+use mex_graph_core::resolve::Files;
+
+use crate::modules::{ModuleResolver, ModuleTarget};
 
 mod contextual;
 mod index;
@@ -109,7 +112,7 @@ impl Lane {
 }
 
 pub fn resolve(files: &[FileFacts], modules: &ModuleResolver) -> Resolution {
-    Resolver::new(files, modules).resolve_all()
+    Resolver::new(Files::Dense(files), modules).resolve(0..files.len(), |_| Vec::new())
 }
 
 /// Schema v4 also persists the explicit name bindings used by framework resolvers.
@@ -117,82 +120,96 @@ pub fn resolve_for_stage(
     files: &[FileFacts],
     modules: &ModuleResolver,
 ) -> (Resolution, Vec<Vec<ImportResolution>>) {
-    let mut resolver = Resolver::new(files, modules);
-    let resolution = resolver.resolve_all();
+    let mut resolver = Resolver::new(Files::Dense(files), modules);
+    let resolution = resolver.resolve(0..files.len(), |_| Vec::new());
     let bindings = (0..files.len())
         .map(|file| resolver.resolve_import_bindings(file))
         .collect();
     (resolution, bindings)
 }
 
-struct Resolver<'a> {
-    files: &'a [FileFacts],
-    index: Vec<Option<FileIndex<'a>>>,
+pub struct Resolver<'a, 'modules> {
+    files: Files<'a>,
+    index: Vec<OnceCell<Option<FileIndex<'a>>>>,
     paths: HashMap<&'a str, usize>,
-    imports: Vec<Vec<Lookup>>,
+    modules: &'modules ModuleResolver,
+    imports: Vec<OnceCell<Vec<OnceCell<ModuleTarget>>>>,
     contextual_this: HashMap<(usize, ExprId), Value>,
-    export_cache: HashMap<(usize, String, Lane), Lookup>,
+    context_ready: HashSet<usize>,
+    preparing_context: Option<usize>,
+    export_cache: HashMap<(usize, String, Lane, usize), Lookup>,
     // Re-export cycles are tracked per query. The cycle itself is not a failed
     // export: a different star can still name the same symbol unambiguously.
     export_stack: Vec<(usize, String, Lane)>,
 }
 
-impl<'a> Resolver<'a> {
-    fn new(files: &'a [FileFacts], modules: &ModuleResolver) -> Self {
-        let mut resolver = Self {
+impl<'a, 'modules> Resolver<'a, 'modules> {
+    pub fn new(files: Files<'a>, modules: &'modules ModuleResolver) -> Self {
+        Self {
             files,
-            index: files.iter().map(FileIndex::new).collect(),
+            index: (0..files.len()).map(|_| OnceCell::new()).collect(),
             paths: files
-                .iter()
+                .paths()
                 .enumerate()
-                .map(|(i, f)| (f.path.as_str(), i))
+                .map(|(i, path)| (path, i))
                 .collect(),
-            imports: Vec::new(),
+            modules,
+            imports: (0..files.len()).map(|_| OnceCell::new()).collect(),
             contextual_this: HashMap::new(),
+            context_ready: HashSet::new(),
+            preparing_context: None,
             export_cache: HashMap::new(),
             export_stack: Vec::new(),
-        };
-        resolver.imports = files
-            .iter()
-            .enumerate()
-            .map(|(file, facts)| {
-                facts
-                    .imports
-                    .iter()
-                    .map(|import| resolver.import_target(file, import, modules))
-                    .collect()
-            })
-            .collect();
-        resolver.index_contextual_this();
-        resolver
+        }
+    }
+
+    fn index(&self, file: usize) -> Option<&FileIndex<'a>> {
+        let facts = self.files.get(file);
+        self.index[file]
+            .get_or_init(|| FileIndex::new(facts))
+            .as_ref()
     }
 
     fn model(&self, file: usize) -> &FileIndex<'a> {
-        self.index[file].as_ref().expect("ECMAScript file model")
+        self.index(file).expect("ECMAScript file model")
     }
 
     fn def(&self, (file, def): DefRef) -> &'a Def {
-        &self.files[file].defs[def]
+        &self.files.get(file).defs[def]
     }
 
-    fn resolve_all(&mut self) -> Resolution {
+    /// Resolve the supplied origins. The remainder of the heritage graph is
+    /// supplied by the caller when resolving a subset of the repository.
+    pub fn resolve(
+        &mut self,
+        files: impl IntoIterator<Item = usize>,
+        descendants: impl Fn(DefRef) -> Vec<DefRef>,
+    ) -> Resolution {
         let mut result = Resolution::default();
         let mut interface_dispatches = Vec::new();
-        for file in 0..self.files.len() {
-            if self.index[file].is_some() {
+        for file in files {
+            self.start(file);
+            if self.index(file).is_some() {
                 self.resolve_file(file, &mut result, &mut interface_dispatches);
             }
         }
         if !interface_dispatches.is_empty() {
-            self.find_dispatch_candidates(&mut result, interface_dispatches);
+            self.find_dispatch_candidates(&mut result, interface_dispatches, descendants);
         }
         result
+    }
+
+    fn start(&mut self, file: usize) {
+        self.files.origin(file);
+        self.export_cache.clear();
+        self.prepare_context(file);
     }
 
     fn find_dispatch_candidates(
         &mut self,
         result: &mut Resolution,
         sites: Vec<(usize, usize, DefRef)>,
+        retained: impl Fn(DefRef) -> Vec<DefRef>,
     ) {
         let mut descendants: HashMap<DefRef, Vec<DefRef>> = HashMap::new();
         for edge in &result.edges {
@@ -200,12 +217,21 @@ impl<'a> Resolver<'a> {
                 descendants.entry(edge.to).or_default().push(edge.from);
             }
         }
+        // A new class can supply a candidate even when a site's preceding
+        // lookup found no implementation. Mark every such site for invalidation.
+        let mut active_file = None;
         let mut cache = HashMap::new();
         for (file, index, interface) in sites {
-            let name = self.files[file].calls[index].name.as_str();
-            let candidate = cache
-                .entry((interface, name))
-                .or_insert_with(|| self.unique_implementation(interface, name, &descendants));
+            if active_file != Some(file) {
+                self.start(file);
+                self.files.lookup("ts-dispatch", "");
+                active_file = Some(file);
+                cache.clear();
+            }
+            let name = self.files.get(file).calls[index].name.as_str();
+            let candidate = cache.entry((interface, name)).or_insert_with(|| {
+                self.unique_implementation(interface, name, &descendants, &retained)
+            });
             if let Some(candidate) = *candidate {
                 result.call_candidates.insert((file, index), candidate);
             }
@@ -217,6 +243,7 @@ impl<'a> Resolver<'a> {
         interface: DefRef,
         name: &str,
         descendants: &HashMap<DefRef, Vec<DefRef>>,
+        retained: &impl Fn(DefRef) -> Vec<DefRef>,
     ) -> Option<DefRef> {
         let mut pending = vec![interface];
         let mut visited = HashSet::new();
@@ -226,6 +253,7 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             pending.extend(descendants.get(&def).into_iter().flatten().copied());
+            pending.extend(retained(def));
             if self.def(def).kind != Kind::Class {
                 continue;
             }
@@ -252,17 +280,17 @@ impl<'a> Resolver<'a> {
         winner
     }
 
-    fn resolve_import_bindings(&mut self, file: usize) -> Vec<ImportResolution> {
-        let Some(index) = &self.index[file] else {
+    pub fn resolve_import_bindings(&mut self, file: usize) -> Vec<ImportResolution> {
+        self.start(file);
+        let Some(index) = self.index(file) else {
             return Vec::new();
         };
-        index
-            .facts
-            .import_sites
+        let sites = &index.facts.import_sites;
+        sites
             .iter()
             .map(|&site| {
-                let binding = &self.files[file].imports[site.import].bindings[site.binding];
-                let (module, target) = match self.imports[file][site.import] {
+                let binding = &self.files.get(file).imports[site.import].bindings[site.binding];
+                let (module, target) = match self.import(file, site.import) {
                     Ok(value @ Value::Module { file: target, .. }) => {
                         let target_def = if binding.imported == "*" {
                             Some((target, 0))
@@ -296,10 +324,10 @@ impl<'a> Resolver<'a> {
         result: &mut Resolution,
         interface_dispatches: &mut Vec<(usize, usize, DefRef)>,
     ) {
-        let facts = &self.files[file];
+        let facts = self.files.get(file);
         let extra = self.model(file).facts;
         for site in &extra.import_sites {
-            if let Ok(Value::Module { file: target, .. }) = self.imports[file][site.import] {
+            if let Ok(Value::Module { file: target, .. }) = self.import(file, site.import) {
                 result.edges.push(edge(
                     (file, 0),
                     (target, 0),
@@ -312,7 +340,7 @@ impl<'a> Resolver<'a> {
         for (import_index, import) in facts.imports.iter().enumerate() {
             if import.form == ImportForm::CommonJs
                 && import.bindings.is_empty()
-                && let Ok(Value::Module { file: target, .. }) = self.imports[file][import_index]
+                && let Ok(Value::Module { file: target, .. }) = self.import(file, import_index)
             {
                 result.edges.push(edge(
                     (file, 0),
@@ -682,7 +710,7 @@ impl<'a> Resolver<'a> {
             Expression::Definition { def } => def_ref(file, *def)
                 .map(Value::Def)
                 .ok_or("missing_definition"),
-            Expression::Module { import } => self.imports[file][*import],
+            Expression::Module { import } => self.import(file, *import),
             Expression::This => self.this_value(file, scope, depth + 1),
             Expression::Super => self.super_value(file, scope, depth + 1),
             Expression::Object => Ok(Value::Object(site)),
@@ -1055,7 +1083,7 @@ impl<'a> Resolver<'a> {
             if let Some(&owner) = self.model(file).this_bindings.get(&scope) {
                 return Ok(owner);
             }
-            let current = &self.files[file].scopes[scope as usize];
+            let current = &self.files.get(file).scopes[scope as usize];
             if matches!(
                 current.kind,
                 ScopeKind::Function | ScopeKind::Class | ScopeKind::Module
@@ -1077,7 +1105,7 @@ impl<'a> Resolver<'a> {
             if let Some(&owner) = model.this_bindings.get(&scope) {
                 return self.owner_value(file, scope, owner);
             }
-            let current = &self.files[file].scopes[scope as usize];
+            let current = &self.files.get(file).scopes[scope as usize];
             if matches!(
                 current.kind,
                 ScopeKind::Function | ScopeKind::Class | ScopeKind::Module
@@ -1089,7 +1117,7 @@ impl<'a> Resolver<'a> {
         Err("unbound_this")
     }
 
-    fn owner_value(&self, file: usize, scope: i32, owner: Owner) -> Lookup {
+    fn owner_value(&mut self, file: usize, scope: i32, owner: Owner) -> Lookup {
         match owner {
             Owner::Definition { def, is_static } => def_ref(file, def)
                 .map(|owner| {
@@ -1100,15 +1128,20 @@ impl<'a> Resolver<'a> {
                     }
                 })
                 .ok_or("unbound_this"),
-            Owner::Object { expression } => Ok(self
-                .contextual_this
-                .get(&(file, expression))
-                .copied()
-                .unwrap_or(Value::Object(Site {
+            Owner::Object { expression } => {
+                let contextual = self.preparing_context.is_none_or(|current| file <= current);
+                if contextual {
+                    self.prepare_context(file);
+                    if let Some(&value) = self.contextual_this.get(&(file, expression)) {
+                        return Ok(value);
+                    }
+                }
+                Ok(Value::Object(Site {
                     file,
                     scope,
                     expression,
-                }))),
+                }))
+            }
             Owner::ClassExpression {
                 expression,
                 is_static,
