@@ -388,7 +388,7 @@ fn routes(facts: &FileFacts) -> Result<[u8; 32], JobError> {
 
 // Batch small base records for cross-file compression while keeping point
 // reads small. An individual large origin gets its own frame.
-const BASE_FRAME_BYTES: usize = 64 * 1024;
+const BASE_FRAME_BYTES: usize = 256 * 1024;
 
 pub(super) struct Encoder {
     payload: Vec<u8>,

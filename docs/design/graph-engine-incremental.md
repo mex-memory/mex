@@ -30,8 +30,8 @@ recreated from verified source without decoding their resolver facts.
    absent from the dictionary needs no reverse index. Topology changes,
    cache misses and other surface edits start from the whole-file reads.
    A file used by a resolver is decoded when the resolver first needs it.
-   `refresh` uses the disk
-   facts cache and extracts a cache miss from the verified source. `serve`
+   `refresh` uses the disk facts cache and extracts a cache miss from the
+   verified source. `serve`
    uses pinned compressed facts, an 8 MiB decompression cache and up to
    1,024 consulted files within a 64 MiB estimated decoded budget. Each
    edit owns its resolver indexes and projected rows. A one-shot refresh
@@ -54,6 +54,8 @@ change. The engine copies their declarations and sketches and recreates
 their contentless FTS rows from node columns and hash-verified source.
 Warm publication inherits filesystem observations from a base captured in
 the same checkout and records changed or missing stamps in the overlay.
+The final source proof checks files, directories and rules in up to eight
+worker batches.
 Continuity looks for aliases of vanished nodes on shadowed paths. It checks
 qualified names, signatures, body hashes and fingerprints in the usual
 order. It reads the alias candidates by file, name or body hash from the
@@ -85,7 +87,7 @@ fingerprint match can require a streaming sketch scan.
   table because it is checked on every edit.
 - `resolution_inputs` holds the origin header. In a base it locates the
   origin's slice of a Zstandard frame. Small records share frames of up to
-  64 KiB of uncompressed data. Larger records get their own frame. The
+  256 KiB of uncompressed data. Larger records get their own frame. The
   compressed stream is split into SQLite rows with 64 bytes of page headroom
   per block. Bases under 4,096 nodes use 2 KiB pages. Larger bases use 4 KiB.
   An overlay keeps each of its updated origins as an independent compressed
