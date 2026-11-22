@@ -116,6 +116,47 @@ Nodes and sketches are unchanged, and accuracy matches the engine's own builds. 
 
 All staging falls from 8.8 s to 1.9 s, while the v4 write and its checks take 14–15 s either way. That is what schema v5 removes (the engine writes Django's v5 graph within its 1.3 s), once TypeScript and JavaScript are on the engine too. Refresh is a little slower with the flag on, since the engine stages every Python file again where today reuses cached extractions; engine refresh is M5.
 
+## M3: TypeScript and JavaScript on the engine
+
+The engine builds TypeScript and JavaScript with native tree-sitter (`tree-sitter-typescript` 0.23.2, `tree-sitter-javascript` 0.25.0), a port of TypeScript 5.9.3's scanner for fingerprints, a module resolver and a reference resolver. There is no type checker. Same machine and method as above.
+
+**Nodes are unchanged.** `parity.mjs` compares the compiler route's nodes in the kept `next2` graphs with the engine's by id. On Hono, zod, NestJS and Express all 61,456 match. There are zero differences in spans, containers, body hashes, flags, decorators, type parameters, minhash and token counts, so no grounded anchor moves. The remaining differences:
+
+- **Docstrings (340).** The checker gives a member the documentation of what it inherits, augments or is assigned from, such as Hono's `TypedURL::protocol` from the DOM `URL`. Syntax alone can't see that. One NestJS docstring is longer than the engine's 2,048-byte bound.
+- **One export flag.** zod's `ZodMiniType` is augmented from a test file, and the saved compiler graph marks it unexported.
+- **90 extra Express nodes.** Module-level `require()` bindings such as `const session = require('express-session')`. The checker merges unresolved packages into one unknown symbol and drops them.
+- **Signatures and return types** are rendered by the checker with inferred types, so they agree on 57–89% of nodes. They are not part of any id.
+
+The scanner matches `ts.createScanner` on every file of the four repositories (1.59 million tokens). The module resolver matches `ts.resolveModuleName` on Hono, zod, NestJS, Express, novu and TypeScript itself. The exceptions are deliberate: workspace packages resolve to their sources where TypeScript, with nothing built, finds nothing.
+
+`next2` (compiler route) → engine, schema v5 builds:
+
+| Repo | Build s | Peak MB | Disk MB | Precision | Recall | Concrete recall |
+|---|---:|---:|---:|---:|---:|---:|
+| hono | 7.67 → 0.39 | 974 → 108 | 73.4 → 9.8 | 99.98% → **100%** | 83.9% → 80.1% | 99.3% → 94.8% |
+| zod | 8.65 → 0.48 | 1,041 → 131 | 89.5 → 10.9 | 99.62% → **100%** | 62.6% → 61.7% | 98.8% → 97.4% |
+| nest | 14.6 → 0.58 | 1,168 → 156 | 133.9 → 17.5 | 99.93% → **100%** | 94.2% → **95.3%** | 97.2% → **98.4%** |
+| express | | | | 100% → 100% | 99.3% → **100%** | |
+
+Recall on the call forms the gate names as certain, compiler → engine:
+
+| Repo | Imported function | `new X()` | `this.method()` | `super` |
+|---|---:|---:|---:|---:|
+| hono | 100% → 100% | 99.6% → 100% | 100% → 100% | 100% → 100% |
+| zod | 100% → 100% | 53.4% → 100% | 100% → 99.6% | — |
+| nest | 89.8% → 100% | 94.8% → 99.95% | 100% → 99.3% | 100% → 100% |
+
+**The TypeScript gate passes:**
+- Precision is at least the compiler's on every repository; the engine made no judged wrong edge.
+- Recall is 99.3% of the compiler's overall (21,059 against 21,201 call sites). By repository it is 95.5% on Hono, 98.6% on zod and 101% on NestJS.
+- Recall on the certain call forms is at least 99.3%.
+
+The compiler's 57 wrong edges were local bindings resolved to a declaration with the same name.
+
+Most remaining misses are calls whose target the judge places on an interface or type alias member, such as Hono's `this.router.add` (415 of 533) and zod's `schema._zod.run` (6,175 of 6,453). The compiler misses most of those as well. Without a type checker, untyped bindings stay unresolved with a reason, never guessed.
+
+novu (9,856 files) builds in 3.85 s at 879 MB, against `next2`'s 77 s and 2.6 GB. The v5 graphs have no search tables yet, so disk is not like for like, as for Python.
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.
