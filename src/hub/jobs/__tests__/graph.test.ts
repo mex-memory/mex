@@ -34,4 +34,32 @@ describe("graph Hub job executors", () => {
     ]);
     expect(JSON.stringify(updates)).not.toContain("/Users/alice");
   });
+
+  it("keeps one monotonic progress bar when maintenance phases restart their counts", async () => {
+    const rebuild = vi.fn(async (options: {
+      onProgress?: (progress: { phase: "parse" | "resolve"; completed?: number; total?: number; message: string }) => void;
+    }) => {
+      options.onProgress?.({ phase: "parse", completed: 0, total: 4, message: "" });
+      options.onProgress?.({ phase: "parse", completed: 4, total: 4, message: "" });
+      options.onProgress?.({ phase: "resolve", completed: 0, total: 4, message: "" });
+      options.onProgress?.({ phase: "resolve", completed: 2, total: 9, message: "" });
+      options.onProgress?.({ phase: "resolve", completed: 4, total: 4, message: "" });
+    });
+    const graph = { refresh: vi.fn(), rebuild } as unknown as RepositoryGraphPort;
+    const updates: unknown[] = [];
+
+    await createGraphJobExecutors(graph).graph_rebuild!({
+      job: {} as never,
+      signal: new AbortController().signal,
+      reportProgress: (update) => updates.push(update),
+    });
+
+    expect(updates).toEqual([
+      { phase: "parse", completed: 0, total: 4 },
+      { phase: "parse", completed: 4, total: 4 },
+      { phase: "resolve" },
+      { phase: "resolve" },
+      { phase: "resolve", completed: 4, total: 4 },
+    ]);
+  });
 });
