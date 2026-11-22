@@ -131,9 +131,9 @@ function checkReceipt(context: string, receipts: Receipt[], agent: Agent, surfac
     `${agent} has no ${surface} receipt for the delivered block`);
 }
 
-function submit(key: string, checks: NonNullable<Proposal["checks"]>, text = claim) {
+function submit(key: string, checks: NonNullable<Proposal["checks"]>, text = claim, kind: Proposal["kind"] = "pitfall") {
   return propose([{
-    producer: "code-facts", key, kind: "pitfall", text, model: "none",
+    producer: "code-facts", key, kind, text, model: "none",
     source: { type: "mined", ref: file, quote: signature }, evidence: [file], anchors: { scope: [file] }, checks,
   }], { projectPath: checkout, home });
 }
@@ -228,20 +228,17 @@ async function main() {
     session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
     tool_input: { command: `cat ${file}` }, tool_response: `Exit code: 0\nOutput:\n${source(body)}`,
   });
-  const kept = (session: string, context: string) => {
-    const receipts = readReceipts(project, session).filter(row => row.entry_id === entry);
-    return !context.includes(claim) && receipts.some(row => row.action === "withheld" || (row.action === "given" && row.form === "pointer"));
+  // Withheld, or sent only as a pointer to today's code: never restated.
+  const kept = (session: string, context: string, id = entry, text = claim) => {
+    const receipts = readReceipts(project, session).filter(row => row.entry_id === id);
+    return !context.includes(text) && receipts.some(row => row.action === "withheld" || row.form === "pointer");
   };
   const change = (body: string) => {
     writeFileSync(join(checkout, file), source(body));
     json("index", "--json");
   };
 
-  // A session that is open while the code changes under it, by a shell
-  // command the agent runs (not an edit tool): the hook sees the command.
-  const open = "joined-open-session";
   await step("join 6→7 fresh entry delivered", () => {
-    start(open);
     requireJoin(read("joined-fresh-entry", oldBody).includes(claim), `entry ${entry} was never delivered on a fresh read`);
   });
 
@@ -257,17 +254,23 @@ async function main() {
     requireJoin(kept(session, read(session, newBody)), `entry ${entry} was not withheld or reduced to a pointer in a new session after its symbol changed`);
   });
 
-  await step("join stale: a shell command changed the code mid-session", () => {
+  // A fact is a claim about the code itself. When a shell command (not an
+  // edit tool) changes the code mid-session and nothing re-parses it, the
+  // next read must not restate the fact.
+  await step("join stale: a shell command changed the code mid-session", async () => {
     change(oldBody);
+    const fact = "makeWidget returns 31.";
+    const [result] = await submit("joined-fact", [{ kind: "symbol", role: "complete", target: { file, symbol } }], fact, "fact");
+    requireJoin(result?.status === "accepted", `the gate did not accept the fact: ${JSON.stringify(result)}`);
     const session = "joined-shell-write";
     start(session);
-    // The shell command rewrites the file; nothing refreshes the index.
     writeFileSync(join(checkout, file), source(newBody));
     hook("codex", "PostToolUse", {
       session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
       tool_input: { command: `sed -i "s/31/470/" ${file}` }, tool_response: "Exit code: 0\nOutput:\n",
     });
-    requireJoin(kept(session, read(session, newBody)), `entry ${entry} was delivered in full after a shell command changed its symbol in the same session`);
+    requireJoin(kept(session, read(session, newBody), result.entryId, fact),
+      `fact ${result.entryId} was restated after a shell command changed its symbol in the same session`);
   });
 }
 
