@@ -62,6 +62,20 @@ function richConfirm(rich: Rich, write: Print): Confirm {
   };
 }
 
+/** The plain screen's offer: the same lines and the same keys as the rich one, in plain text. */
+function plainConfirm(write: Print): Confirm {
+  return async (lines, details) => {
+    for (const line of lines) write(line);
+    for (;;) {
+      write(`Enter = start, s = skip${details.length ? ", d = details" : ""}`);
+      const key = await readKey();
+      if (key === "enter") return true;
+      if (key === "d" && details.length) { for (const line of details) write(line); continue; }
+      return false;
+    }
+  };
+}
+
 /**
  * Offer learn deeper once, after the free results. With no GitHub or GitLab remote there is
  * no review history: say so, $0, no job. A run already queued or running is shown, not
@@ -81,10 +95,14 @@ export async function offerLearnDeeper(context: DeeperContext, confirm?: Confirm
   }
   const before = await learnDeeperStep(context.projectId);
   const { offerLearning } = await import("../learn-deeper/offer.js");
+  // Both screens ask with the same keys, and both say so when the person skips.
+  const ask = confirm ?? (context.interactive ? (context.rich ? richConfirm(context.rich, context.write) : plainConfirm(context.write)) : undefined);
+  let skipped = false;
   await offerLearning({
     root: context.root, projectId: context.projectId, write: quiet, interactive: context.interactive,
-    confirm: confirm ?? (context.rich && context.interactive ? richConfirm(context.rich, context.write) : undefined),
+    confirm: ask && (async (lines, details) => { const start = await ask(lines, details); skipped = !start; return start; }),
   });
+  if (skipped) quiet("Learn deeper skipped · $0 · start it any time with `mex learn`");
   const after = await learnDeeperStep(context.projectId);
   return after && ACTIVE.has(after.state) && (after.jobId !== before?.jobId || ACTIVE.has(before.state)) ? after : undefined;
 }
