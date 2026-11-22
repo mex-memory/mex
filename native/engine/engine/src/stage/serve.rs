@@ -1,12 +1,16 @@
 //! A checkout's packed extraction facts and its currently published resolution.
 //! The regular refresh projection remains the authority for structural edits.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use mex_graph_core::facts::FileFacts;
 use mex_graph_core::store::{BaseFile, BuildMetadata, RefreshBase, Writer};
 use mex_graph_core::timing::{self, Timer};
+use mex_graph_ecmascript::modules::ModuleResolver;
 
 use super::{
     build,
@@ -16,7 +20,7 @@ use super::{
 use crate::facts_cache::{FactsCache, ResidentDecoder, ResidentFacts};
 use crate::job::{
     JobCounts, JobError, Request, RequestConfig, RequestFile, decode_hash, extract_files,
-    read_configs, repository_path, request_facts_key,
+    read_configs, remove_candidate, repository_path, request_facts_key,
 };
 
 pub(crate) struct Edit {
@@ -35,12 +39,17 @@ pub(crate) struct Session {
     base_files: HashMap<String, BaseFile>,
     overlay: Option<PublishedOverlay>,
     facts: HashMap<String, ResidentFacts>,
+    decoder: RefCell<ResidentDecoder>,
+    modules: ModuleResolver,
+    context: String,
 }
 
 pub(crate) struct Pending {
     request: Request,
     facts: HashMap<String, ResidentFacts>,
     deleted: Vec<String>,
+    modules: Option<ModuleResolver>,
+    context: String,
 }
 
 impl Pending {
@@ -114,12 +123,20 @@ impl Session {
             }
         }
         sort_inputs(&mut request.files);
+        let configs = read_configs(&request.root, &request.configs);
+        let modules = incremental::project_modules(&request.root, &request, &configs);
+        let context = build::resolution_context(&request.root, &request, &configs);
+        let decoder = ResidentDecoder::new(32 * 1024 * 1024)
+            .ok_or_else(|| JobError::request("Unable to allocate a resident facts decoder"))?;
         Ok(Self {
             request,
             base,
             base_files,
             overlay,
             facts,
+            decoder: RefCell::new(decoder),
+            modules,
+            context,
         })
     }
 
@@ -163,6 +180,7 @@ impl Session {
             ));
         }
         let (files, edited, observed) = self.updated_files(edit.files, &edit.deleted);
+        let config_upsert = edit.configs.is_some();
         let request = Request {
             root: self.request.root.clone(),
             mode: self.request.mode.clone(),
@@ -179,7 +197,7 @@ impl Session {
             frameworks: true,
             output: Some(edit.output),
             changed: Vec::new(),
-            facts_cache: None,
+            facts_cache: self.request.facts_cache.clone(),
             source_directory: edit.source_directory,
             observation_root: self.request.observation_root.clone(),
             walk_observation: edit.walk_observation,
@@ -225,21 +243,31 @@ impl Session {
             .filter(|path| !sizes.contains_key(path))
             .collect::<HashSet<_>>();
         let enabled = incremental::framework_set(&writer, &configs, &changed, &removed)?;
-        let context = build::resolution_context(&request.root, &request, &configs);
+        let context = if config_upsert {
+            build::resolution_context(&request.root, &request, &configs)
+        } else {
+            self.context.clone()
+        };
+        let topology_changed =
+            !removed.is_empty() || changed.keys().any(|path| prior.file(path).is_none());
+        let replacement_modules = (topology_changed || context != self.context)
+            .then(|| incremental::project_modules(&request.root, &request, &configs));
+        let modules = replacement_modules.as_ref().unwrap_or(&self.modules);
         let complete = context
             != prior
                 .current()
                 .resolution_context()
                 .map_err(JobError::write)?
             || enabled.names() != prior.current().frameworks().map_err(JobError::write)?;
-        let decoder = std::cell::RefCell::new(ResidentDecoder::default());
         let missing = std::cell::RefCell::new(HashMap::new());
         let load = |file: &RequestFile| {
             if let Some(facts) = changed.get(&file.path) {
                 return Ok(facts.clone());
             }
             if let Some(facts) = self.facts.get(&file.path).and_then(|entry| {
-                timing::measure("resident.unpack", || decoder.borrow_mut().unpack(entry))
+                timing::measure("resident.unpack", || {
+                    self.decoder.borrow_mut().unpack(entry)
+                })
             }) {
                 return Ok(facts);
             }
@@ -257,7 +285,9 @@ impl Session {
             Ok(facts)
         };
         let loader = FactLoader::new(&request, &enabled, &load);
-        {
+        let in_process = if complete {
+            false
+        } else {
             let load = |path: &str| loader.get(path);
             let corpus = Corpus {
                 root: &request.root,
@@ -265,15 +295,32 @@ impl Session {
                 configs: &configs,
                 sizes: &sizes,
                 load: &load,
+                modules: Some(modules),
             };
-            Plan::new(&corpus, &prior, &writer, complete)?.write(
-                &corpus,
-                &mut writer,
-                &enabled,
-                &prior,
-            )?;
-        }
+            let plan = Plan::new(&corpus, &prior, &writer, false, inputs.iter().copied())?;
+            if plan.resolution_count() <= MAX_RESIDENT_ORIGINS {
+                plan.write(&corpus, &mut writer, &enabled, &prior)?;
+                true
+            } else {
+                false
+            }
+        };
         loader.finish()?;
+        if !in_process {
+            drop(writer);
+            remove_candidate(Some(request.candidate_path()));
+            let counts = timing::measure("resident.oneShot", || self.one_shot(&request))?;
+            return Ok((
+                counts,
+                Pending {
+                    request,
+                    facts: packed,
+                    deleted: edit.deleted,
+                    modules: replacement_modules,
+                    context,
+                },
+            ));
+        }
         let mut packed = packed;
         packed.extend(missing.into_inner());
         let parsed = packed.len();
@@ -314,8 +361,77 @@ impl Session {
                 request,
                 facts: packed,
                 deleted: edit.deleted,
+                modules: replacement_modules,
+                context,
             },
         ))
+    }
+
+    /// Large resolver arenas belong to a short-lived process. It runs the
+    /// same refresh planner against the same captured sources and publication.
+    fn one_shot(&self, request: &Request) -> Result<JobCounts, JobError> {
+        let mut request = request.clone();
+        request.mode = "refresh".into();
+        request.overlay = self.overlay.as_ref().map(|overlay| overlay.path.clone());
+        // Serve frames always give a complete, hash-verified request. When
+        // no source spool is needed, use the checkout itself for live reads.
+        request
+            .source_directory
+            .get_or_insert_with(|| request.root.clone());
+        request.limits.deadline_ms = request.limits.deadline_ms.min(120_000);
+        let mut path = request.candidate_path().as_os_str().to_owned();
+        path.push("-edit-request");
+        let path = PathBuf::from(path);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path).map_err(JobError::request_io)?;
+        let _frame = WorkerRequest(path);
+        serde_json::to_writer(file, &request).map_err(JobError::write)?;
+        let mut worker = Command::new(std::env::current_exe().map_err(JobError::request_io)?)
+            .arg("refresh")
+            .arg("--request")
+            .arg(&_frame.0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(JobError::request_io)?;
+        // The job's stdin guard sees EOF if this resident process exits.
+        let mut stdin = worker.stdin.take().expect("piped stdin");
+        stdin.write_all(b"start\n").map_err(JobError::request_io)?;
+        let output = worker.wait_with_output().map_err(JobError::request_io)?;
+        drop(stdin);
+        let result: serde_json::Value = output
+            .stdout
+            .split(|&byte| byte == b'\n')
+            .filter_map(|line| serde_json::from_slice(line).ok())
+            .next_back()
+            .ok_or_else(|| JobError::request("Refresh worker returned no result"))?;
+        if !output.status.success() || result["type"] != "result" {
+            return Err(JobError::request(format!(
+                "Refresh worker failed: {}",
+                result["message"].as_str().unwrap_or("missing result")
+            )));
+        }
+        let count = |key: &str| {
+            result[key]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| JobError::request(format!("Refresh worker omitted {key}")))
+        };
+        Ok(JobCounts {
+            files: count("files")?,
+            nodes: count("nodes")?,
+            edges: count("edges")?,
+            coverage_gaps: count("coverageGaps")?,
+            reextracted: count("filesReextracted")?,
+            shadowed: Some(count("shadowedFiles")?),
+        })
     }
 
     fn updated_files(
@@ -368,8 +484,22 @@ impl Session {
         pending.request.source_directory = None;
         pending.request.build_metadata = None;
         self.request = pending.request;
+        if let Some(modules) = pending.modules {
+            self.modules = modules;
+        }
+        self.context = pending.context;
         self.overlay = Some(overlay);
         Ok(())
+    }
+}
+
+const MAX_RESIDENT_ORIGINS: usize = 192;
+
+struct WorkerRequest(PathBuf);
+
+impl Drop for WorkerRequest {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 

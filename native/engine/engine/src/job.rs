@@ -32,7 +32,7 @@ use crate::syntax_language::SyntaxLanguage;
 
 const GUARD_INTERVAL: Duration = Duration::from_millis(10);
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub contract: u32,
@@ -61,14 +61,14 @@ pub struct Request {
     pub(super) walk_observation: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum RequestConfig {
     Path(String),
     Source { path: String, source: String },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestFile {
     pub path: String,
@@ -82,7 +82,7 @@ pub struct RequestFile {
     pub(super) utf8_size: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestLimits {
     pub(super) memory_mb: u64,
@@ -135,7 +135,7 @@ pub fn emit_error(code: &str, message: &str) {
 /// The candidate and its SQLite side files.
 pub(super) fn remove_candidate(output: Option<&Path>) {
     let Some(output) = output else { return };
-    for suffix in ["", "-journal", "-wal", "-shm"] {
+    for suffix in ["", "-journal", "-wal", "-shm", "-edit-request"] {
         let mut path = output.as_os_str().to_owned();
         path.push(suffix);
         let _ = std::fs::remove_file(PathBuf::from(path));
@@ -531,6 +531,14 @@ impl Adapter {
                 }
             ),
         )
+    }
+}
+
+pub(super) fn request_language(path: &str, languages: &[String]) -> Option<&'static str> {
+    match Adapter::for_file(path, languages)? {
+        Adapter::Python => Some(LANGUAGE),
+        Adapter::Syntax(language) => Some(language.name()),
+        Adapter::EcmaScript => language_for_path(path),
     }
 }
 

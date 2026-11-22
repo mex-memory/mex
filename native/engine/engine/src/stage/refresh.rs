@@ -131,8 +131,9 @@ pub(crate) fn write(
             configs,
             sizes: &sizes,
             load: &load,
+            modules: None,
         };
-        Plan::new(&corpus, &prior, &writer, complete)?.write(
+        Plan::new(&corpus, &prior, &writer, complete, inputs.iter().copied())?.write(
             &corpus,
             &mut writer,
             &enabled,

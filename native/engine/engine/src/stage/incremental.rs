@@ -14,7 +14,7 @@ use mex_graph_ecmascript::resolve::DefRef;
 
 use super::{Identities, build, ecmascript, edit_facts, node_ids, python_file, relations, syntax};
 use crate::frameworks::{DETECTION, Enabled};
-use crate::job::{ConfigSource, JobError, Request, RequestFile, request_facts_key};
+use crate::job::{ConfigSource, JobError, Request, RequestFile, request_language};
 use crate::syntax_language::SyntaxLanguage;
 
 pub(super) struct PublishedOverlay {
@@ -99,13 +99,29 @@ impl Language {
     const ALL: [Self; 4] = [Self::Python, Self::Ecma, Self::Rust, Self::CSharp];
 
     fn get(path: &str, languages: &[String]) -> Option<Self> {
-        match request_facts_key(path, languages)?.0 {
+        match request_language(path, languages)? {
             "python" => Some(Self::Python),
             "rust" => Some(Self::Rust),
             "csharp" => Some(Self::CSharp),
             _ => Some(Self::Ecma),
         }
     }
+}
+
+pub(super) fn project_modules<'a>(
+    root: &Path,
+    request: &'a Request,
+    configs: &'a [ConfigSource<'a>],
+) -> ModuleResolver {
+    modules(
+        root,
+        request
+            .files
+            .iter()
+            .filter(|file| Language::get(&file.path, &request.languages) == Some(Language::Ecma))
+            .map(|file| file.path.as_str()),
+        configs,
+    )
 }
 
 pub(super) fn modules<'a>(
@@ -206,6 +222,7 @@ pub(super) struct Corpus<'a> {
     pub(super) configs: &'a [ConfigSource<'a>],
     pub(super) sizes: &'a HashMap<&'a str, u64>,
     pub(super) load: &'a dyn Fn(&str) -> &'a FileFacts,
+    pub(super) modules: Option<&'a ModuleResolver>,
 }
 
 impl Corpus<'_> {
@@ -262,7 +279,13 @@ impl Corpus<'_> {
             };
             match language {
                 Language::Ecma => {
-                    let modules = modules(self.root, paths.iter().copied(), self.configs);
+                    let temporary;
+                    let modules = if let Some(modules) = self.modules {
+                        modules
+                    } else {
+                        temporary = modules(self.root, paths.iter().copied(), self.configs);
+                        &temporary
+                    };
                     let paths_by_index: HashMap<_, _> =
                         paths.iter().enumerate().map(|(i, &p)| (p, i)).collect();
                     let error = RefCell::new(None);
@@ -291,7 +314,7 @@ impl Corpus<'_> {
                     };
                     let (stage, heritage) = ecmascript::Stage::resolve(
                         facts,
-                        &modules,
+                        modules,
                         Some(enabled),
                         &origins,
                         descendants,
@@ -416,7 +439,7 @@ pub(super) struct Plan<'a> {
     pub(super) edited: HashSet<&'a str>,
     removed: HashSet<&'a str>,
     resolve: HashSet<&'a str>,
-    rewrite: HashSet<&'a str>,
+    copy_outgoing: HashSet<&'a str>,
 }
 
 impl<'a> Plan<'a> {
@@ -425,19 +448,20 @@ impl<'a> Plan<'a> {
         prior: &'a Publication<'a>,
         writer: &Writer,
         complete: bool,
+        edits: impl IntoIterator<Item = &'a RequestFile>,
     ) -> Result<Self, JobError> {
         let _timer = Timer::start("incremental.plan");
-        let current: HashSet<&str> = corpus.sizes.keys().copied().collect();
+        let current = corpus.sizes;
         let removed: HashSet<_> = prior
             .paths()
-            .filter(|path| !current.contains(path))
+            .filter(|path| !current.contains_key(path))
             .collect();
         let mut edited = HashSet::new();
         let mut surfaces = Vec::new();
         let mut reusable = HashMap::new();
-        for file in &corpus.request.files {
+        for file in edits {
             let path = file.path.as_str();
-            if !current.contains(path) {
+            if !current.contains_key(path) {
                 continue;
             }
             let Some((old, _)) = prior.file(path) else {
@@ -473,8 +497,9 @@ impl<'a> Plan<'a> {
         }
         let mut resolve = edited.clone();
         let mut affected = HashSet::new();
+        let mut copy_outgoing = HashSet::new();
         if complete {
-            resolve = current.clone();
+            resolve = current.keys().copied().collect();
         } else {
             let mut frontier: VecDeque<_> = surfaces
                 .iter()
@@ -489,7 +514,7 @@ impl<'a> Plan<'a> {
                     Some(Language::Ecma) => ts_dispatch = true,
                     Some(Language::CSharp) => {
                         csharp_types.extend(writer.prior_types_in(path).map_err(JobError::write)?);
-                        if current.contains(path) {
+                        if current.contains_key(path) {
                             csharp_types.extend(
                                 types((corpus.load)(path)).map(|(name, _)| name.to_owned()),
                             );
@@ -538,7 +563,7 @@ impl<'a> Plan<'a> {
                 if !visited.insert(path.clone()) {
                     continue;
                 }
-                if let Some(&path) = current.get(path.as_str()) {
+                if let Some((&path, _)) = current.get_key_value(path.as_str()) {
                     resolve.insert(path);
                     affected.insert(path);
                 }
@@ -548,7 +573,11 @@ impl<'a> Plan<'a> {
                 if affected.contains(path) {
                     continue;
                 }
-                if rows.rebase((corpus.load)(path), &positions)? {
+                let facts = (corpus.load)(path);
+                if rows.unchanged_sites(facts, &positions)? {
+                    copy_outgoing.insert(path);
+                    resolve.remove(path);
+                } else if rows.rebase(facts, &positions)? {
                     rows.signature = signature;
                     rows.install(writer, path)?;
                     writer.carry_origin_index(path).map_err(JobError::write)?;
@@ -556,13 +585,16 @@ impl<'a> Plan<'a> {
                 }
             }
         }
-        let rewrite = edited.union(&resolve).copied().collect();
         Ok(Self {
             edited,
             removed,
             resolve,
-            rewrite,
+            copy_outgoing,
         })
+    }
+
+    pub(super) fn resolution_count(&self) -> usize {
+        self.resolve.len()
     }
 
     pub(super) fn write(
@@ -573,24 +605,35 @@ impl<'a> Plan<'a> {
         prior: &Publication<'_>,
     ) -> Result<(), JobError> {
         for path in &self.removed {
-            writer.shadow(path).map_err(JobError::write)?;
+            if prior.base_files.contains_key(*path) {
+                writer.shadow(path).map_err(JobError::write)?;
+            }
             writer.put_projection(path, None).map_err(JobError::write)?;
         }
-        corpus.resolve(writer, enabled, &self.resolve, &self.removed, true)?;
+        if !self.resolve.is_empty() {
+            corpus.resolve(writer, enabled, &self.resolve, &self.removed, true)?;
+        }
         let _timer = Timer::start("project.incremental");
-        let mut owners: HashSet<String> = self.rewrite.iter().map(|path| (*path).into()).collect();
-        for path in self.rewrite.iter().chain(&self.removed) {
-            owners.extend(
+        let rewrite: Vec<_> = self.edited.union(&self.resolve).copied().collect();
+        let mut callbacks = HashSet::new();
+        for path in rewrite
+            .iter()
+            .filter(|path| !self.copy_outgoing.contains(*path))
+            .chain(self.removed.iter())
+        {
+            callbacks.extend(
                 writer
                     .prior_callback_owners(path)
                     .map_err(JobError::write)?,
             );
-            if let Some(blob) = writer.projection(path).map_err(JobError::write)? {
-                let rows: relations::Projection = relations::decode(&blob)?;
-                owners.extend(rows.callback_owners().map(str::to_owned));
-            }
+            callbacks.extend(writer.callback_owners(path).map_err(JobError::write)?);
         }
-        let files = file_keys(corpus.request, prior);
+        let owners: HashSet<_> = rewrite
+            .iter()
+            .copied()
+            .chain(callbacks.iter().map(String::as_str))
+            .collect();
+        let files = FileKeys::new(&self.edited, prior);
         let mut keys = NodeKeys::new(writer, prior)?;
         let by_path: HashMap<_, _> = corpus
             .request
@@ -613,7 +656,7 @@ impl<'a> Plan<'a> {
                 corpus.sizes[path],
                 &ids,
                 &keys.borrowed(&ids),
-                Some(files[path]),
+                Some(files.get(path)),
             )?;
         }
         let mut written: HashSet<String> = self
@@ -623,10 +666,20 @@ impl<'a> Plan<'a> {
             .map(|&path| path.to_owned())
             .collect();
         for path in owners {
-            let path = path.as_str();
-            let Some(&key) = files.get(path) else {
+            if !corpus.sizes.contains_key(path) {
                 continue;
-            };
+            }
+            let key = files.get(path);
+            if self.copy_outgoing.contains(path) && !callbacks.contains(path) {
+                let (old, previous) = prior.file(path).expect("reused origin is published");
+                writer
+                    .copy_outgoing_from(old.key, previous)
+                    .map_err(JobError::write)?;
+                writer
+                    .set_file_resolution(key, &old.resolution)
+                    .map_err(JobError::write)?;
+                continue;
+            }
             let blob = writer
                 .projection(path)
                 .map_err(JobError::write)?
@@ -646,9 +699,17 @@ impl<'a> Plan<'a> {
                 writer
                     .copy_declarations(key, previous)
                     .map_err(JobError::write)?;
+                build::index_source(
+                    writer,
+                    corpus.root,
+                    corpus.request,
+                    by_path[path],
+                    &file.hash,
+                    key,
+                )?;
                 written.insert(path.into());
             }
-            rows.write(writer, |site| files[site], |id| keys.existing(id))?;
+            rows.write(writer, |site| files.get(site), |id| keys.existing(id))?;
             writer
                 .set_file_resolution(key, &digest)
                 .map_err(JobError::write)?;
@@ -663,25 +724,41 @@ impl<'a> Plan<'a> {
             {
                 writer.shadow(path).map_err(JobError::write)?;
                 if let Some(file) = overlay.files.get(path) {
-                    carry_file(writer, file, true)?;
+                    carry_file(writer, corpus, by_path[path.as_str()], file, true)?;
                 }
             }
         }
-        for path in writer.neighbouring_files().map_err(JobError::write)? {
-            let (file, previous) = prior
-                .file(&path)
-                .expect("a retained neighbour has a publication");
-            writer.shadow(&path).map_err(JobError::write)?;
-            carry_file(writer, file, previous)?;
+        if !self.resolve.is_empty() || !self.removed.is_empty() {
+            for path in writer.neighbouring_files().map_err(JobError::write)? {
+                let (file, previous) = prior
+                    .file(&path)
+                    .expect("a retained neighbour has a publication");
+                writer.shadow(&path).map_err(JobError::write)?;
+                carry_file(writer, corpus, by_path[path.as_str()], file, previous)?;
+            }
         }
         writer.carry_resolution_inputs().map_err(JobError::write)
     }
 }
 
-fn carry_file(writer: &Writer, file: &BaseFile, previous: bool) -> Result<(), JobError> {
+fn carry_file(
+    writer: &mut Writer,
+    corpus: &Corpus<'_>,
+    input: &RequestFile,
+    file: &BaseFile,
+    previous: bool,
+) -> Result<(), JobError> {
     writer
         .copy_declarations(file.key, previous)
         .map_err(JobError::write)?;
+    build::index_source(
+        writer,
+        corpus.root,
+        corpus.request,
+        input,
+        &file.hash,
+        file.key,
+    )?;
     writer
         .copy_outgoing_from(file.key, previous)
         .map_err(JobError::write)?;
@@ -753,30 +830,43 @@ fn topology_readers(
     Ok(changed)
 }
 
-fn file_keys<'a>(request: &'a Request, prior: &Publication<'_>) -> HashMap<&'a str, i64> {
-    let mut next = prior
-        .overlay
-        .into_iter()
-        .flat_map(|overlay| overlay.files.values().map(|file| file.key))
-        .max()
-        .unwrap_or_default()
-        .max(mex_graph_core::store::OVERLAY_KEY_START);
-    request
-        .files
-        .iter()
-        .map(|file| {
-            let path = file.path.as_str();
-            let key = prior
-                .file(path)
-                .map(|(file, _)| file.key)
-                .or_else(|| prior.base_files.get(path).map(|file| file.key))
-                .unwrap_or_else(|| {
-                    next += 1;
-                    next
-                });
-            (path, key)
-        })
-        .collect()
+struct FileKeys<'a> {
+    prior: &'a Publication<'a>,
+    new: HashMap<&'a str, i64>,
+}
+
+impl<'a> FileKeys<'a> {
+    fn new(edited: &HashSet<&'a str>, prior: &'a Publication<'a>) -> Self {
+        let mut next = prior
+            .overlay
+            .into_iter()
+            .flat_map(|overlay| overlay.files.values().map(|file| file.key))
+            .max()
+            .unwrap_or_default()
+            .max(mex_graph_core::store::OVERLAY_KEY_START);
+        let mut paths: Vec<_> = edited
+            .iter()
+            .copied()
+            .filter(|path| prior.file(path).is_none() && !prior.base_files.contains_key(*path))
+            .collect();
+        paths.sort_unstable();
+        let new = paths
+            .into_iter()
+            .map(|path| {
+                next += 1;
+                (path, next)
+            })
+            .collect();
+        Self { prior, new }
+    }
+
+    fn get(&self, path: &str) -> i64 {
+        self.prior
+            .file(path)
+            .map(|(file, _)| file.key)
+            .or_else(|| self.prior.base_files.get(path).map(|file| file.key))
+            .unwrap_or_else(|| self.new[path])
+    }
 }
 
 struct NodeKeys<'a> {

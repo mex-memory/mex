@@ -265,10 +265,8 @@ fn prune_expressions(facts: &mut ReferenceFacts) {
             visit_children(&mut facts.expressions[id as usize], |id| pending.push(*id));
         }
     }
-    let mut next = 0;
-    for id in remap.iter_mut().flatten() {
-        *id = next;
-        next += 1;
+    for (next, id) in remap.iter_mut().flatten().enumerate() {
+        *id = next as ExprId;
     }
     let mut index = 0;
     facts.expressions.retain_mut(|expr| {

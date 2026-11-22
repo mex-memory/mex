@@ -163,8 +163,12 @@ impl Projection {
         Ok(true)
     }
 
-    pub(super) fn callback_owners(&self) -> impl Iterator<Item = &str> {
-        self.remote.keys().map(String::as_str)
+    pub(super) fn unchanged_sites(
+        &self,
+        facts: &FileFacts,
+        positions: &HashMap<Site, Site>,
+    ) -> Result<bool, JobError> {
+        Ok(positions.iter().all(|(old, new)| old == new) && self.routes == routes(facts)?)
     }
 
     pub(super) fn install(&self, writer: &Writer, path: &str) -> Result<(), JobError> {

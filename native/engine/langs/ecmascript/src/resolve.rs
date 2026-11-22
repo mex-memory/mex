@@ -123,9 +123,14 @@ pub fn resolve_for_stage(
     let mut resolver = Resolver::new(Files::Dense(files), modules);
     let resolution = resolver.resolve(0..files.len(), |_| Vec::new());
     let bindings = (0..files.len())
-        .map(|file| resolver.resolve_import_bindings(file))
+        .map(|file| resolver.resolve_import_bindings(file, true))
         .collect();
     (resolution, bindings)
+}
+
+struct ModuleLookup {
+    key: String,
+    target: ModuleTarget,
 }
 
 pub struct Resolver<'a, 'modules> {
@@ -133,7 +138,7 @@ pub struct Resolver<'a, 'modules> {
     index: Vec<OnceCell<Option<FileIndex<'a>>>>,
     paths: HashMap<&'a str, usize>,
     modules: &'modules ModuleResolver,
-    imports: Vec<OnceCell<Vec<OnceCell<ModuleTarget>>>>,
+    imports: Vec<OnceCell<Vec<OnceCell<ModuleLookup>>>>,
     contextual_this: HashMap<(usize, ExprId), Value>,
     context_ready: HashSet<usize>,
     preparing_context: Option<usize>,
@@ -280,7 +285,11 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         winner
     }
 
-    pub fn resolve_import_bindings(&mut self, file: usize) -> Vec<ImportResolution> {
+    pub fn resolve_import_bindings(
+        &mut self,
+        file: usize,
+        include_targets: bool,
+    ) -> Vec<ImportResolution> {
         self.start(file);
         let Some(index) = self.index(file) else {
             return Vec::new();
@@ -292,7 +301,9 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
                 let binding = &self.files.get(file).imports[site.import].bindings[site.binding];
                 let (module, target) = match self.import(file, site.import) {
                     Ok(value @ Value::Module { file: target, .. }) => {
-                        let target_def = if binding.imported == "*" {
+                        let target_def = if !include_targets {
+                            None
+                        } else if binding.imported == "*" {
                             Some((target, 0))
                         } else {
                             let lane = if binding.type_only {

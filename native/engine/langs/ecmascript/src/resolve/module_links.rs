@@ -4,7 +4,7 @@ use mex_graph_core::facts::{ImportForm, Kind, NONE};
 use crate::modules::{ModuleTarget, Syntax};
 
 use super::index::ExportEntry;
-use super::{Lane, Lookup, Resolver, Value, check_depth, def_ref};
+use super::{Lane, Lookup, ModuleLookup, Resolver, Value, check_depth, def_ref};
 
 impl Resolver<'_, '_> {
     pub(super) fn import(&self, file: usize, index: usize) -> Lookup {
@@ -25,23 +25,24 @@ impl Resolver<'_, '_> {
         let key = if require { "ts-require" } else { "ts-import" };
         // The unresolved lookup is a dependency too: adding a previously
         // missing module can change this answer with no old graph edge.
-        self.files
-            .lookup(key, &format!("{}\0{}", facts.path, import.specifier));
         let targets = self.imports[file].get_or_init(|| {
             (0..facts.imports.len())
                 .map(|_| Default::default())
                 .collect()
         });
-        match targets[index]
-            .get_or_init(|| self.modules.resolve(&facts.path, &import.specifier, syntax))
-        {
+        let lookup = targets[index].get_or_init(|| ModuleLookup {
+            key: format!("{}\0{}", facts.path, import.specifier),
+            target: self.modules.resolve(&facts.path, &import.specifier, syntax),
+        });
+        self.files.lookup(key, &lookup.key);
+        match &lookup.target {
             ModuleTarget::File { path, .. } => {
                 let file = self
                     .paths
                     .get(path.as_str())
                     .copied()
                     .ok_or("module_not_indexed")?;
-                if self.index(file).is_none() {
+                if self.files.get(file).ecmascript.is_none() {
                     return Err("module_not_indexed");
                 }
                 Ok(Value::Module { file, require })

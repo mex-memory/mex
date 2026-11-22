@@ -1,6 +1,6 @@
 //! A disposable, shared cache of file-local facts. Resolution never writes here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -84,45 +84,70 @@ impl ResidentFacts {
     }
 }
 
-#[derive(Default)]
+/// Keep a bounded set of decompressed cache blocks. The facts and indexes
+/// decoded from them are owned by the current edit and are never retained.
 pub struct ResidentDecoder {
-    block: Option<Arc<PackedFacts>>,
-    bytes: Vec<u8>,
+    blocks: VecDeque<(Arc<PackedFacts>, Vec<u8>)>,
+    limit: usize,
+    used: usize,
+    decoder: zstd::bulk::Decompressor<'static>,
 }
 
 impl ResidentDecoder {
+    pub fn new(limit: usize) -> Option<Self> {
+        Some(Self {
+            blocks: VecDeque::new(),
+            limit,
+            used: 0,
+            decoder: zstd::bulk::Decompressor::new().ok()?,
+        })
+    }
+
     pub fn unpack(&mut self, resident: &ResidentFacts) -> Option<FileFacts> {
         let block = &resident.block;
-        if self
-            .block
-            .as_ref()
-            .is_none_or(|previous| !Arc::ptr_eq(previous, block))
-        {
-            self.block = None;
-            self.bytes.clear();
-            self.bytes.try_reserve_exact(block.size).ok()?;
-            if zstd::bulk::Decompressor::new()
-                .ok()?
-                .decompress_to_buffer(&block.packed, &mut self.bytes)
+        let found = self
+            .blocks
+            .iter()
+            .position(|(prior, _)| Arc::ptr_eq(prior, block));
+        if let Some(position) = found {
+            let hit = self.blocks.remove(position)?;
+            self.blocks.push_front(hit);
+        } else {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(block.size).ok()?;
+            if self
+                .decoder
+                .decompress_to_buffer(&block.packed, &mut bytes)
                 .ok()?
                 != block.size
             {
                 return None;
             }
-            self.block = Some(Arc::clone(block));
+            if block.size > self.limit {
+                return unpack_record(resident, &bytes);
+            }
+            while self.used + block.size > self.limit {
+                self.used -= self.blocks.pop_back()?.0.size;
+            }
+            self.used += block.size;
+            self.blocks.push_front((Arc::clone(block), bytes));
         }
-        if let Some(record) = &resident.record {
-            decode_entry(
-                self.bytes.get(record.span.clone())?,
-                &record.path,
-                record.language,
-                &record.version,
-                &record.hash,
-            )
-        } else {
-            let (facts, len) = bincode::decode_from_slice(&self.bytes, codec()).ok()?;
-            (len == self.bytes.len()).then_some(facts)
-        }
+        unpack_record(resident, &self.blocks.front()?.1)
+    }
+}
+
+fn unpack_record(resident: &ResidentFacts, bytes: &[u8]) -> Option<FileFacts> {
+    if let Some(record) = &resident.record {
+        decode_entry(
+            bytes.get(record.span.clone())?,
+            &record.path,
+            record.language,
+            &record.version,
+            &record.hash,
+        )
+    } else {
+        let (facts, len) = bincode::decode_from_slice(bytes, codec()).ok()?;
+        (len == bytes.len()).then_some(facts)
     }
 }
 

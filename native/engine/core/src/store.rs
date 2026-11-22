@@ -5,7 +5,7 @@ use std::io;
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub use rusqlite::Error;
 pub const SCHEMA_VERSION: u32 = 5;
@@ -130,7 +130,7 @@ pub struct UnresolvedRow<'a> {
 
 /// Provenance observed by the parent under its maintenance lease. The child
 /// verifies each captured source and adds the actual extraction health totals.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildMetadata {
     pub indexed_at: i64,
@@ -147,7 +147,7 @@ pub struct BuildMetadata {
     pub skipped: Vec<CoverageGap>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageSummary {
     pub policy_hash: String,
@@ -157,19 +157,19 @@ pub struct CoverageSummary {
     pub directories: Vec<CoverageDirectory>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CoverageExtension {
     pub extension: String,
     pub files: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CoverageDirectory {
     pub path: String,
     pub stamp: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CoverageGap {
     pub path: String,
     pub reason: String,

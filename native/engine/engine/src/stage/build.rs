@@ -93,6 +93,7 @@ pub(crate) fn write(
         configs,
         sizes: &sizes,
         load: &load,
+        modules: None,
     }
     .resolve(&writer, frameworks, &selected, &HashSet::new(), false)?;
     for (index, input) in request
@@ -298,6 +299,18 @@ pub(super) fn write_file(
             )
             .map_err(write)?;
     }
+    index_source(writer, root, request, input, &facts.content_hash, file)?;
+    Ok(file)
+}
+
+pub(super) fn index_source(
+    writer: &mut Writer,
+    root: &Path,
+    request: &Request,
+    input: &RequestFile,
+    expected: &[u8; 32],
+    file: i64,
+) -> Result<(), JobError> {
     let _timer = Timer::start("v5.sourceIndex");
     let (source, _, hash) = timing::measure("v5.sourceRead", || {
         request
@@ -307,13 +320,12 @@ pub(super) fn write_file(
     .map_err(|reason| {
         JobError::request(format!("Unable to index source {}: {reason}", input.path))
     })?;
-    if hash != facts.content_hash {
+    if hash != *expected {
         return Err(JobError::request(
             "Source changed before full-text indexing",
         ));
     }
-    write_source_chunks(writer, file, &facts.path, &source).map_err(write)?;
-    Ok(file)
+    write_source_chunks(writer, file, &input.path, &source).map_err(JobError::write)
 }
 
 fn progress(phase: &str, done: usize, total: usize) -> Result<(), JobError> {

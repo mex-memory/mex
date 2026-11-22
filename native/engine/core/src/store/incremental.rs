@@ -140,6 +140,13 @@ impl Writer {
             .collect()
     }
 
+    pub fn callback_owners(&self, path: &str) -> rusqlite::Result<Vec<String>> {
+        self.conn
+            .prepare_cached("SELECT owner FROM main.resolution_callbacks WHERE origin = ?1")?
+            .query_map([path], |row| row.get(0))?
+            .collect()
+    }
+
     pub fn callbacks_for(&self, owner: &str) -> rusqlite::Result<Vec<(String, Vec<u8>)>> {
         let sql = if self.overlay {
             format!(
@@ -235,7 +242,6 @@ impl Writer {
             ("files", "id"),
             ("file_diagnostics", "file"),
             ("nodes", "file"),
-            ("source_chunks", "file"),
         ] {
             self.conn
                 .prepare_cached(&format!(
@@ -248,26 +254,19 @@ impl Writer {
                 SELECT p.* FROM {from}.nodes n CROSS JOIN {from}.{table} p ON p.{owner} = n.id WHERE n.file = ?1"))?
                 .execute([key])?;
         }
-        for (table, fts, columns) in [
-            (
-                "nodes",
-                "nodes_fts",
-                "id, name, qualified_name, docstring, signature",
-            ),
-            (
-                "source_chunks",
-                "source_chunks_fts",
-                "path_terms, identifier_terms, comment_terms, source_text",
-            ),
-        ] {
-            self.conn
-                .prepare_cached(&format!(
-                    "INSERT INTO main.{fts}(rowid, {columns})
-                SELECT rowid, {columns} FROM {from}.{fts}
-                WHERE rowid IN (SELECT id FROM {from}.{table} WHERE file = ?1)"
-                ))?
-                .execute([key])?;
-        }
+        // These are contentless indexes. SELECTing from an FTS table
+        // cannot recover its indexed strings.
+        self.conn
+            .prepare_cached(&format!(
+                "INSERT INTO main.nodes_fts(rowid, id, name, qualified_name, docstring, signature)
+             SELECT n.id, coalesce(k.name, kb.name) || ':' || lower(hex(n.public_id)),
+                    n.name, n.qualified_name, n.docstring, n.signature
+             FROM {from}.nodes n
+             LEFT JOIN {from}.node_kinds k ON k.id = n.kind
+             LEFT JOIN base.node_kinds kb ON kb.id = n.kind
+             WHERE n.file = ?1"
+            ))?
+            .execute([key])?;
         self.conn.prepare_cached(&format!("INSERT INTO main.coverage
             SELECT c.* FROM {from}.files f CROSS JOIN {from}.coverage c ON c.path = f.path WHERE f.id = ?1"))?
             .execute([key])?;

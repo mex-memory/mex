@@ -56,7 +56,13 @@ impl<'a> Stage<'a> {
         let resolution = resolver.resolve(origins.iter().copied(), descendants);
         let mut imports = (0..facts.len()).map(|_| Vec::new()).collect::<Vec<_>>();
         for &file in origins {
-            imports[file] = resolver.resolve_import_bindings(file);
+            let need_targets = !by_site
+                || facts
+                    .get(file)
+                    .frameworks
+                    .iter()
+                    .any(|marker| marker.def >= 0);
+            imports[file] = resolver.resolve_import_bindings(file, need_targets);
         }
         Self::group(facts, frameworks, resolution, imports, by_site)
     }
