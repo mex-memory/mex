@@ -7,7 +7,7 @@ The baseline the Rust engine must beat, measured on 22 Nov 2026: MEX 0.8.5 (the 
 - **Machine:** Apple M4 MacBook Air (10 cores, 16 GB, fanless), macOS 26.0.1, Node 22.23.2. Every number below compares the two versions on this machine; graph-02's Windows numbers (16 cores) are not comparable one to one.
 - **Repositories** (`setup.sh`), fetched at pinned commits, dependencies never installed, nothing from them executed: Express, Hono v4.13.19, zod v4.6.7, NestJS, TypeScript v5.9.3 `src/` (as graph-02 measured it), novu v3.20.0, Flask, HTTPX, FastAPI, Django 5.2.19, ripgrep 15.2.0, fd v10.5.2. Express, Flask, HTTPX, FastAPI and NestJS use the mex-platform bench pins.
 - **Build and refresh** (`measure.mjs`): each run indexes a fresh copy (read once before timing) with a fresh `MEX_HOME`, telemetry and update checks off. `mex graph rebuild`, then one comment line appended to a fixed source file and `mex graph refresh`. Medians of 3 runs (TypeScript `src/` and Django 2, novu 1). Peak memory is the whole process tree, sampled every 100 ms. Disk is every graph file written.
-- **Warm edits** (`warm-latency.ts`, `next2` only): build, open a warm checkout, 2 warm-up edits, then timed body-only edits to one file. A cold edit reopens the checkout, as the background process does.
+- **Warm edits** (`warm-latency.ts`): build, open a warm checkout, make two warm-up edits, then time edits to one file. The `next2` run used the compiler warm path. M5 stage 2 uses the Rust warm path through the same MEX checkout interface.
 - **Call accuracy** (`judge.sh`, `accuracy.mjs`): compiler-precise SCIP indexes as the answer key (scip-typescript 0.4.0, scip-python 0.6.6), adapted from the mex-platform bench with one change: **the judge defines the call sites**, so recall is comparable across tools that extract different calls. A call site is a reference in callee position whose symbol the judge defines in the repository as a function, method or class. An edge is correct when its target is the judge's definition. *Concrete* recall leaves out calls the judge places on an interface or type-alias member (dispatch through a type, which neither version resolves). Edges the judge can't place (no definition, symbol defined twice, star-import mix-ups, non-ASCII lines) are counted and skipped. A scrambling test (20% of call targets replaced) dropped precision from 99.98% to 82%, as it should. Django is judged on its library only: scip-python crashes on its test suite. A repository with a `src/` layout gives the Python judge `extraPaths: ["src"]`, as an installed checkout would. An overload set (same file, container, kind and name) counts as one target, since the judges name its first signature and a graph may name the implementation.
 
 ## Build, memory and disk
@@ -205,7 +205,7 @@ SCIP accuracy is unchanged on Flask, FastAPI, Express and NestJS.
 
 ## Schema v5 storage
 
-The M4 measurements below use the engine's `build` for v5 rebuilds and refreshes. M5 stage 1 uses `refresh` over compatible v5 bases, with cached facts and a per-checkout overlay. Node keeps the maintenance lease and publishes the validated candidate by pointer. Switching storage rebuilds once. Warm edits fall back to refresh.
+The M4 measurements below use the engine's `build` for v5 rebuilds and refreshes. M5 stage 1 uses `refresh` over compatible v5 bases, with cached facts and a per-checkout overlay. Node keeps the maintenance lease and publishes the validated candidate by pointer. Switching storage rebuilds once. Stage 1 routed warm edits through refresh.
 
 The v5 schema has:
 - integer keys between rows;
@@ -265,7 +265,60 @@ novu's rebuild spends about 9.8 s in the engine:
 
 Node's discovery, validation and publication take the rest. In a novu refresh the engine's job takes 83 ms, and Node's checks take most of the remaining 0.7 s. Stage 2 is meant to remove those checks. Set `MEX_GRAPH_PHASE_TIMINGS` to a JSONL path to get the engine's phases beside Node's. Flask's peak, 147 MB, is 40.3% of `next2`'s 365 MB. Node's process accounts for 109 MB of it, and the engine's per-thread cache state for about 17 MB.
 
-Still to do on v5: warm edits (M5 stage 2) and graph-03's Go reader (`native/graph/store.go`, in the unmerged mex #398).
+## M5 stage 2: warm edits
+
+Engine-owned v5 checkouts keep one `mex-graph serve` process alive. It
+pins compressed facts and the published resolution, then parses the edited
+files. It reuses wiring when the resolver inputs agree and runs the normal
+resolver for changes that can affect graph relationships. Node verifies the
+candidate under the writer lease and publishes the new pointer. A known-file
+edit can use filesystem identities to prove the unedited inputs. A missing
+proof triggers contained discovery and a retry in the same session. A crash,
+stale base, or oversized overlay goes through normal refresh.
+
+The table records 24 published edits per repository after two warm-ups on
+the Apple M4 MacBook Air with Node 22.23.2. Each edit appends a comment to
+one source file. MEX time ends at pointer publication. Engine time includes
+writing the candidate and checking input identities. Held RSS is sampled
+between edits. The Node delta is relative to the same process before opening
+the checkout, with the rebuild performed in a separate CLI process.
+
+| Repository and edited file | MEX p50 / p95 (ms) | Engine p50 / p95 (ms) | Engine RSS (MiB) | Node RSS / delta (MiB) | Combined RSS (MiB) |
+|---|---:|---:|---:|---:|---:|
+| Hono `src/hono-base.ts` | 31.9 / 33.3 | 15.1 / 15.4 | 21 | 155.0 / 28.3 | 176.0 |
+| Flask `src/flask/app.py` | 34.0 / 34.3 | 17.9 / 18.4 | 13 | 148.6 / 21.7 | 161.6 |
+| ripgrep `crates/core/main.rs` | 25.0 / 27.3 | 9.7 / 9.9 | 11 | 146.4 / 19.6 | 157.4 |
+| novu `apps/api/src/app.module.ts` | 52.7 / 60.3 | 31.7 / 39.4 | 94 | 193.5 / 66.3 | 287.5 |
+| zod `packages/zod/src/v4/core/schemas.ts` | 127.8 / 340.0 | 101.2 / 192.9 | 41 | 157.0 / 30.2 | 198.0 |
+| NestJS `packages/core/nest-factory.ts` | 31.2 / 36.3 | 17.1 / 22.2 | 28 | 163.5 / 36.9 | 191.5 |
+
+Novu's latency exceeds the 50 ms target by 2.7 ms. Its engine medians
+include 18.2 ms to prepare the overlay and 13.2 ms to verify filesystem
+identities. Node also computes the corpus digest, audits continuity and
+overlay rows, flushes the candidate, and publishes the pointer. The warm
+checkout adds an estimated 66.3 MiB to Node, for 160.3 MiB with the resident
+engine. All zod and NestJS samples published warm. Extraction on zod's
+`schemas.ts` accounts for about 74 ms of its median engine time.
+
+`scripts/graph-engine-bench/refresh-replay.ts --arm=both` compares the
+warm and refresh arms independently against fresh cold builds. Both arms
+use the same raw and projected row digests, point probes, and searches.
+The Flask replay changes a Python export and its re-export. The ripgrep
+replay adds a Rust export and a caller. Each arm published every edit as an
+overlay.
+
+| Repository | Edits | Point probes per arm | Searches per arm | Differences |
+|---|---:|---:|---:|---:|
+| Hono commit history | 30 | 720 | 360 | 0 |
+| Flask package and route edits | 6 | 144 | 84 | 0 |
+| ripgrep export and call edit | 1 | 24 | 12 | 0 |
+
+The replay includes changes to checkout topology, exports, imports, and
+routes. Those edits can require complete source observation or resolution
+and are measured separately from the known-file latency samples.
+
+Still to do on v5 is graph-03's Go reader (`native/graph/store.go`, in
+the unmerged mex #398).
 
 ## Locked targets
 
