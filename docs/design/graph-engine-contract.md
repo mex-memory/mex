@@ -114,7 +114,8 @@ and ranks against the live corpus's BM25 statistics.
 the same sink as Node without adding events to stdout. `worker.*` phases sum
 elapsed time across extraction threads and overlap the `extract` wall
 time. Fingerprint generation is included in `worker.parseExtract`.
-`project` includes the relationship-writing callback during a v5 build.
+`resolve` builds the cross-file resolution. `project` includes delivery of
+the resulting per-file rows, including the v5 relationship-writing callback.
 The `v5.*` totals include their nested phases, such as source indexing
 within declarations and FTS optimization within finalization.
 

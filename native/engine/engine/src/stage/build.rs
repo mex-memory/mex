@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use mex_graph_core::facts::{FileFacts, Kind, ParseStatus};
+use mex_graph_core::fingerprint::K;
 use mex_graph_core::store::{
     EdgeEvidence, EdgeRow, FileRow, NodeRow, RefreshBase, UnresolvedRow, Writer,
 };
@@ -11,7 +12,7 @@ use mex_graph_core::timing::{self, Timer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{StagedEdge, StagedFile, StagedNode, declared_nodes, node_ids, project};
+use super::{Projection, StagedEdge, StagedFile, StagedNode, declared_nodes};
 use crate::frameworks::Enabled;
 use crate::job::{
     ConfigSource, ExtractedFiles, JobCounts, JobError, Request, RequestFile, emit, read_source,
@@ -19,12 +20,16 @@ use crate::job::{
 
 pub(crate) fn write(
     output: &Path,
-    extracted: &ExtractedFiles<'_>,
+    extracted: ExtractedFiles<'_>,
     root: &Path,
     request: &Request,
     configs: &[ConfigSource<'_>],
     frameworks: &Enabled,
 ) -> Result<JobCounts, JobError> {
+    // Resolve before allocating the SQLite writer and its caches. Keep the
+    // public ids for both the declaration pass and the relationship pass.
+    progress("parse", 0, request.files.len())?;
+    let projection = Projection::new(&extracted, root, configs, Some(frameworks));
     let _timer = Timer::start("v5.write");
     let write = JobError::write;
     let mut writer = Writer::create(output).map_err(write)?;
@@ -35,7 +40,7 @@ pub(crate) fn write(
     // Register every declaration before writing cross-file references.
     let declarations = Timer::start("v5.declarations");
     for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
-        if index.is_multiple_of(256) {
+        if index != 0 && index.is_multiple_of(256) {
             progress("parse", index, request.files.len())?;
         }
         let (facts, size) = match extracted.file(entry) {
@@ -51,8 +56,8 @@ pub(crate) fn write(
                 continue;
             }
         };
-        let ids = node_ids(facts);
-        register_nodes(&ids, &mut node_keys, None)?;
+        let ids = projection.ids(entry);
+        register_nodes(ids, &mut node_keys, None)?;
         let file = write_file(
             &mut writer,
             root,
@@ -60,7 +65,7 @@ pub(crate) fn write(
             input,
             facts,
             size,
-            &ids,
+            ids,
             &node_keys,
             None,
         )?;
@@ -74,16 +79,13 @@ pub(crate) fn write(
 
     progress("resolve", 0, counts.files)?;
     let mut written = 0_usize;
-    project(
-        extracted,
-        root,
-        configs,
-        Some(frameworks),
+    let mut digests = ResolutionDigests::default();
+    projection.write(
         false,
         |file| {
             let _timer = Timer::start("v5.relationships");
             let digest = timing::measure("v5.resolutionDigest", || {
-                resolution_digest(by_path[file.path], &file)
+                digests.file(by_path[file.path], &file)
             })?;
             writer
                 .set_file_resolution(file_keys[file.path], &digest)
@@ -98,6 +100,10 @@ pub(crate) fn write(
         },
         |_, _| Ok(()),
     )?;
+    // Final index creation and FTS compaction use their own working memory.
+    drop((file_keys, by_path, node_keys, digests));
+    drop(projection);
+    drop(extracted);
 
     writer
         .set_meta("refresh_format", &crate::job::refresh_format())
@@ -184,33 +190,43 @@ pub(super) fn resolution_context(
     crate::hex(&hash.finalize())
 }
 
-pub(super) fn resolution_digest(
-    facts: &FileFacts,
-    file: &StagedFile<'_>,
-) -> Result<[u8; 32], JobError> {
-    // Activation can add route declarations to a file whose source has not
-    // changed. The remaining declarations and health are file-local facts.
-    let routes: Vec<_> = facts
-        .defs
-        .iter()
-        .filter(|def| def.kind == Kind::Route)
-        .collect();
-    let unresolved_keys: Vec<_> = file
-        .unresolved
-        .iter()
-        .map(|row| (row.called_name, row.candidate_id))
-        .collect();
-    let rows = serde_json::to_vec(&(routes, &file.edges, &file.unresolved, unresolved_keys))
+#[derive(Default)]
+pub(super) struct ResolutionDigests(Vec<u8>);
+
+impl ResolutionDigests {
+    pub(super) fn file(
+        &mut self,
+        facts: &FileFacts,
+        file: &StagedFile<'_>,
+    ) -> Result<[u8; 32], JobError> {
+        // Activation can add route declarations to a file whose source has
+        // not changed. The remaining declarations and health are file-local.
+        let routes: Vec<_> = facts
+            .defs
+            .iter()
+            .filter(|def| def.kind == Kind::Route)
+            .collect();
+        let unresolved_keys: Vec<_> = file
+            .unresolved
+            .iter()
+            .map(|row| (row.called_name, row.candidate_id))
+            .collect();
+        self.0.clear();
+        serde_json::to_writer(
+            &mut self.0,
+            &(routes, &file.edges, &file.unresolved, unresolved_keys),
+        )
         .map_err(JobError::write)?;
-    Ok(Sha256::digest(rows).into())
+        Ok(Sha256::digest(&self.0).into())
+    }
 }
 
-pub(super) fn register_nodes(
-    ids: &[Option<String>],
-    keys: &mut HashMap<String, i64>,
+pub(super) fn register_nodes<'a>(
+    ids: &'a [Option<String>],
+    keys: &mut HashMap<&'a str, i64>,
     base: Option<&RefreshBase>,
 ) -> Result<(), JobError> {
-    for id in ids.iter().flatten() {
+    for id in ids.iter().filter_map(Option::as_deref) {
         let key = match base {
             Some(base) => base
                 .node_key(id)
@@ -218,7 +234,7 @@ pub(super) fn register_nodes(
                 .unwrap_or_else(|| Writer::next_overlay_key(keys.len())),
             None => 1 + keys.len() as i64,
         };
-        if keys.insert(id.clone(), key).is_some() {
+        if keys.insert(id, key).is_some() {
             return Err(JobError::request("Duplicate public node id"));
         }
     }
@@ -237,7 +253,7 @@ pub(super) fn write_file(
     facts: &FileFacts,
     size: u64,
     ids: &[Option<String>],
-    nodes: &HashMap<String, i64>,
+    nodes: &HashMap<&str, i64>,
     key: Option<i64>,
 ) -> Result<i64, JobError> {
     let write = JobError::write;
@@ -264,7 +280,13 @@ pub(super) fn write_file(
         )
         .map_err(write)?;
     for (def, id, parent) in declared_nodes(facts, ids) {
-        write_node(writer, StagedNode::new(facts, def, id, parent), file, nodes).map_err(write)?;
+        write_node(
+            writer,
+            StagedNode::new(facts, def, id, parent, String::new()),
+            file,
+            nodes,
+        )
+        .map_err(write)?;
     }
     if health.status == ParseStatus::Failed {
         writer
@@ -308,7 +330,7 @@ fn write_node(
     writer: &mut Writer,
     node: StagedNode,
     file_key: i64,
-    nodes: &HashMap<String, i64>,
+    nodes: &HashMap<&str, i64>,
 ) -> Result<(), mex_graph_core::store::Error> {
     let key = nodes[node.id];
     let flags = u32::from(node.is_exported)
@@ -332,7 +354,7 @@ fn write_node(
         ],
         signature: node.signature,
         flags,
-        body_hash: node.body_hash.as_deref(),
+        body_hash: node.body_hash.map(|hash| hash.0),
         docstring: node.docstring,
         visibility: node.visibility,
         return_type: node.return_type,
@@ -343,11 +365,14 @@ fn write_node(
         (node.minhash, node.token_count, &node.body_hash)
     {
         let _timer = Timer::start("v5.fingerprints");
-        let packed: Vec<u8> = minhash
-            .iter()
-            .flat_map(|value| value.to_be_bytes())
-            .collect();
-        writer.add_fingerprint(key, &packed, token_count)?;
+        let values: &[u32; K] = minhash
+            .try_into()
+            .map_err(|_| mex_graph_core::store::Error::InvalidQuery)?;
+        writer.add_fingerprint(
+            key,
+            values.map(u32::to_be_bytes).as_flattened(),
+            token_count,
+        )?;
     }
     Ok(())
 }
@@ -356,7 +381,7 @@ pub(super) fn write_relationships(
     writer: &mut Writer,
     file: &StagedFile,
     files: &HashMap<&str, i64>,
-    nodes: &HashMap<String, i64>,
+    nodes: &HashMap<&str, i64>,
 ) -> Result<usize, mex_graph_core::store::Error> {
     let file_key = files[file.path];
     let mut edges = 0;
@@ -433,33 +458,38 @@ fn write_source_chunks(
     source: &str,
 ) -> Result<(), mex_graph_core::store::Error> {
     let path_terms = split_index_terms(path);
-    let lines: Vec<_> = source.split('\n').collect();
-    for start in (0..lines.len()).step_by(60) {
-        let end = (start + 80).min(lines.len());
-        let chunk = &lines[start..end];
-        let text = chunk.join("\n");
-        let comments = chunk
-            .iter()
-            .copied()
-            .filter(|line| {
-                let line = line.trim_start_matches(|ch: char| {
-                    (ch.is_whitespace() && ch != '\u{85}') || ch == '\u{feff}'
-                });
-                ["//", "/*", "*", "#", "<!--"]
-                    .iter()
-                    .any(|prefix| line.starts_with(prefix))
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+    let line_starts: Vec<_> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(byte, _)| byte + 1))
+        .collect();
+    let mut comments = String::new();
+    for start in (0..line_starts.len()).step_by(60) {
+        let end = (start + 80).min(line_starts.len());
+        let end_byte = line_starts.get(end).map_or(source.len(), |byte| byte - 1);
+        let text = &source[line_starts[start]..end_byte];
+        comments.clear();
+        for line in text.split('\n') {
+            let trimmed = line.trim_start_matches(|ch: char| {
+                (ch.is_whitespace() && ch != '\u{85}') || ch == '\u{feff}'
+            });
+            if ["//", "/*", "*", "#", "<!--"]
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+            {
+                if !comments.is_empty() {
+                    comments.push(' ');
+                }
+                comments.push_str(line);
+            }
+        }
         writer.add_source_chunk(
             file,
             [start + 1, end],
             &path_terms,
-            &split_index_terms(&text),
+            &split_index_terms(text),
             &comments,
-            &text,
+            text,
         )?;
-        if end == lines.len() {
+        if end == line_starts.len() {
             break;
         }
     }
@@ -470,44 +500,76 @@ fn write_source_chunks(
 fn split_index_terms(value: &str) -> String {
     use std::collections::HashSet;
 
+    let lowercase = value.to_ascii_lowercase();
+    let bytes = value.as_bytes();
+    let connector = |byte| matches!(byte, b'_' | b'$');
     let mut seen = HashSet::new();
-    let mut terms = Vec::new();
-    let mut push = |term: &str| {
-        let term = term.to_ascii_lowercase();
-        if seen.insert(term.clone()) {
-            terms.push(term);
+    let mut terms = String::new();
+    let mut push = |start, end| {
+        let term = &lowercase[start..end];
+        if seen.insert(term) {
+            if !terms.is_empty() {
+                terms.push(' ');
+            }
+            terms.push_str(term);
         }
     };
-    for raw in value.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')) {
-        let token = raw
-            .trim_start_matches(|ch: char| ch.is_ascii_digit())
-            .trim_matches(['_', '$']);
-        if token.is_empty() {
+    let mut offset = 0;
+    for raw in bytes.split(|byte| !(byte.is_ascii_alphanumeric() || connector(*byte))) {
+        let mut start = offset;
+        let mut end = offset + raw.len();
+        offset = end + 1;
+        while start < end && bytes[start].is_ascii_digit() {
+            start += 1;
+        }
+        while start < end && connector(bytes[start]) {
+            start += 1;
+        }
+        while start < end && connector(bytes[end - 1]) {
+            end -= 1;
+        }
+        if start == end {
             continue;
         }
-        push(token);
-        for fragment in token.split(['_', '$']) {
-            let bytes = fragment.as_bytes();
-            let mut start = 0;
-            for i in 1..bytes.len() {
-                let previous = bytes[i - 1];
-                let here = bytes[i];
-                if here.is_ascii_uppercase()
-                    && (previous.is_ascii_lowercase()
-                        || previous.is_ascii_digit()
-                        || (previous.is_ascii_uppercase()
-                            && bytes.get(i + 1).is_some_and(u8::is_ascii_lowercase)))
-                {
-                    if i - start >= 2 {
-                        push(&fragment[start..i]);
-                    }
-                    start = i;
+        push(start, end);
+        let mut part = start;
+        for i in start + 1..end {
+            let here = bytes[i];
+            let previous = bytes[i - 1];
+            if connector(here) {
+                if i - part >= 2 {
+                    push(part, i);
                 }
-            }
-            if bytes.len() - start >= 2 {
-                push(&fragment[start..]);
+                part = i + 1;
+            } else if i > part
+                && here.is_ascii_uppercase()
+                && (previous.is_ascii_lowercase()
+                    || previous.is_ascii_digit()
+                    || (previous.is_ascii_uppercase()
+                        && bytes.get(i + 1).is_some_and(u8::is_ascii_lowercase)))
+            {
+                if i - part >= 2 {
+                    push(part, i);
+                }
+                part = i;
             }
         }
+        if end - part >= 2 {
+            push(part, end);
+        }
     }
-    terms.join(" ")
+    terms
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_index_terms;
+
+    #[test]
+    fn source_index_preserves_ascii_boundaries_and_first_seen_order() {
+        assert_eq!(
+            split_index_terms("99__parseHTTP2Value__ parse_http$Value éVALUE _1Name"),
+            "parsehttp2value parse http2 value parse_http$value http 1name name",
+        );
+    }
 }

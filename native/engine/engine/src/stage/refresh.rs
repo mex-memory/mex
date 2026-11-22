@@ -7,7 +7,7 @@ use std::path::Path;
 use mex_graph_core::facts::{FileFacts, Kind};
 use mex_graph_core::store::{BaseFile, RefreshBase, Writer};
 
-use super::{build, node_ids, project};
+use super::{Projection, build, node_ids};
 use crate::facts_cache::FactsCache;
 use crate::frameworks::Enabled;
 use crate::job::{
@@ -48,12 +48,17 @@ pub(crate) fn write(
         extracted.activate(&Enabled::from_names(
             &base.frameworks().map_err(JobError::write)?,
         ));
+        let ids = extracted
+            .files
+            .iter()
+            .map(|entry| extracted.file(entry).map(|(facts, _)| node_ids(facts)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(bad_source)?;
         let mut nodes = HashMap::new();
-        for (input, entry) in inputs.iter().zip(&extracted.files) {
+        for ((input, entry), ids) in inputs.iter().zip(&extracted.files).zip(&ids) {
             let (facts, size) = extracted.file(entry).map_err(bad_source)?;
             let old = &prior[&input.path];
-            let ids = node_ids(facts);
-            build::register_nodes(&ids, &mut nodes, Some(&base))?;
+            build::register_nodes(ids, &mut nodes, Some(&base))?;
             write_shadow(
                 &mut writer,
                 old.key,
@@ -202,6 +207,7 @@ fn resolve_and_shadow<'a>(
         .map(|(_, text)| text.as_ref());
     let enabled = Enabled::detect(&extracted.facts, &extracted.ecmascript, package);
     extracted.activate(&enabled);
+    let projection = Projection::new(&extracted, root, configs, Some(&enabled));
 
     let mut files = HashMap::with_capacity(inputs.len());
     let mut by_path = HashMap::with_capacity(inputs.len());
@@ -220,7 +226,7 @@ fn resolve_and_shadow<'a>(
             .map_or_else(|| Writer::next_overlay_key(index), |file| file.key);
         files.insert(input.path.as_str(), key);
         by_path.insert(input.path.as_str(), FileInput { input, facts, size });
-        build::register_nodes(&node_ids(facts), &mut nodes, Some(base))?;
+        build::register_nodes(projection.ids(entry), &mut nodes, Some(base))?;
     }
     for path in prior
         .keys()
@@ -228,15 +234,12 @@ fn resolve_and_shadow<'a>(
     {
         writer.shadow(path).map_err(JobError::write)?;
     }
-    project(
-        &extracted,
-        root,
-        configs,
-        Some(&enabled),
+    let mut digests = build::ResolutionDigests::default();
+    projection.write(
         false,
         |file| {
             let input = by_path[file.path];
-            let digest = build::resolution_digest(input.facts, &file)?;
+            let digest = digests.file(input.facts, &file)?;
             if !prior
                 .get(file.path)
                 .is_some_and(|old| input.matches(old, &digest))
@@ -284,7 +287,7 @@ fn write_shadow(
     file: FileInput<'_>,
     root: &Path,
     request: &Request,
-    nodes: &HashMap<String, i64>,
+    nodes: &HashMap<&str, i64>,
 ) -> Result<(), JobError> {
     writer.shadow(&file.input.path).map_err(JobError::write)?;
     build::write_file(

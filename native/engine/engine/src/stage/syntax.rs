@@ -33,6 +33,10 @@ impl<'a> Stage<'a> {
         node_id(&self.ids[file], def)
     }
 
+    pub(super) fn ids(&self, index: usize) -> &[Option<String>] {
+        &self.ids[index]
+    }
+
     pub(super) fn file(&self, index: usize, size: u64, include_nodes: bool) -> StagedFile<'_> {
         let facts = &self.facts[index];
         let mut file = StagedFile::new(facts, size, &self.ids[index], include_nodes);

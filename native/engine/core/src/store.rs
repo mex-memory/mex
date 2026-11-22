@@ -83,7 +83,7 @@ pub struct NodeRow<'a> {
     pub span: [u32; 4],
     pub signature: Option<&'a str>,
     pub flags: u32,
-    pub body_hash: Option<&'a str>,
+    pub body_hash: Option<&'a [u8; 32]>,
     pub docstring: Option<&'a str>,
     pub visibility: Option<&'a str>,
     pub return_type: Option<&'a str>,
@@ -210,7 +210,7 @@ impl Writer {
             "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = OFF;
              PRAGMA page_size = 4096;
-             PRAGMA cache_size = -32768;",
+             PRAGMA cache_size = -8192;",
         )?;
         conn.pragma_update(None, "foreign_keys", base.is_none())?;
         conn.execute_batch(SCHEMA)?;
@@ -325,7 +325,6 @@ impl Writer {
         let kind = self.code(Code::NodeKind, node.kind)?;
         let (_, public_id) = node.public_id.split_once(':').ok_or(Error::InvalidQuery)?;
         let public_id = decode_hex(public_id)?;
-        let body_hash = node.body_hash.map(decode_hex).transpose()?;
         self.conn
             .prepare_cached(
                 "INSERT INTO nodes(id, public_id, kind, file, parent, name, qualified_name,
@@ -336,12 +335,16 @@ impl Writer {
             .execute(params![
                 node.key, public_id, kind, node.file, node.parent, node.name, node.qualified_name,
                 node.span[0], node.span[1], node.span[2], node.span[3], node.signature, node.flags,
-                body_hash, node.docstring, node.visibility, node.return_type
+                node.body_hash.map(|hash| hash.as_slice()), node.docstring, node.visibility,
+                node.return_type
             ])?;
         self.conn
             .prepare_cached("INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?
             .execute(params![node.key, node.public_id, node.name, node.qualified_name, node.docstring, node.signature])?;
         for (kind, values) in [(0, node.decorators), (1, node.type_parameters)] {
+            if values.is_empty() {
+                continue;
+            }
             let mut insert = self
                 .conn
                 .prepare_cached("INSERT INTO node_attributes VALUES (?1, ?2, ?3, ?4)")?;
@@ -434,13 +437,16 @@ impl Writer {
 
     /// Derive the stored neighborhood from exactly the published call edges.
     pub fn finish_fingerprints(&self) -> rusqlite::Result<()> {
+        // The call pairs can repeat at different sites. Deduplicate directly
+        // into the primary key instead of sorting a separate UNION table.
         self.conn.execute_batch(
             "INSERT INTO fingerprint_neighbours
-             SELECT fp.node, e.target FROM fingerprints fp JOIN edges e ON e.source = fp.node
+             SELECT e.source, e.target FROM edges e CROSS JOIN fingerprints fp ON fp.node = e.source
              WHERE e.kind = (SELECT id FROM edge_kinds WHERE name = 'calls')
-             UNION
-             SELECT fp.node, e.source FROM fingerprints fp JOIN edges e ON e.target = fp.node
-             WHERE e.kind = (SELECT id FROM edge_kinds WHERE name = 'calls');",
+             UNION ALL
+             SELECT e.target, e.source FROM edges e CROSS JOIN fingerprints fp ON fp.node = e.target
+             WHERE e.kind = (SELECT id FROM edge_kinds WHERE name = 'calls')
+             ON CONFLICT(node, neighbour) DO NOTHING;",
         )
     }
 

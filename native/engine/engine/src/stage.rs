@@ -10,7 +10,7 @@ use mex_graph_python::{EXCLUDED, LANGUAGE};
 use serde::Serialize;
 use serde_json::{Number, Value, json};
 
-use crate::frameworks::{self, Enabled};
+use crate::frameworks::{self, Enabled, Link};
 use crate::job::{ConfigSource, ExtractedFile, ExtractedFiles, JobCounts, JobError, emit};
 use crate::syntax_language::SyntaxLanguage;
 use crate::{hex, is_compiler_language};
@@ -28,11 +28,7 @@ pub(super) fn write(
     frameworks: Option<&Enabled>,
 ) -> Result<JobCounts, JobError> {
     let mut counts = JobCounts::default();
-    project(
-        extracted,
-        root,
-        configs,
-        frameworks,
+    Projection::new(extracted, root, configs, frameworks).write(
         true,
         |file| file.emit(&mut counts, frameworks.is_some()),
         |path, reason| {
@@ -51,117 +47,162 @@ pub(super) fn write(
 
 /// Both storage formats consume the same resolved facts and site locations.
 /// Only one file's projected records are assembled at a time.
-fn project(
-    extracted: &ExtractedFiles<'_>,
-    root: &Path,
-    configs: &[ConfigSource<'_>],
-    frameworks: Option<&Enabled>,
-    include_nodes: bool,
-    mut file_ready: impl FnMut(StagedFile<'_>) -> Result<(), JobError>,
-    mut skipped: impl FnMut(&str, &str) -> Result<(), JobError>,
-) -> Result<(), JobError> {
-    let _timer = Timer::start("project");
-    let Resolution {
-        edges,
-        unresolved_calls,
-        call_candidates,
-        ..
-    } = extracted.resolve();
-    let mut edges = edges.into_iter().peekable();
-    let mut unresolved = unresolved_calls.into_iter().peekable();
+struct Projection<'a> {
+    extracted: &'a ExtractedFiles<'a>,
+    resolution: Resolution,
+    python_ids: Vec<Vec<Option<String>>>,
+    python_frameworks: Option<Vec<Vec<Link<'a>>>>,
+    ecmascript: Option<ecmascript::Stage<'a>>,
+    syntax: [syntax::Stage<'a>; 2],
+}
 
-    // Cross-file edge targets can be written later in the stream. Keep an id
-    // per written definition, but only assemble one file's rows at a time.
-    let ids: Vec<_> = extracted.facts.iter().map(node_ids).collect();
-    let ecmascript = (!extracted.ecmascript.is_empty()).then(|| {
-        ecmascript::Stage::new(
-            &extracted.ecmascript,
-            &extracted.modules(root, configs),
-            frameworks,
-        )
-    });
-    let python_frameworks = frameworks.map(|registry| registry.links(&extracted.facts, None));
-    let syntax = SyntaxLanguage::ALL
-        .map(|language| syntax::Stage::new(&extracted.syntax[language as usize], language));
-    for entry in &extracted.files {
-        let (index, size) = match *entry {
-            ExtractedFile::Python { index, size } => (index, size),
-            ExtractedFile::EcmaScript { index, size } => {
-                file_ready(ecmascript.as_ref().expect("ECMAScript stage").file(
+impl<'a> Projection<'a> {
+    fn new(
+        extracted: &'a ExtractedFiles<'a>,
+        root: &Path,
+        configs: &[ConfigSource<'_>],
+        frameworks: Option<&Enabled>,
+    ) -> Self {
+        let _timer = Timer::start("resolve");
+        let resolution = extracted.resolve();
+        let ecmascript = (!extracted.ecmascript.is_empty()).then(|| {
+            ecmascript::Stage::new(
+                &extracted.ecmascript,
+                &extracted.modules(root, configs),
+                frameworks,
+            )
+        });
+        Self {
+            extracted,
+            resolution,
+            python_ids: extracted.facts.iter().map(node_ids).collect(),
+            python_frameworks: frameworks.map(|registry| registry.links(&extracted.facts, None)),
+            ecmascript,
+            syntax: SyntaxLanguage::ALL
+                .map(|language| syntax::Stage::new(&extracted.syntax[language as usize], language)),
+        }
+    }
+
+    fn ids(&self, entry: &ExtractedFile<'_>) -> &[Option<String>] {
+        match *entry {
+            ExtractedFile::Python { index, .. } => &self.python_ids[index],
+            ExtractedFile::EcmaScript { index, .. } => self
+                .ecmascript
+                .as_ref()
+                .expect("ECMAScript stage")
+                .ids(index),
+            ExtractedFile::Syntax {
+                language, index, ..
+            } => self.syntax[language as usize].ids(index),
+            ExtractedFile::Skipped { .. } => &[],
+        }
+    }
+
+    fn write(
+        &self,
+        include_nodes: bool,
+        mut file_ready: impl FnMut(StagedFile<'_>) -> Result<(), JobError>,
+        mut skipped: impl FnMut(&str, &str) -> Result<(), JobError>,
+    ) -> Result<(), JobError> {
+        let _timer = Timer::start("project");
+        let Projection {
+            extracted,
+            resolution,
+            python_ids: ids,
+            python_frameworks,
+            ecmascript,
+            syntax,
+        } = self;
+        let Resolution {
+            edges,
+            unresolved_calls,
+            call_candidates,
+            ..
+        } = resolution;
+        let mut edges = edges.iter().peekable();
+        let mut unresolved = unresolved_calls.iter().copied().peekable();
+        // Cross-file edge targets can appear later in the stream. Keep their
+        // ids, and assemble only one file's projected rows at a time.
+        for entry in &extracted.files {
+            let (index, size) = match *entry {
+                ExtractedFile::Python { index, size } => (index, size),
+                ExtractedFile::EcmaScript { index, size } => {
+                    file_ready(ecmascript.as_ref().expect("ECMAScript stage").file(
+                        index,
+                        size,
+                        include_nodes,
+                    ))?;
+                    continue;
+                }
+                ExtractedFile::Syntax {
+                    language,
                     index,
                     size,
-                    include_nodes,
-                ))?;
-                continue;
+                } => {
+                    file_ready(syntax[language as usize].file(index, size, include_nodes))?;
+                    continue;
+                }
+                ExtractedFile::Skipped { path, reason } => {
+                    skipped(path, reason)?;
+                    continue;
+                }
+            };
+            let facts = &extracted.facts[index];
+            let mut file = StagedFile::new(facts, size, &ids[index], include_nodes);
+            while let Some(edge) = edges.next_if(|edge| edge.from.0 == index) {
+                let source = node_id(&ids[index], edge.from.1);
+                let target = node_id(&ids[edge.to.0], edge.to.1);
+                if let (Some(source), Some(target)) = (source, target) {
+                    file.edges.push(StagedEdge {
+                        source,
+                        target,
+                        kind: edge.kind,
+                        line: edge.line,
+                        column: Some(edge.col),
+                        provenance: "tree-sitter",
+                        confidence: 1.into(),
+                        resolution_method: "engine-python",
+                        metadata: None,
+                        evidence: None,
+                    });
+                }
             }
-            ExtractedFile::Syntax {
-                language,
-                index,
-                size,
-            } => {
-                file_ready(syntax[language as usize].file(index, size, include_nodes))?;
-                continue;
+            while let Some((_, call_index, reason)) = unresolved.next_if(|call| call.0 == index) {
+                let call = &facts.calls[call_index];
+                let source = call_source(facts, call.caller);
+                if let Some(id) = node_id(&ids[index], source) {
+                    file.unresolved.push(StagedRef {
+                        from_node_id: id,
+                        reference_name: &call.name,
+                        called_name: Some(&call.name),
+                        reference_kind: "calls",
+                        file_path: &facts.path,
+                        language: LANGUAGE,
+                        line: call.name_range.start_line + 1,
+                        column: call.name_range.start_col,
+                        status: "unresolved",
+                        resolver: "engine-python",
+                        metadata: json!({ "reason": reason }),
+                        confidence: None,
+                        candidates: None,
+                        candidate_id: call_candidates
+                            .get(&(index, call_index))
+                            .and_then(|&(file, def)| node_id(&ids[file], def)),
+                        receiver: None,
+                        qualifier: None,
+                    });
+                }
             }
-            ExtractedFile::Skipped { path, reason } => {
-                skipped(path, reason)?;
-                continue;
-            }
-        };
-        let facts = &extracted.facts[index];
-        let mut file = StagedFile::new(facts, size, &ids[index], include_nodes);
-        while let Some(edge) = edges.next_if(|edge| edge.from.0 == index) {
-            let source = node_id(&ids[index], edge.from.1);
-            let target = node_id(&ids[edge.to.0], edge.to.1);
-            if let (Some(source), Some(target)) = (source, target) {
-                file.edges.push(StagedEdge {
-                    source,
-                    target,
-                    kind: edge.kind,
-                    line: edge.line,
-                    column: Some(edge.col),
-                    provenance: "tree-sitter",
-                    confidence: 1.into(),
-                    resolution_method: "engine-python",
-                    metadata: None,
-                    evidence: None,
+            if let Some(links) = python_frameworks {
+                framework::add_links(&mut file, &links[index], index, |(f, d)| {
+                    node_id(&ids[f], d)
                 });
             }
+            file_ready(file)?;
         }
-        while let Some((_, call_index, reason)) = unresolved.next_if(|call| call.0 == index) {
-            let call = &facts.calls[call_index];
-            let source = call_source(facts, call.caller);
-            if let Some(id) = node_id(&ids[index], source) {
-                file.unresolved.push(StagedRef {
-                    from_node_id: id,
-                    reference_name: &call.name,
-                    called_name: Some(&call.name),
-                    reference_kind: "calls",
-                    file_path: &facts.path,
-                    language: LANGUAGE,
-                    line: call.name_range.start_line + 1,
-                    column: call.name_range.start_col,
-                    status: "unresolved",
-                    resolver: "engine-python",
-                    metadata: json!({ "reason": reason }),
-                    confidence: None,
-                    candidates: None,
-                    candidate_id: call_candidates
-                        .get(&(index, call_index))
-                        .and_then(|&(file, def)| node_id(&ids[file], def)),
-                    receiver: None,
-                    qualifier: None,
-                });
-            }
-        }
-        if let Some(links) = &python_frameworks {
-            framework::add_links(&mut file, &links[index], index, |(f, d)| {
-                node_id(&ids[f], d)
-            });
-        }
-        file_ready(file)?;
+        debug_assert!(edges.next().is_none() && unresolved.next().is_none());
+        Ok(())
     }
-    debug_assert!(edges.next().is_none() && unresolved.next().is_none());
-    Ok(())
 }
 
 fn node_ids(facts: &FileFacts) -> Vec<Option<String>> {
@@ -278,7 +319,13 @@ impl<'a> StagedFile<'a> {
                 });
             }
             if include_nodes {
-                file.nodes.push(StagedNode::new(facts, def, id, parent));
+                file.nodes.push(StagedNode::new(
+                    facts,
+                    def,
+                    id,
+                    parent,
+                    identity_key(facts, def),
+                ));
             }
         }
         file
@@ -371,7 +418,7 @@ struct StagedNode<'a> {
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     type_parameters: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
-    body_hash: Option<String>,
+    body_hash: Option<StagedHash<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     minhash: Option<&'a [u32]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -379,7 +426,13 @@ struct StagedNode<'a> {
 }
 
 impl<'a> StagedNode<'a> {
-    fn new(facts: &'a FileFacts, def: &'a Def, id: &'a str, parent: Option<&'a str>) -> Self {
+    fn new(
+        facts: &'a FileFacts,
+        def: &'a Def,
+        id: &'a str,
+        parent: Option<&'a str>,
+        identity_key: String,
+    ) -> Self {
         let compiler = is_compiler_language(&facts.language);
         let csharp = facts.language == mex_graph_csharp::LANGUAGE;
         let writes_visibility = compiler || csharp || facts.language == mex_graph_rust::LANGUAGE;
@@ -396,7 +449,7 @@ impl<'a> StagedNode<'a> {
             end_line: def.range.end_line + 1,
             start_column: def.range.start_col,
             end_column: def.range.end_col,
-            identity_key: identity_key(facts, def),
+            identity_key,
             container_id: parent,
             signature: (!def.signature.is_empty()).then_some(def.signature.as_str()),
             docstring: def.docstring.as_deref(),
@@ -413,10 +466,19 @@ impl<'a> StagedNode<'a> {
             is_abstract: (writes_modifiers && has_flag("abstract")).then_some(true),
             decorators: if compiler { &def.decorators } else { &[] },
             type_parameters: &def.type_parameters,
-            body_hash: def.body_hash.as_ref().map(|hash| hex(hash)),
+            body_hash: def.body_hash.as_ref().map(StagedHash),
             minhash: def.sketch.as_ref().map(|sketch| sketch.minhash.as_slice()),
             token_count: def.sketch.as_ref().map(|sketch| sketch.token_count),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StagedHash<'a>(&'a [u8; 32]);
+
+impl Serialize for StagedHash<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&hex(self.0))
     }
 }
 

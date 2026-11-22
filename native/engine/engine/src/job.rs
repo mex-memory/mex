@@ -362,8 +362,9 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
     } else {
         Enabled::default()
     };
+    let reextracted = extracted.reextracted.len();
     let mut counts = match request.output.as_deref() {
-        Some(output) => stage::build::write(output, &extracted, &root, request, &configs, &enabled),
+        Some(output) => stage::build::write(output, extracted, &root, request, &configs, &enabled),
         None => stage::write(
             &extracted,
             &root,
@@ -371,7 +372,7 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
             request.frameworks.then_some(&enabled),
         ),
     }?;
-    counts.reextracted = extracted.reextracted.len();
+    counts.reextracted = reextracted;
     Ok(counts)
 }
 

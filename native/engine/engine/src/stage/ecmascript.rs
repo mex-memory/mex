@@ -125,6 +125,10 @@ impl<'a> Stage<'a> {
         file
     }
 
+    pub(super) fn ids(&self, index: usize) -> &[Option<String>] {
+        &self.ids[index]
+    }
+
     fn id(&self, (file, index): DefRef) -> Option<&str> {
         node_id(&self.ids[file], index)
     }
