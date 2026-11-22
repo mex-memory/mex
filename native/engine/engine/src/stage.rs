@@ -4,6 +4,7 @@ use std::path::Path;
 
 use mex_graph_core::facts::{Def, FileFacts, Health, Kind, ParseStatus};
 use mex_graph_core::id::node_id as public_id;
+use mex_graph_core::timing::Timer;
 use mex_graph_python::resolve::{Resolution, call_source};
 use mex_graph_python::{EXCLUDED, LANGUAGE};
 use serde::Serialize;
@@ -59,6 +60,7 @@ fn project(
     mut file_ready: impl FnMut(StagedFile<'_>) -> Result<(), JobError>,
     mut skipped: impl FnMut(&str, &str) -> Result<(), JobError>,
 ) -> Result<(), JobError> {
+    let _timer = Timer::start("project");
     let Resolution {
         edges,
         unresolved_calls,

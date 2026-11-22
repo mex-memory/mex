@@ -540,17 +540,21 @@ impl Writer {
 
     pub fn finish(self) -> rusqlite::Result<()> {
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
-        self.conn.execute_batch(INDEXES)?;
-        if self.overlay {
-            self.finish_overlay_fingerprints()?;
-        } else {
-            self.finish_fingerprints()?;
-        }
-        self.conn.execute_batch(
-            "INSERT INTO nodes_fts(nodes_fts) VALUES ('optimize');
-             INSERT INTO source_chunks_fts(source_chunks_fts) VALUES ('optimize');
-             COMMIT;",
-        )?;
+        crate::timing::measure("v5.indexes", || self.conn.execute_batch(INDEXES))?;
+        crate::timing::measure("v5.fingerprintNeighbours", || {
+            if self.overlay {
+                self.finish_overlay_fingerprints()
+            } else {
+                self.finish_fingerprints()
+            }
+        })?;
+        crate::timing::measure("v5.optimizeFts", || {
+            self.conn.execute_batch(
+                "INSERT INTO nodes_fts(nodes_fts) VALUES ('optimize');
+                 INSERT INTO source_chunks_fts(source_chunks_fts) VALUES ('optimize');",
+            )
+        })?;
+        self.conn.execute_batch("COMMIT;")?;
         self.conn.close().map_err(|(_, error)| error)
     }
 }

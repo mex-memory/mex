@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use mex_graph_core::CONTRACT_VERSION;
 use mex_graph_core::facts::{FACTS_VERSION, FileFacts};
 use mex_graph_core::store::BuildMetadata;
+use mex_graph_core::timing::{self, Timer};
 use mex_graph_csharp::CSharp;
 use mex_graph_ecmascript::modules::ModuleResolver;
 use mex_graph_ecmascript::{EcmaScript, language_for_path};
@@ -266,8 +267,15 @@ pub fn run(request: Request) -> Result<(), JobError> {
         });
     }
 
-    let counts =
-        run_started(&request).inspect_err(|_| remove_candidate(request.output.as_deref()))?;
+    let timing_file = timing_file(&request.root);
+    if timing_file.is_some() {
+        timing::enable();
+    }
+    let counts = timing::measure("job", || run_started(&request));
+    if let (Some(path), Some(totals)) = (timing_file, timing::take()) {
+        append_timings(&path, &request.mode, totals);
+    }
+    let counts = counts.inspect_err(|_| remove_candidate(request.output.as_deref()))?;
     let result = emit(&serde_json::json!({
         "type": "result",
         "files": counts.files,
@@ -285,6 +293,35 @@ pub fn run(request: Request) -> Result<(), JobError> {
         result?;
     }
     Ok(())
+}
+
+fn timing_file(root: &Path) -> Option<PathBuf> {
+    let raw = std::env::var_os("MEX_GRAPH_PHASE_TIMINGS")?;
+    match raw.to_string_lossy().trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" | "no" | "off" => None,
+        "1" | "true" | "on" | "yes" => {
+            let directory = root.join(".mex/local");
+            std::fs::create_dir_all(&directory).ok()?;
+            Some(directory.join("graph-phase-timings.jsonl"))
+        }
+        _ => Some(raw.into()),
+    }
+}
+
+fn append_timings(path: &Path, mode: &str, totals: timing::Totals) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let record = serde_json::json!({
+            "label": format!("engine.{mode}"),
+            "pid": std::process::id(),
+            "phases": totals.milliseconds(),
+            "memory": [],
+        });
+        let _ = file.write_all(format!("{record}\n").as_bytes());
+    }
 }
 
 #[derive(Default)]
@@ -310,6 +347,7 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
     let inputs: Vec<_> = request.files.iter().collect();
     let mut extracted = extract_files(&root, request, &inputs, cache.as_ref());
     let enabled = if request.frameworks || request.output.is_some() {
+        let _timer = Timer::start("frameworks.activate");
         let package = configs
             .iter()
             .find(|(path, _)| *path == "package.json")
@@ -473,6 +511,7 @@ pub(super) fn extract_files<'a>(
     files: &[&'a RequestFile],
     cache: Option<&FactsCache>,
 ) -> ExtractedFiles<'a> {
+    let _timer = Timer::start("extract");
     let enabled = |language: &str| request.languages.iter().any(|name| name == language);
     let python_enabled = enabled(LANGUAGE);
     let capture_frameworks = request.frameworks || request.output.is_some();
@@ -512,8 +551,15 @@ pub(super) fn extract_files<'a>(
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
             .clamp(1, count);
         std::thread::scope(|scope| {
+            let measure = timing::enabled();
+            let mut workers = Vec::with_capacity(threads);
+            let next = &next;
+            let inputs = &inputs;
             for _ in 0..threads {
-                scope.spawn(|| {
+                workers.push(scope.spawn(move || {
+                    if measure {
+                        timing::enable();
+                    }
                     let mut python = None;
                     let mut ecmascript = None;
                     let mut rust = None;
@@ -547,7 +593,9 @@ pub(super) fn extract_files<'a>(
                                                 .extract(path, text, hash),
                                         };
                                         if capture_frameworks {
-                                            frameworks::capture(&mut facts, text);
+                                            timing::measure("worker.frameworks.capture", || {
+                                                frameworks::capture(&mut facts, text)
+                                            });
                                         }
                                         facts
                                     },
@@ -558,7 +606,13 @@ pub(super) fn extract_files<'a>(
                     if let Some(mut cache) = cache {
                         cache.flush();
                     }
-                });
+                    timing::take()
+                }));
+            }
+            for worker in workers {
+                if let Some(totals) = worker.join().expect("extraction worker") {
+                    timing::merge(totals);
+                }
             }
         });
     }
@@ -649,8 +703,10 @@ fn extract(
             reextracted: false,
         });
     }
-    let canonical = request.source_path(root, file)?;
-    let (text, size, hash) = read_source(&canonical, file)?;
+    let (text, size, hash) = timing::measure("worker.read", || {
+        let canonical = request.source_path(root, file)?;
+        read_source(&canonical, file)
+    })?;
     if let Some(facts) = cached(cache.as_deref(), &hash) {
         return Ok(Extracted {
             size,
@@ -658,7 +714,7 @@ fn extract(
             reextracted: false,
         });
     }
-    let facts = adapter(&file.path, &text, hash);
+    let facts = timing::measure("worker.parseExtract", || adapter(&file.path, &text, hash));
     if let (Some(cache), Some((_, version))) = (cache, key) {
         cache.put(version, &facts);
     }

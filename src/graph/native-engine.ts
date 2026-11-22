@@ -14,6 +14,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { GraphCoverageHistogram } from "./corpus-policy.js";
 import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
+import { phaseTimingsWorkerEnv } from "./phase-timing.js";
 import type { GraphEdge, GraphNode, Language } from "./types.js";
 
 /** The contract version this module speaks; the engine must report the same. */
@@ -170,7 +171,11 @@ export function runGraphEngine(
     const child = spawn(binary, [request.mode, "--request", requestPath], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: engineEnv(),
+      env: {
+        ...engineEnv(),
+        MEX_GRAPH_PHASE_TIMINGS: process.env.MEX_GRAPH_PHASE_TIMINGS,
+        ...phaseTimingsWorkerEnv(),
+      },
     });
     const run: EngineRun = { exitCode: null, signal: null };
     const lines = createInterface({ input: child.stdout });

@@ -362,6 +362,7 @@ impl<'a> Materializer<'a> {
         ) {
             return (None, None);
         }
+        let _timer = mex_graph_core::timing::Timer::start("worker.fingerprints");
         let hash = *self
             .bodies
             .entry((start, end))

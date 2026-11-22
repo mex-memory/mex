@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use mex_graph_core::facts::{FACTS_VERSION, FileFacts};
+use mex_graph_core::timing::Timer;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
@@ -107,6 +108,7 @@ impl CacheWorker {
         version: &str,
         hash: &[u8; 32],
     ) -> Option<FileFacts> {
+        let _timer = Timer::start("worker.cacheRead");
         let (checksum, payload): (Vec<u8>, Vec<u8>) = self
             .conn
             .prepare_cached(
@@ -137,6 +139,7 @@ impl CacheWorker {
     }
 
     pub fn put(&mut self, version: &str, facts: &FileFacts) {
+        let timer = Timer::start("worker.cacheEncode");
         let Ok(encoded) = serde_json::to_vec(facts) else {
             return;
         };
@@ -155,6 +158,7 @@ impl CacheWorker {
             checksum: Self::checksum(version, &payload),
             payload,
         });
+        drop(timer);
         if self.bytes >= BATCH_BYTES {
             self.flush();
         }
@@ -162,6 +166,7 @@ impl CacheWorker {
 
     pub fn flush(&mut self) {
         if !self.pending.is_empty() {
+            let _timer = Timer::start("worker.cacheWrite");
             // An unavailable cache is a miss. A failed transaction leaves all
             // previously committed entries available to other processes.
             let _ = Self::write_batch(&mut self.conn, &self.pending, self.bytes);

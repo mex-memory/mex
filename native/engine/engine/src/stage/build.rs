@@ -7,6 +7,7 @@ use mex_graph_core::facts::{FileFacts, Kind, ParseStatus};
 use mex_graph_core::store::{
     EdgeEvidence, EdgeRow, FileRow, NodeRow, RefreshBase, UnresolvedRow, Writer,
 };
+use mex_graph_core::timing::{self, Timer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -24,6 +25,7 @@ pub(crate) fn write(
     configs: &[ConfigSource<'_>],
     frameworks: &Enabled,
 ) -> Result<JobCounts, JobError> {
+    let _timer = Timer::start("v5.write");
     let write = JobError::write;
     let mut writer = Writer::create(output).map_err(write)?;
     let mut counts = JobCounts::default();
@@ -31,6 +33,7 @@ pub(crate) fn write(
     let mut node_keys = HashMap::new();
     let mut by_path = HashMap::new();
     // Register every declaration before writing cross-file references.
+    let declarations = Timer::start("v5.declarations");
     for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
         if index.is_multiple_of(256) {
             progress("parse", index, request.files.len())?;
@@ -67,6 +70,7 @@ pub(crate) fn write(
         counts.coverage_gaps += usize::from(facts.health.status == ParseStatus::Failed);
     }
     counts.nodes = node_keys.len();
+    drop(declarations);
 
     progress("resolve", 0, counts.files)?;
     let mut written = 0_usize;
@@ -77,7 +81,10 @@ pub(crate) fn write(
         Some(frameworks),
         false,
         |file| {
-            let digest = resolution_digest(by_path[file.path], &file)?;
+            let _timer = Timer::start("v5.relationships");
+            let digest = timing::measure("v5.resolutionDigest", || {
+                resolution_digest(by_path[file.path], &file)
+            })?;
             writer
                 .set_file_resolution(file_keys[file.path], &digest)
                 .map_err(write)?;
@@ -119,6 +126,7 @@ pub(super) fn finish(
     request: &Request,
     counts: &mut JobCounts,
 ) -> Result<(), JobError> {
+    let _timer = Timer::start("v5.finish");
     let write = JobError::write;
     if let Some(root) = &request.observation_root {
         writer.set_meta("observation_root", root).map_err(write)?;
@@ -274,12 +282,15 @@ pub(super) fn write_file(
             )
             .map_err(write)?;
     }
-    let (source, _, hash) = request
-        .source_path(root, input)
-        .and_then(|path| read_source(&path, input))
-        .map_err(|reason| {
-            JobError::request(format!("Unable to index source {}: {reason}", input.path))
-        })?;
+    let _timer = Timer::start("v5.sourceIndex");
+    let (source, _, hash) = timing::measure("v5.sourceRead", || {
+        request
+            .source_path(root, input)
+            .and_then(|path| read_source(&path, input))
+    })
+    .map_err(|reason| {
+        JobError::request(format!("Unable to index source {}: {reason}", input.path))
+    })?;
     if hash != facts.content_hash {
         return Err(JobError::request(
             "Source changed before full-text indexing",
@@ -331,6 +342,7 @@ fn write_node(
     if let (Some(minhash), Some(token_count), Some(_)) =
         (node.minhash, node.token_count, &node.body_hash)
     {
+        let _timer = Timer::start("v5.fingerprints");
         let packed: Vec<u8> = minhash
             .iter()
             .flat_map(|value| value.to_be_bytes())

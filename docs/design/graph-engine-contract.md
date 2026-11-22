@@ -109,6 +109,15 @@ and ranks against the live corpus's BM25 statistics.
 - `build` can report `progress` while writing the candidate and records per-file coverage gaps there. `stage` reports each file as described below.
 - `result` is the last line of a successful job. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files and failed parses. `usage` gives elapsed milliseconds (`wallMs`) and peak sampled resident memory in MiB (`peakRssMb`). Node owns validation, publication and usage logging.
 
+`MEX_GRAPH_PHASE_TIMINGS` also enables the engine's JSONL timing records
+(`engine.build`, `engine.refresh`, or `engine.stage`). The engine appends to
+the same sink as Node without adding events to stdout. `worker.*` phases sum
+elapsed time across extraction threads and overlap the `extract` wall
+time. Fingerprint generation is included in `worker.parseExtract`.
+`project` includes the relationship-writing callback during a v5 build.
+The `v5.*` totals include their nested phases, such as source indexing
+within declarations and FTS optimization within finalization.
+
 ### Stage events
 
 `stage` emits one `staged` or `file` line per requested file in request order, followed by `result`. Each edge appears in the file event that owns its source node. Its target may appear in a later event. File lines and result counts are deterministic across extraction thread counts. Node discards the stream if the job fails. If a file is skipped or its content hash differs from discovery, Node extracts that file from the captured source and demotes engine edges whose targets are missing.

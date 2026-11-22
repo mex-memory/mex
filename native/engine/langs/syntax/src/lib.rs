@@ -232,6 +232,7 @@ fn has_body(kind: Kind) -> bool {
 /// Today's tree-sitter sketches include any leaf wholly inside the body lines,
 /// even outside the declaration's columns (and including comment leaves).
 pub fn hash_and_sketch(defs: &mut [Def], raw: &str, tree: &Tree, builder: &mut SketchBuilder) {
+    let _timer = mex_graph_core::timing::Timer::start("worker.fingerprints");
     let lines: Vec<_> = raw.split('\n').collect();
     let leaves = leaf_types(tree);
     for def in defs.iter_mut().filter(|def| has_body(def.kind)) {

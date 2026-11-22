@@ -15,3 +15,4 @@ pub mod store;
 
 pub mod fingerprint;
 pub mod text;
+pub mod timing;

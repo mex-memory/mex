@@ -181,6 +181,7 @@ impl Enabled {
         files: &'a [FileFacts],
         imports: Option<&[Vec<ImportResolution>]>,
     ) -> Vec<Vec<Link<'a>>> {
+        let _timer = mex_graph_core::timing::Timer::start("frameworks.links");
         files
             .iter()
             .enumerate()
