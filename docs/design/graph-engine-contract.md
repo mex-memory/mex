@@ -43,7 +43,7 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 - `files` gives the git-aware paths Node discovered, with sizes. `configs` accepts repository-relative paths or objects with a repository-relative `path` and captured `source` text. The engine reads named files and configs only under `root`. For ECMAScript staging, Node supplies the tsconfig, jsconfig and package.json texts from discovery so resolution uses that snapshot.
 - `languages` names the languages this engine run handles. During migration Node keeps every other language on today's path.
 - For `build`, `output` is the absolute path to a new candidate in an existing folder. Temporary files sit beside it. For `stage`, set `mode` to `"stage"`. The engine ignores a supplied `output` path or `null` and opens no database.
-- `base` and `changed` are set for `refresh`. `base` is the absolute path of the published v5 base and is opened read-only. `changed` lists repository-relative paths, including deletions. `files` still lists the complete current corpus. The engine compares its complete input to the base, so omitted hints cannot hide a change.
+- `base` and `changed` are set for `refresh`. `base` is the absolute path of the published v5 base and is opened read-only. An optional `overlay` names the current published overlay for that base. `changed` lists repository-relative paths, including deletions. `files` still lists the complete current corpus. The engine compares its complete input to the current publication, so omitted hints cannot hide a change.
 - `factsCache` optionally names an absolute directory for disposable file-local facts. In `facts-v2.db`, workers encode complete facts as binary records and group them into Zstandard-compressed blocks. The SQLite index keys records by path, language adapter version, facts and framework-capture versions, and source SHA-256. Reads verify the block checksum, decode bounds, record format, path, language and source hash. A single writer commits the blocks in one transaction and evicts the oldest blocks as needed. The payload budget is 12 KiB per observed source file, bounded to 64–256 MiB, and a smaller checkout never reduces a shared cache's budget. Missing, incompatible, corrupt, contended and oversized entries are ordinary misses.
 - `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, `jsx` for `.jsx`, `rust` for `.rs`, and `csharp` for `.cs`. Node's `MEX_GRAPH_ENGINE_LANGUAGES` flag accepts `python`, `typescript`, `javascript`, `rust` and `csharp` as comma-separated names. `typescript` also selects `tsx`, and `javascript` also selects `jsx`.
 - `build` includes framework rows. Stage requests opt in by sending `"frameworks": true`. A binary that handled the pass sets `frameworksResolved` on its staged events so Node can skip framework extraction for those files. If a file falls back because the native read differed from discovery, Node recomputes framework rows from the captured corpus.
@@ -81,11 +81,12 @@ The overlay owns the complete rows of every path in `shadow_files`, including
 the tombstones of deleted paths. Edges and unresolved references belong to
 their source file. Fingerprint neighbours belong to the fingerprint's file,
 so a changed call can also shadow a file on the other end. `file_resolution`
-records an outgoing projection digest in public-id space. The refresh runs
-the regular resolver over cached facts whenever any resolution input changes.
-When the corpus and resolver configuration agree with the base and modified
-facts differ only in their content hash and file-node end position, it can
-reuse the base's outgoing wiring.
+records an outgoing projection digest in public-ID space. Both edit
+modes compare with the current publication. They reuse position-independent
+resolution, resolve changed references, and follow recorded dependencies
+when a declaration or module surface changes. See
+[Incremental resolution](graph-engine-incremental.md) for the private
+records, dependency rules and complete-resolution cases.
 
 Files reuse the base key for the same repository path. Nodes reuse the base
 key for the same 16-byte public id. New keys start above `2^40`. Interned
@@ -210,9 +211,10 @@ published facts and resolution. To abandon a candidate, Node sends
 `{"type":"discard","id":1}` and waits for `{"type":"discarded","id":1}`.
 There is at most one pending edit. The engine never writes the pointer.
 
-The engine retains checked compressed fact blocks and the published
-resolution. It reuses wiring when the changed facts prove identical resolver
-inputs. Other edits run the same resolver and overlay writer as refresh.
+The engine retains checked compressed fact blocks, a bounded decompression
+cache, and the published resolution. It handles bounded deltas in the
+session and runs large edits in a short-lived worker using the same
+refresh planner.
 The session guard applies for the lifetime of the process. `{"type":"close"}`
 or stdin EOF ends the session and discards any unpublished candidate. An
 `error` event, crash, stale publication, or overlay that exceeds the limit

@@ -256,7 +256,7 @@ Through `mex graph` with every language on the engine and v5 storage. Medians of
 | ripgrep | 0.48 | 161 | — → 0.19 | 442 KB | 1.0 |
 | novu | 13.1 | 944 | — → 0.81 | 2.7 MB | 49.4 |
 
-Against `next2`, novu rebuilds in 13.1 s instead of 77 s at 944 MB instead of 2.6 GB, and refreshes one file in 0.81 s instead of 23 s. Hono refreshes in 0.23 s instead of 3.3 s and NestJS in 0.35 s instead of 9.0 s. Like the `next2` baseline, these refreshes append a comment, which moves no declaration. An edit that does move declarations still resolves the whole corpus: 3.1 s on novu (see stage 2).
+Against `next2`, novu rebuilds in 13.1 s instead of 77 s at 944 MB instead of 2.6 GB, and refreshes one file in 0.81 s instead of 23 s. Hono refreshes in 0.23 s instead of 3.3 s and NestJS in 0.35 s instead of 9.0 s. Like the `next2` baseline, these refreshes append a comment, which moves no declaration. At this stage, moving declarations still resolved the whole corpus and took 3.1 s on novu.
 
 novu's rebuild spends about 9.8 s in the engine:
 - 3.7 s extracting;
@@ -265,79 +265,92 @@ novu's rebuild spends about 9.8 s in the engine:
 
 Node's discovery, validation and publication take the rest. In a novu refresh the engine's job takes 83 ms, and Node's checks take most of the remaining 0.7 s. Stage 2 is meant to remove those checks. Set `MEX_GRAPH_PHASE_TIMINGS` to a JSONL path to get the engine's phases beside Node's. Flask's peak, 147 MB, is 40.3% of `next2`'s 365 MB. Node's process accounts for 109 MB of it, and the engine's per-thread cache state for about 17 MB.
 
-## M5 stage 2: warm edits
+## M5 stage 2: warm edits and incremental resolution
 
-Engine-owned v5 checkouts keep one `mex-graph serve` process alive. It
-pins compressed facts and the published resolution, then parses the edited
-files. It reuses wiring when the resolver inputs agree and runs the normal
-resolver for changes that can affect graph relationships. Node verifies the
-candidate under the writer lease and publishes the new pointer. A known-file
-edit can use filesystem identities to prove the unedited inputs. A missing
-proof triggers contained discovery and a retry in the same session. A crash,
-stale base, or oversized overlay goes through normal refresh.
+Engine-owned v5 checkouts keep one `mex-graph serve` process alive. Node
+verifies each candidate under a writer lease and publishes its pointer.
+When filesystem identities cannot prove the unedited inputs, the same
+session retries with contained discovery.
 
-The table records 24 published edits per repository after two warm-ups on
-the Apple M4 MacBook Air with Node 22.23.2. Each edit appends a comment to
-one source file. MEX time ends at pointer publication. Engine time includes
-writing the candidate and checking input identities. Held RSS is sampled
-between edits. The Node delta is relative to the same process before opening
-the checkout, with the rebuild performed in a separate CLI process.
+Stage 2b makes resolution incremental in `serve` and `refresh`. Position
+changes move saved relationship sites and rebuild the edited file's
+declarations, fingerprints and search rows. A local reference change
+resolves one origin. A surface change also visits the files that read it,
+including re-exports and lookups that previously failed. Unchanged results
+keep their published rows. Cross-file callback ownership and changes to
+call-pair fingerprint neighbours can require additional public rows.
+Large deltas run in a short-lived worker. The
+[incremental design](graph-engine-incremental.md) describes the dependency
+rules, retained data and full-resolution cases.
 
-| Repository and edited file | MEX p50 / p95 (ms) | Engine p50 / p95 (ms) | Engine RSS (MiB) | Node RSS / delta (MiB) | Combined RSS (MiB) |
-|---|---:|---:|---:|---:|---:|
-| Hono `src/hono-base.ts` | 31.9 / 33.3 | 15.1 / 15.4 | 21 | 155.0 / 28.3 | 176.0 |
-| Flask `src/flask/app.py` | 34.0 / 34.3 | 17.9 / 18.4 | 13 | 148.6 / 21.7 | 161.6 |
-| ripgrep `crates/core/main.rs` | 25.0 / 27.3 | 9.7 / 9.9 | 11 | 146.4 / 19.6 | 157.4 |
-| novu `apps/api/src/app.module.ts` | 52.7 / 60.3 | 31.7 / 39.4 | 94 | 193.5 / 66.3 | 287.5 |
-| zod `packages/zod/src/v4/core/schemas.ts` | 127.8 / 340.0 | 101.2 / 192.9 | 41 | 157.0 / 30.2 | 198.0 |
-| NestJS `packages/core/nest-factory.ts` | 31.2 / 36.3 | 17.1 / 22.2 | 28 | 163.5 / 36.9 | 191.5 |
+The M4 MacBook Air runs used Node 22.23.2 and the same source files as
+stage 2. Each mode published 24 edits after two warm-ups. MEX latency ends at
+pointer publication. Engine latency includes candidate generation and
+filesystem proof. Held MiB adds the resident engine's RSS to the Node RSS
+delta from before the checkout opened. Each cell reports `MEX p50/p95 ·
+engine p50/p95 · held MiB` and each latency is in milliseconds.
 
-Novu's latency exceeds the 50 ms target by 2.7 ms. Its engine medians
-include 18.2 ms to prepare the overlay and 13.2 ms to verify filesystem
-identities. Node also computes the corpus digest, audits continuity and
-overlay rows, flushes the candidate, and publishes the pointer. The warm
-checkout adds an estimated 66.3 MiB to Node, for 160.3 MiB with the resident
-engine. All zod and NestJS samples published warm. Extraction on zod's
-`schemas.ts` accounts for about 74 ms of its median engine time.
-
-**Edits that move declarations aren't incremental yet.** An appended comment leaves every declaration and call in place, so `serve` reuses the published resolution. Most real edits insert or remove lines above some declarations. Those edits fail the resolver-input check, and the engine resolves and projects the whole corpus again. `MEX_WARM_EDIT=prepend` in `warm-latency.ts` adds the comment line at the top of the file instead:
-
-| Repository | MEX p50, append → prepend (ms) | Engine p50, prepend (ms) | Engine RSS after, prepend (MiB) |
-|---|---:|---:|---:|
-| Hono | 34 → 325 | 307 | 80 |
-| Flask | — → 58 | 40 | 20 |
-| ripgrep | — → 81 | 64 | 24 |
-| NestJS | — → 457 | 440 | 193 |
-| novu | 53 → 2,693 | 2,669 | 781 |
-
-A normal refresh has the same limit. novu's prepend refresh takes 3.1 s through `mex graph` (0.81 s for an appended comment). The engine's 1.95 s job breaks down as:
-- 2.6 s of CPU (0.53 s elapsed) decoding every file's cached facts;
-- 0.42 s resolving the corpus;
-- 0.76 s projecting every file to find the changed rows.
-
-Hono's prepend refresh takes 0.46 s (0.24 s for an append).
-
-Next is incremental resolution:
-- an edit that only moves positions re-projects that file;
-- a changed call re-resolves that file;
-- a changed export also re-resolves its dependents.
-
-`scripts/graph-engine-bench/refresh-replay.ts --arm=both` compares the
-warm and refresh arms independently against fresh cold builds. Both arms
-use the same raw and projected row digests, point probes, and searches.
-The Flask replay changes a Python export and its re-export. The ripgrep
-replay adds a Rust export and a caller. Each arm published every edit as an
-overlay.
-
-| Repository | Edits | Point probes per arm | Searches per arm | Differences |
+| Repository and edited file | Append | Prepend | Insert call | Change export |
 |---|---:|---:|---:|---:|
-| Hono commit history | 30 | 720 | 360 | 0 |
-| Flask package and route edits | 6 | 144 | 84 | 0 |
-| ripgrep export and call edit | 1 | 24 | 12 | 0 |
+| Hono `src/hono-base.ts` | 31.8/32.9 · 18.5/19.4 · 45.8 | 33.0/35.6 · 16.7/20.1 · 50.8 | 34.0/36.4 · 20.1/21.5 · 61.4 | 289.9/314.5 · 246.5/250.1 · 66.3 |
+| Flask `src/flask/app.py` | 33.2/34.6 · 17.8/18.8 · 39.0 | 33.9/35.0 · 18.4/19.2 · 43.3 | 36.6/38.6 · 19.6/20.2 · 44.8 | 63.6/75.7 · 34.7/35.0 · 65.9 |
+| ripgrep `crates/core/main.rs` | 24.7/25.1 · 9.8/10.3 · 36.0 | 25.9/32.0 · 10.6/11.3 · 31.6 | 25.8/26.8 · 11.2/11.5 · 35.1 | 59.8/73.8 · 31.5/31.9 · 58.6 |
+| NestJS `packages/core/nest-factory.ts` | 28.0/29.8 · 15.4/16.2 · 64.1 | 32.4/33.6 · 17.9/18.9 · 67.1 | 33.8/38.3 · 20.1/23.7 · 91.2 | 970.1/1003.6 · 900.8/921.5 · 63.7 |
+| novu `apps/api/src/app.module.ts` | 38.7/39.4 · 19.1/19.4 · 157.9 | 41.2/42.6 · 21.9/22.2 · 160.6 | 48.7/50.1 · 29.9/30.2 · 196.5 | 308.0/440.1 · 135.0/156.6 · 236.0 |
 
-The replay includes changes to checkout topology, exports, imports, and
-routes. Those edits can require complete source observation or resolution
-and are measured separately from the known-file latency samples.
+`MEX_WARM_EDIT=append` adds a trailing comment. `prepend` adds it before
+any declarations. `call` adds a call to an existing function body.
+`export` alternates adding and deleting an exported function.
+
+Before stage 2b, prepend p50 was 325 ms on Hono, 58 ms on Flask, 81 ms
+on ripgrep, 457 ms on NestJS and 2,693 ms on novu. Novu's normal
+`mex graph refresh` on a prepend took 840 ms median over three runs
+(831–861 ms, down from 3.1 s). The engine job took 32 ms median. Each
+candidate re-extracted and rewrote one file. Node's source capture,
+filesystem verification and database audit account for most of the rest.
+Novu held at most 264.4 MiB across 26 mixed edits.
+
+Novu's inserted-call medians in the two final samples were 50.2 ms and
+48.7 ms. Engine medians were 30.4 ms and 29.9 ms. The append p50
+comparison against the stage 2 base binary with the same Node wrapper was
+30.9 → 31.8 ms on Hono, 32.1 → 33.2 ms on Flask, 24.4 → 24.7 ms on
+ripgrep, 30.7 → 28.0 ms on NestJS and 43.1 → 38.7 ms on novu. The
+engine jobs on Hono, Flask and ripgrep picked up a small fixed cost from
+planning and writing the incremental candidate.
+
+Large TypeScript export changes can fan out across importers, re-exports
+and inherited declarations. For Hono and NestJS, the refresh worker and
+its resolution work account for most of the latency. On novu, the engine
+and Node's continuity scan each took about 135 ms median. The engine
+is the largest component on Flask and ripgrep.
+
+Building the private dependency and projection tables adds to cold build
+cost. The novu Rust build job took about 13 s in the benchmark runs,
+compared with 9.0 s on the stage 2 base. Two end-to-end cold builds took
+16.0 s and 19.4 s. The 545 MB base included 898,854 recorded reads with
+116 MiB of text keys before indexing.
+
+`scripts/graph-engine-bench/refresh-replay.ts --arm=both` checks both edit
+paths against an independent cold build after every step. It compares
+raw rows, public reads, fingerprints, search results and the outgoing
+resolution digests. The synthetic histories cover prepends, inserted and
+removed calls, declaration and call-site renames, exports, file additions
+and deletions, and changed re-exports. The TypeScript history also moves a
+callback site that shares an outgoing edge key.
+
+| Replay | Edits | Point probes per arm | Searches per arm | Differences |
+|---|---:|---:|---:|---:|
+| Hono, 30 commits and 13 synthetic edits | 43 | 1032 | 516 | 0 |
+| Flask, 6 historical and 12 synthetic edits | 18 | 432 | 252 | 0 |
+| ripgrep, 1 original and 12 synthetic edits | 13 | 312 | 156 | 0 |
+| novu, 13 synthetic edits | 13 | 312 | 130 | 0 |
+| TypeScript seeded fixture | 160 | 1120 | 1920 | 0 |
+| Python seeded fixture | 160 | 800 | 1600 | 0 |
+
+Each of the 407 steps published an overlay in both modes. Novu ran with
+`--arm=warm` and `--arm=refresh` separately to keep scratch use within the
+disk budget. Bulk digests use the same read SQL with temporary indexes over
+the published rows. Point reads and searches use the publication directly.
 
 Still to do on v5 is graph-03's Go reader (`native/graph/store.go`, in
 the unmerged mex #398).
