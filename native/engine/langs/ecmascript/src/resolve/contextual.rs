@@ -151,6 +151,7 @@ impl<'a> Resolver<'a, '_> {
             .model(alias_file)
             .aliases
             .get(&alias_def)
+            .copied()
             .ok_or("contextual_this_unknown")?;
         self.this_type(
             Site {

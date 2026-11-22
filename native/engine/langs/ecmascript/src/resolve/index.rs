@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use mex_graph_core::facts::ecmascript::{
     Base, ConstructSignature, ExportKind, ExportValue, ExprId, Expression, FormalType, Owner,
@@ -8,11 +9,95 @@ use mex_graph_core::facts::{FileFacts, NONE, Scope};
 
 use super::{Lane, Reason};
 
+// The extracted facts remain available by file. Bound the derived lexical
+// maps separately so a cold job does not keep every model resident.
+const MODEL_CAPACITY: usize = 4096;
+
+struct CachedModel<'a> {
+    model: Rc<FileIndex<'a>>,
+    recent: bool,
+}
+
+pub(super) struct FileIndexes<'a> {
+    entries: Vec<Option<CachedModel<'a>>>,
+    slots: Vec<usize>,
+    cursor: usize,
+}
+
+impl<'a> FileIndexes<'a> {
+    pub(super) fn new(files: usize) -> Self {
+        Self {
+            entries: (0..files).map(|_| None).collect(),
+            slots: Vec::new(),
+            cursor: 0,
+        }
+    }
+
+    pub(super) fn get(&mut self, file: usize, facts: &'a FileFacts) -> Option<Rc<FileIndex<'a>>> {
+        if let Some(entry) = &mut self.entries[file] {
+            entry.recent = true;
+            return Some(Rc::clone(&entry.model));
+        }
+        let model = Rc::new(FileIndex::new(facts)?);
+        if self.slots.len() == MODEL_CAPACITY {
+            // Give recently used files a second pass before eviction.
+            loop {
+                let slot = self.cursor;
+                self.cursor = (slot + 1) % MODEL_CAPACITY;
+                let old = self.slots[slot];
+                let entry = self.entries[old].as_mut().expect("occupied model");
+                if !std::mem::replace(&mut entry.recent, false) {
+                    self.entries[old] = None;
+                    self.slots[slot] = file;
+                    break;
+                }
+            }
+        } else {
+            self.slots.push(file);
+        }
+        self.entries[file] = Some(CachedModel {
+            model: Rc::clone(&model),
+            recent: true,
+        });
+        Some(model)
+    }
+}
+
+// A binding or member usually has one declaration. Keep its ordinal inline
+// and allocate links only for the duplicate keys that need a chain.
+struct OrdinalBuckets<K> {
+    first: HashMap<K, u32>,
+    next: HashMap<u32, u32>,
+}
+
+impl<K: Eq + std::hash::Hash> OrdinalBuckets<K> {
+    fn new() -> Self {
+        Self {
+            first: HashMap::new(),
+            next: HashMap::new(),
+        }
+    }
+
+    fn prepend(&mut self, key: K, index: usize) {
+        let index = u32::try_from(index).expect("fact ordinal fits in 32 bits");
+        if let Some(old) = self.first.insert(key, index) {
+            self.next.insert(index, old);
+        }
+    }
+
+    fn get<'a>(&'a self, key: &K) -> impl Iterator<Item = usize> + use<'a, K> {
+        std::iter::successors(self.first.get(key).copied(), |index| {
+            self.next.get(index).copied()
+        })
+        .map(|index| index as usize)
+    }
+}
+
 pub(super) struct FileIndex<'a> {
     pub facts: &'a ReferenceFacts,
     scopes: &'a [Scope],
-    names: HashMap<(i32, &'a str), Vec<usize>>,
-    members: HashMap<(Owner, &'a str), Vec<usize>>,
+    names: OrdinalBuckets<(i32, &'a str)>,
+    members: OrdinalBuckets<(Owner, &'a str)>,
     pub this_bindings: HashMap<i32, Owner>,
     pub explicit_this: HashMap<i32, ExprId>,
     pub bases: HashMap<usize, Vec<Base>>,
@@ -44,8 +129,8 @@ impl<'a> FileIndex<'a> {
         let mut index = Self {
             facts,
             scopes: &file.scopes,
-            names: HashMap::new(),
-            members: HashMap::new(),
+            names: OrdinalBuckets::new(),
+            members: OrdinalBuckets::new(),
             explicit_this: facts.explicit_this.iter().copied().collect(),
             this_bindings: facts
                 .this_bindings
@@ -74,19 +159,11 @@ impl<'a> FileIndex<'a> {
             commonjs: None,
             commonjs_members: HashMap::new(),
         };
-        for (i, binding) in facts.bindings.iter().enumerate() {
-            index
-                .names
-                .entry((binding.scope, &binding.name))
-                .or_default()
-                .push(i);
+        for (i, binding) in facts.bindings.iter().enumerate().rev() {
+            index.names.prepend((binding.scope, &binding.name), i);
         }
-        for (i, member) in facts.members.iter().enumerate() {
-            index
-                .members
-                .entry((member.owner, &member.name))
-                .or_default()
-                .push(i);
+        for (i, member) in facts.members.iter().enumerate().rev() {
+            index.members.prepend((member.owner, &member.name), i);
         }
         for base in &facts.bases {
             index
@@ -202,9 +279,6 @@ impl<'a> FileIndex<'a> {
     ) -> impl Iterator<Item = usize> + 'b {
         self.names
             .get(&(scope, name))
-            .into_iter()
-            .flatten()
-            .copied()
             .filter(move |&i| lane.admits(self.facts.bindings[i].space))
     }
 
@@ -253,10 +327,10 @@ impl<'a> FileIndex<'a> {
     }
 
     pub(super) fn member(&self, owner: Owner, name: &str) -> Result<usize, Reason> {
-        let indices = self.members.get(&(owner, name)).ok_or("member_missing")?;
-        let first = indices[0];
+        let mut indices = self.members.get(&(owner, name));
+        let first = indices.next().ok_or("member_missing")?;
         let member = &self.facts.members[first];
-        for &i in &indices[1..] {
+        for i in indices {
             let other = &self.facts.members[i];
             if member.def == NONE || member.def != other.def || member.getter != other.getter {
                 return Err("ambiguous_member");

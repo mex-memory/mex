@@ -2,8 +2,9 @@
 //! Start each lookup at a lexical binding or an explicit module. Every member
 //! lookup then needs a known receiver; absence is retained as an unresolved call.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 
 use mex_graph_core::facts::ecmascript::{ExprId, Expression, ImportSite, Owner, Space};
 use mex_graph_core::facts::{
@@ -17,10 +18,11 @@ use crate::modules::ModuleResolver;
 mod contextual;
 mod index;
 mod module_links;
-use index::FileIndex;
+use index::{FileIndex, FileIndexes};
 
 const MAX_DEPTH: usize = 48;
 type Reason = &'static str;
+type ImportTargets = Vec<OnceCell<Result<usize, Reason>>>;
 type Lookup = Result<Value, Reason>;
 pub type DefRef = (usize, usize);
 
@@ -146,10 +148,10 @@ pub fn resolve_for_stage(
 
 pub struct Resolver<'a, 'modules> {
     files: Files<'a>,
-    index: Vec<OnceCell<Option<FileIndex<'a>>>>,
+    index: RefCell<FileIndexes<'a>>,
     paths: HashMap<&'a str, usize>,
     modules: &'modules ModuleResolver,
-    imports: Vec<OnceCell<Vec<OnceCell<Result<usize, Reason>>>>>,
+    imports: Vec<OnceCell<ImportTargets>>,
     contextual_this: HashMap<(usize, ExprId), Value>,
     context_ready: Vec<bool>,
     preparing_context: Option<usize>,
@@ -164,7 +166,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
     pub fn new(files: Files<'a>, modules: &'modules ModuleResolver) -> Self {
         Self {
             files,
-            index: (0..files.len()).map(|_| OnceCell::new()).collect(),
+            index: RefCell::new(FileIndexes::new(files.len())),
             paths: files
                 .paths()
                 .enumerate()
@@ -181,14 +183,12 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         }
     }
 
-    fn index(&self, file: usize) -> Option<&FileIndex<'a>> {
+    fn index(&self, file: usize) -> Option<Rc<FileIndex<'a>>> {
         let facts = self.files.get(file);
-        self.index[file]
-            .get_or_init(|| FileIndex::new(facts))
-            .as_ref()
+        self.index.borrow_mut().get(file, facts)
     }
 
-    fn model(&self, file: usize) -> &FileIndex<'a> {
+    fn model(&self, file: usize) -> Rc<FileIndex<'a>> {
         self.index(file).expect("ECMAScript file model")
     }
 
@@ -630,7 +630,8 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
             Value::ClassExpression {
                 is_static: true, ..
             } => construct,
-            _ if construct => self.construct_signatures(value).is_some(),
+            _ if construct => Self::construct_owner(value)
+                .is_some_and(|(file, owner)| self.model(file).constructs.contains_key(&owner)),
             _ => false,
         }
     }
@@ -831,13 +832,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         self.eval(site.file, site.scope, *expression, depth + 1)
     }
 
-    fn construct_signatures(
-        &self,
-        value: Value,
-    ) -> Option<(
-        usize,
-        &[mex_graph_core::facts::ecmascript::ConstructSignature],
-    )> {
+    fn construct_owner(value: Value) -> Option<(usize, Owner)> {
         let (file, owner) = match value {
             Value::Instance((file, def)) => (
                 file,
@@ -854,7 +849,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
             ),
             _ => return None,
         };
-        Some((file, self.model(file).constructs.get(&owner)?))
+        Some((file, owner))
     }
 
     fn constructed_value(&mut self, value: Value, depth: usize) -> Lookup {
@@ -881,8 +876,12 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
                 self.constructed_value(value, depth + 1)
             }
             _ => {
-                let (file, signatures) = self
-                    .construct_signatures(value)
+                let (file, owner) =
+                    Self::construct_owner(value).ok_or("constructor_type_unknown")?;
+                let model = self.model(file);
+                let signatures = model
+                    .constructs
+                    .get(&owner)
                     .ok_or("constructor_type_unknown")?;
                 let mut sites = Vec::with_capacity(signatures.len());
                 for signature in signatures {
