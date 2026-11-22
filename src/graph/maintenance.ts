@@ -38,7 +38,7 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, openGraphDatabase, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphInvariants, inspectV5GraphSchema, v5Rows } from "./db/v5.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphInvariants, inspectV5GraphSchema, parseV5PublicId, v5Rows } from "./db/v5.js";
 import { GraphStore } from "./db/store.js";
 import { FingerprintStore, transferGroundingBaselines } from "./fingerprint-store.js";
 import { installGraphViews, overlayBase } from "./overlay.js";
@@ -706,9 +706,10 @@ function restoreStandaloneContinuity(previous: string, candidate: string, delta 
       destination.transaction(() => {
         if (delta) {
           const paths = overlayShadowPaths(source, destination);
-          if (!overlayKeepsNodeIds(source, destination, paths)) {
-            const vanished = paths.flatMap(path => sourceStore.getNodesByFile(path)
-              .filter(node => destinationStore.getNodeById(node.id)?.id !== node.id));
+          const missing = overlayMissingNodeIds(source, destination, paths);
+          if (missing.size) {
+            const vanished = [...missing].flatMap(([path, ids]) => sourceStore.getNodesByFile(path)
+              .filter(node => ids.has(parseV5PublicId(node.id)!.digest.toString("hex"))));
             restoreOverlayAliases(sourceStore, destinationStore, vanished, sourceFingerprints, destinationFingerprints);
           } else if (source.prepare("SELECT 1 FROM main.aliases LIMIT 1").get()) {
             for (const alias of sourceStore.getAllAliases()) {
@@ -728,21 +729,30 @@ function overlayShadowPaths(source: ReturnType<typeof openSqlite>, destination: 
   return [...new Set([...shadows(source), ...shadows(destination)])];
 }
 
-function overlayKeepsNodeIds(
+function overlayMissingNodeIds(
   source: ReturnType<typeof openSqlite>, destination: ReturnType<typeof openSqlite>, paths: readonly string[],
-): boolean {
-  if (paths.length === 0) return true;
-  const prior = source.prepare(`SELECT hex(n.public_id) AS id FROM ${v5Rows(source, "files")} f
+): Map<string, Set<string>> {
+  const missing = new Map<string, Set<string>>();
+  if (paths.length === 0) return missing;
+  const prior = source.prepare(`SELECT f.path, lower(hex(n.public_id)) AS id FROM ${v5Rows(source, "files")} f
     CROSS JOIN ${v5Rows(source, "nodes")} n ON n.file = f.id
-    WHERE f.path IN (SELECT value FROM json_each(?))`).all(JSON.stringify(paths)) as Array<{ id: string }>;
-  if (prior.length === 0) return true;
+    WHERE f.path IN (SELECT value FROM json_each(?))`).all(JSON.stringify(paths)) as Array<{ path: string; id: string }>;
+  if (prior.length === 0) return missing;
   // A standalone prior can only lose identities on shadowed paths. Every
   // surviving node on those paths is physically present in the new patch.
   const retainedSide = overlayBase(source) ? v5Rows(destination, "nodes") : "main.nodes";
-  const { retained } = destination.prepare(`SELECT count(*) AS retained FROM ${retainedSide}
+  const retained = destination.prepare(`SELECT lower(hex(public_id)) AS id FROM ${retainedSide}
     WHERE public_id IN (SELECT unhex(value) FROM json_each(?))`)
-    .get(JSON.stringify(prior.map(row => row.id))) as { retained: number };
-  return retained === prior.length;
+    .all(JSON.stringify(prior.map(row => row.id))) as Array<{ id: string }>;
+  if (retained.length === prior.length) return missing;
+  const available = new Set(retained.map(row => row.id));
+  for (const { path, id } of prior) {
+    if (available.has(id)) continue;
+    const ids = missing.get(path) ?? new Set<string>();
+    ids.add(id);
+    missing.set(path, ids);
+  }
+  return missing;
 }
 
 async function refreshCandidate(

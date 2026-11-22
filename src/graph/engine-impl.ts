@@ -2145,8 +2145,12 @@ export function restoreOverlayAliases(
       const node = one(destination.getNodesByBodyHash(old.kind, old.bodyHash, 2));
       if (node) match = { node, method: "body-hash", confidence: 0.95 };
     }
-    match ??= fingerprintAliasMatch(old, previousFingerprints.get(old.id) ?? undefined,
-      destinationFingerprints, id => destination.getNodeById(id) ?? undefined) ?? undefined;
+    if (!match) {
+      // The v5 fingerprint projection already supplies canonical IDs with their kind.
+      const kindPrefix = `${old.kind}:`;
+      match = fingerprintAliasMatch(old, previousFingerprints.get(old.id) ?? undefined, destinationFingerprints,
+        id => destination.getNodeById(id) ?? undefined, id => id.startsWith(kindPrefix)) ?? undefined;
+    }
     if (match) {
       destination.insertAlias(old.id, match.node.id, match.method, match.confidence);
       remapped.set(old.id, match.node.id);
@@ -2337,21 +2341,19 @@ function fingerprintAliasMatch(
   baseline: Fingerprint | undefined,
   freshFingerprints: FingerprintStore,
   lookupNode: (id: string) => GraphNode | undefined,
+  matchesKind = (id: string) => lookupNode(id)?.kind === old.kind,
 ): { node: GraphNode; method: string; confidence: number } | null {
   if (!baseline || baseline.tokenCount < MIN_TOKENS) return null;
   const scored = freshFingerprints.lookup(baseline)
-    .flatMap(candidate => {
-      const node = lookupNode(candidate.nodeId);
-      return node?.kind === old.kind
-        ? [{ ...candidate, node, score: minhashJaccard(baseline.minhash, candidate.fingerprint.minhash) }]
-        : [];
-    })
+    .filter(candidate => matchesKind(candidate.nodeId))
+    .map(candidate => ({ nodeId: candidate.nodeId, score: minhashJaccard(baseline.minhash, candidate.fingerprint.minhash) }))
     .sort((left, right) => right.score - left.score || left.nodeId.localeCompare(right.nodeId));
   const best = scored[0];
   if (!best || best.score < 0.95) return null;
   const runnerUp = scored[1];
   if (runnerUp && best.score - runnerUp.score < 0.08) return null;
-  return { node: best.node, method: "fingerprint", confidence: best.score };
+  const node = lookupNode(best.nodeId);
+  return node ? { node, method: "fingerprint", confidence: best.score } : null;
 }
 
 function groupUnique<T>(values: readonly T[], key: (value: T) => string): Map<string, T[]> {
