@@ -89,18 +89,25 @@ function message(error: unknown): string {
   return text.split(/\r?\n/u)[0]!.slice(0, 200);
 }
 
-interface HookSummary { note?: string; notices: string[]; agents?: Array<Agent | PluginAgent>; names?: string[]; }
+interface HookSummary {
+  note?: string; notices: string[]; agents?: Array<Agent | PluginAgent>; names?: string[];
+  /** The hooks are the Node fallback, which only fails open: nothing reaches an agent. */
+  off?: boolean;
+}
 async function installHooks(): Promise<HookSummary> {
   try {
     const { installAgents, AGENT_NAMES } = await import("../install/index.js");
     const result = await installAgents();
     if (!result.agents.length) return { note: "No supported agent found. Install Claude Code or Codex (the app, an editor extension or the CLI), Copilot CLI or OpenCode, open it once, then run `mex install`.", notices: [] };
     const where = result.agents.map(agent => AGENT_NAMES[agent]);
+    const off = result.runner === "node";
     return {
-      agents: result.agents, names: where,
-      note: `Hooks: ${list(where)}, in your user settings.`,
+      agents: result.agents, names: where, off,
+      // Said on every run while it lasts: the person can't see it any other way.
+      note: off ? `Hooks: ${list(where)}, in your user settings, but MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX.`
+        : `Hooks: ${list(where)}, in your user settings.`,
       // The trust and timing notices matter when hooks first change; repeat runs stay quiet.
-      notices: result.changes.length ? result.notices : [],
+      notices: result.changes.length ? result.notices.filter(notice => !/native hook isn't installed/u.test(notice)) : [],
     };
   } catch (error) {
     return { note: `Hooks weren't installed: ${message(error)} (\`mex install\` shows the details).`, notices: [] };
@@ -306,7 +313,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       if (rich) {
         for (const line of rich.header(basename(displayPath(checkout.path)), hidden)) write(line);
         // The hooks went in first, so they lead the list.
-        if (hooks.note) for (const line of rich.rows([{ state: hooks.agents?.length ? "ok" : "attention", text: hooks.note }])) write(line);
+        if (hooks.note) for (const line of rich.rows([{ state: hooks.agents?.length && !hooks.off ? "ok" : "attention", text: hooks.note }])) write(line);
         showNew();
       }
 
@@ -465,14 +472,14 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   }
   for (const line of rich ? rich.notes(notes) : renderNotes(notes, mode)) write(line);
   if (rich) {
-    for (const line of rich.next({ learning, agents: hooks.names })) write(line);
+    for (const line of rich.next({ learning, agents: hooks.names, hooksOff: hooks.off })) write(line);
     // The mascot closes the run with what it found.
     if (!exitNow) {
       const deep = learnJob && ["queued", "running", "waiting"].includes(learnJob.state) ? (learnJob.state === "running" ? "running" : "queued") : undefined;
-      for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later], answers, ...(deep ? { learning: deep } : {}) }))) write(line);
+      for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later], answers, hooksOff: hooks.off, ...(deep ? { learning: deep } : {}) }))) write(line);
     }
   } else {
-    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, agents: hooks.names }, mode)) write(line);
+    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, agents: hooks.names, hooksOff: hooks.off }, mode)) write(line);
     if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
   }
   const ended = exitNow ? { exitNow: true as const } : {};

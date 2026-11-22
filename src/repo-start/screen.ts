@@ -168,7 +168,9 @@ export function renderDone(ms: number, mode: ScreenMode): string[] {
  */
 export const NOTE_EXAMPLE = 'mex note "<something your agents keep getting wrong here, and why>"';
 
-export function renderNext(options: { short: boolean; learning?: string; agents?: readonly string[] }, mode: ScreenMode): string[] {
+export function renderNext(options: { short: boolean; learning?: string; agents?: readonly string[]; hooksOff?: boolean }, mode: ScreenMode): string[] {
+  // Without the native hook nothing reaches an agent, so nothing here may promise it.
+  if (options.hooksOff) return renderNotes(["Nothing reaches your agents yet: MEX's native hook is missing. Reinstall MEX, then run mex install."], mode);
   if (options.short) return renderNotes(['Saved notes reach new sessions; mex note "<fact>" adds one.'], mode);
   // Learning from typed statements is opt-in; anything but "on" is off.
   const learning = options.learning === "on"

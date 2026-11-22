@@ -81,4 +81,15 @@ describe("setup v2 on the rich screen", () => {
     expect(summary).toContain('Your 2 answers reach them as "you said".');
     expect(summary).toContain("Learn deeper is running in the background · mex jobs");
   });
+
+  it("never promises delivery when the hooks are the Node fallback, which delivers nothing", () => {
+    const next = plain(rich.next({ agents: ["Claude Code"], hooksOff: true })).join("\n");
+    expect(next).toContain("Nothing reaches your agents yet: MEX's native hook is missing. Reinstall MEX, then run mex install.");
+    expect(next).not.toContain("Notes you save reach");
+    const summary = plain(rich.summary({ name: "repo", ms: 1200, commandsSaved: true, findings: [], answers: 2, hooksOff: true }));
+    expect(summary).toContain("Your agents get nothing yet: MEX's native hook is missing.");
+    expect(summary.join("\n")).not.toMatch(/get its test and build commands|you said/u);
+    expect(labelled("Hooks: Claude Code and Codex, in your user settings, but MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX."))
+      .toEqual({ label: "Hooks", text: "Claude Code and Codex · MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX." });
+  });
 });

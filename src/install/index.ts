@@ -41,7 +41,11 @@ export interface InstallOptions {
 }
 /** Agents MEX reaches through a plugin file instead of hook settings. */
 export type PluginAgent = "opencode";
-export interface InstallResult { agents: (Agent | PluginAgent)[]; changes: InstallChange[]; notices: string[]; legacyTracked: string[]; }
+export interface InstallResult {
+  agents: (Agent | PluginAgent)[]; changes: InstallChange[]; notices: string[]; legacyTracked: string[];
+  /** The hook command now in agent settings: the native hook, or the Node fallback that only fails open and delivers nothing. */
+  runner?: "native" | "node";
+}
 
 export function activeRows(writer: RecordWriter): InstallRow[] {
   const rows = writer.db.prepare("SELECT * FROM installs WHERE key LIKE 'file-v1:%' ORDER BY id DESC LIMIT ?").all(MAX_CHANGES + 1) as unknown as InstallRow[];
@@ -194,17 +198,18 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
       const target = join(bin, binaryFileName(platform));
       const test = options.selfTest ?? selfTestBinary;
       const native = binary && test(binary).ok ? binary : existsSync(target) && test(target).ok ? target : null;
-      // Keep a previously selected Node command stable on upgrade. Native npm
-      // packages are optional: a missing or blocked binary must not prevent install.
-      const rows = writer ? activeRows(writer) : installationChanges(location);
+      // Native npm packages are optional: a missing or blocked binary must not prevent install.
+      // The Node fallback only fails open; it delivers nothing. So the native command
+      // replaces it as soon as a binary passes its self-test, instead of staying stuck on it.
       const previousMode = writer?.setting("global", "install.runner") ?? installationRunner(location);
-      const previousNode = rows.length > 0 && previousMode === "node";
       const nativeCommand: HookCommand = { path: target, args: [] };
       const nodeCommand: HookCommand = { path: "node", args: [fallback] };
-      const command: HookCommand = native && !previousNode ? nativeCommand : nodeCommand;
+      const command: HookCommand = native ? nativeCommand : nodeCommand;
+      result.runner = native ? "native" : "node";
+      if (native && previousMode === "node") result.notices.push("MEX's native hook is now available; the hooks switched to it from the fail-open Node fallback.");
       if (writer) writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES('global','install.runner',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
         .run(command === nodeCommand ? "node" : "native");
-      if (!native) result.notices.push("Native hook binary unavailable; using the fail-open Node fallback.");
+      if (!native) result.notices.push("MEX's native hook isn't installed, so your agents get no MEX knowledge yet (the hooks only fail open). Reinstall MEX to fix it.");
       const put = (path: string, bytes: Buffer, agent = "mex", kind: InstallChange["kind"] = "runtime", mode?: number, expected?: Snapshot) => {
         path = resolve(path);
         if (bytes.length > (kind === "settings" ? MAX_SETTINGS_BYTES : MAX_RUNTIME_BYTES)) throw new Error(`Installed file would exceed its bound: ${path}`);

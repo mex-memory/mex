@@ -151,14 +151,17 @@ export class Rich {
     return `${MARGIN}${mark} ${state === "skipped" ? this.dim(text) : text}`;
   }
 
-  next(options: { learning?: string; agents?: readonly string[] }): string[] {
+  next(options: { learning?: string; agents?: readonly string[]; hooksOff?: boolean }): string[] {
     const learning = options.learning === "on"
       ? `${this.dim("Learning from what you type is on: your agent's smallest model, at most 3% of your usage · off: ")}${this.cmd("mex config set learning.statements off")}`
       : `${this.dim("Learning from what you type is off · ")}${this.cmd("mex config set learning.statements on")}`;
     const agents = options.agents?.length ? options.agents : ["Claude Code", "Codex"];
     return [
       "", this.pill("FROM NOW ON", "green"), "",
-      `${MARGIN}Notes you save reach every new ${listNames(agents)} session.`,
+      // Without the native hook nothing reaches an agent, so this may not promise it.
+      options.hooksOff
+        ? `${MARGIN}${this.paint("warn", "Nothing reaches your agents yet:")} MEX's native hook is missing. Reinstall MEX, then run ${this.cmd("mex install")}.`
+        : `${MARGIN}Notes you save reach every new ${listNames(agents)} session.`,
       `${MARGIN}A note the code has made false is held back, never sent.`,
       `${MARGIN}${learning}`,
       "", this.pill("TRY IT", "paper"), "",
@@ -181,13 +184,14 @@ export class Rich {
   }
 
   /** What the mascot says: the time and cost, what the agents get, what needs a look. */
-  summary(input: { name: string; ms: number; commandsSaved: boolean; findings: readonly Finding[]; answers?: number; learning?: "queued" | "running" | "waiting" }): string[] {
+  summary(input: { name: string; ms: number; commandsSaved: boolean; findings: readonly Finding[]; answers?: number; learning?: "queued" | "running" | "waiting"; hooksOff?: boolean }): string[] {
     if (input.findings.some(f => /^MEX is off everywhere/u.test(f.text))) {
       return [this.bold("MEX is off everywhere, so I read nothing."), `${this.cmd("mex on --all")} turns it back on.`];
     }
     const lines = [this.bold(`Read ${input.name} in ${formatSeconds(input.ms)}, for $0.`)];
-    lines.push(input.commandsSaved ? "Your agents now get its test and build commands." : "Notes you save reach your agents from the next session.");
-    if (input.answers) lines.push(`Your ${input.answers === 1 ? "answer reaches" : `${input.answers} answers reach`} them as "you said".`);
+    if (input.hooksOff) lines.push(`${this.paint("warn", "Your agents get nothing yet:")} MEX's native hook is missing.`);
+    else lines.push(input.commandsSaved ? "Your agents now get its test and build commands." : "Notes you save reach your agents from the next session.");
+    if (input.answers && !input.hooksOff) lines.push(`Your ${input.answers === 1 ? "answer reaches" : `${input.answers} answers reach`} them as "you said".`);
     if (input.learning) lines.push(`Learn deeper ${input.learning === "running" ? "is running" : "will run"} in the background · ${this.cmd("mex jobs")}`);
     const stale = input.findings.map(f => /^(\d+) lines? in your rule files (?:is|are) out of date/u.exec(f.text)).find(Boolean);
     const attention = input.findings.filter(f => f.state === "attention").length;
@@ -248,6 +252,7 @@ export function labelled(text: string): { label: string; text: string } {
   if ((m = /^Git history \((.+?)\):/u.exec(text))) return { label: "Git history", text: `${m[1]} read` };
   if ((m = /^Git history: (.+)$/u.exec(text))) return { label: "Git history", text: m[1]! };
   if ((m = /^Hooks: (.+?), in your user settings\.$/u.exec(text))) return { label: "Hooks", text: m[1]! };
+  if ((m = /^Hooks: (.+?), in your user settings, but (.+)$/u.exec(text))) return { label: "Hooks", text: `${m[1]} · ${m[2]}` };
   if (/^No test or build commands found/u.test(text)) return { label: "Commands", text: "none found in package files" };
   if ((m = /^(?:Git history and the file index|The file index): in the background \(`mex jobs`\)(.*)$/u.exec(text))) {
     return { label: "Your code", text: `indexing in the background · mex jobs${m[1] ? ` ·${m[1].replace(/^;/u, "")}` : ""}` };
