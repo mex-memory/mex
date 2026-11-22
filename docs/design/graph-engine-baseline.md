@@ -229,7 +229,7 @@ v4 → v5 through `mex graph`, with the engine flag on in both. Medians of three
 | Repo | Rebuild s | Peak MB | Refresh s | Graph MB |
 |---|---:|---:|---:|---:|
 | flask | 1.62 → 0.39 | 246 → 128 | 0.62 → 0.37 | 7.1 → 2.4 |
-| hono | 5.40 → 1.30 | 425 → 252 | 2.07 → 1.40 | 64 → 17 |
+| hono | 5.40 → 1.30 | 425 → 252 | 2.09 → 1.40 | 64 → 17 |
 | nest | 11.2 → 2.5 | 575 → 322 | 4.80 → 2.78 | 122 → 30 |
 | ripgrep | 2.99 → 0.55 | 370 → 163 | 0.95 → — | 21 → 7.6 |
 
