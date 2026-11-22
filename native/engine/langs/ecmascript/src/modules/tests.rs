@@ -1005,3 +1005,23 @@ fn nested_declaration_directory_does_not_own_javascript_outputs() {
         file("pkg/src/root.ts", "build_to_source")
     );
 }
+
+#[test]
+fn explicit_paths_mappings_apply_to_absolute_specifiers() {
+    let view = ModuleResolver::with_repository_root(
+        "/checkout",
+        ["src/app.ts", "src/tool.ts", "src/direct.ts"],
+        [(
+            "tsconfig.json",
+            r#"{"compilerOptions":{"paths":{"/legacy/*":["src/*"],"/checkout/src/direct.js":["absent"]}}}"#,
+        )],
+    );
+    assert_eq!(
+        view.resolve("src/app.ts", "/legacy/tool.js", Syntax::Import),
+        file("src/tool.ts", "tsconfig_paths")
+    );
+    assert_eq!(
+        view.resolve("src/app.ts", "/checkout/src/direct.js", Syntax::Import),
+        file("src/direct.ts", "relative")
+    );
+}

@@ -316,7 +316,7 @@ impl Paths {
 
 pub(super) fn config_path(
     paths: &RepositoryPaths,
-    origin: &str,
+    origin: Option<&str>,
     leaf: &str,
     value: &str,
 ) -> Result<String, Reason> {
@@ -325,7 +325,12 @@ pub(super) fn config_path(
     {
         return paths.target(leaf, rest.trim_start_matches('/'));
     }
-    paths.target(origin, value)
+    let base = if value.starts_with('/') {
+        ""
+    } else {
+        origin.ok_or("outside_repository")?
+    };
+    paths.target(base, value)
 }
 
 pub(super) struct ProjectIndex {
@@ -534,7 +539,7 @@ struct Located {
 
 impl Located {
     fn path(&self, paths: &RepositoryPaths, leaf: &str, value: &str) -> Result<String, Reason> {
-        config_path(paths, &self.dir, leaf, value)
+        config_path(paths, Some(&self.dir), leaf, value)
     }
 }
 

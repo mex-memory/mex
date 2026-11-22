@@ -75,8 +75,8 @@ impl ModuleResolver {
         Self::build(RepositoryPaths { root: None }, files, configs)
     }
 
-    /// Bind absolute paths in specifiers and configs to an explicit absolute
-    /// POSIX repository root. An absolute path outside this prefix is rejected.
+    /// Bind absolute file candidates to an explicit absolute POSIX repository
+    /// root. A specifier can also match a project's explicit `paths` mapping.
     pub fn with_repository_root<'a>(
         root: &str,
         files: impl IntoIterator<Item = &'a str>,
@@ -236,16 +236,34 @@ impl<'a> Lookup<'a> {
     }
 
     fn resolve_relative(self, from_dir: &str, specifier: &str) -> Result<ModuleTarget, Reason> {
-        let base = self.resolver.paths.target(from_dir, specifier)?;
+        let base = self.resolver.paths.target(from_dir, specifier);
+        let alias = specifier
+            .starts_with('/')
+            .then(|| self.options.paths.find(specifier))
+            .flatten();
+        let mut alias_reason = "tsconfig_path_not_found";
         let trailing_slash = specifier.ends_with('/') || matches!(basename(specifier), "." | "..");
         let root_dirs = &self.options.root_dirs;
-        let virtual_root = root_dirs
-            .iter()
-            .filter_map(|root| strip_directory(&base, root).map(|suffix| (root, suffix)))
-            .max_by_key(|(root, _)| root.len());
+        let virtual_root = base
+            .as_ref()
+            .ok()
+            .filter(|_| alias.is_none())
+            .and_then(|base| {
+                root_dirs
+                    .iter()
+                    .filter_map(|root| strip_directory(base, root).map(|suffix| (root, suffix)))
+                    .max_by_key(|(root, _)| root.len())
+            });
 
         for &extensions in self.extension_passes() {
-            if let Some(found) = self.load_path(&base, extensions, trailing_slash)? {
+            if let Some((capture, targets)) = alias
+                && let Some(found) =
+                    self.load_alias(capture, targets, extensions, &mut alias_reason)?
+            {
+                return Ok(found.target("tsconfig_paths"));
+            }
+            let Ok(base) = &base else { continue };
+            if let Some(found) = self.load_path(base, extensions, trailing_slash)? {
                 return Ok(found.target("relative"));
             }
             if let Some((root, suffix)) = virtual_root {
@@ -257,6 +275,7 @@ impl<'a> Lookup<'a> {
                 }
             }
         }
+        let base = base?;
         let reason = if self.strict_esm() && (trailing_slash || file_parts(&base).is_none()) {
             "explicit_extension_required"
         } else {
@@ -275,42 +294,10 @@ impl<'a> Lookup<'a> {
         let mut alias_reason = "tsconfig_path_not_found";
         for &extensions in self.extension_passes() {
             if let Some((capture, targets)) = alias {
-                for target in targets {
-                    let substituted = capture
-                        .filter(|text| !text.is_empty())
-                        .map(|text| package::replace_stars(target, text, false));
-                    let candidate = match self
-                        .options
-                        .paths_base
-                        .as_ref()
-                        .ok_or("outside_repository")
-                        .and_then(|base| {
-                            config::config_path(
-                                &self.resolver.paths,
-                                base,
-                                &self.options.config_dir,
-                                substituted.as_deref().unwrap_or(target),
-                            )
-                        }) {
-                        Ok(candidate) => candidate,
-                        Err(reason) => {
-                            alias_reason = reason;
-                            continue;
-                        }
-                    };
-                    // A literal path mapping with a recognized extension is
-                    // checked before file-extension substitution.
-                    if extension(target).is_some()
-                        && let Some(found) = self.probe(&candidate, Extensions::All)?
-                    {
-                        return Ok(found.target("tsconfig_paths"));
-                    }
-                    if let Some(found) =
-                        self.load_path(&candidate, extensions, target.ends_with('/'))?
-                    {
-                        return Ok(found.target("tsconfig_paths"));
-                    }
-                    alias_reason = self.missing_path(&candidate, alias_reason);
+                if let Some(found) =
+                    self.load_alias(capture, targets, extensions, &mut alias_reason)?
+                {
+                    return Ok(found.target("tsconfig_paths"));
                 }
             } else if let Some(base_url) = &self.options.base_url
                 && let Ok(candidate) = self.resolver.paths.target(base_url, specifier)
@@ -342,6 +329,44 @@ impl<'a> Lookup<'a> {
         Ok(ModuleTarget::External {
             pkg: name.to_owned(),
         })
+    }
+
+    fn load_alias(
+        self,
+        capture: Option<&str>,
+        targets: &[String],
+        extensions: Extensions,
+        hint: &mut Reason,
+    ) -> Search<'a> {
+        for target in targets {
+            let substituted = capture
+                .filter(|text| !text.is_empty())
+                .map(|text| package::replace_stars(target, text, false));
+            let candidate = match config::config_path(
+                &self.resolver.paths,
+                self.options.paths_base.as_deref(),
+                &self.options.config_dir,
+                substituted.as_deref().unwrap_or(target),
+            ) {
+                Ok(candidate) => candidate,
+                Err(reason) => {
+                    *hint = reason;
+                    continue;
+                }
+            };
+            // A literal path mapping with a recognized extension is
+            // checked before file-extension substitution.
+            if extension(target).is_some()
+                && let Some(found) = self.probe(&candidate, Extensions::All)?
+            {
+                return Ok(Some(found));
+            }
+            if let Some(found) = self.load_path(&candidate, extensions, target.ends_with('/'))? {
+                return Ok(Some(found));
+            }
+            *hint = self.missing_path(&candidate, hint);
+        }
+        Ok(None)
     }
 
     fn workspace_package(
