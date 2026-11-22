@@ -46,6 +46,7 @@ pub struct Resolution {
     /// Every call left unresolved, in file and call order, so a reader can
     /// answer "no callers" per symbol: (file index, call index, reason).
     pub unresolved_calls: Vec<(usize, usize, &'static str)>,
+    pub call_candidates: HashMap<(usize, usize), DefRef>,
 }
 
 const MAX_DEPTH: usize = 12;
@@ -852,6 +853,18 @@ impl<'a> Resolver<'a> {
                     };
                     *reasons.entry(reason).or_default() += 1;
                     out.unresolved_calls.push((file, call_index, reason));
+                    let candidate = match target {
+                        Value::Def(def) => Some(def),
+                        Value::Instance(class) => {
+                            self.member(class, "__call__", 0).filter(|&(f, d)| {
+                                matches!(self.files[f].defs[d].kind, Kind::Function | Kind::Method)
+                            })
+                        }
+                        _ => None,
+                    };
+                    if let Some(candidate) = candidate {
+                        out.call_candidates.insert((file, call_index), candidate);
+                    }
                 }
             }
         }

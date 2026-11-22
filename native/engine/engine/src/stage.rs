@@ -12,6 +12,7 @@ use serde_json::{Number, Value, json};
 use crate::hex;
 use crate::job::{ExtractedFile, ExtractedFiles, JobCounts, JobError, RequestConfig, emit};
 
+pub(super) mod build;
 mod ecmascript;
 
 pub(super) fn write(
@@ -19,9 +20,39 @@ pub(super) fn write(
     root: &Path,
     configs: &[RequestConfig],
 ) -> Result<JobCounts, JobError> {
+    let mut counts = JobCounts::default();
+    project(
+        extracted,
+        root,
+        configs,
+        |file| file.emit(&mut counts),
+        |path, reason| {
+            emit(&serde_json::json!({
+                "type": "file", "path": path, "status": "skipped", "reason": reason,
+            }))
+        },
+    )?;
+    counts.coverage_gaps += extracted
+        .files
+        .iter()
+        .filter(|file| matches!(file, ExtractedFile::Skipped { .. }))
+        .count();
+    Ok(counts)
+}
+
+/// Both storage formats consume the same resolved facts and site locations.
+/// Only one file's projected records are assembled at a time.
+fn project(
+    extracted: &ExtractedFiles<'_>,
+    root: &Path,
+    configs: &[RequestConfig],
+    mut file_ready: impl FnMut(StagedFile<'_>) -> Result<(), JobError>,
+    mut skipped: impl FnMut(&str, &str) -> Result<(), JobError>,
+) -> Result<(), JobError> {
     let Resolution {
         edges,
         unresolved_calls,
+        call_candidates,
         ..
     } = extracted.resolve();
     let mut edges = edges.into_iter().peekable();
@@ -32,23 +63,20 @@ pub(super) fn write(
     let ids: Vec<_> = extracted.facts.iter().map(node_ids).collect();
     let ecmascript = (!extracted.ecmascript.is_empty())
         .then(|| ecmascript::Stage::new(&extracted.ecmascript, &extracted.modules(root, configs)));
-    let mut counts = JobCounts::default();
     for entry in &extracted.files {
         let (index, size) = match *entry {
             ExtractedFile::Python { index, size } => (index, size),
             ExtractedFile::EcmaScript { index, size } => {
-                ecmascript
-                    .as_ref()
-                    .expect("ECMAScript stage")
-                    .file(index, size)
-                    .emit(&mut counts)?;
+                file_ready(
+                    ecmascript
+                        .as_ref()
+                        .expect("ECMAScript stage")
+                        .file(index, size),
+                )?;
                 continue;
             }
             ExtractedFile::Skipped { path, reason } => {
-                emit(&serde_json::json!({
-                    "type": "file", "path": path, "status": "skipped", "reason": reason,
-                }))?;
-                counts.coverage_gaps += 1;
+                skipped(path, reason)?;
                 continue;
             }
         };
@@ -89,15 +117,18 @@ pub(super) fn write(
                     metadata: json!({ "reason": reason }),
                     confidence: None,
                     candidates: None,
+                    candidate_id: call_candidates
+                        .get(&(index, call_index))
+                        .and_then(|&(file, def)| node_id(&ids[file], def)),
                     receiver: None,
                     qualifier: None,
                 });
             }
         }
-        file.emit(&mut counts)?;
+        file_ready(file)?;
     }
     debug_assert!(edges.next().is_none() && unresolved.next().is_none());
-    Ok(counts)
+    Ok(())
 }
 
 fn node_ids(facts: &FileFacts) -> Vec<Option<String>> {
@@ -266,6 +297,8 @@ struct StagedNode<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     is_async: Option<bool>,
     is_exported: bool,
+    #[serde(skip)]
+    is_default_export: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     visibility: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -310,6 +343,7 @@ impl<'a> StagedNode<'a> {
                 matches!(def.kind, Kind::Function | Kind::Method).then(|| has_flag("async"))
             },
             is_exported: def.exported,
+            is_default_export: def.is_default_export,
             visibility: def.visibility.as_deref().filter(|_| compiler),
             is_static: (compiler && has_flag("static")).then_some(true),
             is_abstract: (compiler && has_flag("abstract")).then_some(true),
@@ -364,6 +398,8 @@ struct StagedRef<'a> {
     confidence: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     candidates: Option<[(); 0]>,
+    #[serde(skip)]
+    candidate_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     receiver: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]

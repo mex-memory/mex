@@ -2,7 +2,7 @@
 //! Start each lookup at a lexical binding or an explicit module. Every member
 //! lookup then needs a known receiver; absence is retained as an unresolved call.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mex_graph_core::facts::ecmascript::{ExprId, Expression, ImportSite, Owner, Space};
 use mex_graph_core::facts::{
@@ -54,6 +54,7 @@ pub struct Resolution {
     pub edges: Vec<Edge>,
     pub unresolved: Vec<(usize, Reason, u32)>,
     pub unresolved_calls: Vec<(usize, usize, Reason)>,
+    pub call_candidates: HashMap<(usize, usize), DefRef>,
     pub unresolved_heritage: Vec<UnresolvedHeritage>,
 }
 
@@ -176,12 +177,79 @@ impl<'a> Resolver<'a> {
 
     fn resolve_all(&mut self) -> Resolution {
         let mut result = Resolution::default();
+        let mut interface_dispatches = Vec::new();
         for file in 0..self.files.len() {
             if self.index[file].is_some() {
-                self.resolve_file(file, &mut result);
+                self.resolve_file(file, &mut result, &mut interface_dispatches);
             }
         }
+        if !interface_dispatches.is_empty() {
+            self.find_dispatch_candidates(&mut result, interface_dispatches);
+        }
         result
+    }
+
+    fn find_dispatch_candidates(
+        &mut self,
+        result: &mut Resolution,
+        sites: Vec<(usize, usize, DefRef)>,
+    ) {
+        let mut descendants: HashMap<DefRef, Vec<DefRef>> = HashMap::new();
+        for edge in &result.edges {
+            if matches!(edge.kind, "extends" | "implements") {
+                descendants.entry(edge.to).or_default().push(edge.from);
+            }
+        }
+        let mut cache = HashMap::new();
+        for (file, index, interface) in sites {
+            let name = self.files[file].calls[index].name.as_str();
+            let candidate = cache
+                .entry((interface, name))
+                .or_insert_with(|| self.unique_implementation(interface, name, &descendants));
+            if let Some(candidate) = *candidate {
+                result.call_candidates.insert((file, index), candidate);
+            }
+        }
+    }
+
+    fn unique_implementation(
+        &mut self,
+        interface: DefRef,
+        name: &str,
+        descendants: &HashMap<DefRef, Vec<DefRef>>,
+    ) -> Option<DefRef> {
+        let mut pending = vec![interface];
+        let mut visited = HashSet::new();
+        let mut winner = None;
+        while let Some(def) = pending.pop() {
+            if !visited.insert(def) {
+                continue;
+            }
+            pending.extend(descendants.get(&def).into_iter().flatten().copied());
+            if self.def(def).kind != Kind::Class {
+                continue;
+            }
+            let Ok(Value::Member(file, member)) = self.definition_member(def, false, name, 0)
+            else {
+                continue;
+            };
+            let member = &self.model(file).facts.members[member];
+            let Some(target) = def_ref(file, member.def) else {
+                continue;
+            };
+            let target_def = self.def(target);
+            if member.getter
+                || !self.callable_def(target)
+                || target_def.flags.iter().any(|flag| flag == "abstract")
+            {
+                continue;
+            }
+            if winner.is_some_and(|prior| prior != target) {
+                return None;
+            }
+            winner = Some(target);
+        }
+        winner
     }
 
     fn resolve_import_bindings(&mut self, file: usize) -> Vec<ImportResolution> {
@@ -222,7 +290,12 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    fn resolve_file(&mut self, file: usize, result: &mut Resolution) {
+    fn resolve_file(
+        &mut self,
+        file: usize,
+        result: &mut Resolution,
+        interface_dispatches: &mut Vec<(usize, usize, DefRef)>,
+    ) {
         let facts = &self.files[file];
         let extra = self.model(file).facts;
         for site in &extra.import_sites {
@@ -287,7 +360,11 @@ impl<'a> Resolver<'a> {
         let mut reasons = BTreeMap::new();
         let mut arguments = extra.arguments.iter().peekable();
         for (index, call) in facts.calls.iter().enumerate() {
-            let resolved = self.resolve_call(file, call);
+            let mut interface = None;
+            let resolved = self.resolve_call_with_dispatch(file, call, &mut interface);
+            if let Some(interface) = interface {
+                interface_dispatches.push((file, index, interface));
+            }
             let mut callback_arguments =
                 std::iter::from_fn(|| arguments.next_if(|arg| arg.call == index));
             match resolved {
@@ -356,6 +433,15 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_call(&mut self, file: usize, call: &Call) -> Result<DefRef, Reason> {
+        self.resolve_call_with_dispatch(file, call, &mut None)
+    }
+
+    fn resolve_call_with_dispatch(
+        &mut self,
+        file: usize,
+        call: &Call,
+        interface: &mut Option<DefRef>,
+    ) -> Result<DefRef, Reason> {
         let scope = call.scope;
         if call.form == CallForm::SuperConstructor {
             let (Value::Def(base) | Value::Instance(base)) = self.super_value(file, scope, 0)?
@@ -395,7 +481,13 @@ impl<'a> Resolver<'a> {
                 }
             }
         };
-        self.call_target(value, call.form == CallForm::New, allow_interface, 0)
+        self.call_target(
+            value,
+            call.form == CallForm::New,
+            allow_interface,
+            0,
+            interface,
+        )
     }
 
     fn call_target(
@@ -404,6 +496,7 @@ impl<'a> Resolver<'a> {
         new: bool,
         allow_interface: bool,
         depth: usize,
+        interface: &mut Option<DefRef>,
     ) -> Result<DefRef, Reason> {
         check_depth(depth)?;
         match value {
@@ -419,6 +512,7 @@ impl<'a> Resolver<'a> {
                     && let Owner::Definition { def, .. } = member.owner
                     && self.def((file, def as usize)).kind == Kind::Interface
                 {
+                    *interface = Some((file, def as usize));
                     return Err("interface_dispatch");
                 }
                 if !member.getter && member.def != NONE {
@@ -435,7 +529,7 @@ impl<'a> Resolver<'a> {
                 let binding = &self.model(file).facts.bindings[index];
                 if self.model(file).is_module_binding(index) {
                     let target = self.bound_value(value, depth + 1)?;
-                    return self.call_target(target, new, allow_interface, depth + 1);
+                    return self.call_target(target, new, allow_interface, depth + 1, interface);
                 }
                 if binding.def != NONE && self.callable(value, new, depth + 1) {
                     return Ok((file, binding.def as usize));
@@ -451,7 +545,7 @@ impl<'a> Resolver<'a> {
                 require: true,
             } => {
                 let value = self.commonjs_default(file, depth + 1)?;
-                self.call_target(value, new, allow_interface, depth + 1)
+                self.call_target(value, new, allow_interface, depth + 1, interface)
             }
             _ => Err(if new {
                 "constructor_unknown"
@@ -671,7 +765,7 @@ impl<'a> Resolver<'a> {
                 Ok(result)
             };
         }
-        let target = self.call_target(value, false, true, depth + 1)?;
+        let target = self.call_target(value, false, true, depth + 1, &mut None)?;
         self.return_value(target, awaited, depth + 1)
     }
 

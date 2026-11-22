@@ -12,19 +12,47 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import type { GraphCoverageHistogram } from "./corpus-policy.js";
 import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
 import type { GraphEdge, GraphNode, Language } from "./types.js";
 
 /** The contract version this module speaks; the engine must report the same. */
-export const GRAPH_ENGINE_CONTRACT = 2;
+export const GRAPH_ENGINE_CONTRACT = 3;
 /** Points at a specific engine binary, for development and tests. */
 export const GRAPH_ENGINE_ENV = "MEX_GRAPH_ENGINE";
 export { GRAPH_ENGINE_LANGUAGES_ENV, graphEngineLanguages } from "./engine-languages.js";
 
+export interface GraphEngineBuildMetadata {
+  indexedAt: number;
+  indexedBranch: string | null;
+  indexedHead: string | null;
+  compilerVersion: string;
+  extractorVersion: string;
+  resolverVersion: string;
+  grammarHash: string;
+  configHash: string;
+  manifestHash: string;
+  sourceCorpusDigest: string;
+  coverage: (GraphCoverageHistogram & {
+    policyHash: string;
+    directories: Array<{ path: string; stamp: string }>;
+  }) | null;
+  skipped: Array<{ path: string; reason: string }>;
+}
+
 export interface EngineRequest {
   mode: "build" | "refresh" | "stage";
   root: string;
-  files: Array<{ path: string; size?: number }>;
+  files: Array<{
+    path: string;
+    size?: number;
+    modifiedAt?: number;
+    contentHash?: string;
+    staged?: string;
+    extractorVersion?: string;
+  }>;
+  sourceDirectory?: string;
+  buildMetadata?: GraphEngineBuildMetadata;
   configs?: Array<string | { path: string; source: string }>;
   languages: string[];
   /** The candidate database; `stage` writes none. */
@@ -143,11 +171,16 @@ export function runGraphEngine(
       try { event = JSON.parse(line) as EngineEvent; } catch { return; }
       if (event.type === "result") run.result = event;
       if (event.type === "error") run.error = event;
-      options.onEvent?.(event);
+      try { options.onEvent?.(event); }
+      catch (error) {
+        run.error = { type: "error", code: "graph_engine_parent_error", message: String(error) };
+        child.kill("SIGKILL");
+      }
     });
     child.stderr.resume();
     const abort = (): void => { child.kill("SIGKILL"); };
     options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
     // An engine that refuses the request exits before reading start; the
     // write then meets a closed pipe, which the exit code already explains.
     child.stdin.on("error", () => {});

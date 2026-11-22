@@ -288,7 +288,7 @@ fn python_build_matches_facts_ids_and_spans() {
         )
         .unwrap();
     assert_eq!(inner_parent, None);
-    let contains: (String, String, u32, u32, String, f64) = db
+    let contains: (String, String, u32, i32, String, f64) = db
         .query_row(
             "SELECT parent.qualified_name, k.name, e.line, e.col, p.name, e.confidence
              FROM edges e JOIN nodes child ON child.id = e.target
@@ -314,7 +314,7 @@ fn python_build_matches_facts_ids_and_spans() {
             "Outer::Inner".into(),
             "contains".into(),
             4,
-            0,
+            -1,
             "tree-sitter".into(),
             1.0
         )
@@ -332,7 +332,7 @@ fn python_build_matches_facts_ids_and_spans() {
         .collect();
     db.query_row(
         "SELECT n.signature, n.flags, lower(hex(n.body_hash)), n.docstring,
-                f.minhash, f.neighbours, f.token_count
+                f.minhash, (SELECT count(*) FROM fingerprint_neighbours WHERE node = f.node), f.token_count
          FROM nodes n JOIN fingerprints f ON f.node = n.id WHERE n.qualified_name = ?1",
         [method["qualifiedName"].as_str().unwrap()],
         |row| {
@@ -350,7 +350,7 @@ fn python_build_matches_facts_ids_and_spans() {
                 method["docstring"].as_str().unwrap()
             );
             assert_eq!(row.get::<_, Vec<u8>>(4)?, minhash);
-            assert!(row.get::<_, Vec<u8>>(5)?.is_empty());
+            assert_eq!(row.get::<_, u32>(5)?, 0);
             assert_eq!(
                 u64::from(row.get::<_, u32>(6)?),
                 method["tokenCount"].as_u64().unwrap()
@@ -380,8 +380,13 @@ fn python_build_tables_are_identical_across_thread_counts() {
         ("files", "id"),
         ("nodes", "id"),
         ("edges", "source, kind, target, line, col"),
-        ("unresolved", "file, reason"),
+        ("unresolved_names", "id"),
+        ("unresolved_calls", "id"),
+        ("unresolved_other", "id"),
         ("fingerprints", "node"),
+        ("fingerprint_neighbours", "node, neighbour"),
+        ("file_diagnostics", "file, position"),
+        ("source_chunks", "id"),
         ("aliases", "old_public_id"),
         ("coverage", "path"),
     ] {
@@ -530,7 +535,14 @@ fn builds_ecmascript_with_config_and_preserves_callback_sites_across_thread_coun
     assert_eq!(
         calls,
         [
-            ("app.tsx", "invoke", "src/app.tsx", 3, 0, "tree-sitter"),
+            (
+                "app.tsx",
+                "invoke",
+                "src/app.tsx",
+                3,
+                0,
+                "typescript-compiler"
+            ),
             (
                 "invoke",
                 "handler",
@@ -545,13 +557,13 @@ fn builds_ecmascript_with_config_and_preserves_callback_sites_across_thread_coun
                 "src/view.jsx",
                 2,
                 27,
-                "tree-sitter"
+                "typescript-compiler"
             ),
         ]
     );
     let reason: String = db
         .query_row(
-            "SELECT r.name FROM unresolved u JOIN files f ON f.id = u.file
+            "SELECT r.name FROM unresolved_calls u JOIN nodes n ON n.id = u.source JOIN files f ON f.id = n.file
          JOIN unresolved_reasons r ON r.id = u.reason WHERE f.path = 'src/app.tsx'",
             [],
             |r| r.get(0),

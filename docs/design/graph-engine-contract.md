@@ -8,7 +8,7 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 
 | Command | Does | Lifetime |
 |---|---|---|
-| `mex-graph version` | Prints `{"engine":"mex-graph","version":"…","contract":2}` | exits |
+| `mex-graph version` | Prints `{"engine":"mex-graph","version":"…","contract":3}` | exits |
 | `mex-graph languages` | Prints the language registry: id, level, extensions, grammar version, adapter version | exits |
 | `mex-graph build --request <file>` | Builds a candidate graph from scratch | one job |
 | `mex-graph stage --request <file>` | Streams extracted and resolved rows for Node's schema v4 writer | one job |
@@ -26,7 +26,7 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 
 ```json
 {
-  "contract": 2,
+  "contract": 3,
   "mode": "build",
   "root": "/abs/path/to/checkout",
   "files": [{ "path": "src/app.py", "size": 1234 }],
@@ -45,6 +45,19 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 - For `build`, `output` is the absolute path to a new candidate in an existing folder. Temporary files sit beside it. For `stage`, set `mode` to `"stage"`. The engine ignores a supplied `output` path or `null` and opens no database.
 - `base` and `changed` are set for `refresh`: the published base graph (opened read-only) and the repository-relative paths that changed.
 - `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, and `jsx` for `.jsx`. Node's `MEX_GRAPH_ENGINE_LANGUAGES` flag accepts `python`, `typescript` and `javascript` as comma-separated names. `typescript` also selects `tsx`, and `javascript` also selects `jsx`.
+
+### Published schema v5 candidates
+
+When all indexed languages are engine-owned and `MEX_GRAPH_STORAGE=v5`,
+Node uses `build` for both rebuild and refresh. It supplies `sourceDirectory`
+and per-file `staged` basenames, `contentHash`, `modifiedAt` and
+`extractorVersion` from the same contained discovery used for schema v4.
+The child verifies the captured content before extracting and indexing it.
+The optional `buildMetadata` carries exact Git, manifest, corpus and coverage
+provenance for publication. The engine stores it relationally and adds the
+health counts from the files it wrote. A standalone engine benchmark may omit
+the publication fields. Node retains the lease and validates the finished
+database before advancing the pointer. A refresh builds a full base.
 
 ## Events
 

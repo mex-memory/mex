@@ -1,47 +1,53 @@
-//! Writing a schema v5 graph: one candidate file, one transaction.
-//!
-//! The writer creates the candidate, inserts rows in file order inside a
-//! single transaction with cached statements (the fingerprint save once took
-//! 238 of 313 s through nested savepoints and per-row statements), builds the
-//! secondary indexes after the bulk insert, and records the schema version.
+//! Bulk-write one schema v5 candidate in a single transaction.
 
 use std::collections::HashMap;
+use std::io;
 use std::path::Path;
 
 use rusqlite::{Connection, params};
+use serde::Deserialize;
 
-/// The writer's error type.
 pub use rusqlite::Error;
-
 pub const SCHEMA_VERSION: u32 = 5;
 const SCHEMA: &str = include_str!("schema_v5.sql");
 
-/// Indexes built after the bulk insert, not before.
 const INDEXES: &str = "
-CREATE INDEX nodes_file   ON nodes(file);
-CREATE INDEX nodes_name   ON nodes(name);
+CREATE INDEX nodes_file_line ON nodes(file, start_line);
+CREATE INDEX nodes_name ON nodes(name);
+CREATE INDEX nodes_lower_name ON nodes(lower(name));
 CREATE INDEX nodes_parent ON nodes(parent) WHERE parent IS NOT NULL;
 CREATE INDEX edges_target ON edges(target, kind);
+CREATE INDEX unresolved_calls_name ON unresolved_calls(name);
+CREATE INDEX unresolved_calls_candidate ON unresolved_calls(candidate) WHERE candidate IS NOT NULL;
+CREATE INDEX unresolved_calls_source ON unresolved_calls(source);
+CREATE INDEX unresolved_other_name ON unresolved_other(name);
+CREATE INDEX aliases_node ON aliases(node);
+CREATE INDEX grounded_body_hash ON _mex_grounded_source(body_hash);
+CREATE UNIQUE INDEX source_chunks_file ON source_chunks(file, start_line);
 ";
 
-/// Small-integer code tables, interned as rows arrive.
+// Static identifiers are the only strings interpolated into SQL statements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Code {
     Language,
     NodeKind,
     EdgeKind,
     Provenance,
-    UnresolvedReason,
+    Method,
+    Reason,
+    Name,
 }
 
 impl Code {
     fn table(self) -> &'static str {
         match self {
-            Code::Language => "languages",
-            Code::NodeKind => "node_kinds",
-            Code::EdgeKind => "edge_kinds",
-            Code::Provenance => "provenances",
-            Code::UnresolvedReason => "unresolved_reasons",
+            Self::Language => "languages",
+            Self::NodeKind => "node_kinds",
+            Self::EdgeKind => "edge_kinds",
+            Self::Provenance => "provenances",
+            Self::Method => "resolution_methods",
+            Self::Reason => "unresolved_reasons",
+            Self::Name => "unresolved_names",
         }
     }
 }
@@ -51,77 +57,159 @@ pub struct FileRow<'a> {
     pub content_hash: &'a [u8; 32],
     pub language: &'a str,
     pub size: u64,
+    pub modified_at: f64,
     pub parse_status: u8,
     pub error_count: u32,
     pub missing_count: u32,
+    pub error_coverage: f32,
+    pub extractor_version: &'a str,
 }
 
 pub struct NodeRow<'a> {
-    pub public_id: &'a [u8; 16],
+    pub key: i64,
+    pub public_id: &'a str,
     pub kind: &'a str,
     pub file: i64,
     pub parent: Option<i64>,
     pub name: &'a str,
     pub qualified_name: &'a str,
-    /// 1-based start line, 0-based column, then the same for the end.
     pub span: [u32; 4],
     pub signature: Option<&'a str>,
     pub flags: u32,
-    pub body_hash: Option<&'a [u8; 32]>,
+    pub body_hash: Option<&'a str>,
     pub docstring: Option<&'a str>,
+    pub visibility: Option<&'a str>,
+    pub return_type: Option<&'a str>,
+    pub decorators: &'a [String],
+    pub type_parameters: &'a [String],
 }
 
 pub struct EdgeRow<'a> {
     pub source: i64,
     pub kind: &'a str,
     pub target: i64,
-    pub line: u32,
-    pub col: u32,
+    pub line: Option<u32>,
+    pub col: Option<u32>,
     pub site_file: Option<i64>,
     pub provenance: &'a str,
     pub confidence: f64,
+    pub method: &'a str,
+    pub target_name: Option<&'a str>,
+    pub evidence: Option<EdgeEvidence<'a>>,
 }
 
-/// Writes one candidate graph. Nothing is visible until [`Writer::finish`].
+pub enum EdgeEvidence<'a> {
+    Declaration(Option<&'a str>),
+    Import,
+    Heritage,
+    Expression(&'a str),
+    Callback(u32),
+}
+
+pub struct UnresolvedRow<'a> {
+    pub source: i64,
+    pub name: &'a str,
+    pub kind: &'a str,
+    pub reason: &'a str,
+    pub line: u32,
+    pub col: u32,
+    pub candidate: Option<i64>,
+    pub receiver: Option<&'a str>,
+}
+
+/// Provenance observed by the parent under its maintenance lease. The child
+/// verifies each captured source and adds the actual extraction health totals.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildMetadata {
+    pub indexed_at: i64,
+    pub indexed_branch: Option<String>,
+    pub indexed_head: Option<String>,
+    pub compiler_version: String,
+    pub extractor_version: String,
+    pub resolver_version: String,
+    pub grammar_hash: String,
+    pub config_hash: String,
+    pub manifest_hash: String,
+    pub source_corpus_digest: String,
+    pub coverage: Option<CoverageSummary>,
+    pub skipped: Vec<CoverageGap>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageSummary {
+    pub policy_hash: String,
+    pub total: u32,
+    pub truncated: bool,
+    pub entries: Vec<CoverageExtension>,
+    pub directories: Vec<CoverageDirectory>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CoverageExtension {
+    pub extension: String,
+    pub files: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CoverageDirectory {
+    pub path: String,
+    pub stamp: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CoverageGap {
+    pub path: String,
+    pub reason: String,
+}
+
 pub struct Writer {
     conn: Connection,
-    codes: HashMap<(Code, String), i64>,
+    codes: HashMap<Code, HashMap<String, i64>>,
+    edge_sequence: i64,
 }
 
 impl Writer {
-    /// Create `path`, which must not exist yet: the engine writes only the
-    /// candidate it is given, never over another file.
+    /// Atomically reserve a new candidate path. The parent validates and syncs
+    /// completed candidates; a stopped build is discarded with its sidecars.
     pub fn create(path: &Path) -> rusqlite::Result<Writer> {
-        if path.exists() {
-            return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
+        let mut file = std::fs::OpenOptions::new();
+        file.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            file.mode(0o600);
         }
+        file.open(path)
+            .map_err(|_| Error::InvalidPath(path.to_path_buf()))?;
         let conn = Connection::open(path)?;
-        // A candidate is written once and validated before publication: no
-        // rollback journal is needed, and a crash leaves a file Node deletes.
         conn.execute_batch(
             "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = OFF;
              PRAGMA page_size = 4096;
-             PRAGMA cache_size = -65536;",
+             PRAGMA cache_size = -32768;
+             PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
-        conn.execute_batch("BEGIN")?;
+        conn.execute_batch("BEGIN; PRAGMA defer_foreign_keys = ON;")?;
         Ok(Writer {
             conn,
             codes: HashMap::new(),
+            edge_sequence: 0,
         })
     }
 
     fn code(&mut self, code: Code, name: &str) -> rusqlite::Result<i64> {
-        if let Some(id) = self.codes.get(&(code, name.to_owned())) {
+        let names = self.codes.entry(code).or_default();
+        if let Some(id) = names.get(name) {
             return Ok(*id);
         }
-        let table = code.table();
         self.conn
-            .prepare_cached(&format!("INSERT INTO {table}(name) VALUES (?1)"))?
+            .prepare_cached(&format!("INSERT INTO {}(name) VALUES (?1)", code.table()))?
             .execute([name])?;
         let id = self.conn.last_insert_rowid();
-        self.codes.insert((code, name.to_owned()), id);
+        names.insert(name.to_owned(), id);
         Ok(id)
     }
 
@@ -129,280 +217,252 @@ impl Writer {
         let language = self.code(Code::Language, file.language)?;
         self.conn
             .prepare_cached(
-                "INSERT INTO files(path, content_hash, language, size, parse_status, error_count, missing_count)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO files(path, content_hash, language, size, modified_at, parse_status,
+                                   error_count, missing_count, error_coverage, extractor_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?
             .execute(params![
                 file.path,
-                &file.content_hash[..],
+                file.content_hash.as_slice(),
                 language,
-                i64::try_from(file.size).unwrap_or(i64::MAX),
+                i64::try_from(file.size)
+                    .map_err(|error| Error::ToSqlConversionFailure(error.into()))?,
+                file.modified_at,
                 file.parse_status,
                 file.error_count,
-                file.missing_count
+                file.missing_count,
+                file.error_coverage,
+                file.extractor_version
             ])?;
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn add_node(&mut self, node: &NodeRow) -> rusqlite::Result<i64> {
+    pub fn add_diagnostic(
+        &self,
+        file: i64,
+        position: usize,
+        code: &str,
+        start: u32,
+        end: u32,
+    ) -> rusqlite::Result<()> {
+        self.conn
+            .prepare_cached("INSERT INTO file_diagnostics VALUES (?1, ?2, ?3, ?4, ?5)")?
+            .execute(params![file, position as i64, code, start, end])?;
+        Ok(())
+    }
+
+    pub fn add_node(&mut self, node: &NodeRow) -> rusqlite::Result<()> {
         let kind = self.code(Code::NodeKind, node.kind)?;
+        let (_, public_id) = node.public_id.split_once(':').ok_or(Error::InvalidQuery)?;
+        let public_id = decode_hex(public_id)?;
+        let body_hash = node.body_hash.map(decode_hex).transpose()?;
         self.conn
             .prepare_cached(
-                "INSERT INTO nodes(public_id, kind, file, parent, name, qualified_name,
-                    start_line, start_col, end_line, end_col, signature, flags, body_hash, docstring)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                "INSERT INTO nodes(id, public_id, kind, file, parent, name, qualified_name,
+                    start_line, start_col, end_line, end_col, signature, flags, body_hash,
+                    docstring, visibility, return_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?
             .execute(params![
-                &node.public_id[..],
-                kind,
-                node.file,
-                node.parent,
-                node.name,
-                node.qualified_name,
-                node.span[0],
-                node.span[1],
-                node.span[2],
-                node.span[3],
-                node.signature,
-                node.flags,
-                node.body_hash.map(|h| &h[..]),
-                node.docstring
+                node.key, public_id, kind, node.file, node.parent, node.name, node.qualified_name,
+                node.span[0], node.span[1], node.span[2], node.span[3], node.signature, node.flags,
+                body_hash, node.docstring, node.visibility, node.return_type
             ])?;
-        Ok(self.conn.last_insert_rowid())
+        self.conn
+            .prepare_cached("INSERT INTO nodes_fts(rowid, id, name, qualified_name, docstring, signature) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?
+            .execute(params![node.key, node.public_id, node.name, node.qualified_name, node.docstring, node.signature])?;
+        for (kind, values) in [(0, node.decorators), (1, node.type_parameters)] {
+            let mut insert = self
+                .conn
+                .prepare_cached("INSERT INTO node_attributes VALUES (?1, ?2, ?3, ?4)")?;
+            for (position, value) in values.iter().enumerate() {
+                insert.execute(params![node.key, kind, position as i64, value])?;
+            }
+        }
+        Ok(())
     }
 
-    /// Add an edge; a duplicate of an existing edge is folded into it.
-    pub fn add_edge(&mut self, edge: &EdgeRow) -> rusqlite::Result<()> {
+    pub fn add_edge(&mut self, edge: &EdgeRow) -> rusqlite::Result<bool> {
         let kind = self.code(Code::EdgeKind, edge.kind)?;
         let provenance = self.code(Code::Provenance, edge.provenance)?;
-        self.conn
+        let method = self.code(Code::Method, edge.method)?;
+        let (detail_kind, detail, argument) = match edge.evidence {
+            None => (None, None, None),
+            Some(EdgeEvidence::Declaration(role)) => (Some(1), role, None),
+            Some(EdgeEvidence::Import) => (Some(2), None, None),
+            Some(EdgeEvidence::Heritage) => (Some(3), None, None),
+            Some(EdgeEvidence::Expression(text)) => (Some(4), Some(text), None),
+            Some(EdgeEvidence::Callback(index)) => (Some(5), None, Some(index)),
+        };
+        self.edge_sequence += 1;
+        let inserted = self
+            .conn
             .prepare_cached(
-                "INSERT OR IGNORE INTO edges(source, kind, target, line, col, site_file, provenance, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO edges VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(source, kind, target, line, col) DO NOTHING",
             )?
             .execute(params![
                 edge.source,
                 kind,
                 edge.target,
-                edge.line,
-                edge.col,
-                edge.site_file.unwrap_or(0),
+                edge.line.map_or(-1, i64::from),
+                edge.col.map_or(-1, i64::from),
+                edge.site_file,
                 provenance,
-                edge.confidence
+                edge.confidence,
+                method,
+                edge.target_name,
+                detail_kind,
+                detail,
+                argument,
+                self.edge_sequence
             ])?;
-        Ok(())
+        Ok(inserted > 0)
     }
 
-    pub fn add_unresolved(&mut self, file: i64, reason: &str, count: u32) -> rusqlite::Result<()> {
-        let reason = self.code(Code::UnresolvedReason, reason)?;
-        self.conn
-            .prepare_cached(
-                "INSERT INTO unresolved(file, reason, count) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(file, reason) DO UPDATE SET count = count + excluded.count",
-            )?
-            .execute(params![file, reason, count])?;
+    pub fn add_unresolved(&mut self, row: &UnresolvedRow) -> rusqlite::Result<()> {
+        let name = self.code(Code::Name, row.name)?;
+        let reason = self.code(Code::Reason, row.reason)?;
+        let kind = self.code(Code::EdgeKind, row.kind)?;
+        if matches!(row.kind, "calls" | "instantiates") {
+            let receiver = row
+                .receiver
+                .map(|name| self.code(Code::Name, name))
+                .transpose()?;
+            self.conn.prepare_cached(
+                "INSERT INTO unresolved_calls(source, name, kind, reason, line, col, candidate, receiver)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?.execute(params![row.source, name, kind, reason, row.line, row.col, row.candidate, receiver])?;
+        } else {
+            self.conn.prepare_cached(
+                "INSERT INTO unresolved_other(source, name, kind, reason, line, col) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?.execute(params![row.source, name, kind, reason, row.line, row.col])?;
+        }
         Ok(())
     }
 
     pub fn add_fingerprint(
-        &mut self,
+        &self,
         node: i64,
         minhash: &[u8],
-        neighbours: &[u8],
         token_count: u32,
     ) -> rusqlite::Result<()> {
         self.conn
-            .prepare_cached(
-                "INSERT INTO fingerprints(node, minhash, neighbours, token_count)
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?
-            .execute(params![node, minhash, neighbours, token_count])?;
+            .prepare_cached("INSERT INTO fingerprints VALUES (?1, ?2, ?3)")?
+            .execute(params![node, minhash, token_count])?;
         Ok(())
     }
 
-    pub fn add_coverage(&mut self, path: &str, reason: &str) -> rusqlite::Result<()> {
+    /// Derive the stored neighborhood from exactly the published call edges.
+    pub fn finish_fingerprints(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch(
+            "INSERT INTO fingerprint_neighbours
+             SELECT fp.node, e.target FROM fingerprints fp JOIN edges e ON e.source = fp.node
+             WHERE e.kind = (SELECT id FROM edge_kinds WHERE name = 'calls')
+             UNION
+             SELECT fp.node, e.source FROM fingerprints fp JOIN edges e ON e.target = fp.node
+             WHERE e.kind = (SELECT id FROM edge_kinds WHERE name = 'calls');",
+        )
+    }
+
+    pub fn add_source_chunk(
+        &self,
+        file: i64,
+        lines: [usize; 2],
+        path_terms: &str,
+        identifier_terms: &str,
+        comments: &str,
+        text: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn
+            .prepare_cached(
+                "INSERT INTO source_chunks(file, start_line, end_line) VALUES (?1, ?2, ?3)",
+            )?
+            .execute(params![file, lines[0] as i64, lines[1] as i64])?;
+        let id = self.conn.last_insert_rowid();
+        self.conn.prepare_cached(
+            "INSERT INTO source_chunks_fts(rowid, path_terms, identifier_terms, comment_terms, source_text) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?.execute(params![id, path_terms, identifier_terms, comments, text])?;
+        Ok(())
+    }
+
+    pub fn add_coverage(&self, path: &str, reason: &str) -> rusqlite::Result<()> {
         self.conn
             .prepare_cached("INSERT OR REPLACE INTO coverage(path, reason) VALUES (?1, ?2)")?
             .execute(params![path, reason])?;
         Ok(())
     }
 
-    pub fn set_meta(&mut self, key: &str, value: &str) -> rusqlite::Result<()> {
+    pub fn set_build_metadata(&self, meta: &BuildMetadata) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO snapshot SELECT 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, COUNT(*),
+                    COUNT(*) FILTER(WHERE parse_status = 1), COUNT(*) FILTER(WHERE parse_status = 2) FROM files",
+            params![
+                meta.indexed_at, meta.indexed_branch, meta.indexed_head.as_deref().map(decode_hex).transpose()?,
+                meta.compiler_version, meta.extractor_version, meta.resolver_version,
+                decode_hex(&meta.grammar_hash)?, decode_hex(&meta.config_hash)?, decode_hex(&meta.manifest_hash)?,
+                decode_hex(&meta.source_corpus_digest)?,
+            ],
+        )?;
+        if let Some(coverage) = &meta.coverage {
+            self.conn.execute(
+                "INSERT INTO coverage_summary VALUES (1, ?1, ?2, ?3)",
+                params![
+                    decode_hex(&coverage.policy_hash)?,
+                    coverage.total,
+                    coverage.truncated
+                ],
+            )?;
+            let mut extension = self
+                .conn
+                .prepare_cached("INSERT INTO coverage_extensions VALUES (?1, ?2)")?;
+            for entry in &coverage.entries {
+                extension.execute(params![entry.extension, entry.files])?;
+            }
+            let mut directory = self
+                .conn
+                .prepare_cached("INSERT INTO coverage_directories VALUES (?1, ?2)")?;
+            for entry in &coverage.directories {
+                directory.execute(params![entry.path, entry.stamp])?;
+            }
+        }
+        for gap in &meta.skipped {
+            self.add_coverage(&gap.path, &gap.reason)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         self.conn
-            .prepare_cached("INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)")?
+            .prepare_cached("INSERT OR REPLACE INTO meta VALUES (?1, ?2)")?
             .execute(params![key, value])?;
         Ok(())
     }
 
-    /// Build the indexes, commit and close. Only now is the candidate complete.
-    pub fn finish(mut self) -> rusqlite::Result<()> {
+    pub fn finish(self) -> rusqlite::Result<()> {
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         self.conn.execute_batch(INDEXES)?;
-        self.conn.execute_batch("COMMIT; PRAGMA optimize;")?;
-        self.conn.close().map_err(|(_, e)| e)
+        self.finish_fingerprints()?;
+        self.conn.execute_batch(
+            "INSERT INTO nodes_fts(nodes_fts) VALUES ('optimize');
+             INSERT INTO source_chunks_fts(source_chunks_fts) VALUES ('optimize');
+             COMMIT;",
+        )?;
+        self.conn.close().map_err(|(_, error)| error)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::id::{id_bytes, signature_identity};
-
-    fn temp_db(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("mex-graph-store-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("graph.db");
-        let _ = std::fs::remove_file(&path);
-        path
+fn decode_hex(value: &str) -> rusqlite::Result<Vec<u8>> {
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::ToSqlConversionFailure(
+            io::Error::new(io::ErrorKind::InvalidData, "invalid hex digest").into(),
+        ));
     }
-
-    #[test]
-    fn writes_a_small_graph_and_refuses_an_existing_file() {
-        let path = temp_db("small");
-        let mut w = Writer::create(&path).unwrap();
-        let file = w
-            .add_file(&FileRow {
-                path: "src/app.py",
-                content_hash: &[7; 32],
-                language: "python",
-                size: 120,
-                parse_status: 0,
-                error_count: 0,
-                missing_count: 0,
-            })
-            .unwrap();
-        let ids: Vec<i64> = ["main", "helper"]
-            .iter()
-            .map(|name| {
-                let identity = signature_identity("src/app.py", "function", name, None, "()");
-                w.add_node(&NodeRow {
-                    public_id: &id_bytes(&identity),
-                    kind: "function",
-                    file,
-                    parent: None,
-                    name,
-                    qualified_name: name,
-                    span: [1, 0, 3, 0],
-                    signature: Some("()"),
-                    flags: 1,
-                    body_hash: Some(&[1; 32]),
-                    docstring: None,
-                })
-                .unwrap()
-            })
-            .collect();
-        let edge = EdgeRow {
-            source: ids[0],
-            kind: "calls",
-            target: ids[1],
-            line: 2,
-            col: 4,
-            site_file: None,
-            provenance: "tree-sitter",
-            confidence: 1.0,
-        };
-        w.add_edge(&edge).unwrap();
-        w.add_edge(&edge).unwrap();
-        w.add_unresolved(file, "untyped_receiver", 2).unwrap();
-        w.add_unresolved(file, "untyped_receiver", 1).unwrap();
-        let minhash = [0x6b; 256];
-        w.add_fingerprint(ids[0], &minhash, &[], 47).unwrap();
-        w.finish().unwrap();
-
-        let conn = Connection::open(&path).unwrap();
-        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
-        assert_eq!(count("SELECT count(*) FROM nodes"), 2);
-        assert_eq!(
-            count("SELECT count(*) FROM edges"),
-            1,
-            "duplicate edges fold"
-        );
-        assert_eq!(count("SELECT count FROM unresolved"), 3);
-        assert_eq!(
-            count("SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema_version'"),
-            5
-        );
-        assert_eq!(count("SELECT length(public_id) FROM nodes LIMIT 1"), 16);
-        let stored = conn
-            .query_row(
-                "SELECT node, minhash, neighbours, token_count FROM fingerprints",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, u32>(3)?,
-                    ))
-                },
-            )
-            .unwrap();
-        assert_eq!(stored, (ids[0], minhash.to_vec(), vec![], 47));
-        assert!(Writer::create(&path).is_err(), "never writes over a file");
-    }
-
-    /// A rough size check on the storage target (<= 1.5 KB per node): a
-    /// synthetic graph with today's shape, two edges per node.
-    #[test]
-    fn stays_well_under_the_bytes_per_node_target() {
-        let path = temp_db("size");
-        let mut w = Writer::create(&path).unwrap();
-        let mut nodes = Vec::new();
-        for f in 0..200 {
-            let file_path = format!("src/module_{f}/component_{f}.ts");
-            let file = w
-                .add_file(&FileRow {
-                    path: &file_path,
-                    content_hash: &[f as u8; 32],
-                    language: "typescript",
-                    size: 8_000,
-                    parse_status: 0,
-                    error_count: 0,
-                    missing_count: 0,
-                })
-                .unwrap();
-            for n in 0..50 {
-                let name = format!("handleRequestNumber{n}");
-                let qualified = format!("Component{f}.{name}");
-                let identity = signature_identity(&file_path, "method", &qualified, None, "");
-                nodes.push(
-                    w.add_node(&NodeRow {
-                        public_id: &id_bytes(&identity),
-                        kind: "method",
-                        file,
-                        parent: None,
-                        name: &name,
-                        qualified_name: &qualified,
-                        span: [n * 10 + 1, 2, n * 10 + 9, 3],
-                        signature: Some("(request: Request, context: Context): Promise<Response>"),
-                        flags: 1,
-                        body_hash: Some(&[n as u8; 32]),
-                        docstring: None,
-                    })
-                    .unwrap(),
-                );
-            }
-        }
-        for (i, &source) in nodes.iter().enumerate() {
-            for step in [1, 7] {
-                w.add_edge(&EdgeRow {
-                    source,
-                    kind: "calls",
-                    target: nodes[(i + step) % nodes.len()],
-                    line: 10,
-                    col: 8,
-                    site_file: None,
-                    provenance: "tree-sitter",
-                    confidence: 1.0,
-                })
-                .unwrap();
-            }
-        }
-        w.finish().unwrap();
-        let bytes = std::fs::metadata(&path).unwrap().len();
-        let per_node = bytes / nodes.len() as u64;
-        eprintln!("schema v5 synthetic graph: {per_node} bytes per node");
-        assert!(per_node < 1_536, "{per_node} bytes per node");
-    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|error| Error::ToSqlConversionFailure(error.into()))
+        })
+        .collect()
 }

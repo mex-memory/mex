@@ -1,94 +1,182 @@
--- MEX graph schema v5 (OSS-73): written by the Rust engine.
---
--- Rules, each from a past bug (docs/design/graph-engine-baseline.md and the
--- engine design's lessons):
---   * rows reference each other by INTEGER key; a node's public id is stored
---     once, as the 16 bytes its 32-hex text form names;
---   * hashes are bytes, never hex text;
---   * kinds, edge kinds, languages, provenance and unresolved reasons are
---     small integers with a lookup table, never repeated text;
---   * no JSON columns, no stored identity key, no LSH table;
---   * unresolved calls are a per-file count by reason, not rows;
---   * secondary indexes are built after the bulk insert.
+-- Engine-owned graph rows. All inter-row references use integer keys.
+PRAGMA user_version = 5;
 
-CREATE TABLE meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-) WITHOUT ROWID;
-
--- Lookup tables: id -> name for every small-integer code below.
-CREATE TABLE languages          (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
-CREATE TABLE node_kinds         (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
-CREATE TABLE edge_kinds         (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
-CREATE TABLE provenances        (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
-CREATE TABLE unresolved_reasons (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE languages          (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
+CREATE TABLE node_kinds         (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
+CREATE TABLE edge_kinds         (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
+CREATE TABLE provenances        (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
+CREATE TABLE resolution_methods (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
+CREATE TABLE unresolved_reasons (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
+CREATE TABLE unresolved_names   (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE) STRICT;
 
 CREATE TABLE files (
-    id            INTEGER PRIMARY KEY,
-    path          TEXT    NOT NULL UNIQUE,
-    content_hash  BLOB    NOT NULL,           -- 32 bytes
-    language      INTEGER NOT NULL REFERENCES languages(id),
-    size          INTEGER NOT NULL,
-    parse_status  INTEGER NOT NULL,           -- 0 ok, 1 partial, 2 failed
-    error_count   INTEGER NOT NULL DEFAULT 0,
-    missing_count INTEGER NOT NULL DEFAULT 0,
-    -- Digest of every row this file owns: refreshes rewrite only changed files.
-    row_digest    BLOB
-);
+    id                INTEGER PRIMARY KEY,
+    path              TEXT NOT NULL UNIQUE,
+    content_hash      BLOB NOT NULL CHECK(length(content_hash) = 32),
+    language          INTEGER NOT NULL REFERENCES languages(id),
+    size              INTEGER NOT NULL CHECK(size >= 0),
+    modified_at       REAL    NOT NULL,
+    parse_status      INTEGER NOT NULL CHECK(parse_status BETWEEN 0 AND 2), -- ok, partial, failed
+    error_count       INTEGER NOT NULL CHECK(error_count >= 0),
+    missing_count     INTEGER NOT NULL CHECK(missing_count >= 0),
+    error_coverage    REAL NOT NULL CHECK(error_coverage BETWEEN 0 AND 1),
+    extractor_version TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE file_diagnostics (
+    file       INTEGER NOT NULL REFERENCES files(id),
+    position   INTEGER NOT NULL CHECK(position BETWEEN 0 AND 99),
+    code       TEXT NOT NULL,
+    start_line INTEGER NOT NULL CHECK(start_line > 0),
+    end_line   INTEGER NOT NULL CHECK(end_line >= start_line),
+    PRIMARY KEY (file, position)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE nodes (
     id             INTEGER PRIMARY KEY,
-    public_id      BLOB    NOT NULL UNIQUE,   -- 16 bytes
+    public_id      BLOB NOT NULL UNIQUE CHECK(length(public_id) = 16),
     kind           INTEGER NOT NULL REFERENCES node_kinds(id),
     file           INTEGER NOT NULL REFERENCES files(id),
-    parent         INTEGER,                   -- containing node
-    name           TEXT    NOT NULL,
-    qualified_name TEXT    NOT NULL,
-    start_line     INTEGER NOT NULL,          -- 1-based, as today
-    start_col      INTEGER NOT NULL,
-    end_line       INTEGER NOT NULL,
-    end_col        INTEGER NOT NULL,
-    signature      TEXT,                      -- bounded
-    flags          INTEGER NOT NULL DEFAULT 0, -- bit 0 exported, 1 async, 2 static, 3 abstract, 4 default export
-    body_hash      BLOB,                      -- 32 bytes
-    docstring      TEXT                       -- bounded
-);
+    parent         INTEGER REFERENCES nodes(id),
+    name           TEXT NOT NULL,
+    qualified_name TEXT NOT NULL,
+    start_line     INTEGER NOT NULL CHECK(start_line > 0),
+    start_col      INTEGER NOT NULL CHECK(start_col >= 0),
+    end_line       INTEGER NOT NULL CHECK(end_line >= start_line),
+    end_col        INTEGER NOT NULL CHECK(end_col >= 0),
+    signature      TEXT,
+    flags          INTEGER NOT NULL CHECK(flags BETWEEN 0 AND 31), -- exported, async, static, abstract, default
+    body_hash      BLOB CHECK(length(body_hash) = 32),
+    docstring      TEXT,
+    visibility     TEXT,
+    return_type    TEXT
+) STRICT;
 
+-- kind: 0 decorator, 1 type parameter. Position preserves declaration order.
+CREATE TABLE node_attributes (
+    node     INTEGER NOT NULL REFERENCES nodes(id),
+    kind     INTEGER NOT NULL CHECK(kind IN (0, 1)),
+    position INTEGER NOT NULL CHECK(position >= 0),
+    value    TEXT NOT NULL,
+    PRIMARY KEY (node, kind, position)
+) STRICT, WITHOUT ROWID;
+
+-- line/col use -1 for no location so the primary key matches v4 call-site identity.
+-- Evidence codes: 1 declaration role, 2 imported file, 3 heritage, 4 expression,
+-- 5 callback wiring. target_name is the written name; the qualified name comes
+-- from the target row.
 CREATE TABLE edges (
-    source     INTEGER NOT NULL,
-    kind       INTEGER NOT NULL,
-    target     INTEGER NOT NULL,
-    line       INTEGER NOT NULL DEFAULT 0,    -- 1-based call-site line; 0 when none
-    col        INTEGER NOT NULL DEFAULT 0,    -- 0-based column of the called name
-    site_file  INTEGER NOT NULL DEFAULT 0,    -- 0 when the location is in the source node's file
-    provenance INTEGER NOT NULL,
-    confidence REAL    NOT NULL DEFAULT 1,
-    PRIMARY KEY (source, kind, target, line, col, site_file)
-) WITHOUT ROWID;
+    source      INTEGER NOT NULL REFERENCES nodes(id),
+    kind        INTEGER NOT NULL REFERENCES edge_kinds(id),
+    target      INTEGER NOT NULL REFERENCES nodes(id),
+    line        INTEGER NOT NULL CHECK(line = -1 OR line > 0),
+    col         INTEGER NOT NULL CHECK(col >= -1),
+    site_file   INTEGER REFERENCES files(id),
+    provenance  INTEGER NOT NULL REFERENCES provenances(id),
+    confidence  REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+    method      INTEGER NOT NULL REFERENCES resolution_methods(id),
+    target_name TEXT,
+    detail_kind INTEGER CHECK(detail_kind BETWEEN 1 AND 5),
+    detail      TEXT,
+    argument    INTEGER CHECK(argument >= 0),
+    sequence    INTEGER NOT NULL CHECK(sequence > 0),
+    PRIMARY KEY (source, kind, target, line, col)
+) STRICT, WITHOUT ROWID;
 
-CREATE TABLE unresolved (
-    file   INTEGER NOT NULL,
-    reason INTEGER NOT NULL,
-    count  INTEGER NOT NULL,
-    PRIMARY KEY (file, reason)
-) WITHOUT ROWID;
+CREATE TABLE unresolved_calls (
+    id        INTEGER PRIMARY KEY,
+    source    INTEGER NOT NULL REFERENCES nodes(id),
+    name      INTEGER NOT NULL REFERENCES unresolved_names(id),
+    kind      INTEGER NOT NULL REFERENCES edge_kinds(id),
+    reason    INTEGER NOT NULL REFERENCES unresolved_reasons(id),
+    line      INTEGER NOT NULL CHECK(line > 0),
+    col       INTEGER NOT NULL CHECK(col >= 0),
+    candidate INTEGER REFERENCES nodes(id),
+    receiver  INTEGER REFERENCES unresolved_names(id)
+) STRICT;
+
+-- The existing exact-name fallback also reports unresolved imports and bases.
+CREATE TABLE unresolved_other (
+    id     INTEGER PRIMARY KEY,
+    source INTEGER NOT NULL REFERENCES nodes(id),
+    name   INTEGER NOT NULL REFERENCES unresolved_names(id),
+    kind   INTEGER NOT NULL REFERENCES edge_kinds(id),
+    reason INTEGER NOT NULL REFERENCES unresolved_reasons(id),
+    line   INTEGER NOT NULL CHECK(line > 0),
+    col    INTEGER NOT NULL CHECK(col >= 0)
+) STRICT;
 
 CREATE TABLE fingerprints (
-    node        INTEGER PRIMARY KEY,          -- nodes(id); only nodes with enough tokens
-    minhash     BLOB    NOT NULL,             -- 64 x u32, big-endian
-    neighbours  BLOB    NOT NULL,             -- packed 16-byte public ids, sorted
-    token_count INTEGER NOT NULL
-);
+    node        INTEGER PRIMARY KEY REFERENCES nodes(id),
+    minhash     BLOB NOT NULL CHECK(length(minhash) = 256), -- 64 big-endian u32 values
+    token_count INTEGER NOT NULL CHECK(token_count >= 0)
+) STRICT;
 
--- An old public id (an earlier engine's, or a renamed declaration's) that now
--- names a node, so grounded anchors keep resolving.
+CREATE TABLE fingerprint_neighbours (
+    node      INTEGER NOT NULL REFERENCES fingerprints(node),
+    neighbour INTEGER NOT NULL REFERENCES nodes(id),
+    PRIMARY KEY (node, neighbour)
+) STRICT, WITHOUT ROWID;
+
 CREATE TABLE aliases (
-    old_public_id BLOB PRIMARY KEY,
-    node          INTEGER NOT NULL
-) WITHOUT ROWID;
+    old_public_id  BLOB PRIMARY KEY CHECK(length(old_public_id) = 16),
+    old_kind       INTEGER NOT NULL REFERENCES node_kinds(id),
+    node           INTEGER NOT NULL REFERENCES nodes(id),
+    match_method   TEXT NOT NULL,
+    confidence     REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1)
+) STRICT, WITHOUT ROWID;
 
--- Files considered but not indexed, with the reason ("too big", "parse failed").
-CREATE TABLE coverage (
-    path   TEXT PRIMARY KEY,
-    reason TEXT NOT NULL
-) WITHOUT ROWID;
+-- Historical baseline IDs can outlive both a node and its alias.
+CREATE TABLE _mex_grounded_source (
+    subject_kind TEXT NOT NULL CHECK(subject_kind IN ('scaffold', 'entity')),
+    subject_id   TEXT NOT NULL,
+    node_kind    TEXT NOT NULL,
+    public_id    BLOB NOT NULL CHECK(length(public_id) = 16),
+    source       TEXT NOT NULL,
+    body_hash    BLOB NOT NULL CHECK(length(body_hash) = 32),
+    fingerprint  TEXT NOT NULL,
+    PRIMARY KEY (subject_kind, subject_id, public_id)
+) STRICT, WITHOUT ROWID;
+
+-- Contentless FTS indexes. The source itself is read from the proven checkout.
+-- Keep the id column in the node tokenizer for v4's document lengths and rank.
+CREATE VIRTUAL TABLE nodes_fts USING fts5(id, name, qualified_name, docstring, signature, content='');
+CREATE TABLE source_chunks (
+    id         INTEGER PRIMARY KEY,
+    file       INTEGER NOT NULL REFERENCES files(id),
+    start_line INTEGER NOT NULL CHECK(start_line > 0),
+    end_line   INTEGER NOT NULL CHECK(end_line >= start_line)
+) STRICT;
+CREATE VIRTUAL TABLE source_chunks_fts USING fts5(path_terms, identifier_terms, comment_terms, source_text, content='');
+
+CREATE TABLE snapshot (
+    id               INTEGER PRIMARY KEY CHECK(id = 1),
+    indexed_at       INTEGER NOT NULL CHECK(indexed_at >= 0),
+    indexed_branch   TEXT,
+    indexed_head     BLOB CHECK(length(indexed_head) IN (20, 32)),
+    compiler_version TEXT NOT NULL,
+    extractor_version TEXT NOT NULL,
+    resolver_version TEXT NOT NULL,
+    grammar_hash     BLOB NOT NULL CHECK(length(grammar_hash) = 32),
+    config_hash      BLOB NOT NULL CHECK(length(config_hash) = 32),
+    manifest_hash    BLOB NOT NULL CHECK(length(manifest_hash) = 32),
+    corpus_digest    BLOB NOT NULL CHECK(length(corpus_digest) = 32),
+    source_count     INTEGER NOT NULL CHECK(source_count >= 0),
+    partial_count    INTEGER NOT NULL CHECK(partial_count >= 0),
+    failed_count     INTEGER NOT NULL CHECK(failed_count >= 0),
+    CHECK(partial_count + failed_count <= source_count)
+) STRICT;
+
+CREATE TABLE coverage (path TEXT PRIMARY KEY, reason TEXT NOT NULL) STRICT, WITHOUT ROWID;
+CREATE TABLE coverage_summary (
+    id        INTEGER PRIMARY KEY CHECK(id = 1),
+    policy    BLOB NOT NULL CHECK(length(policy) = 32),
+    total     INTEGER NOT NULL CHECK(total >= 0),
+    truncated INTEGER NOT NULL CHECK(truncated IN (0, 1))
+) STRICT;
+CREATE TABLE coverage_extensions (
+    extension TEXT PRIMARY KEY,
+    files     INTEGER NOT NULL CHECK(files > 0)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE coverage_directories (path TEXT PRIMARY KEY, stamp TEXT NOT NULL) STRICT, WITHOUT ROWID;

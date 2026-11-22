@@ -18,7 +18,7 @@ pub(super) struct Stage<'a> {
     facts: &'a [FileFacts],
     ids: Vec<Vec<Option<String>>>,
     edges: Vec<Vec<Edge>>,
-    calls: Vec<Vec<(usize, &'static str)>>,
+    calls: Vec<Vec<(usize, &'static str, Option<DefRef>)>>,
     heritage: Vec<Vec<UnresolvedHeritage>>,
     imports: Vec<Vec<ImportResolution>>,
 }
@@ -34,7 +34,11 @@ impl<'a> Stage<'a> {
         }
         let mut calls = vec![Vec::new(); facts.len()];
         for (file, index, reason) in resolution.unresolved_calls {
-            calls[file].push((index, reason));
+            calls[file].push((
+                index,
+                reason,
+                resolution.call_candidates.get(&(file, index)).copied(),
+            ));
         }
         let mut heritage = vec![Vec::new(); facts.len()];
         for base in resolution.unresolved_heritage {
@@ -85,10 +89,10 @@ impl<'a> Stage<'a> {
                 json!({ "reason": base.reason, "heritage": kind }),
             ));
         }
-        for &(call_index, reason) in &self.calls[index] {
+        for &(call_index, reason, candidate) in &self.calls[index] {
             let call = &facts.calls[call_index];
             let caller = usize::try_from(call.caller).unwrap_or(0);
-            file.unresolved.extend(self.unresolved(
+            let mut reference = self.unresolved(
                 (index, caller),
                 if call.form == CallForm::New {
                     "instantiates"
@@ -99,7 +103,11 @@ impl<'a> Stage<'a> {
                 call.name_range,
                 call_receiver(call),
                 json!({ "reason": reason, "expression": call.text }),
-            ));
+            );
+            if let Some(reference) = &mut reference {
+                reference.candidate_id = candidate.and_then(|node| self.id(node));
+            }
+            file.unresolved.extend(reference);
         }
         file
     }
@@ -198,6 +206,7 @@ impl<'a> Stage<'a> {
             metadata,
             confidence: Some(0),
             candidates: Some([]),
+            candidate_id: None,
             receiver,
             qualifier: receiver,
         })
