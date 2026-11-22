@@ -21,7 +21,7 @@ import { treeRssKb } from "./process-tree.mjs";
 
 const MiB = 1024 * 1024;
 // Leave room for a write between samples on a nearly full volume.
-const MIN_FREE_BYTES = 1664 * MiB;
+const MIN_FREE_BYTES = 2300 * MiB;
 const cli = resolve("dist/cli.js");
 const [, , reposDirectory, ...requested] = process.argv;
 if (!reposDirectory || !process.env.MEX_GRAPH_ENGINE) {

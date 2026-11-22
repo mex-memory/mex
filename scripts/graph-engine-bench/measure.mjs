@@ -3,6 +3,7 @@
 //
 // usage: node measure.mjs --bench <BENCH_DIR> --tool <id> --cli <path/to/cli.js>
 //                         --repo <name> [--runs 3] [--keep-graph] [--timeout-min 30]
+// Add --checkout to clone the pinned tree with a fresh Git index.
 // For an engine build, use --engine <path/to/mex-graph> instead of --cli
 // and optionally pass --languages python and --memory-mb 4096.
 //
@@ -16,7 +17,7 @@
 // process. Graph size is every graph file on disk, plus a per-table breakdown
 // from SQLite's dbstat. Results go to $BENCH_DIR/results/<tool>/<repo>/.
 import { spawn, execFileSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, statfsSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, basename, extname, resolve } from "node:path";
 import { treeRssKb } from "./process-tree.mjs";
 
@@ -47,6 +48,13 @@ if (engine && (args["memory-mb"] === true || !Number.isSafeInteger(memoryMb) || 
   throw new Error("--memory-mb requires a positive integer");
 }
 mkdirSync(outDir, { recursive: true });
+const MiB = 1024 ** 2;
+let minimumFree = Infinity;
+function checkDisk() {
+  const stat = statfsSync(outDir, { bigint: true });
+  minimumFree = Math.min(minimumFree, Number(stat.bavail * stat.bsize));
+  if (minimumFree < 2300 * MiB) throw new Error(`Disk guard: ${Math.floor(minimumFree / MiB)} MiB free.`);
+}
 
 const SOURCE = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rs", ".cs"]);
 const EXCLUDE = /(^|\/)(node_modules|dist|build|vendor|__fixtures__|fixtures|test|tests|__tests__|spec|e2e|docs?|examples?)\//i;
@@ -95,10 +103,11 @@ function writeEngineRequest(root, home, output) {
 
 
 function timed(argv, env, cwd, startEngine = false) {
-  return new Promise((resolve) => {
+  checkDisk();
+  return new Promise((resolve, reject) => {
     const started = process.hrtime.bigint();
     const child = spawn("/usr/bin/time", ["-l", ...argv], {
-      cwd, env, detached: startEngine, stdio: [startEngine ? "pipe" : "ignore", "pipe", "pipe"],
+      cwd, env, detached: process.platform !== "win32", stdio: [startEngine ? "pipe" : "ignore", "pipe", "pipe"],
     });
     if (startEngine) {
       // EOF signals that the parent went away. Keep stdin open for the job.
@@ -108,10 +117,18 @@ function timed(argv, env, cwd, startEngine = false) {
     let stdout = ""; let stderr = ""; let peakKb = 0;
     child.stdout.on("data", (d) => { stdout += d; });
     child.stderr.on("data", (d) => { stderr += d; });
-    const sampler = setInterval(() => { peakKb = Math.max(peakKb, treeRssKb(child.pid)); }, 100);
-    const killer = setTimeout(() => { try { process.kill(startEngine ? -child.pid : child.pid, "SIGKILL"); } catch {} }, timeoutMs);
+    const kill = () => {
+      if (child.pid) try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL"); } catch {}
+    };
+    let diskFailure;
+    const sampler = setInterval(() => {
+      try { checkDisk(); } catch (error) { diskFailure = error; kill(); }
+      peakKb = Math.max(peakKb, treeRssKb(child.pid));
+    }, 100);
+    const killer = setTimeout(kill, timeoutMs);
     child.on("close", (code) => {
       clearInterval(sampler); clearTimeout(killer);
+      if (diskFailure) { reject(diskFailure); return; }
       const wallMs = Number(process.hrtime.bigint() - started) / 1e6;
       const num = (re) => Number(stderr.match(re)?.[1] ?? NaN);
       resolve({
@@ -126,14 +143,14 @@ function timed(argv, env, cwd, startEngine = false) {
 }
 
 /** Every graph database file this tool wrote, with WAL/SHM. */
-function graphFiles(src, home) {
+function graphFiles(src, home, predicate = name => /^graph.*\.db(-wal|-shm)?$/.test(name)) {
   const found = [];
   const walk = (dir) => {
     if (!existsSync(dir)) return;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (/^graph.*\.db(-wal|-shm)?$/.test(e.name)) found.push(p);
+      else if (predicate(e.name)) found.push(p);
     }
   };
   walk(join(src, ".mex"));
@@ -159,43 +176,68 @@ for (let i = 1; i <= runs; i++) {
   const runDir = join(outDir, `run-${i}`);
   rmSync(runDir, { recursive: true, force: true });
   const src = join(runDir, "src"); const home = join(runDir, "home");
-  cpSync(repoDir, src, { recursive: true }); mkdirSync(home, { recursive: true });
-  readAll(src);
+  checkDisk();
+  let retainSource = false;
+  try {
+    if (args.checkout) {
+      execFileSync("git", ["-c", "core.autocrlf=false", "-c", "advice.detachedHead=false", "clone", "--shared", "--quiet", resolve(repoDir), src], { stdio: "inherit" });
+    } else cpSync(repoDir, src, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    checkDisk();
+    readAll(src);
 
-  const engineDb = engine ? join(home, "graph-engine.db") : null;
-  const build = engine
-    ? await timed([resolve(engine), "build", "--request", writeEngineRequest(src, home, engineDb)], env(home), src, true)
-    : await timed(["node", cli, "graph", "rebuild", "--root", src, "--json"], env(home), src);
-  let summary = {};
-  if (engine) {
-    if (build.code === 0) {
-      summary = JSON.parse(build.stdout.trimEnd().split("\n").at(-1));
-      if (summary?.type !== "result") throw new Error("engine stdout must end with a result event");
+    const engineDb = engine ? join(home, "graph-engine.db") : null;
+    const build = engine
+      ? await timed([resolve(engine), "build", "--request", writeEngineRequest(src, home, engineDb)], env(home), src, true)
+      : await timed(["node", cli, "graph", "rebuild", "--root", src, "--json"], env(home), src);
+    let summary = {};
+    if (engine) {
+      if (build.code === 0) {
+        summary = JSON.parse(build.stdout.trimEnd().split("\n").at(-1));
+        if (summary?.type !== "result") throw new Error("engine stdout must end with a result event");
+      }
+    } else {
+      try { const r = JSON.parse(build.stdout); summary = { files: r.filesIndexed, nodes: r.nodesCreated, edges: r.edgesCreated, compiler: r.typescript?.compiler }; } catch {}
     }
-  } else {
-    try { const r = JSON.parse(build.stdout); summary = { files: r.filesIndexed, nodes: r.nodesCreated, edges: r.edgesCreated, compiler: r.typescript?.compiler }; } catch {}
-  }
-  const files = engine
-    ? [engineDb, `${engineDb}-wal`, `${engineDb}-shm`].filter((f) => existsSync(f))
-    : graphFiles(src, home);
-  const bytes = files.reduce((n, f) => n + statSync(f).size, 0);
-  const mainDb = engine
-    ? (build.code === 0 ? engineDb : null)
-    : files.filter((f) => f.endsWith(".db")).sort((a, b) => statSync(b).size - statSync(a).size)[0];
-  const stats = mainDb ? dbStats(mainDb) : null;
+    const files = engine
+      ? [engineDb, `${engineDb}-wal`, `${engineDb}-shm`].filter((f) => existsSync(f))
+      : graphFiles(src, home);
+    const bytes = files.reduce((n, f) => n + statSync(f).size, 0);
+    const mainDb = engine
+      ? (build.code === 0 ? engineDb : null)
+      : files.filter((f) => f.endsWith(".db")).sort((a, b) => statSync(b).size - statSync(a).size)[0];
+    const stats = mainDb ? dbStats(mainDb) : null;
 
-  let refresh = null;
-  if (build.code === 0 && target) {
-    appendFileSync(join(src, target), commentFor(target));
-    refresh = await timed(["node", cli, "graph", "refresh", "--root", src, "--json"], env(home), src);
-    delete refresh.stdout;
+    let refresh = null;
+    let overlayBytes = null;
+    let factsCacheBytes = null;
+    if (build.code === 0 && target) {
+      appendFileSync(join(src, target), commentFor(target));
+      refresh = await timed(["node", cli, "graph", "refresh", "--root", src, "--json"], env(home), src);
+      if (process.env.MEX_GRAPH_STORAGE === "v5") {
+        overlayBytes = graphFiles(src, home, name => /^graph-o-.*\.db$/.test(name)).reduce((n, f) => n + statSync(f).size, 0);
+        factsCacheBytes = graphFiles(src, home, name => /^facts-v\d+\.db(?:-journal|-wal|-shm)?$/.test(name))
+          .reduce((n, f) => n + statSync(f).size, 0);
+      }
+      try { refresh.report = JSON.parse(refresh.stdout).refresh; } catch {}
+      delete refresh.stdout;
+    }
+    delete build.stdout;
+    const result = { tool: args.tool, repo: args.repo, run: i, build, summary, graph: { bytes, files: files.map((f) => f.slice(runDir.length + 1)), stats }, refresh, refreshFile: target, overlayBytes, factsCacheBytes };
+    results.push(result);
+    console.log(JSON.stringify({ run: i, code: build.code, wallMs: build.wallMs, peakTreeMb: build.peakTreeMb,
+      nodes: stats?.nodes, edges: stats?.edges, mb: Math.round(bytes / MiB), refreshMs: refresh?.wallMs, refreshCode: refresh?.code,
+      refreshPeakTreeMb: refresh?.peakTreeMb, overlayBytes, factsCacheBytes, filesReextracted: refresh?.report?.filesReextracted,
+      minimumFreeMiB: Math.floor(minimumFree / MiB) }));
+    if (i === 1 && args["keep-graph"] && mainDb) {
+      checkDisk();
+      cpSync(mainDb, join(outDir, "graph.db"));
+      writeFileSync(join(outDir, "root.txt"), src + "\n");
+      retainSource = true;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    if (!retainSource) rmSync(runDir, { recursive: true, force: true });
   }
-  delete build.stdout;
-  const result = { tool: args.tool, repo: args.repo, run: i, build, summary, graph: { bytes, files: files.map((f) => f.slice(runDir.length + 1)), stats }, refresh, refreshFile: target };
-  results.push(result);
-  console.log(JSON.stringify({ run: i, code: build.code, wallMs: build.wallMs, peakTreeMb: build.peakTreeMb, nodes: stats?.nodes, edges: stats?.edges, mb: Math.round(bytes / 1048576), refreshMs: refresh?.wallMs, refreshCode: refresh?.code }));
-  if (i === 1 && args["keep-graph"] && mainDb) { cpSync(mainDb, join(outDir, "graph.db")); writeFileSync(join(outDir, "root.txt"), src + "\n"); }
-  rmSync(home, { recursive: true, force: true });
-  if (!(i === 1 && args["keep-graph"])) rmSync(src, { recursive: true, force: true });
 }
 writeFileSync(join(outDir, "measure.json"), JSON.stringify(results, null, 2));

@@ -1,6 +1,7 @@
-import { appendFileSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RepositoryGraphPort } from "../application-adapter.js";
 import { runGraphGet, runGraphQuery } from "../cli-agent.js";
@@ -256,4 +257,144 @@ def execute():
     expect(result.status.schemaVersion).toBe(4);
     expect(result.engine).toMatchObject({ files: 1, fallbackFiles: 0 });
   });
+
+  it("shadows importers, inherited calls, routes and incoming fingerprint neighbours exactly as a fresh build", async () => {
+    const root = fixture();
+    const home = process.env.MEX_HOME!;
+    const write = (path: string, source: string) => writeFileSync(join(root, path), source);
+    const definitions = (method: string, seed: number) => `
+export class Parent { ${method}() { return ${seed}; } }
+export function handler(input: number) {
+  const adjusted = input * ${seed} + 29 + 757;
+  return adjusted + input * input + 19;
+}
+`;
+    write("primary.ts", definitions("work", 11));
+    write("secondary.ts", definitions("work", 13));
+    write("package.json", '{"dependencies":{"express":"5.0.0"}}');
+    write("barrel.ts", 'export { handler, Parent } from "./primary";\n');
+    write("app.ts", `import { handler, Parent } from "./barrel";
+export class Child extends Parent { run() { return this.work() + handler(7); } }
+`);
+    write("routes.ts", `import express from "express";
+import { handler } from "./barrel";
+const app = express();
+app.get("/before", handler);
+`);
+    write("utilities.ts", "export function unused() { return 5; }\n");
+    await rebuildGraph(root);
+    const base = currentGraphPath(root);
+    const baseBytes = readFileSync(base);
+    const run = declaration(root, "Child::run");
+
+    const read = () => {
+      const db = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
+      try {
+        const store = new GraphStore(db);
+        const fingerprints = new FingerprintStore(db);
+        const nodes = store.getAllNodes().map(({ updatedAt: _, ...node }) => node).sort((a, b) => a.id.localeCompare(b.id));
+        const sorted = <T,>(rows: T[]) => rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        return {
+          nodes, edges: sorted(store.getAllEdges()), unresolved: sorted(store.getAllUnresolvedRefs()),
+          fingerprints: nodes.filter(node => node.bodyHash).map(node => [node.id, fingerprints.get(node.id)]),
+          incoming: store.getIncomingEdges(run), outgoing: store.getOutgoingEdges(run),
+          symbols: store.search("work handler before after", { limit: 30 }).map(node => node.id),
+          chunks: store.searchSourceChunks("handler adjusted", 30).map(({ id: _, ...chunk }) => chunk),
+        };
+      } finally { db.close(); }
+    };
+    const compareFresh = async () => {
+      const incremental = read();
+      const freshHome = join(dirname(home), "fresh");
+      vi.stubEnv("MEX_HOME", freshHome);
+      try { await rebuildGraph(root); expect(read()).toEqual(incremental); }
+      finally { vi.stubEnv("MEX_HOME", home); rmSync(freshHome, { recursive: true, force: true }); }
+      expect(readFileSync(base)).toEqual(baseBytes);
+      return incremental;
+    };
+
+    write("barrel.ts", 'export { handler, Parent } from "./secondary";\n');
+    const first = await refreshGraph(root);
+    expect(first.refresh).toMatchObject({ mode: "incremental", filesChanged: 1, filesReextracted: 1 });
+    expect(readGraphPointer(graphLocation(root))).toMatchObject({ overlay: expect.any(String) });
+    const overlay = openSqlite(currentGraphPath(root), { readOnly: true, immutable: true });
+    try {
+      expect(overlay.prepare("SELECT path FROM shadow_files ORDER BY path").all().map((row) => (row as { path: string }).path))
+        .toEqual(["app.ts", "barrel.ts", "primary.ts", "routes.ts", "secondary.ts"]);
+    } finally { overlay.close(); }
+    expect((await compareFresh()).outgoing).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "calls", target: expect.stringContaining("method:") }),
+    ]));
+
+    write("secondary.ts", definitions("stop", 13));
+    renameSync(join(root, "secondary.ts"), join(root, "moved.ts"));
+    rmSync(join(root, "primary.ts"));
+    write("barrel.ts", 'export { handler, Parent } from "./moved";\n');
+    write("routes.ts", readFileSync(join(root, "routes.ts"), "utf8").replace("/before", "/after"));
+    expect((await refreshGraph(root)).refresh?.publication).toBe("delta");
+    const second = await compareFresh();
+    expect(second.nodes.filter(node => node.filePath === "primary.ts" || node.filePath === "secondary.ts")).toEqual([]);
+    expect(second.nodes.filter(node => node.kind === "route").map(node => node.name)).toEqual(["GET /after"]);
+    expect(second.unresolved).toContainEqual(expect.objectContaining({ fromNodeId: run, referenceName: "work" }));
+    const port = new RepositoryGraphPort(root);
+    expect((await port.searchNodes({ query: "handler", limit: 20 })).items.some(node => node.path === "moved.ts")).toBe(true);
+  });
+
+  it("checks its complete source capture at publication, even after a same-size rewrite with restored mtime", async () => {
+    const root = fixture();
+    const path = join(root, "worker.ts");
+    writeFileSync(path, tsSource);
+    await rebuildGraph(root);
+    const prior = currentGraphPath(root);
+    appendFileSync(path, "\n// capture a comment\n");
+    const capture = statSync(path);
+    await expect(refreshGraph(root, { __internal: { afterCandidateValidated() {
+      writeFileSync(path, readFileSync(path, "utf8").replace("capture a comment", "replace a comment"));
+      utimesSync(path, capture.atime, capture.mtime);
+    } } } as GraphMaintenanceExecutionOptions)).rejects.toMatchObject({ code: "GRAPH_SOURCE_STAGING_FAILED" });
+    expect(currentGraphPath(root)).toBe(prior);
+  });
+
+  it("applies current ignore rules to paths recovered from the previous walk", async () => {
+    const root = fixture();
+    writeFileSync(join(root, "worker.ts"), tsSource);
+    writeFileSync(join(root, "hidden.ts"), "export function fromIgnoredFile() { return 3; }\n");
+    const rules = join(root, ".gitignore");
+    writeFileSync(rules, "hidden.ts\n");
+    expect((await rebuildGraph(root)).filesIndexed).toBe(1);
+    const before = statSync(rules);
+    writeFileSync(rules, "unused.ts\n");
+    utimesSync(rules, before.atime, before.mtime);
+    const refreshed = await refreshGraph(root);
+    expect(refreshed.refresh).toMatchObject({ filesChanged: 1, filesReextracted: 1, publication: "delta" });
+    expect(declaration(root, "fromIgnoredFile")).toMatch(/^function:/);
+  });
+
+  it("shares a base across checkouts, rolls a large patch into a new base and can share again", async () => {
+    const root = fixture("python");
+    const side = join(dirname(root), "side");
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Graph Test", "-c", "user.email=graph@example.com", ...args], { cwd });
+    git(root, "init", "-q");
+    for (let index = 0; index < 201; index++) writeFileSync(join(root, `f${index}.py`), `def f${index}():\n    return ${index}\n`);
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "Create graph fixture");
+    await rebuildGraph(root);
+    const main = readGraphPointer(graphLocation(root))!;
+    git(root, "worktree", "add", "-q", "--detach", side);
+    appendFileSync(join(side, "f0.py"), "# side edit\n");
+    expect((await refreshGraph(side)).refresh?.publication).toBe("delta");
+    expect(readGraphPointer(graphLocation(side))).toMatchObject({ base: main.base, overlay: expect.any(String) });
+    expect(readGraphPointer(graphLocation(root))).toEqual(main);
+
+    for (let index = 1; index < 201; index++) appendFileSync(join(side, `f${index}.py`), "# switch away\n");
+    expect((await refreshGraph(side)).refresh?.publication).toBe("full");
+    const standalone = readGraphPointer(graphLocation(side))!;
+    expect(standalone.base).not.toBe(main.base);
+    expect(standalone.overlay).toBeNull();
+    git(side, "restore", "--worktree", ".");
+    appendFileSync(join(side, "f0.py"), "# another side edit\n");
+    expect((await refreshGraph(side)).refresh?.publication).toBe("delta");
+    expect(readGraphPointer(graphLocation(side))).toMatchObject({ base: main.base, overlay: expect.any(String) });
+    expect(readGraphPointer(graphLocation(root))).toEqual(main);
+  }, 15_000);
 });
