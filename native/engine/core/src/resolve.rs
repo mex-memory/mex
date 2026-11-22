@@ -14,6 +14,7 @@ pub enum LookupKind {
     TsRequire = 6,
     TsDispatch = 7,
     TsHeritage = 8,
+    FunctionName = 9,
 }
 
 pub enum Access<'a> {
@@ -25,6 +26,7 @@ pub enum Access<'a> {
     ReadMemo(usize),
     File(usize),
     Import(usize, usize),
+    Name(usize, &'a str),
     Lookup(LookupKind, &'a str),
 }
 
@@ -82,6 +84,14 @@ impl<'a> Files<'a> {
     pub fn import(self, file: usize, index: usize) {
         if let Self::Lazy { observe, .. } = self {
             observe(Access::Import(file, index));
+        }
+    }
+
+    /// A declaration lookup, including a miss. The planner can distinguish
+    /// these reads from whole-file reads for a change to one function name.
+    pub fn name(self, file: usize, name: &str) {
+        if let Self::Lazy { observe, .. } = self {
+            observe(Access::Name(file, name));
         }
     }
 

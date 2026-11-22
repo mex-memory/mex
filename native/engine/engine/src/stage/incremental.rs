@@ -214,7 +214,11 @@ impl Recorder {
     }
 
     fn observe(&self, access: Access<'_>) {
-        let previous_file = self.last_file.take();
+        let previous_file = if matches!(access, Access::Name(..)) {
+            self.last_file.get()
+        } else {
+            self.last_file.take()
+        };
         let item = match access {
             Access::Origin(origin) => return self.origin.set(Some(origin)),
             Access::Enter(origin) => return self.nested.borrow_mut().push(origin),
@@ -248,8 +252,31 @@ impl Recorder {
                 Read::File(ordinal(file))
             }
             Access::Import(file, index) => Read::Import(ordinal(file), ordinal(index)),
+            Access::Name(file, name) => {
+                let Some(origin) = self.origin.get() else {
+                    return;
+                };
+                // Local resolution is always redone for the edited origin.
+                // Heritage and contextual values can also affect other files,
+                // and an export memo can be replayed from a different origin.
+                if file == origin && !self.recording_memo.get() && self.nested.borrow().is_empty() {
+                    return;
+                }
+                if self.last_file.replace(Some(file)) != Some(file) {
+                    self.record(Read::File(ordinal(file)));
+                }
+                Read::Lookup(
+                    self.lookups
+                        .borrow_mut()
+                        .intern(LookupKind::FunctionName, name),
+                )
+            }
             Access::Lookup(kind, key) => Read::Lookup(self.lookups.borrow_mut().intern(kind, key)),
         };
+        self.record(item);
+    }
+
+    fn record(&self, item: Read) {
         self.record_to_origins(|origin, reads| {
             if item != Read::File(ordinal(origin)) {
                 reads.items.insert(item);
@@ -283,7 +310,13 @@ impl Recorder {
             .take()
             .keys
             .into_iter()
-            .map(|(kind, name)| writer.intern_lookup(kind, 0, &name))
+            .map(|(kind, name)| {
+                if kind == LookupKind::FunctionName {
+                    writer.intern_function_name(&name)
+                } else {
+                    writer.intern_lookup(kind, 0, &name)
+                }
+            })
             .collect::<Result<Vec<_>, _>>()
             .map_err(JobError::write)?;
         let memos = self.memos.take();
@@ -645,6 +678,7 @@ impl<'a> Plan<'a> {
         writer: &Writer,
         complete: bool,
         edits: impl IntoIterator<Item = &'a RequestFile>,
+        function_delta: impl Fn(&str, [u8; 32]) -> Option<String>,
     ) -> Result<Self, JobError> {
         let _timer = Timer::start("incremental.plan");
         let current = corpus.sizes;
@@ -656,6 +690,7 @@ impl<'a> Plan<'a> {
         let is_basic =
             |path: &str| Language::get(path, &corpus.request.languages) == Some(Language::Basic);
         let mut surfaces = Vec::new();
+        let mut functions = Vec::new();
         let mut reusable = HashMap::new();
         for file in edits {
             let path = file.path.as_str();
@@ -689,7 +724,11 @@ impl<'a> Plan<'a> {
                 if let Some(sites) = rows.signature.positions(&signature) {
                     reusable.insert(path, (rows, signature, sites));
                 } else if !rows.signature.same_surface(&signature) {
-                    surfaces.push(path);
+                    if let Some(name) = function_delta(path, old.hash) {
+                        functions.push((path, old.key, name));
+                    } else {
+                        surfaces.push(path);
+                    }
                 }
             }
         }
@@ -706,8 +745,18 @@ impl<'a> Plan<'a> {
             }
             let topology =
                 !removed.is_empty() || edited.iter().any(|path| prior.file(path).is_none());
+            let mut named_reads = Vec::new();
+            for (path, file, name) in functions {
+                if topology {
+                    surfaces.push(path);
+                } else if let Some(key) = writer.function_read(&name).map_err(JobError::write)? {
+                    named_reads.push((path, file, key));
+                }
+            }
             if !topology {
-                writer.restrict_read_index_to_surfaces();
+                writer.restrict_read_index_to_surfaces(
+                    named_reads.iter().map(|&(_, _, id)| id).collect(),
+                );
             }
             let mut frontier: VecDeque<_> = surfaces
                 .iter()
@@ -732,6 +781,27 @@ impl<'a> Plan<'a> {
                         }
                     }
                     _ => {}
+                }
+            }
+            for (path, file, key) in named_reads {
+                let readers = writer.readers_of(key).map_err(JobError::write)?;
+                if readers.is_empty() {
+                    continue;
+                }
+                // Spelling IDs are shared across files. Keep readers that
+                // also read this file, including its own heritage or context.
+                let files: HashSet<_> = writer
+                    .readers_of(ReadId::file(file))
+                    .map_err(JobError::write)?
+                    .iter()
+                    .copied()
+                    .collect();
+                let ecma = Language::get(path, &corpus.request.languages) == Some(Language::Ecma);
+                for &reader in readers {
+                    if reader == file || files.contains(&reader) {
+                        frontier.push_back(reader);
+                        ts_dispatch |= ecma;
+                    }
                 }
             }
             for name in csharp_types {

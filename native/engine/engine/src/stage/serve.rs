@@ -325,7 +325,21 @@ impl Session {
                 modules: Some(modules),
                 identities: None,
             };
-            let plan = Plan::new(&corpus, &prior, &writer, false, inputs.iter().copied())?;
+            let function_delta = |path: &str, hash| {
+                let old = self.decoder.borrow_mut().unpack(self.facts.get(path)?)?;
+                if old.content_hash != hash {
+                    return None;
+                }
+                super::edit_facts::function_delta(&old, changed.get(path)?)
+            };
+            let plan = Plan::new(
+                &corpus,
+                &prior,
+                &writer,
+                false,
+                inputs.iter().copied(),
+                function_delta,
+            )?;
             if loader.over_budget() || plan.resolution_count() > MAX_RESIDENT_ORIGINS {
                 false
             } else {

@@ -106,6 +106,7 @@ impl<'a> Resolver<'a, '_> {
         require: bool,
         depth: usize,
     ) -> Lookup {
+        self.files.name(file, name);
         let model = self.model(file);
         if let Some(entries) = model
             .exports

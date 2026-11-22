@@ -533,6 +533,7 @@ impl<'a> Resolver<'a> {
         if depth > MAX_DEPTH {
             return Value::Unknown("depth_limit");
         }
+        self.files.name(file, name);
         for s in self.scope_chain(file, scope) {
             if let Some(sym) = self.tables(file).scopes.get(&s).and_then(|m| m.get(name)) {
                 return self.sym_value(file, s, sym, depth);
@@ -672,6 +673,7 @@ impl<'a> Resolver<'a> {
         if depth > MAX_DEPTH {
             return Value::Unknown("depth_limit");
         }
+        self.files.name(module, name);
         if let Some(sym) = self.tables(module).scopes.get(&0).and_then(|m| m.get(name)) {
             let v = self.sym_value(module, 0, sym, depth);
             if !matches!(v, Value::Unknown("external_module")) {

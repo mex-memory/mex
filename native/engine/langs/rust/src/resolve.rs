@@ -438,6 +438,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn child(&self, owner: DefRef, name: &str, accept: &impl Fn(&Def) -> bool) -> Target {
+        if owner.1 == 0 {
+            self.index.facts.name(owner.0, name);
+        }
         unique(
             self.index
                 .children(owner)

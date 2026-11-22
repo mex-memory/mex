@@ -104,17 +104,22 @@ pub(crate) fn write(
             .and_then(FactsCache::reader)
             .zip(ResidentDecoder::new(64 * 1024 * 1024)),
     );
+    let cached_facts = |path: &str, hash| {
+        let (language, version) = request_facts_key(path, &request.languages)?;
+        let mut cache = reader.borrow_mut();
+        let (reader, decoder) = cache.as_mut()?;
+        decoder.unpack(&reader.pin(path, language, version, hash)?)
+    };
     let reextracted_new = RefCell::new(HashSet::new());
     let load = |input: &RequestFile| {
         if let Some(facts) = changed.get(&input.path) {
             return Ok(incremental::activate(facts.clone(), &enabled));
         }
         let cached = timing::measure("worker.cacheRead", || {
-            let (language, version) = request_facts_key(&input.path, &request.languages)?;
-            let hash = input.content_hash.as_deref().and_then(decode_hash)?;
-            let mut cache = reader.borrow_mut();
-            let (reader, decoder) = cache.as_mut()?;
-            decoder.unpack(&reader.pin(&input.path, language, version, hash)?)
+            cached_facts(
+                &input.path,
+                input.content_hash.as_deref().and_then(decode_hash)?,
+            )
         });
         if let Some(facts) = cached {
             return Ok(incremental::activate(facts, &enabled));
@@ -143,12 +148,19 @@ pub(crate) fn write(
             modules: None,
             identities: None,
         };
-        Plan::new(&corpus, &prior, &writer, complete, inputs.iter().copied())?.write(
+        let function_delta = |path: &str, hash| {
+            let old = cached_facts(path, hash)?;
+            super::edit_facts::function_delta(&old, changed.get(path)?)
+        };
+        Plan::new(
             &corpus,
-            &mut writer,
-            &enabled,
             &prior,
-        )?;
+            &writer,
+            complete,
+            inputs.iter().copied(),
+            function_delta,
+        )?
+        .write(&corpus, &mut writer, &enabled, &prior)?;
     }
     loader.finish()?;
     let additional = reextracted_new.into_inner();

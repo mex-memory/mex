@@ -288,7 +288,7 @@ type Language = "ts" | "py" | "rs";
 
 function fixture(language: Language, state: {
   prepend: number; calls: number; renamed: boolean; exported: boolean; extra: boolean; forwarded: boolean;
-  secondImport: boolean; wiringOffset: number;
+  secondImport: boolean; wiringOffset: number; addedFunction: boolean;
 }): Record<string, string | undefined> {
   const name = state.renamed ? "renamed" : "handler";
   const other = state.forwarded ? "another" : name;
@@ -296,29 +296,32 @@ function fixture(language: Language, state: {
   const positions = (language === "py" ? "# shift\n" : "// shift\n").repeat(state.prepend);
   const calls = Array.from({ length: state.calls }, () => `${call}${name}()`).join("\n");
   if (language === "ts") return {
-    "leaf.ts": `${positions}${state.exported ? "export " : ""}function ${name}() { return 73; }\nexport function another() { return 12; }\nexport function local() {\n${calls}\n  return ${name}();\n}\n`,
-    "barrel.ts": state.forwarded
+    "leaf.ts": `${positions}${state.exported ? "export " : ""}function ${name}() { return 73; }\nexport function another() { return 12; }\nexport function local() {\n${calls}\n  return ${name}();\n}\n`
+      + (state.addedFunction ? "export function late() { return 32; }\n" : ""),
+    "barrel.ts": (state.forwarded
       ? `export { another as run } from './leaf';\n`
-      : `export { ${name} as run } from './leaf';\nexport * from './leaf';\n`,
-    "caller.ts": `${"// moved callback\n".repeat(state.wiringOffset)}import { run } from '${state.secondImport ? "./second" : "./barrel"}';\nimport { relay, callback } from './wiring';\nexport function use() {\n  return run();\n}\nrelay(callback);\n`,
+      : `export { ${name} as run } from './leaf';\nexport * from './leaf';\n`) + "export { late as pending } from './leaf';\n",
+    "caller.ts": `${"// moved callback\n".repeat(state.wiringOffset)}import { run, pending } from '${state.secondImport ? "./second" : "./barrel"}';\nimport { relay, callback } from './wiring';\nexport function use() {\n  pending();\n  return run();\n}\nrelay(callback);\n`,
     "wiring.ts": "export function relay(fn: () => void) { fn(); }\nexport function callback() { return 31; }\n",
     "second.ts": "export * from './barrel';\n",
     "extra.ts": state.extra ? "export { run } from './barrel';\n" : undefined,
     "missing.ts": "import { run } from './extra';\nexport function test() { run(); }\n",
-    "wiring-again.ts": "import { relay, callback } from './wiring';\n\n\n\n\nrelay(callback);\n",
+    "wiring-again.ts": "import { relay, callback } from './wiring';\nimport { pending } from './barrel';\npending();\n\n\nrelay(callback);\n",
   };
   if (language === "py") return {
-    "leaf.py": `${positions}def ${name}():\n    return 73\n\ndef another():\n    return 12\n\ndef local():\n${calls}\n    return ${name}()\n`,
-    "__init__.py": `${state.exported ? `from .leaf import ${other} as run\n` : ""}`,
-    "caller.py": `from ${state.secondImport ? ".second" : "."} import run\ndef use():\n    return run()\n`,
+    "leaf.py": `${positions}def ${name}():\n    return 73\n\ndef another():\n    return 12\n\ndef local():\n${calls}\n    return ${name}()\n`
+      + (state.addedFunction ? "\ndef late():\n    return 32\n" : ""),
+    "__init__.py": `${state.exported ? `from .leaf import ${other} as run\n` : ""}from .leaf import late as pending\n`,
+    "caller.py": `from ${state.secondImport ? ".second" : "."} import run\nfrom . import pending\ndef use():\n    pending()\n    return run()\n`,
     "second.py": "from . import run\n",
     "extra.py": state.extra ? "from . import run\n" : undefined,
     "missing.py": "from .extra import run\ndef test():\n    run()\n",
   };
   return {
-    "leaf.rs": `${positions}${state.exported ? "pub " : ""}fn ${name}() -> u32 { 73 }\npub fn another() -> u32 { 12 }\npub fn local() -> u32 {\n${calls.replaceAll("()", "();")}\n  ${name}()\n}\n`,
-    "lib.rs": `mod leaf;\npub use crate::leaf::${other} as run;\nmod caller;\nmod extra;\nmod missing;\n`,
-    "caller.rs": "use crate::run;\npub fn call() -> u32 { run() }\n",
+    "leaf.rs": `${positions}${state.exported ? "pub " : ""}fn ${name}() -> u32 { 73 }\npub fn another() -> u32 { 12 }\npub fn local() -> u32 {\n${calls.replaceAll("()", "();")}\n  ${name}()\n}\n`
+      + (state.addedFunction ? "pub fn late() -> u32 { 32 }\n" : ""),
+    "lib.rs": `mod leaf;\npub use crate::leaf::${other} as run;\npub use crate::leaf::late as pending;\nmod caller;\nmod extra;\nmod missing;\n`,
+    "caller.rs": "use crate::run;\nuse crate::pending;\npub fn call() -> u32 { pending(); run() }\n",
     "extra.rs": state.extra ? "pub use crate::leaf::another as run;\n" : undefined,
     "missing.rs": "pub fn test() -> u32 { crate::extra::run() }\n",
   };
@@ -328,7 +331,7 @@ function mixedEdits(root: string, language: Language, random?: number): ReplayEd
   const folder = "mex_edit_fixture";
   const state = {
     prepend: 0, calls: 0, renamed: false, exported: true, extra: false, forwarded: false,
-    secondImport: false, wiringOffset: 0,
+    secondImport: false, wiringOffset: 0, addedFunction: false,
   };
   const render = () => {
     mkdirSync(join(root, folder), { recursive: true });
@@ -340,6 +343,7 @@ function mixedEdits(root: string, language: Language, random?: number): ReplayEd
   };
   const paths = Object.keys(fixture(language, state)).map(file => `${folder}/${file}`);
   const edit = (label: string, change: () => void) => ({ label, paths, apply() { change(); render(); } });
+  const toggleFunction = edit("toggle a referenced export", () => { state.addedFunction = !state.addedFunction; });
   const toggles = [
     edit("prepend a line", () => { state.prepend = (state.prepend + 1) % 9; }),
     edit("insert a call", () => { state.calls++; }),
@@ -358,6 +362,7 @@ function mixedEdits(root: string, language: Language, random?: number): ReplayEd
       return seed >>> 0;
     };
     toggles.push(edit("redirect importer", () => { state.secondImport = !state.secondImport; }));
+    toggles.push(toggleFunction);
     return Array.from({ length: steps }, () => toggles[next() % toggles.length]!);
   }
   return [
@@ -366,6 +371,8 @@ function mixedEdits(root: string, language: Language, random?: number): ReplayEd
     { ...toggles[5]!, label: "add extra file" },
     { ...toggles[5]!, label: "delete extra file" },
     toggles[6]!,
+    { ...toggleFunction, label: "add a referenced export" },
+    { ...toggleFunction, label: "remove a referenced export" },
     ...(language === "ts" ? [edit("move a colliding callback site", () => { state.wiringOffset++; })] : []),
   ];
 }

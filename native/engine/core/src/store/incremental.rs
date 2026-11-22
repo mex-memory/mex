@@ -82,18 +82,24 @@ CREATE TABLE resolution_paths (
 ) STRICT;
 ";
 
-/// The low bit distinguishes a lookup from a file; the remaining bits are
-/// the immutable row ID in its respective table.
+/// The high tag marks a function spelling. For other reads, the low bit
+/// distinguishes a lookup from a file. The payload is the immutable row ID.
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReadId(u64);
 
 impl ReadId {
+    const FUNCTION_NAME: u64 = 1 << 62;
+
     pub fn file(file: i64) -> Self {
         Self((file as u64) << 1)
     }
 
     fn lookup(key: i64) -> Self {
         Self((key as u64) << 1 | 1)
+    }
+
+    fn function_name(name: i64) -> Self {
+        Self(Self::FUNCTION_NAME | name as u64)
     }
 }
 
@@ -102,7 +108,7 @@ pub(super) struct Dependencies {
     names: RefCell<HashMap<String, i64>>,
     lookups: RefCell<HashMap<(LookupKind, i64, i64), ReadId>>,
     readers: OnceCell<HashMap<ReadId, Vec<i64>>>,
-    surface_reads_only: Cell<bool>,
+    surface_reads: RefCell<Option<HashSet<ReadId>>>,
     last_lookup: Cell<i64>,
 }
 
@@ -362,27 +368,29 @@ impl Writer {
         sql
     }
 
-    /// Surface-only edits can skip lookups that only change on topology edits.
-    pub fn restrict_read_index_to_surfaces(&self) {
+    /// Surface-only edits keep only lookup keys that could change in this edit.
+    pub fn restrict_read_index_to_surfaces(&self, named: HashSet<ReadId>) {
         debug_assert!(self.dependencies.readers.get().is_none());
-        self.dependencies.surface_reads_only.set(true);
+        self.dependencies.surface_reads.replace(Some(named));
     }
 
-    fn surface_keys(&self) -> rusqlite::Result<HashSet<ReadId>> {
-        self.conn
-            .prepare_cached(
-                "SELECT id FROM base.resolution_keys WHERE kind IN (?1, ?2, ?3)
+    fn surface_keys(&self) -> rusqlite::Result<Option<HashSet<ReadId>>> {
+        let Some(mut keys) = self.dependencies.surface_reads.take() else {
+            return Ok(None);
+        };
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id FROM base.resolution_keys WHERE kind IN (?1, ?2, ?3)
              UNION ALL SELECT id FROM main.resolution_keys WHERE kind IN (?1, ?2, ?3)",
-            )?
-            .query_map(
-                params![
-                    LookupKind::CSharpType as u8,
-                    LookupKind::TsHeritage as u8,
-                    LookupKind::TsDispatch as u8
-                ],
-                |row| Ok(ReadId::lookup(row.get(0)?)),
-            )?
-            .collect()
+        )?;
+        let mut rows = stmt.query(params![
+            LookupKind::CSharpType as u8,
+            LookupKind::TsHeritage as u8,
+            LookupKind::TsDispatch as u8
+        ])?;
+        while let Some(row) = rows.next()? {
+            keys.insert(ReadId::lookup(row.get(0)?));
+        }
+        Ok(Some(keys))
     }
 
     fn read_index(&self) -> rusqlite::Result<&HashMap<ReadId, Vec<i64>>> {
@@ -390,12 +398,7 @@ impl Writer {
             return Ok(index);
         }
         let _timer = crate::timing::Timer::start("incremental.reverseReads");
-        let surface_keys = self
-            .dependencies
-            .surface_reads_only
-            .get()
-            .then(|| self.surface_keys())
-            .transpose()?;
+        let surface_keys = self.surface_keys()?;
         let mut index: HashMap<_, Vec<_>> = HashMap::new();
         let sql = self.prior_sql("resolution_reads", "origin, reads", "1");
         let mut statement = self.conn.prepare_cached(&sql)?;
@@ -407,7 +410,14 @@ impl Writer {
             while !bytes.is_empty() {
                 id = next_read(&mut bytes, id)?;
                 let key = ReadId(id);
-                if id & 1 == 0 || surface_keys.as_ref().is_none_or(|keys| keys.contains(&key)) {
+                let relevant = if id & ReadId::FUNCTION_NAME != 0 {
+                    surface_keys
+                        .as_ref()
+                        .is_some_and(|keys| keys.contains(&key))
+                } else {
+                    id & 1 == 0 || surface_keys.as_ref().is_none_or(|keys| keys.contains(&key))
+                };
+                if relevant {
                     index.entry(key).or_default().push(origin);
                 }
             }
@@ -417,6 +427,14 @@ impl Writer {
 
     pub fn readers_of(&self, id: ReadId) -> rusqlite::Result<&[i64]> {
         Ok(self.read_index()?.get(&id).map_or(&[], Vec::as_slice))
+    }
+
+    pub fn intern_function_name(&self, name: &str) -> rusqlite::Result<ReadId> {
+        self.intern_name(name).map(ReadId::function_name)
+    }
+
+    pub fn function_read(&self, name: &str) -> rusqlite::Result<Option<ReadId>> {
+        Ok(self.name_key(name)?.map(ReadId::function_name))
     }
 
     pub fn lookup_readers(&self, kind: LookupKind, name: &str) -> rusqlite::Result<Vec<i64>> {

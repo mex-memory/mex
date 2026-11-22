@@ -378,7 +378,8 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
             let heritage = &facts.defs[base.def as usize].heritage[base.heritage];
             let from = (file, base.def as usize);
             let target = self
-                .eval(file, base.scope, base.expression, 0)
+                .files
+                .within(file, || self.eval(file, base.scope, base.expression, 0))
                 .and_then(|value| {
                     self.referenced(value)
                         .filter(|&target| {
@@ -649,6 +650,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
 
     fn name(&mut self, file: usize, scope: i32, name: &'a str, lane: Lane, depth: usize) -> Lookup {
         check_depth(depth)?;
+        self.files.name(file, name);
         let index = self.model(file).binding(scope, name, lane)?;
         let binding = &self.model(file).facts.bindings[index];
         let value = match def_ref(file, binding.def) {

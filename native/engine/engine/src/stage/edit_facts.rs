@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use mex_graph_core::facts::ecmascript::{ExprId, Expression, Owner, ReferenceFacts};
-use mex_graph_core::facts::{FileFacts, Kind, Range, ReferenceKind};
+use mex_graph_core::facts::{FileFacts, Kind, NONE, ParseStatus, Range, ReferenceKind};
 
 use crate::is_compiler_language;
 
@@ -65,6 +65,113 @@ impl Signature {
         }
         Some(before)
     }
+}
+
+/// Prove that the only changed declaration is a trailing, named module
+/// function. Every retained fact must agree, including its arena index.
+pub(super) fn function_delta(before: &FileFacts, after: &FileFacts) -> Option<String> {
+    let (short, long) = if before.defs.len() < after.defs.len() {
+        (before, after)
+    } else {
+        (after, before)
+    };
+    let [function] = long.defs.get(short.defs.len()..)? else {
+        return None;
+    };
+    let compiler = long.ecmascript.is_some();
+    if short.defs.first()?.kind != Kind::File
+        || short.health.status != ParseStatus::Ok
+        || function.kind != Kind::Function
+        || function.parent != 0
+        || function.scope != if compiler { NONE } else { 0 }
+        || !function.exported
+        || function.is_default_export
+        || !function.heritage.is_empty()
+        || compiler
+            && matches!(
+                function.name.as_str(),
+                "default" | "exports" | "module" | "require"
+            )
+        || !compiler && !matches!(long.language.as_str(), "python" | "rust")
+    {
+        return None;
+    }
+    let def = short.defs.len() as i32;
+    let first_scope = short.scopes.len() as i32;
+    let local_scope = |scope| scope >= first_scope && scope < long.scopes.len() as i32;
+    let mut retained = long.clone();
+    retained.content_hash = short.content_hash;
+    retained.defs[0].range = short.defs[0].range;
+    retained.defs[0].name_range = short.defs[0].name_range;
+    retained.defs.pop();
+    trim_added(&short.scopes, &mut retained.scopes, |scope| {
+        (scope.def == def && scope.parent == function.scope)
+            || (matches!(scope.def, NONE) && local_scope(scope.parent))
+    })?;
+    trim_added(&short.exports, &mut retained.exports, |export| {
+        export.def == def
+            && export.exported == function.name
+            && export
+                .local
+                .as_ref()
+                .is_none_or(|local| *local == function.name)
+            && !export.type_only
+    })?;
+    trim_added(&short.calls, &mut retained.calls, |call| call.caller == def)?;
+    trim_added(&short.bindings, &mut retained.bindings, |binding| {
+        binding.scope == def && binding.field_of.is_none()
+    })?;
+    trim_added(
+        &short.syntax_references,
+        &mut retained.syntax_references,
+        |reference| reference.from == def as usize,
+    )?;
+    if let Some(extra) = &mut retained.ecmascript {
+        let old = short.ecmascript.as_ref()?;
+        trim_added(&old.expressions, &mut extra.expressions, |_| true)?;
+        trim_added(&old.bindings, &mut extra.bindings, |binding| {
+            local_scope(binding.scope)
+                || (binding.def == def && binding.scope == NONE && binding.name == function.name)
+        })?;
+        trim_added(
+            &old.initializer_scopes,
+            &mut extra.initializer_scopes,
+            |&(index, _)| index >= old.bindings.len(),
+        )?;
+        trim_added(&old.callable_defs, &mut extra.callable_defs, |&index| {
+            index == def
+        })?;
+        trim_added(&old.signature_defs, &mut extra.signature_defs, |&index| {
+            index == def
+        })?;
+        trim_added(&old.formal_types, &mut extra.formal_types, |formal| {
+            formal.def == def
+        })?;
+        trim_added(&old.returns, &mut extra.returns, |returned| {
+            returned.def == def
+        })?;
+        trim_added(&old.references, &mut extra.references, |reference| {
+            reference.caller == def
+        })?;
+        trim_added(&old.arguments, &mut extra.arguments, |argument| {
+            argument.call >= short.calls.len()
+        })?;
+        trim_added(&old.parameter_calls, &mut extra.parameter_calls, |call| {
+            local_scope(call.scope)
+        })?;
+    }
+    // In particular, imports, framework markers, CommonJS export values and
+    // heritage evidence must agree. A new arena root for any of these can
+    // change resolution under names other than the function's name.
+    (retained == *short).then(|| function.name.clone())
+}
+
+fn trim_added<T>(before: &[T], after: &mut Vec<T>, owned: impl FnMut(&T) -> bool) -> Option<()> {
+    if !after.get(before.len()..)?.iter().all(owned) {
+        return None;
+    }
+    after.truncate(before.len());
+    Some(())
 }
 
 fn keep_surface(file: &mut FileFacts) {
