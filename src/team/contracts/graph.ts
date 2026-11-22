@@ -51,7 +51,7 @@ export interface GraphSourceChanges {
 /** What the Rust graph engine (OSS-73) built in one pass. */
 export interface GraphEngineReport {
   /** The languages it was asked to build. */
-  languages: readonly string[];
+  languages: string[];
   /** Files whose rows came from the engine. */
   files: number;
   /** Files built by Node's tree-sitter extractors after an engine fallback. */
