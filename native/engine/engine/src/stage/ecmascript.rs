@@ -56,6 +56,7 @@ impl<'a> Stage<'a> {
         let resolution = resolver.resolve(origins.iter().copied(), descendants);
         let mut imports = (0..facts.len()).map(|_| Vec::new()).collect::<Vec<_>>();
         for &file in origins {
+            facts.origin(file);
             let need_targets = !by_site
                 || facts
                     .get(file)
@@ -326,5 +327,39 @@ fn call_name(call: &Call) -> &str {
         &call.name
     } else {
         &call.text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+
+    use mex_graph_core::resolve::Access;
+    use mex_graph_ecmascript::EcmaScript;
+
+    use super::*;
+
+    #[test]
+    fn import_projection_does_not_record_unrelated_origins() {
+        let paths = ["a.ts", "b.ts"];
+        let mut parser = EcmaScript::new();
+        let files = paths.map(|path| parser.extract(path, "export const answer = 42;", [0; 32]));
+        let origin = Cell::new(None);
+        let foreign_reads = RefCell::new(Vec::new());
+        let observe = |event: Access<'_>| match event {
+            Access::Origin(index) => origin.set(Some(index)),
+            Access::File(index) if origin.get() != Some(index) => {
+                foreign_reads.borrow_mut().push((origin.get(), index));
+            }
+            _ => {}
+        };
+        let facts = Files::Lazy {
+            paths: &paths,
+            load: &|index| &files[index],
+            observe: &observe,
+        };
+        let modules = ModuleResolver::new(paths, []);
+        Stage::resolve(facts, &modules, None, &[0, 1], |_| Vec::new(), true);
+        assert!(foreign_reads.into_inner().is_empty());
     }
 }

@@ -475,10 +475,10 @@ enum Adapter {
 
 const FRAMEWORK_CAPTURE_VERSION: u32 = 1;
 
-/// Bump the prefix when persisted projection or digest semantics change.
+/// Bump the prefix when persisted projection, dependency or digest semantics change.
 pub(super) fn refresh_format() -> String {
     format!(
-        "3:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
+        "4:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
         mex_graph_python::ADAPTER_VERSION,
         mex_graph_ecmascript::ADAPTER_VERSION,
         mex_graph_rust::ADAPTER_VERSION,
