@@ -263,38 +263,42 @@ fn next_frame(
 
 fn verify(root: &Path, pending: &Pending, stamps: &[Stamp]) -> bool {
     let files = pending.files();
-    // Metadata reads are independent. Split the large, stable part of the
-    // corpus into a few disjoint batches; no source text is opened here.
+    let count = files.len() + stamps.len();
+    let batch = count.div_ceil(8).max(64);
+    // File, directory and rule checks share a bounded set of workers.
+    // Metadata reads are independent and no source text is opened here.
     std::thread::scope(|scope| {
-        let workers: Vec<_> = files
-            .chunks(files.len().div_ceil(8).max(1))
-            .map(|files| {
+        let workers: Vec<_> = (0..count)
+            .step_by(batch)
+            .map(|start| {
                 scope.spawn(move || {
-                    files.iter().all(|file| {
-                        file.source_identity
+                    (start..count.min(start + batch)).all(|index| match files.get(index) {
+                        Some(file) => file
+                            .source_identity
                             .as_deref()
-                            .is_some_and(|stamp| stamp_matches(root, &file.path, stamp, false))
+                            .is_some_and(|stamp| stamp_matches(root, &file.path, stamp, false)),
+                        None => verify_stamp(root, &stamps[index - files.len()]),
                     })
                 })
             })
             .collect();
-        let matches = stamps.iter().all(|entry| {
-            (entry.path == "." && entry.directory || repository_path(&entry.path))
-                && match &entry.identity {
-                    Some(identity) => stamp_matches(root, &entry.path, identity, entry.directory),
-                    None => std::fs::symlink_metadata(root.join(&entry.path)).is_err_and(|error| {
-                        matches!(
-                            error.kind(),
-                            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                        )
-                    }),
-                }
-        });
         workers
             .into_iter()
             .all(|worker| worker.join().unwrap_or(false))
-            && matches
     })
+}
+
+fn verify_stamp(root: &Path, entry: &Stamp) -> bool {
+    (entry.path == "." && entry.directory || repository_path(&entry.path))
+        && match &entry.identity {
+            Some(identity) => stamp_matches(root, &entry.path, identity, entry.directory),
+            None => std::fs::symlink_metadata(root.join(&entry.path)).is_err_and(|error| {
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                )
+            }),
+        }
 }
 
 #[cfg(unix)]
