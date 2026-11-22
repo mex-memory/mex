@@ -196,7 +196,8 @@ fn write_file_rows(
     for reference in &file.unresolved {
         writer.add_unresolved(&UnresolvedRow {
             source: nodes[reference.from_node_id],
-            name: reference.reference_name,
+            name: reference.called_name.unwrap_or(reference.reference_name),
+            written_name: reference.called_name.map(|_| reference.reference_name),
             kind: reference.reference_kind,
             reason: reference.metadata["reason"].as_str().unwrap_or("unknown"),
             line: reference.line,

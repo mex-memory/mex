@@ -105,6 +105,7 @@ impl<'a> Stage<'a> {
                 json!({ "reason": reason, "expression": call.text }),
             );
             if let Some(reference) = &mut reference {
+                reference.called_name = Some(&call.name);
                 reference.candidate_id = candidate.and_then(|node| self.id(node));
             }
             file.unresolved.extend(reference);
@@ -196,6 +197,7 @@ impl<'a> Stage<'a> {
         Some(StagedRef {
             from_node_id: self.id(source)?,
             reference_name: name,
+            called_name: None,
             reference_kind: kind,
             file_path: &facts.path,
             language: &facts.language,

@@ -93,7 +93,8 @@ CREATE TABLE unresolved_calls (
     line      INTEGER NOT NULL CHECK(line > 0),
     col       INTEGER NOT NULL CHECK(col >= 0),
     candidate INTEGER REFERENCES nodes(id),
-    receiver  INTEGER REFERENCES unresolved_names(id)
+    receiver  INTEGER REFERENCES unresolved_names(id),
+    written_name INTEGER REFERENCES unresolved_names(id) -- only if the legacy display spelling differs
 ) STRICT;
 
 -- The existing exact-name fallback also reports unresolved imports and bases.

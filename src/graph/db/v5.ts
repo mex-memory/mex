@@ -48,7 +48,7 @@ export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
     nodes: "id public_id kind file parent name qualified_name start_line start_col end_line end_col signature flags body_hash docstring visibility return_type",
     node_attributes: "node kind position value",
     edges: "source kind target line col site_file provenance confidence method target_name detail_kind detail argument sequence",
-    unresolved_calls: "id source name kind reason line col candidate receiver",
+    unresolved_calls: "id source name kind reason line col candidate receiver written_name",
     unresolved_other: "id source name kind reason line col",
     fingerprints: "node minhash token_count",
     fingerprint_neighbours: "node neighbour",
@@ -90,7 +90,7 @@ export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
     files: "language:languages", file_diagnostics: "file:files",
     nodes: "file:files kind:node_kinds parent:nodes", node_attributes: "node:nodes",
     edges: "source:nodes target:nodes kind:edge_kinds site_file:files provenance:provenances method:resolution_methods",
-    unresolved_calls: "source:nodes candidate:nodes name:unresolved_names receiver:unresolved_names kind:edge_kinds reason:unresolved_reasons",
+    unresolved_calls: "source:nodes candidate:nodes name:unresolved_names receiver:unresolved_names written_name:unresolved_names kind:edge_kinds reason:unresolved_reasons",
     unresolved_other: "source:nodes name:unresolved_names kind:edge_kinds reason:unresolved_reasons",
     fingerprints: "node:nodes", fingerprint_neighbours: "node:fingerprints neighbour:nodes",
     aliases: "old_kind:node_kinds node:nodes", source_chunks: "file:files",
@@ -103,7 +103,8 @@ export function inspectV5GraphSchema(db: SqliteDatabase): string[] {
   for (const [name, table] of Object.entries({
     nodes_file_line: "nodes", nodes_name: "nodes", nodes_lower_name: "nodes", nodes_parent: "nodes",
     edges_target: "edges", unresolved_calls_name: "unresolved_calls", unresolved_calls_candidate: "unresolved_calls",
-    unresolved_calls_source: "unresolved_calls", unresolved_other_name: "unresolved_other",
+    unresolved_calls_written_name: "unresolved_calls", unresolved_calls_source: "unresolved_calls",
+    unresolved_other_name: "unresolved_other",
     aliases_node: "aliases", grounded_body_hash: "_mex_grounded_source", source_chunks_file: "source_chunks",
   })) {
     if ((index.get(name) as { tbl_name: string } | undefined)?.tbl_name !== table) failures.push(`missing index ${name}`);
@@ -260,7 +261,7 @@ WHERE f.path NOT IN (SELECT path FROM temp.graph_uncovered);
 
 CREATE TEMP VIEW unresolved_refs AS
 WITH refs AS (
-  SELECT id, source, name, kind, reason, line, col, candidate, receiver FROM main.unresolved_calls
+  SELECT id, source, coalesce(written_name, name) AS name, kind, reason, line, col, candidate, receiver FROM main.unresolved_calls
   UNION ALL
   SELECT -id, source, name, kind, reason, line, col, NULL, NULL FROM main.unresolved_other
 )

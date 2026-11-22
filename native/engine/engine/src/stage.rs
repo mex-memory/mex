@@ -107,6 +107,7 @@ fn project(
                 file.unresolved.push(StagedRef {
                     from_node_id: id,
                     reference_name: &call.name,
+                    called_name: Some(&call.name),
                     reference_kind: "calls",
                     file_path: &facts.path,
                     language: LANGUAGE,
@@ -386,6 +387,8 @@ struct StagedEdgeMetadata<'a> {
 struct StagedRef<'a> {
     from_node_id: &'a str,
     reference_name: &'a str,
+    #[serde(skip)]
+    called_name: Option<&'a str>,
     reference_kind: &'static str,
     file_path: &'a str,
     language: &'a str,

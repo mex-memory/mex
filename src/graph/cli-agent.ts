@@ -2946,12 +2946,25 @@ function potentialCallSites(db: SqliteDatabase, node: GraphNode, limit: number):
   ).all(node.name, key, limit) as UnresolvedCallSite[];
 }
 
+// Keep the legacy exact written-spelling lookup indexed. Symbol-level checks
+// use the called name instead, so obj["method"] can still be a caller of method.
+const V5_UNRESOLVED_SPELLING = `id IN (
+  SELECT id FROM main.unresolved_calls
+    WHERE name = (SELECT id FROM main.unresolved_names WHERE name = ?) AND written_name IS NULL
+  UNION ALL
+  SELECT id FROM main.unresolved_calls
+    WHERE written_name = (SELECT id FROM main.unresolved_names WHERE name = ?)
+  UNION ALL
+  SELECT -id FROM main.unresolved_other WHERE name = (SELECT id FROM main.unresolved_names WHERE name = ?)
+)`;
+
 /** Total matching call sites, so the summary can report what it capped. */
 function unresolvedCallSiteCount(db: SqliteDatabase, name: string): number {
+  const native = readsV5Graph(db);
   const row = db.prepare(
     `SELECT COUNT(*) AS total FROM unresolved_refs
-      WHERE reference_name = ? AND status <> 'resolved'`,
-  ).get(name) as { total?: unknown } | undefined;
+      WHERE ${native ? V5_UNRESOLVED_SPELLING : "reference_name = ? AND status <> 'resolved'"}`,
+  ).get(...(native ? [name, name, name] : [name])) as { total?: unknown } | undefined;
   return typeof row?.total === "number" ? row.total : 0;
 }
 
@@ -2961,15 +2974,15 @@ function unresolvedCallSites(
   name: string,
   limit: number,
 ): UnresolvedCallSite[] {
-  const candidateColumn = readsV5Graph(db) ? ", candidate_id" : "";
+  const native = readsV5Graph(db);
   return db.prepare(
     `SELECT reference_name, reference_kind, status, file_path, line, col,
-            from_node_id, receiver, qualifier${candidateColumn}
+            from_node_id, receiver, qualifier${native ? ", candidate_id" : ""}
        FROM unresolved_refs
-      WHERE reference_name = ? AND status <> 'resolved'
+      WHERE ${native ? V5_UNRESOLVED_SPELLING : "reference_name = ? AND status <> 'resolved'"}
       ORDER BY file_path, line, col, from_node_id
       LIMIT ?`,
-  ).all(name, Math.max(0, limit)) as UnresolvedCallSite[];
+  ).all(...(native ? [name, name, name] : [name]), Math.max(0, limit)) as UnresolvedCallSite[];
 }
 
 /**

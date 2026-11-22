@@ -18,6 +18,7 @@ CREATE INDEX nodes_lower_name ON nodes(lower(name));
 CREATE INDEX nodes_parent ON nodes(parent) WHERE parent IS NOT NULL;
 CREATE INDEX edges_target ON edges(target, kind);
 CREATE INDEX unresolved_calls_name ON unresolved_calls(name);
+CREATE INDEX unresolved_calls_written_name ON unresolved_calls(written_name) WHERE written_name IS NOT NULL;
 CREATE INDEX unresolved_calls_candidate ON unresolved_calls(candidate) WHERE candidate IS NOT NULL;
 CREATE INDEX unresolved_calls_source ON unresolved_calls(source);
 CREATE INDEX unresolved_other_name ON unresolved_other(name);
@@ -115,6 +116,7 @@ pub struct UnresolvedRow<'a> {
     pub col: u32,
     pub candidate: Option<i64>,
     pub receiver: Option<&'a str>,
+    pub written_name: Option<&'a str>,
 }
 
 /// Provenance observed by the parent under its maintenance lease. The child
@@ -329,10 +331,15 @@ impl Writer {
                 .receiver
                 .map(|name| self.code(Code::Name, name))
                 .transpose()?;
+            let written_name = row
+                .written_name
+                .filter(|written| *written != row.name)
+                .map(|name| self.code(Code::Name, name))
+                .transpose()?;
             self.conn.prepare_cached(
-                "INSERT INTO unresolved_calls(source, name, kind, reason, line, col, candidate, receiver)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )?.execute(params![row.source, name, kind, reason, row.line, row.col, row.candidate, receiver])?;
+                "INSERT INTO unresolved_calls(source, name, kind, reason, line, col, candidate, receiver, written_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?.execute(params![row.source, name, kind, reason, row.line, row.col, row.candidate, receiver, written_name])?;
         } else {
             self.conn.prepare_cached(
                 "INSERT INTO unresolved_other(source, name, kind, reason, line, col) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

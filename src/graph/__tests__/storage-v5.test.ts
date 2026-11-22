@@ -146,13 +146,16 @@ describe.skipIf(!engineBinary)("schema v5 with the Rust writer", () => {
     }));
     expect((await query(root, "who-calls", quiet)).at(-1)).toMatchObject({ type: "summary", status: "no-match" });
 
-    appendFileSync(file, "\nclass Other implements Worker { work() { return 99; } }\n");
+    appendFileSync(file, '\nclass Other implements Worker { work() { return 99; } }\nunknown["untouched"]();\n');
     await refreshGraph(root);
     const calls = await query(root, "who-calls", work);
     const dispatch = calls.find(record => record.type === "unresolved-reference");
     expect(dispatch).toMatchObject({ target: work, name: "work" });
     expect(dispatch).not.toHaveProperty("candidate");
     expect(calls.at(-1)).toMatchObject({ type: "summary", status: "partial" });
+    expect(await query(root, "who-calls", quiet)).toContainEqual(expect.objectContaining({
+      type: "unresolved-reference", name: 'unknown["untouched"]', target: quiet,
+    }));
   });
 
   it("finds a Python candidate even when the call site uses a different name", async () => {
