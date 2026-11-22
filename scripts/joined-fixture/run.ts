@@ -5,12 +5,13 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { propose, type Proposal } from "../../src/knowledge/gate.js";
 import { openHooksReadOnly, openRecordReadOnly } from "../../src/record/index.js";
+import { checkAccepted, checkCard as cardCheck, checkKept, checkProbe, checkReceipt, checkSetupJobs, requireJoin, type Receipt, type SetupJob } from "./joins.js";
 
 // TODO: Enable both required graph read checks when graph reads merge.
 const GRAPH_READS_MERGED = false;
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const cli = join(repo, "dist", "cli.js");
-const binary = resolve(process.env.MEX_HOOK_BINARY ?? join(repo, "native", ".scratch", process.platform === "win32" ? "mex-hook.exe" : "mex-hook"));
+const binary = resolve(process.env.MEX_HOOK_BINARY || join(repo, "native", ".scratch", process.platform === "win32" ? "mex-hook.exe" : "mex-hook"));
 const file = "src/widget.ts";
 const caller = "src/caller.ts";
 const symbol = "makeWidget";
@@ -59,10 +60,6 @@ function run(command: string, args: string[], options: { payload?: object; captu
 const mex = (...args: string[]) => run(process.execPath, [cli, ...args]);
 const json = (...args: string[]) => JSON.parse(mex(...args));
 
-function requireJoin(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
-
 async function step<T>(name: string, action: () => T | Promise<T>): Promise<T> {
   try {
     const result = await action();
@@ -74,7 +71,7 @@ async function step<T>(name: string, action: () => T | Promise<T>): Promise<T> {
 }
 
 // Setup v2 will replace this read with readSetupSteps.
-function readSetupJobs(): Array<{ kind: string; state: string; reason: string | null }> {
+function readSetupJobs(): SetupJob[] {
   return json("jobs", "--json").jobs;
 }
 
@@ -109,8 +106,6 @@ function replay(agent: Agent, session: string, capture = false): string {
   return hook(agent, "PostToolUse", searchPayload(agent, session), capture);
 }
 
-interface Receipt { entry_id: string; surface: string; action: string; block_id: string; form: string; }
-
 // The Sessions API can read this ledger through the same read-only record port.
 function readReceipts(project: string, session: string): Receipt[] {
   const record = openHooksReadOnly({ home });
@@ -121,15 +116,7 @@ function readReceipts(project: string, session: string): Receipt[] {
   } finally { record?.close(); }
 }
 
-function checkCard(context: string, agent: Agent, surface: string, body: string) {
-  requireJoin(context.includes(`${file}:`) && context.includes(symbol) && context.includes(body),
-    `${agent} sent no ${surface} card for ${symbol}`);
-}
-
-function checkReceipt(context: string, receipts: Receipt[], agent: Agent, surface: string) {
-  requireJoin(receipts.some(row => row.action === "given" && row.surface === surface && row.block_id && context.includes(`[mex ${row.block_id}]`)),
-    `${agent} has no ${surface} receipt for the delivered block`);
-}
+const checkCard = (context: string, agent: Agent, surface: string, body: string) => cardCheck(context, agent, surface, file, symbol, body);
 
 function submit(key: string, checks: NonNullable<Proposal["checks"]>, text = claim, kind: Proposal["kind"] = "pitfall") {
   return propose([{
@@ -150,11 +137,7 @@ async function main() {
     run("git", ["add", "--", file, caller]);
     run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Create fixture"]);
     mex();
-    const jobs = readSetupJobs();
-    for (const kind of ["file-index", "code-facts"]) {
-      const row = jobs.find(job => job.kind === kind);
-      requireJoin(row?.state === "done", `bare mex did not finish its ${kind} job (${row?.state ?? "missing"}${row?.reason ? `: ${row.reason}` : ""})`);
-    }
+    checkSetupJobs(readSetupJobs(), ["file-index", "code-facts"]);
     return readProject();
   });
 
@@ -172,17 +155,17 @@ async function main() {
 
   const entry = await step("join 3→4 producer gate and store", async () => {
     const [result] = await submit("joined-symbol", [{ kind: "symbol", role: "complete", target: { file, symbol } }]);
-    requireJoin(result?.status === "accepted", `the gate did not accept the symbol proposal: ${JSON.stringify(result)}`);
+    const id = checkAccepted(result, "symbol");
     const check = json("check", "--json");
-    requireJoin(check.entries?.some((row: { id: string; one_line: string; verdict: string }) => row.id === result.entryId && row.one_line === claim && row.verdict === "held"),
-      `entry ${result.entryId} did not land with a held verdict`);
-    return result.entryId;
+    requireJoin(check.entries?.some((row: { id: string; one_line: string; verdict: string }) => row.id === id && row.one_line === claim && row.verdict === "held"),
+      `entry ${id} did not land with a held verdict`);
+    return id;
   });
 
   if (GRAPH_READS_MERGED) {
     await step("join 3→4 relation-check", async () => {
       const [result] = await submit("joined-relation", [{ kind: "relation", role: "complete", target: { query: "imports", from: caller, to: file }, saw: { count: 1 } }], "The caller depends on the widget module.");
-      requireJoin(result?.status === "accepted", `the gate did not accept the relation proposal: ${JSON.stringify(result)}`);
+      checkAccepted(result, "relation");
     });
   } else console.log("SKIP relation-check (pending: graph reads not merged)");
 
@@ -199,10 +182,7 @@ async function main() {
   });
 
   await step("join 4→6 search-span card", () => {
-    for (const { agent, context } of fresh) {
-      requireJoin(context, `${agent} returned no context for ${symbol} with search-span enabled`);
-      checkCard(context, agent, "search-span", oldBody);
-    }
+    for (const { agent, context } of fresh) checkCard(context, agent, "search-span", oldBody);
   });
 
   await step("join 6→7 delivery receipt", () => {
@@ -228,11 +208,6 @@ async function main() {
     session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
     tool_input: { command: `cat ${file}` }, tool_response: `Exit code: 0\nOutput:\n${source(body)}`,
   });
-  // Withheld, or sent only as a pointer to today's code: never restated.
-  const kept = (session: string, context: string, id = entry, text = claim) => {
-    const receipts = readReceipts(project, session).filter(row => row.entry_id === id);
-    return !context.includes(text) && receipts.some(row => row.action === "withheld" || row.form === "pointer");
-  };
   const change = (body: string) => {
     writeFileSync(join(checkout, file), source(body));
     json("index", "--json");
@@ -251,7 +226,7 @@ async function main() {
     }
     const session = "joined-stale-entry";
     start(session);
-    requireJoin(kept(session, read(session, newBody)), `entry ${entry} was not withheld or reduced to a pointer in a new session after its symbol changed`);
+    checkKept(read(session, newBody), readReceipts(project, session), entry, claim, "in a new session after its symbol changed");
   });
 
   // A fact is a claim about the code itself. When a shell command (not an
@@ -261,7 +236,7 @@ async function main() {
     change(oldBody);
     const fact = "makeWidget returns 31.";
     const [result] = await submit("joined-fact", [{ kind: "symbol", role: "complete", target: { file, symbol } }], fact, "fact");
-    requireJoin(result?.status === "accepted", `the gate did not accept the fact: ${JSON.stringify(result)}`);
+    const factId = checkAccepted(result, "fact");
     const session = "joined-shell-write";
     start(session);
     writeFileSync(join(checkout, file), source(newBody));
@@ -270,18 +245,16 @@ async function main() {
       tool_input: { command: `sed -i "s/31/470/" ${file}` }, tool_response: "Exit code: 0\nOutput:\n",
     });
     const context = read(session, newBody);
-    requireJoin(!context.includes(fact), `fact ${result.entryId} was restated at the read after a shell command changed its symbol`);
+    requireJoin(!context.includes(fact), `fact ${factId} was restated at the read after a shell command changed its symbol`);
     // What the controller would send for the fact now, at any moment. Verdicts
     // are keyed by the checkout root MEX registered (normalized per OS).
     const mirrors = readdirSync(join(home, "hook-checkouts")).map(name => JSON.parse(readFileSync(join(home, "hook-checkouts", name), "utf8")));
     const registered = mirrors.find(row => row.project_id === project)?.root;
     requireJoin(registered, `no registered checkout for project ${project}`);
     const probe = JSON.parse(run(binary, ["--delivery-probe"], { payload: {
-      checkout: registered, project_id: project, mex_home: home, record_directory: home, entries: [result.entryId],
+      checkout: registered, project_id: project, mex_home: home, record_directory: home, entries: [factId],
     } }));
-    const [answer] = probe.results ?? [];
-    requireJoin(probe.ok && answer && (answer.form === "withheld" || answer.form === "pointer") && !String(answer.text ?? "").includes(fact),
-      `fact ${result.entryId} would still be sent in full after a shell command changed its symbol (${answer?.verdict ?? "no verdict"}, ${answer?.form ?? "no form"})`);
+    checkProbe(probe, factId, fact, "after a shell command changed its symbol");
   });
 }
 

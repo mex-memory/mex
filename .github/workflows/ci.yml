@@ -439,8 +439,52 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  joined:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    name: joined (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Keep temporary files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP 'tmp'
+          New-Item -ItemType Directory -Force $temp | Out-Null
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+          "npm_config_cache=$(Join-Path $env:RUNNER_TEMP 'npm-cache')" >> $env:GITHUB_ENV
+          "GOCACHE=$(Join-Path $env:RUNNER_TEMP 'go-build')" >> $env:GITHUB_ENV
+          "GOMODCACHE=$(Join-Path $env:RUNNER_TEMP 'go-mod')" >> $env:GITHUB_ENV
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm run build:node
+      - name: Build the hook
+        working-directory: native
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o ".scratch/mex-hook$([ "$RUNNER_OS" = Windows ] && echo .exe)" ./cmd/mex-hook
+      # Setup, index, graph, the producer gate, a replayed search, the card,
+      # its receipt and never-stale, through the built CLI and hook.
+      - name: Joined fixture test
+        run: npm run test:joined
+
   ci-passed:
-    needs: [changes, check, package, go, rust, storage-portability, hub-browser]
+    needs: [changes, check, package, go, rust, storage-portability, hub-browser, joined]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
