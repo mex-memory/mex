@@ -2,8 +2,10 @@
 // Bundle like storage-parity.ts. Set MEX_GRAPH_ENGINE to the release binary,
 // MEX_HOME to an empty graph home and MEX_BENCH_CLI to the built dist/cli.js.
 //   node --expose-gc dist/graph-warm-latency.mjs <repo copy> <file> [edits=24]
+// MEX_WARM_EDIT=prepend adds the comment line at the top of the file instead,
+// which moves every declaration below it, as an edit inside the file does.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, statfsSync } from "node:fs";
+import { appendFileSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { openWarmCheckout, type WarmEditResult } from "../../src/graph/warm.js";
 import { childProcessUsage, WARM_GRAPH_SERVER } from "../../src/graph/process-stats.js";
@@ -22,6 +24,12 @@ function checkDisk() {
 }
 checkDisk();
 const comment = extname(file) === ".py" ? "# warm edit\n" : "// warm edit\n";
+const prepend = process.env.MEX_WARM_EDIT === "prepend";
+const editFile = () => {
+  const path = join(root, file);
+  if (prepend) writeFileSync(path, comment + readFileSync(path, "utf8"));
+  else appendFileSync(path, comment);
+};
 const round = (n: number) => Math.round(n * 10) / 10;
 const summary = (values: number[]) => {
   if (!values.length) return null;
@@ -43,7 +51,7 @@ const openMs = round(performance.now() - openStarted);
 const results: WarmEditResult[] = [];
 try {
   for (let i = 0; i < Number(count) + 2; i++) {
-    appendFileSync(join(root, file), comment);
+    editFile();
     const result = await warm.edit([file]);
     if (result.status !== "published") throw new Error(`Edit ${i + 1} returned ${result.status}: ${result.reason ?? ""}`);
     if (i >= 2) results.push(result);
@@ -55,7 +63,7 @@ try {
   if (servers.length !== 1) throw new Error(`Expected one resident engine, found ${servers.length}.`);
   const engine = servers[0]!.rssMb ?? servers[0]!.peakRssMb;
   console.log(JSON.stringify({
-    file, openMs, edits: results.length, published: results.length,
+    file, edit: prepend ? "prepend" : "append", openMs, edits: results.length, published: results.length,
     mexMs: summary(results.map(result => result.ms)),
     engineMs: summary(results.map(result => result.phases.engine!)),
     heldMiB: {
