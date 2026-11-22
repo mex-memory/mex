@@ -187,6 +187,24 @@ func TestHookRunsTheFreeStage(t *testing.T) {
 	if got := verdict(); got != check.Held {
 		t.Fatalf("after checkout: %q", got)
 	}
+
+	// The file changes outside any edit tool (a shell command, the person's
+	// editor). A command that neither reads it nor moves git leaves the
+	// verdict alone; the next read of the file re-checks it.
+	write(t, filepath.Join(root, "package.json"), `{"scripts":{"test":"vitest"}}`)
+	run(t, []string{"claude-code", "PostToolUse"}, strings.NewReader(posted("Bash", map[string]any{"command": "npm run lint"}, root)), env)
+	if got := verdict(); got != check.Held {
+		t.Fatalf("a command that reads no file re-ran the stage: %q", got)
+	}
+	run(t, []string{"claude-code", "PostToolUse"}, strings.NewReader(posted("Read", map[string]any{"file_path": filepath.Join(root, "package.json")}, root)), env)
+	if got := verdict(); got != check.Broken {
+		t.Fatalf("after reading the changed file: %q", got)
+	}
+	write(t, filepath.Join(root, "package.json"), `{"scripts":{"test":"tsc && vitest"}}`)
+	run(t, []string{"claude-code", "PostToolUse"}, strings.NewReader(posted("Bash", map[string]any{"command": "cat package.json"}, root)), env)
+	if got := verdict(); got != check.Held {
+		t.Fatalf("after a shell read of the changed file: %q", got)
+	}
 	if detached != 0 {
 		t.Fatalf("detached %d times", detached)
 	}

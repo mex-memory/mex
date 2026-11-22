@@ -29,25 +29,58 @@ var (
 // gitMoves are git commands after which many files can differ.
 var gitMoves = map[string]bool{"pull": true, "checkout": true, "switch": true, "merge": true, "rebase": true, "reset": true, "cherry-pick": true, "revert": true, "am": true, "stash": true, "restore": true}
 
+// maxStageReads bounds the files one shell command's reads re-check.
+const maxStageReads = 8
+
 // stageTrigger says whether this event should run the free stage: every
-// entry (paths nil) or only those reading the edited files.
+// entry (paths nil) or only those reading the edited or read files.
+//
+// A read re-checks the entries on that file because the file can change
+// outside any edit tool: a shell command, a formatter, the person's editor.
+// The stage runs before delivery, so the read's own moment sees the new
+// verdict. Unchanged inputs reuse the cached verdict.
 func stageTrigger(ev contract.Event) (run bool, paths []string, budget time.Duration) {
 	switch ev.Kind {
 	case contract.SessionStart:
 		return true, nil, stageBudgetStart
-	case contract.PostTool:
-		if ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.OK {
-			return false, nil, 0
+	case contract.PostTool, contract.PostToolBatch:
+		tools := ev.Batch
+		if ev.Tool != nil {
+			tools = []contract.Tool{*ev.Tool}
 		}
-		if ev.Tool.Name == contract.ToolShell {
-			if movesGit(ev.Tool.Input.Command) {
-				return true, nil, stageBudgetGit
+		seen := map[string]bool{}
+		add := func(p string) {
+			if p == "" {
+				return
 			}
-			return false, nil, 0
+			if rel, ok := place.RelativeToCheckout(ev.Checkout, p); ok {
+				if rel = filepath.ToSlash(rel); !seen[rel] {
+					seen[rel] = true
+					paths = append(paths, rel)
+				}
+			}
 		}
-		for _, edit := range editsOf(*ev.Tool) {
-			if rel, ok := place.RelativeToCheckout(ev.Checkout, edit.path); ok {
-				paths = append(paths, filepath.ToSlash(rel))
+		for _, tool := range tools {
+			if tool.Output == nil || !tool.Output.OK {
+				continue
+			}
+			switch tool.Name {
+			case contract.ToolShell:
+				if movesGit(tool.Input.Command) {
+					return true, nil, stageBudgetGit
+				}
+				for i, r := range shellparse.Reads(tool.Input.Command, ev.Cwd, ev.Agent == "codex") {
+					if i >= maxStageReads {
+						break
+					}
+					add(r.Path)
+				}
+			case contract.ToolRead:
+				add(tool.Input.Path)
+			default:
+				for _, edit := range editsOf(tool) {
+					add(edit.path)
+				}
 			}
 		}
 		return len(paths) > 0, paths, stageBudgetEdit
