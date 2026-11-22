@@ -552,9 +552,11 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         try {
           const tree = await PinnedTree.open(quoted.checkout, quoted.head);
           if (!tree) return finishGap("The approved Git revision is no longer readable in this checkout.");
-          const client = quoted.origin.host === "github.com" ? await deps.client(quoted) : undefined;
+          const v2 = state.v2 ?? initialState();
+          // Only the harvest reads the forge; later phases never need a login.
+          const client = v2.phase === "harvest" && quoted.origin.host === "github.com" ? await deps.client(quoted) : undefined;
           const gaps = new Set(state.gaps);
-          const out = await runPipelineBatch({ context, plan: quoted as LearningPlan & { harvest: HarvestPlan }, state: state.v2 ?? initialState(),
+          const out = await runPipelineBatch({ context, plan: quoted as LearningPlan & { harvest: HarvestPlan }, state: v2,
             deps: { model: deps.model, now: deps.now, client, tree }, weekly: false, gaps });
           const next: Checkpoint = { ...state, v2: out.state, gaps: [...gaps].slice(0, 24) };
           return { checkpoint: next, results: out.results, tokens: Math.max(0, spend() - context.job.tokens_used), done: out.done,
