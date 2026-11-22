@@ -7,5 +7,9 @@ license = "MIT AND Apache-2.0 AND Unicode-DFS-2016"
 publish.workspace = true
 rust-version.workspace = true
 
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [lints]
 workspace = true
