@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind, ReferenceKind } from "../types.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "../retrieval/query.js";
 import type { SqliteDatabase, SqliteStatement } from "./sqlite.js";
+import { parseV5PublicId, readsV5Graph, v5NodeKey } from "./v5.js";
 import { timeGraphPhase } from "../phase-timing.js";
 
 /** An unresolved reference row: a name a node points at, bound after indexing. */
@@ -105,7 +106,7 @@ interface NodeRow {
   name: string;
   qualified_name: string;
   container_id: string | null;
-  identity_key: string;
+  identity_key: string | null;
   file_path: string;
   language: string;
   start_line: number;
@@ -155,7 +156,7 @@ function rowToNode(row: NodeRow): GraphNode {
     name: row.name,
     qualifiedName: row.qualified_name,
     containerId: row.container_id ?? undefined,
-    identityKey: row.identity_key,
+    identityKey: row.identity_key ?? undefined,
     filePath: row.file_path,
     language: row.language as Language,
     startLine: row.start_line,
@@ -558,6 +559,19 @@ export class GraphStore {
 
   insertAlias(aliasId: string, canonicalNodeId: string, matchMethod: string, confidence: number): boolean {
     if (aliasId === canonicalNodeId) return false;
+    if (readsV5Graph(this.db)) {
+      const alias = parseV5PublicId(aliasId);
+      const node = v5NodeKey(this.db, canonicalNodeId);
+      if (!alias || node === undefined) return false;
+      this.db.prepare("INSERT OR IGNORE INTO main.node_kinds(name) VALUES (?)").run(alias.kind);
+      return this.db.prepare(
+        `INSERT INTO main.aliases(old_public_id, old_kind, node, match_method, confidence)
+         VALUES (?, (SELECT id FROM main.node_kinds WHERE name = ?), ?, ?, ?)
+         ON CONFLICT(old_public_id) DO UPDATE SET
+           old_kind = excluded.old_kind, node = excluded.node, match_method = excluded.match_method,
+           confidence = excluded.confidence`,
+      ).run(alias.digest, alias.kind, node, matchMethod, confidence).changes > 0;
+    }
     return this.statement(
       "insertAlias",
       `INSERT INTO node_aliases (alias_id, canonical_node_id, match_method, confidence, created_at)
@@ -791,6 +805,19 @@ export class GraphStore {
   // --- Reads ----------------------------------------------------------------
 
   getNodeById(id: string): GraphNode | null {
+    if (readsV5Graph(this.db)) {
+      const parts = parseV5PublicId(id);
+      if (!parts) return null;
+      const row = this.statement("getNodeById",
+        `SELECT * FROM temp.nodes
+         WHERE node_key = coalesce(
+           (SELECT n.id FROM main.nodes n JOIN main.node_kinds k ON k.id = n.kind
+            WHERE n.public_id = ? AND k.name = ?),
+           (SELECT node_key FROM temp.node_aliases WHERE alias_digest = ? AND alias_kind = ?)
+         )`,
+      ).get(parts.digest, parts.kind, parts.digest, parts.kind) as NodeRow | undefined;
+      return row ? rowToNode(row) : null;
+    }
     const row = this.statement(
       "getNodeById",
       `SELECT nodes.* FROM nodes WHERE nodes.id = ?
@@ -982,6 +1009,7 @@ export class GraphStore {
   }
 
   getIncomingEdges(targetId: string, kinds?: EdgeKind[]): GraphEdge[] {
+    if (readsV5Graph(this.db)) return this.getV5Edges("target", targetId, kinds);
     if (kinds && kinds.length > 0) {
       const placeholders = kinds.map(() => "?").join(",");
       const rows = this.db
@@ -997,6 +1025,7 @@ export class GraphStore {
   }
 
   getOutgoingEdges(sourceId: string, kinds?: EdgeKind[]): GraphEdge[] {
+    if (readsV5Graph(this.db)) return this.getV5Edges("source", sourceId, kinds);
     if (kinds && kinds.length > 0) {
       const placeholders = kinds.map(() => "?").join(",");
       const rows = this.db
@@ -1011,18 +1040,38 @@ export class GraphStore {
     ).map(rowToEdge);
   }
 
+  private getV5Edges(side: "source" | "target", id: string, kinds?: EdgeKind[]): GraphEdge[] {
+    const key = v5NodeKey(this.db, id);
+    if (key === undefined) return [];
+    const selected = kinds?.length ? kinds : [];
+    const filter = selected.length
+      ? ` AND kind_key IN (SELECT id FROM main.edge_kinds WHERE name IN (${selected.map(() => "?").join(",")}))`
+      : "";
+    return (this.db.prepare(
+      `SELECT * FROM temp.edges WHERE ${side}_key = ?${filter} ORDER BY source, target, kind, id`,
+    ).all(key, ...selected) as EdgeRow[]).map(rowToEdge);
+  }
+
   /** Batch node lookup by id (one round-trip), keyed by id. */
   getNodesByIds(ids: readonly string[]): Map<string, GraphNode> {
     const out = new Map<string, GraphNode>();
     if (ids.length === 0) return out;
+    const native = readsV5Graph(this.db);
+    const requested = native ? new Set(ids) : null;
     const CHUNK = 500;
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
-      const placeholders = chunk.map(() => "?").join(",");
-      const rows = this.db
-        .prepare(`SELECT * FROM nodes WHERE id IN (${placeholders})`)
-        .all(...chunk) as NodeRow[];
-      for (const row of rows) out.set(row.id, rowToNode(row));
+      const bindings = native ? chunk.flatMap(id => {
+        const parts = parseV5PublicId(id);
+        return parts ? [parts.digest] : [];
+      }) : chunk;
+      if (bindings.length === 0) continue;
+      const placeholders = bindings.map(() => "?").join(",");
+      const predicate = native
+        ? `node_key IN (SELECT id FROM main.nodes WHERE public_id IN (${placeholders}))`
+        : `id IN (${placeholders})`;
+      const rows = this.db.prepare(`SELECT * FROM nodes WHERE ${predicate}`).all(...bindings) as NodeRow[];
+      for (const row of rows) if (!requested || requested.has(row.id)) out.set(row.id, rowToNode(row));
     }
     return out;
   }
@@ -1063,7 +1112,7 @@ export class GraphStore {
       const rows = this.ftsSides("nodes.file_path").flatMap(({ schema, hidden }) => this.db
         .prepare(
           `SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) AS fts_rank FROM ${schema}nodes_fts AS nodes_fts
-             JOIN ${schema}nodes AS nodes ON nodes_fts.id = nodes.id
+             JOIN ${schema}nodes AS nodes ON ${readsV5Graph(this.db) ? "nodes_fts.rowid = nodes.node_key" : "nodes_fts.id = nodes.id"}
              WHERE nodes_fts MATCH ?${hidden}${filterClause}
              ORDER BY fts_rank, nodes.id LIMIT ?`,
         )

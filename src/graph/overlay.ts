@@ -16,6 +16,7 @@
  */
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { hasV5GraphSchema, installV5GraphViews, readsV5Graph } from "./db/v5.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 
 export const OVERLAY_NAME = /^graph-o-[a-f0-9]{24}-[a-z0-9-]+\.db$/;
@@ -56,6 +57,13 @@ export function overlayBase(db: SqliteDatabase): string | undefined {
  * `uncovered` hides further files (sources that drifted since the build).
  */
 export function installGraphViews(db: SqliteDatabase, overlayPath: string | undefined, uncovered: readonly string[] = []): void {
+  if (readsV5Graph(db) || hasV5GraphSchema(db)) {
+    if (overlayBase(db) || (overlayPath && OVERLAY_NAME.test(basename(overlayPath)))) {
+      throw new Error("Schema v5 graphs require a standalone base.");
+    }
+    installV5GraphViews(db, uncovered);
+    return;
+  }
   const attached = readsOverlay(db);
   const base = overlayPath || attached ? overlayBase(db) : undefined;
   if (!base && uncovered.length === 0) return;
@@ -66,6 +74,8 @@ export function installGraphViews(db: SqliteDatabase, overlayPath: string | unde
     if (base && !attached) {
       if (basename(base) !== base || !/^graph-base-[a-z0-9-]+\.db$/.test(base)) throw new Error("Invalid overlay base");
       db.exec(`ATTACH DATABASE '${uri(join(dirname(overlayPath!), base)).replaceAll("'", "''")}' AS base`);
+      const version = db.prepare("PRAGMA base.user_version").get() as { user_version: number };
+      if (version.user_version !== 0) throw new Error("A schema v4 overlay requires a schema v4 base.");
     }
     db.exec("CREATE TEMP TABLE IF NOT EXISTS graph_uncovered(path TEXT PRIMARY KEY) WITHOUT ROWID");
     const insert = db.prepare("INSERT OR IGNORE INTO temp.graph_uncovered VALUES (?)");

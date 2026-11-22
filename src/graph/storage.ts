@@ -139,7 +139,7 @@ export function openCurrentGraph(root: string): SqliteDatabase | undefined {
   if (!regular(file)) return undefined;
   touchGraph(root);
   const db = openSqlite(file, { readOnly: true, immutable: true });
-  try { if (pointer.overlay) installGraphViews(db, file); } catch (error) { db.close(); throw error; }
+  try { installGraphViews(db, file); } catch (error) { db.close(); throw error; }
   return db;
 }
 export function touchGraph(root: string, now = Date.now()): void {

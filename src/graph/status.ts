@@ -29,6 +29,7 @@ import type {
 import type { Diagnostic, RepoState } from "../team/contracts/shared.js";
 import { DB_SCHEMA_VERSION, detectGraphSchemaLineage } from "./db/database.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphInvariants, inspectV5GraphSchema } from "./db/v5.js";
 import { holdsAuditedBytes } from "./audit-record.js";
 import { timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 import { recallSource, rememberSource } from "./source-memo.js";
@@ -44,7 +45,7 @@ import {
   addGraphSemanticInput,
   createGraphSemanticInputLedger,
 } from "./corpus-policy.js";
-import { graphManifest, graphManifestDiffersOnlyByConfig } from "./manifest.js";
+import { graphManifest, graphManifestDiffersOnlyByConfig, graphManifestForSchema } from "./manifest.js";
 import { isSupportedSourceFile } from "./extraction/grammars.js";
 import { bandHashInts, decodeMinhash, indexedInLsh } from "./fingerprint.js";
 import type { Fingerprint } from "./reconcile.js";
@@ -564,7 +565,7 @@ async function inspectGraphStatusAttempt(
     context.options.sourceScope,
   ));
   diagnostics.push(...live.diagnostics);
-  const manifest = timeGraphPhase("inspect.manifest", () => inspectCurrentManifest(projectRoot, diagnostics));
+  let manifest = timeGraphPhase("inspect.manifest", () => inspectCurrentManifest(projectRoot, diagnostics));
   let buildPrerequisitesComplete = repo.complete && live.complete && manifest !== null;
 
   let fileStat: ReturnType<typeof statSync>;
@@ -697,7 +698,8 @@ async function inspectGraphStatusAttempt(
   };
   try {
     db = openSqlite(database.canonicalPath, { readOnly: true, immutable: true });
-    if (!tableExists(db, "schema_versions")) {
+    const native = hasV5GraphSchema(db);
+    if (!native && !tableExists(db, "schema_versions")) {
       const oversizedSchemaName = db.prepare(
         `SELECT 1 FROM sqlite_master
          WHERE name NOT LIKE 'sqlite_%'
@@ -733,7 +735,8 @@ async function inspectGraphStatusAttempt(
         }));
     }
 
-    const schemaVersion = readSchemaVersion(db);
+    const schemaVersion = native ? ENGINE_GRAPH_SCHEMA_VERSION : readSchemaVersion(db);
+    if (native && manifest) manifest = graphManifestForSchema(manifest, ENGINE_GRAPH_SCHEMA_VERSION);
     if (schemaVersion === null) {
       diagnostics.push({
         code: "GRAPH_INDEX_SCHEMA_INVALID",
@@ -751,7 +754,7 @@ async function inspectGraphStatusAttempt(
           diagnostics,
         }));
     }
-    if (schemaVersion !== DB_SCHEMA_VERSION) {
+    if (!native && schemaVersion !== DB_SCHEMA_VERSION) {
       if (schemaVersion > DB_SCHEMA_VERSION) {
         diagnostics.push(rebuildDiagnostic(
           `This mex build supports graph schema ${DB_SCHEMA_VERSION}, but the index uses ${schemaVersion}.`,
@@ -785,7 +788,7 @@ async function inspectGraphStatusAttempt(
     }
 
     try {
-      if (timeGraphPhase("inspect.lineage", () => detectGraphSchemaLineage(db!, schemaVersion)) !== "v4") {
+      if (!native && timeGraphPhase("inspect.lineage", () => detectGraphSchemaLineage(db!, schemaVersion)) !== "v4") {
         throw new Error("unexpected current schema lineage");
       }
     } catch {
@@ -806,7 +809,8 @@ async function inspectGraphStatusAttempt(
       }));
     }
 
-    const schemaFailures = timeGraphPhase("inspect.schema", () => inspectRequiredSchema(db!));
+    const schemaFailures = timeGraphPhase("inspect.schema", () => native
+      ? inspectV5GraphSchema(db!) : inspectRequiredSchema(db!));
     if (schemaFailures.length > 0) {
       diagnostics.push({
         code: "GRAPH_INDEX_SCHEMA_INVALID",
@@ -858,7 +862,8 @@ async function inspectGraphStatusAttempt(
     // through the overlay, as every reader sees them.
     installGraphViews(db, database.canonicalPath);
 
-    const coreInvariantFailures = structureAudited ? [] : timeGraphPhase("inspect.invariants", () => inspectCoreInvariants(db!, {
+    const coreInvariantFailures = structureAudited ? [] : timeGraphPhase("inspect.invariants", () => native
+      ? inspectV5GraphInvariants(db!) : inspectCoreInvariants(db!, {
       fingerprints: context.options.structuralAudit !== "graph",
       bandHashMemo: context.options.bandHashMemo,
       ...(context.options.fingerprintScope ? { fingerprintScope: context.options.fingerprintScope } : {}),
@@ -1576,7 +1581,7 @@ async function validateFreshObservation(
   ));
   const manifestDiagnostics: Diagnostic[] = [];
   const manifest = timeGraphPhase("inspect.validation.manifest", () =>
-    inspectCurrentManifest(context.projectRoot, manifestDiagnostics));
+    inspectCurrentManifest(context.projectRoot, manifestDiagnostics, before.manifest.inputs.db));
   if (!repo.complete || !live.complete || !semantic.complete || manifest === null) {
     const status = !repo.complete ? "degraded" : "stale";
     return {
@@ -1713,6 +1718,7 @@ function readSnapshotIdentity(dbPath: string): { snapshotRaw: string; databaseId
   const db = openSqlite(dbPath, { readOnly: true, immutable: true });
   let snapshotRaw: string;
   try {
+    if (hasV5GraphSchema(db)) installGraphViews(db, dbPath);
     const row = db.prepare(
       `SELECT CASE
          WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) <= ? THEN value
@@ -2990,9 +2996,10 @@ function metadataTimestamp(metadata: MetadataValue | undefined): string | null {
 function inspectCurrentManifest(
   projectRoot: string,
   diagnostics: Diagnostic[],
+  schemaVersion = DB_SCHEMA_VERSION,
 ): ReturnType<typeof graphManifest> | null {
   try {
-    return graphManifest(projectRoot);
+    return graphManifest(projectRoot, schemaVersion);
   } catch (error) {
     const corpusLimit = isGraphCorpusLimitError(error);
     diagnostics.push({

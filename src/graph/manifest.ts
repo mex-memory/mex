@@ -57,12 +57,12 @@ export interface GraphManifestInputs {
   configHash: string;
 }
 
-export function graphManifest(root: string): GraphManifest {
+export function graphManifest(root: string, schemaVersion = DB_SCHEMA_VERSION): GraphManifest {
   const configSources = discoverGraphConfigSources(root);
   const configHash = configHashForSources(configSources);
   const grammarHash = grammarManifestHash();
   const inputs: GraphManifestInputs = {
-    db: DB_SCHEMA_VERSION,
+    db: schemaVersion,
     compiler: TYPESCRIPT_COMPILER_VERSION,
     extractor: corpusExtractorVersion(),
     resolver: RESOLVER_VERSION,
@@ -76,6 +76,13 @@ export function graphManifest(root: string): GraphManifest {
     grammarHash,
     inputs: Object.freeze(inputs),
   };
+}
+
+/** Reuse one exact config observation when inspection learns the store's format. */
+export function graphManifestForSchema(manifest: GraphManifest, schemaVersion: number): GraphManifest {
+  if (manifest.inputs.db === schemaVersion) return manifest;
+  const inputs = Object.freeze({ ...manifest.inputs, db: schemaVersion });
+  return { ...manifest, inputs, manifestHash: graphManifestHash(inputs) };
 }
 
 /**

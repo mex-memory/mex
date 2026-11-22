@@ -28,13 +28,14 @@ import {
   serializeGraphSnapshot,
 } from "../snapshot.js";
 import { assertFts5Available, openSqlite, type SqliteDatabase } from "./sqlite.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphSchema } from "./v5.js";
 
 // The FTS5 preflight lives with the SQLite adapter (it describes the SQLite
 // build, not the graph) and is re-exported here for the callers and tests that
 // already reach for it through this module.
 export { assertFts5Available };
 
-/** The schema version this build writes/expects (matches schema.sql's seed). */
+/** The schema of the Node writer and its migration ladder. */
 export const DB_SCHEMA_VERSION = 4;
 /** @deprecated Prefer the explicit DB_SCHEMA_VERSION name. */
 export const CURRENT_SCHEMA_VERSION = DB_SCHEMA_VERSION;
@@ -49,6 +50,8 @@ export interface OpenGraphDatabaseOptions {
    * establish that no non-empty WAL contains authoritative graph data.
    */
   immutable?: boolean;
+  /** A private clone may explicitly update v5 continuity data. */
+  allowV5ContinuityWrites?: boolean;
 }
 
 function configureConnection(db: SqliteDatabase): void {
@@ -105,9 +108,15 @@ export function openGraphDatabase(
     return db;
   }
   const db = openSqlite(dbPath);
-  configureConnection(db);
-
   try {
+    if (hasV5GraphSchema(db)) {
+      if (!options.allowV5ContinuityWrites) throw incompatibleSchema("schema v5 graph facts are written by the Rust engine.");
+      assertV5Readable(db);
+      db.pragma("foreign_keys = ON");
+      installGraphViews(db, dbPath);
+      return db;
+    }
+    configureConnection(db);
     initializeWritableGraphDatabase(db, readFileSync(schemaPath(), "utf-8"), options);
     return db;
   } catch (error) {
@@ -168,12 +177,24 @@ function initializeWritableGraphDatabase(
 
 function validateReadOnlyGraphDatabase(db: SqliteDatabase): SqliteDatabase {
   configureReadOnlyConnection(db);
+  if (hasV5GraphSchema(db)) {
+    assertV5Readable(db);
+    installGraphViews(db, undefined);
+    return db;
+  }
   if (!tableExists(db, "schema_versions") || readSchemaVersion(db) !== DB_SCHEMA_VERSION) {
     throw new GraphRebuildRequiredError();
   }
   assertCombinedSchemaShape(db);
   if (graphRequiresRebuild(db)) throw new GraphRebuildRequiredError();
   return db;
+}
+
+function assertV5Readable(db: SqliteDatabase): void {
+  const failures = inspectV5GraphSchema(db);
+  if (failures.length > 0 || !db.prepare("SELECT 1 FROM main.snapshot WHERE id = 1").get()) {
+    throw incompatibleSchema(`incomplete schema v5 graph (${failures[0] ?? "missing snapshot"}).`);
+  }
 }
 
 function openImmutableGraphDatabase(dbPath: string): SqliteDatabase {
@@ -238,6 +259,7 @@ function stampSchemaVersion(db: SqliteDatabase, version: number): void {
 
 /** The highest recorded schema version, or null if none is recorded. */
 export function readSchemaVersion(db: SqliteDatabase): number | null {
+  if (hasV5GraphSchema(db)) return ENGINE_GRAPH_SCHEMA_VERSION;
   const row = db
     .prepare("SELECT version FROM schema_versions ORDER BY version DESC LIMIT 1")
     .get() as { version: unknown } | undefined;

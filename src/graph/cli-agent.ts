@@ -1,3 +1,4 @@
+import { ENGINE_GRAPH_SCHEMA_VERSION, readsV5Graph, v5NodeKey } from "./db/v5.js";
 import { currentGraphPath } from "./storage.js";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -278,6 +279,17 @@ export function runGraphQuery(
       }
     }
 
+    const potential: Array<{ node: GraphNode; row: UnresolvedCallSite }> = [];
+    if (relation === "who-calls" && readsV5Graph(session.db)) {
+      const withCallers = new Set(pairs.map(pair => pair.targetId));
+      for (const node of nodes) {
+        if (withCallers.has(node.id)) continue;
+        const remaining = opts.maxNodes + 1 - potential.length;
+        if (remaining === 0) break;
+        for (const row of potentialCallSites(session.db, node, remaining)) potential.push({ node, row });
+      }
+    }
+
     const targetsById = new Map(nodes.map((node) => [node.id, node]));
     const { kept: shownPairs, omitted: omittedTestNodes } = relation === "where-defined"
       ? { kept: pairs, omitted: 0 }
@@ -310,11 +322,20 @@ export function runGraphQuery(
       entries.push({ record, node: pair.node });
     }
 
+    const unresolved: Rec[] = [];
+    for (const { node, row } of potential) {
+      const record = unresolvedCallRecord(row, node.id, session);
+      if (unresolved.length + entries.length >= opts.maxNodes || !ledger.tryAdd(record)) {
+        truncated = true;
+        break;
+      }
+      unresolved.push(record);
+    }
     const sourceRecords = planSource(session, ledger, entries.map((e) => e.node), rootDir, opts);
 
     emitAll(write, meta, [
       ...configDriftRecords(session),
-      ...entries.map((e) => e.record), ...sourceRecords,
+      ...entries.map((e) => e.record), ...unresolved, ...sourceRecords,
     ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: pairs.length,
@@ -322,6 +343,11 @@ export function runGraphQuery(
       returnedEdges: 0,
       truncated,
       omittedTestNodes,
+      ...(potential.length ? {
+        status: "partial",
+        evidenceStrength: entries.length ? "moderate" : "weak",
+        warnings: ["Unresolved call sites may call one or more of the queried symbols."],
+      } : {}),
       suggestedNextCommands: [
         ...(entries.length > 0 && opts.detail !== "source" ? [`mex graph get ${entries[0]!.node.id} --detail source`] : []),
         ...testsCommand,
@@ -2307,7 +2333,7 @@ function runScopeAgentSession(
     const opened = openImmutableGraphReadSessionSync(rootDir, dbPath);
     session = { ...opened };
     const stored = storedManifestIdentity(session.db);
-    const current = graphManifest(resolve(rootDir));
+    const current = graphManifest(resolve(rootDir), readsV5Graph(session.db) ? ENGINE_GRAPH_SCHEMA_VERSION : undefined);
     if (stored.manifestHash !== current.manifestHash) {
       if (!graphManifestDiffersOnlyByConfig(current, stored.manifestHash, stored.configHash)) {
         manifestUnavailable(write);
@@ -2826,6 +2852,7 @@ interface UnresolvedCallSite {
   from_node_id: string;
   receiver: string | null;
   qualifier: string | null;
+  candidate_id?: string | null;
 }
 
 /**
@@ -2859,25 +2886,7 @@ function emitUnresolvedCallers(
   const records: Rec[] = [];
   let truncated = matched > rows.length;
   for (const row of rows) {
-    // A distinct record type, never `type: "result"`. An agent must not be
-    // able to mistake an unbound name for a resolved graph edge.
-    const record: Rec = {
-      type: "unresolved-reference",
-      relation: "who-calls",
-      target,
-      name: row.reference_name,
-      referenceKind: row.reference_kind,
-      resolution: row.status,
-      file: row.file_path,
-      line: row.line,
-      col: row.col,
-      fromNode: row.from_node_id,
-      ...(row.receiver === null ? {} : { receiver: row.receiver }),
-      ...(row.qualifier === null ? {} : { qualifier: row.qualifier }),
-      // An unresolved reference is a resolution outcome, so drifted compiler
-      // inputs are the most likely reason this row exists at all.
-      ...(isConfigDrifted(session) ? { stale: true } : {}),
-    };
+    const record = unresolvedCallRecord(row, target, session);
     if (!ctx.ledger.tryAdd(record)) { truncated = true; break; }
     records.push(record);
   }
@@ -2903,6 +2912,40 @@ function emitUnresolvedCallers(
   return true;
 }
 
+function unresolvedCallRecord(row: UnresolvedCallSite, target: string, session: AgentGraphSession): Rec {
+  return {
+    type: "unresolved-reference",
+    relation: "who-calls",
+    target,
+    name: row.reference_name,
+    referenceKind: row.reference_kind,
+    resolution: row.status,
+    file: row.file_path,
+    line: row.line,
+    col: row.col,
+    fromNode: row.from_node_id,
+    ...(row.receiver === null ? {} : { receiver: row.receiver }),
+    ...(row.qualifier === null ? {} : { qualifier: row.qualifier }),
+    ...(row.candidate_id ? { candidate: row.candidate_id } : {}),
+    ...(isConfigDrifted(session) ? { stale: true } : {}),
+  };
+}
+
+/** An empty caller result is evidence only for this exact symbol. */
+function potentialCallSites(db: SqliteDatabase, node: GraphNode, limit: number): UnresolvedCallSite[] {
+  const key = v5NodeKey(db, node.id);
+  if (key === undefined) return [];
+  return db.prepare(
+    `SELECT reference_name, reference_kind, status, file_path, line, col,
+            from_node_id, receiver, qualifier, candidate_id
+     FROM temp.unresolved_refs WHERE id IN (
+       SELECT id FROM main.unresolved_calls WHERE name = (SELECT id FROM main.unresolved_names WHERE name = ?)
+       UNION
+       SELECT id FROM main.unresolved_calls WHERE candidate = ?
+     ) ORDER BY file_path, line, col, from_node_id LIMIT ?`,
+  ).all(node.name, key, limit) as UnresolvedCallSite[];
+}
+
 /** Total matching call sites, so the summary can report what it capped. */
 function unresolvedCallSiteCount(db: SqliteDatabase, name: string): number {
   const row = db.prepare(
@@ -2918,9 +2961,10 @@ function unresolvedCallSites(
   name: string,
   limit: number,
 ): UnresolvedCallSite[] {
+  const candidateColumn = readsV5Graph(db) ? ", candidate_id" : "";
   return db.prepare(
     `SELECT reference_name, reference_kind, status, file_path, line, col,
-            from_node_id, receiver, qualifier
+            from_node_id, receiver, qualifier${candidateColumn}
        FROM unresolved_refs
       WHERE reference_name = ? AND status <> 'resolved'
       ORDER BY file_path, line, col, from_node_id
