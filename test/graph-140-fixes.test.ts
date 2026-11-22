@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MexConfig } from "../src/types.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
 import { openSqlite } from "../src/graph/db/sqlite.js";
@@ -43,6 +43,9 @@ export function calculateCheckoutTotal(items: number[]): number {
     config: { projectRoot: root, scaffoldRoot: join(root, ".mex"), aiTools: [] },
   };
 }
+
+// These fixtures exercise the writable v4 layout.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
 
 afterEach(() => {
   vi.unstubAllEnvs();

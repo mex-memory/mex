@@ -22,7 +22,7 @@ import {
 import { rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { graphRemediationCommand } from "../../reporter.js";
 import { DB_SCHEMA_VERSION } from "../db/database.js";
 import { openSqlite } from "../db/sqlite.js";
@@ -73,6 +73,10 @@ describe("scoped source freshness", () => {
     expect((await inspect(root)).status).toBe(scoped.status);
   });
 });
+
+// These fixtures edit the v4 tables directly.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

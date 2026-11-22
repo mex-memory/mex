@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { boundedCandidateMessage } from "../candidate-protocol.js";
 import { createGraphCandidateProgressSender } from "../candidate-progress.js";
 import { GRAPH_CANDIDATE_DIAGNOSTIC_BYTES, GraphCandidateProcessError, runGraphCandidateProcess } from "../candidate-process.js";
@@ -18,6 +18,11 @@ import { openSqlite } from "../db/sqlite.js";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const roots: string[] = [];
+beforeEach(() => {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
+  vi.stubEnv(GRAPH_ENGINE_LANGUAGES_ENV, "javascript,typescript");
+});
+afterEach(() => vi.unstubAllEnvs());
 const children = new Set<ChildProcess>();
 let bundleDir: string;
 let realEntry: string;
@@ -318,7 +323,7 @@ describe("isolated graph candidate construction", () => {
       expect(readFileSync(join(workspace, "sentinel"), "utf8")).toBe("replacement directory must survive");
       expect(existsSync(original)).toBe(true);
       expect(hash(database)).toBe(before);
-      expect(artifacts(path)).toEqual([]);
+      expect(artifacts(path)).toEqual([basename(workspace)]);
     } finally {
       // These are the two exact directories created/moved by this fixture;
       // production cleanup must have left the replacement entirely alone.

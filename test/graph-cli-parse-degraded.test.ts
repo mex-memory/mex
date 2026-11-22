@@ -2,7 +2,7 @@ import { currentGraphPath } from "../src/graph/storage.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentCommandDeps } from "../src/graph/cli-agent.js";
 import { runGraphQuery, runImpact } from "../src/graph/cli-agent.js";
 import { openSqlite } from "../src/graph/db/sqlite.js";
@@ -17,7 +17,11 @@ import { inspectGraphStatus } from "../src/graph/status.js";
 const roots: string[] = [];
 type Rec = Record<string, unknown>;
 
+// These fixtures exercise the writable v4 layout.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

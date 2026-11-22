@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync 
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createGraphEngine } from "../index.js";
 import type { GraphEngine } from "../engine.js";
 import type { GraphEdge, GraphNode } from "../types.js";
@@ -82,6 +82,7 @@ function syntheticScopeGraph(options: {
 }
 
 beforeAll(async () => {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
   root = mkdtempSync(join(tmpdir(), "mex-cli-agent-"));
   writeFileSync(join(root, "util.ts"), `export function helper(x: number): number {\n  return x + 1;\n}\n`);
   writeFileSync(
@@ -97,6 +98,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  vi.unstubAllEnvs();
   db.close();
   engine.close();
   rmSync(root, { recursive: true, force: true });

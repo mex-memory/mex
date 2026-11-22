@@ -1,18 +1,23 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { openRecord, openRecordReadOnly } from "../../record/index.js";
 import { latestBuildUsage, recordBuildUsage, type BuildUsageRow } from "../../record/build-usage.js";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
 import { graphLocation } from "../storage.js";
+import { graphEngineBinary } from "../native-engine.js";
+import { BackgroundGraph } from "../background-warm.js";
+import { verifyGraph } from "../verify.js";
+import { writeShift } from "../../file-index/shifts.js";
 
 // The usage log (record migration 6): every build and refresh records its
 // wall time, CPU time and peak memory.
 
 /** Temporary folders this file made, removed after its tests; an open handle on Windows only leaves one behind. */
 const temporaries: string[] = [];
+afterEach(() => vi.unstubAllEnvs());
 function temporary(prefix: string): string {
   const folder = mkdtempSync(join(tmpdir(), prefix));
   temporaries.push(folder);
@@ -42,6 +47,7 @@ function rows(root: string): BuildUsageRow[] {
 
 describe("graph usage log", () => {
   it("records a build and a refresh run in the candidate process", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const root = fixture();
     await rebuildGraph(root, { candidateExecution: "process" });
     writeFileSync(join(root, "a.ts"), "export function a(): number {\n  return 2;\n}\n");
@@ -66,11 +72,51 @@ describe("graph usage log", () => {
   });
 
   it("records an unchanged refresh and a failed one", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const root = fixture();
     await rebuildGraph(root);
     await refreshGraph(root);
     await expect(refreshGraph(join(root, "missing"))).rejects.toThrow();
     expect(rows(root).map((row) => [row.kind, row.result])).toEqual([["build", "ok"], ["refresh", "unchanged"]]);
+  });
+
+  it.skipIf(!graphEngineBinary())("includes Rust CPU and peak RSS in native build, refresh, and resident edit usage", async () => {
+    const root = fixture();
+    const source = join(root, "a.ts");
+    const build = await rebuildGraph(root);
+    expect(build.status.schemaVersion).toBe(5);
+    writeFileSync(source, "export function a(): number { return 2; }\n");
+    const refresh = await refreshGraph(root);
+    const location = graphLocation(root);
+    const writer = openRecord();
+    const background = new BackgroundGraph(writer, () => { throw new Error("unexpected cold refresh"); }, () => {});
+    try {
+      writeFileSync(source, "export function a(): number { return 3; }\n");
+      const checkouts = join(location.directory, "checkouts");
+      mkdirSync(checkouts, { recursive: true });
+      writeFileSync(join(checkouts, `${location.key}.json`), JSON.stringify({ root: location.root }));
+      writeShift(location.directory, location.key, { path: "a.ts", mtime_ns: "1", ranges: [] });
+      writeFileSync(join(location.recordDirectory, "index-pending"), "");
+      await background.collect();
+      await background.run();
+      expect(await verifyGraph(root)).toMatchObject({ status: "match" });
+      const logged = rows(root);
+      expect(logged.map(({ kind, result }) => [kind, result])).toEqual([
+        ["build", "ok"], ["refresh", "ok"], ["warm", "ok"], ["verify", "ok"],
+      ]);
+      for (const row of logged) {
+        expect(row.cpu_ms).toBeGreaterThan(0);
+        expect(row.server_rss_mb).toBeGreaterThan(0);
+        expect(row.peak_rss_mb).toBeGreaterThan(row.server_rss_mb!);
+      }
+      expect(logged[0]!.server_rss_mb).toBe(build.engine?.peakRssMb);
+      expect(logged[1]!.server_rss_mb).toBe(refresh.engine?.peakRssMb);
+      expect(logged[0]!.cpu_ms).toBeGreaterThanOrEqual(build.engine?.cpuMs ?? Infinity);
+      expect(logged[1]!.cpu_ms).toBeGreaterThanOrEqual(refresh.engine?.cpuMs ?? Infinity);
+    } finally {
+      background.stop();
+      writer.close();
+    }
   });
 });
 

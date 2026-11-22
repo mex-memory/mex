@@ -2,7 +2,7 @@ import { currentGraphPath } from "../storage.js";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openSqlite } from "../db/sqlite.js";
 import { createGraphEngine } from "../engine-impl.js";
 import {
@@ -15,6 +15,10 @@ import { inspectGraphStatusWithFreshObservation } from "../status.js";
 
 const NOW = new Date("2026-09-08T12:00:00.000Z");
 const roots: string[] = [];
+
+// These fixtures edit the v4 tables directly.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

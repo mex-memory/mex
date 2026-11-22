@@ -106,7 +106,7 @@ describe.skipIf(!engineBinary)("schema v5 with the Rust writer", () => {
   it("serves the same search, symbol, relation, impact and grounded evidence as staged v4", async () => {
     const root = fixture();
     writeFileSync(join(root, "worker.ts"), tsSource);
-    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     expect((await rebuildGraph(root)).status.schemaVersion).toBe(4);
     const id = declaration(root, "helper");
     const ref = { kind: "symbol", symbolId: id } as const;
@@ -162,10 +162,9 @@ describe.skipIf(!engineBinary)("schema v5 with the Rust writer", () => {
         .toEqual([]);
     } finally { db.close(); }
 
-    vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", undefined);
     const warm = await openWarmCheckout(root);
     warm.close();
-    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     expect((await refreshGraph(root)).status.schemaVersion).toBe(4);
     const switched = currentGraphPath(root);
     expect((await refreshGraph(root)).filesIndexed).toBe(0);
@@ -216,7 +215,7 @@ def execute():
 
   it("carries historical baselines across the switch and reconciles a moved declaration without LSH", async () => {
     const root = fixture();
-    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const file = join(root, "before.ts");
     writeFileSync(file, `export function helper(seed: number) {
   const large = seed * 75671 + (seed % 18313) ** 2;
@@ -252,7 +251,7 @@ def execute():
       expect(snapshot.reconcile(id, fingerprint, hash)).toEqual({ kind: "MOVED", nodeId: moved });
     });
 
-    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     expect((await refreshGraph(root)).status.schemaVersion).toBe(4);
     expect(await port.withFreshGroundingSnapshot(snapshot => snapshot.getBaselineSource(subject, moved)))
       .toMatchObject({ nodeId: id, bodyHash: hash, fingerprint });
@@ -286,7 +285,7 @@ def execute():
     expect((await refreshGraph(root)).status).toMatchObject({ schemaVersion: 5, status: "degraded", parseHealth: { partial: 1 } });
   });
 
-  it("uses v4 for a corpus containing a non-engine language", async () => {
+  it("uses v4 when a language in the corpus is opted out", async () => {
     const root = fixture();
     writeFileSync(join(root, "worker.ts"), tsSource);
     writeFileSync(join(root, "legacy.py"), "def legacy():\n    return 1\n");

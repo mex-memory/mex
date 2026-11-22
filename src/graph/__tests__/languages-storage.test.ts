@@ -19,8 +19,8 @@ import { openWarmCheckout } from "../warm.js";
 const binary = graphEngineBinary();
 const roots: string[] = [];
 beforeAll(() => {
-  vi.stubEnv("MEX_GRAPH_STORAGE", "v5");
-  vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "typescript,javascript,python,rust,csharp");
+  vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+  vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", undefined);
 });
 afterAll(() => vi.unstubAllEnvs());
 afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -98,7 +98,7 @@ describe.skipIf(!binary)("every language on the new storage", () => {
     const built = await inHome(fresh, () => images(root));
     for (const table of Object.keys(built)) expect(overlaid[table], table).toEqual(built[table]);
 
-    // Python also uses the resident engine when opted in on v5.
+    // The default Python adapter also uses the resident engine.
     const warm = await inHome(home, () => openWarmCheckout(root));
     try {
       writeFileSync(join(root, "py/e.py"), `${FILES["py/e.py"]![1]}\n# edited\n`);

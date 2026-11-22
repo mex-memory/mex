@@ -54,6 +54,7 @@ function repo(): string {
 }
 
 async function build(root: string) {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
   const engine = createGraphEngine({ rootDir: root });
   try { return await engine.build(); }
   finally { engine.close(); }
@@ -153,11 +154,11 @@ describe.skipIf(!binary)("TypeScript and JavaScript from the Rust engine into sc
     }));
   });
 
-  it.each(["typescript", "javascript"])("keeps both ECMAScript families with the old %s opt-in", async (flag) => {
+  it.each([["typescript", 3], ["javascript", 2]] as const)("limits the engine to the %s family when requested", async (flag, files) => {
     const root = repo();
     vi.stubEnv(GRAPH_ENGINE_LANGUAGES_ENV, flag);
-    expect((await build(root)).engine).toMatchObject({ languages: ["javascript", "typescript"], files: 5, fallbackFiles: 0 });
-    expect(rows(root).cache).toEqual([]);
+    expect((await build(root)).engine).toMatchObject({ languages: [flag], files, fallbackFiles: 0 });
+    expect(rows(root).cache).toHaveLength(5 - files);
   });
 
   it("falls back to the captured source for a changed file and demotes its dangling engine edges", async () => {
@@ -191,6 +192,7 @@ describe.skipIf(!binary)("TypeScript and JavaScript from the Rust engine into sc
   });
 
   it("queues a normal refresh for v4 edits", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const root = repo();
     await build(root);
     const reason = "Schema v4 edits use a normal graph refresh.";
@@ -232,9 +234,9 @@ async function expectFallback(root: string, reason: string, expectedFiles = 7): 
   }));
 }
 
-it.each([undefined, "v5"])("publishes Node extraction and coverage without an engine (storage %s)", async (storage) => {
+it.each(["v4", undefined])("publishes Node extraction and coverage without an engine (storage %s)", async (storage) => {
   const root = fallbackFixture();
-  vi.stubEnv(GRAPH_ENGINE_ENV, join(root, "missing-mex-graph"));
+  vi.stubEnv(GRAPH_ENGINE_ENV, join(root, "missing-mex-graph.wasm"));
   vi.stubEnv("MEX_GRAPH_STORAGE", storage);
   const result = await rebuildGraph(root);
   const reason = "no mex-graph binary was found";
@@ -258,7 +260,7 @@ exit 3
   return path;
 }
 
-it.skipIf(process.platform === "win32").each([undefined, "v5"])(
+it.skipIf(process.platform === "win32").each(["v4", "v5"])(
   "publishes Node extraction and coverage after an engine job fails (storage %s)", async (storage) => {
     const root = fallbackFixture();
     vi.stubEnv("MEX_GRAPH_STORAGE", storage);
@@ -287,7 +289,7 @@ it.skipIf(!binary || process.platform === "win32")("falls back from a failed v5 
 
 it("refuses to bind a compiler-era manifest even when source drift is bounded", async () => {
   const root = repo();
-  vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
   await build(root);
   const path = currentGraphPath(root);
   const { db, corpusPolicyHash, grammarHash, configHash } = graphManifest(root).inputs;
@@ -320,9 +322,9 @@ it("refuses to bind a compiler-era manifest even when source drift is bounded", 
   } finally { published.close(); }
 });
 
-it("versions the default engine languages and keeps the other languages opt-in", () => {
+it("versions all default engine languages and records the exact override", () => {
   expect(corpusExtractorVersion({}))
-    .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-typescript-v1`);
+    .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-csharp-javascript-python-rust-typescript-v1`);
   expect(corpusExtractorVersion({ [GRAPH_ENGINE_LANGUAGES_ENV]: "tsx, Javascript, Python, TypeScript" }))
     .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-python-typescript-v1`);
 });

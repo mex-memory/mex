@@ -6,7 +6,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createGraphEngine,
   createGraphEngineFromOpenDatabase,
@@ -25,6 +25,10 @@ import { runGraphScope } from "../cli-agent.js";
 import type { GraphEdge, GraphNode } from "../types.js";
 
 const roots: string[] = [];
+
+// These fixtures edit the v4 tables directly.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { openSqlite } from "../db/sqlite.js";
 import { GRAPH_ENGINE_ENV, GRAPH_ENGINE_LANGUAGES_ENV, graphEngineBinary } from "../native-engine.js";
 import { createGraphEngine } from "../index.js";
@@ -11,15 +11,15 @@ import { currentGraphPath } from "../storage.js";
 import type { BuildResult } from "../engine.js";
 
 /**
- * Python from the Rust engine into today's schema v4 graph (OSS-73), behind
- * `MEX_GRAPH_ENGINE_LANGUAGES=python`. Runs where an engine is built; the
- * fallback test runs everywhere.
+ * Python from the default engine into the schema v4 writer. The comparison
+ * opts Python out to exercise the Node extractor on the same source.
  */
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "python-package");
 const roots: string[] = [];
 const saved = { languages: process.env[GRAPH_ENGINE_LANGUAGES_ENV], binary: process.env[GRAPH_ENGINE_ENV] };
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const [key, value] of [[GRAPH_ENGINE_LANGUAGES_ENV, saved.languages], [GRAPH_ENGINE_ENV, saved.binary]] as const) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -40,6 +40,7 @@ function repo(): string {
 }
 
 async function build(root: string, languages?: string): Promise<BuildResult> {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
   if (languages === undefined) delete process.env[GRAPH_ENGINE_LANGUAGES_ENV];
   else process.env[GRAPH_ENGINE_LANGUAGES_ENV] = languages;
   const engine = createGraphEngine({ rootDir: root });
@@ -87,8 +88,8 @@ describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's 
   it("writes the same nodes, containment and sketches as today, with the engine's calls", async () => {
     const today = repo();
     const engine = repo();
-    const todayBuild = await build(today);
-    const engineBuild = await build(engine, "python");
+    const todayBuild = await build(today, "typescript");
+    const engineBuild = await build(engine);
     expect(todayBuild.engine).toMatchObject({ languages: ["typescript"], files: 1, fallbackFiles: 0 });
     expect(engineBuild.engine).toMatchObject({ languages: ["python", "typescript"], files: 7, fallbackFiles: 0 });
     expect(engineBuild.engine?.fellBack).toBeUndefined();
@@ -113,17 +114,17 @@ describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's 
 
 describe("the engine flag", () => {
   it("folds the engine's languages into the extractor version", () => {
-    expect(corpusExtractorVersion({})).toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-typescript-v1`);
+    expect(corpusExtractorVersion({})).toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-csharp-javascript-python-rust-typescript-v1`);
     expect(corpusExtractorVersion({ [GRAPH_ENGINE_LANGUAGES_ENV]: "Python, cobol" }))
-      .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-python-typescript-v1`);
+      .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-python-v1`);
   });
 
   it("keeps today's extractors and says why when no engine can run", async () => {
     const today = repo();
     const fallback = repo();
-    process.env[GRAPH_ENGINE_ENV] = join(fallback, "no-such-engine");
+    process.env[GRAPH_ENGINE_ENV] = join(fallback, "no-such-engine.wasm");
     await build(today);
-    const result = await build(fallback, "python");
+    const result = await build(fallback);
     expect(result.engine).toMatchObject({ languages: ["python", "typescript"], files: 0, fallbackFiles: 7, fellBack: "no mex-graph binary was found" });
     const before = rows(today);
     const after = rows(fallback);

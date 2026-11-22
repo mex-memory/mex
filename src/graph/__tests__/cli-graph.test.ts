@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dirname } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphSourceChanges } from "../../team/contracts/graph.js";
 import { runGraphScope } from "../cli-agent.js";
 import { openSqlite } from "../db/sqlite.js";
@@ -34,6 +34,10 @@ function changes(overrides: Partial<GraphSourceChanges> = {}): GraphSourceChange
     ...overrides,
   };
 }
+
+// These fixtures edit the v4 tables directly.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 describe("graph CLI status formatting", () => {
   it("labels bounded path arrays as shown instead of an exact breakdown", () => {

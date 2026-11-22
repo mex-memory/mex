@@ -58,7 +58,7 @@ describe("warm registry", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("queues a normal refresh for v4 edits", async () => {
-    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const clock = { now: 1_000_000 };
     const { value, refreshes, opened } = host(clock);
     const registry = new WarmRegistry(value, settings);
@@ -125,7 +125,7 @@ describe("warm registry", () => {
   });
 
   it("turns the warm path off when a full rebuild differs, and keeps the repository cold", async () => {
-    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const root = emptyRoot();
     execFileSync("git", ["init", "-q", "."], { cwd: root });
     mkdirSync(join(root, "src"));
@@ -144,6 +144,7 @@ describe("warm registry", () => {
     expect(readGraphState(index)).toMatchObject({ warm: "off", differing: ["src/a.ts"] });
     expect(readGraphPointer(graphLocation(root))).toBeTruthy();
 
+    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
     const clock = { now: 4_000_000 };
     const { value, refreshes, opened } = host(clock);
     const registry = new WarmRegistry(value, settings);

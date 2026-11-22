@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireGraphMaintenanceLease, GraphMaintenanceError, rebuildGraph, refreshGraph, repairGraph, type GraphMaintenanceExecutionOptions } from "../maintenance.js";
 import { currentGraphPath, graphLocation, graphPointerFile, readGraphPointer } from "../storage.js";
 import { inspectGraphStatus } from "../status.js";
@@ -21,6 +21,8 @@ function leftovers(root: string): string[] {
 }
 function change(root: string): void { writeFileSync(join(root,"example.py"),"def changed():\n    return 2\n"); }
 function bytes(root: string): Buffer { return readFileSync(currentGraphPath(root)); }
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("immutable graph maintenance", () => {
   it("builds a missing graph through a validated candidate without leftovers", async () => {
@@ -59,6 +61,7 @@ describe("immutable graph maintenance", () => {
     expect(bytes(root)).toEqual(before); expect(leftovers(root)).toEqual([]);
   });
   it("rejects same-size snapshot tampering even with restored mtime", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const root=fixture(); await rebuildGraph(root); const before=bytes(root); change(root);
     await expect(refreshGraph(root,options({afterCandidateValidated(path:string){
       const data=readFileSync(path); const marker=Buffer.from('"indexedAt":"'); const at=data.indexOf(marker)+marker.length;

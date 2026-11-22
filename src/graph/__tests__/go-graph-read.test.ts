@@ -69,6 +69,7 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
   beforeAll(async () => {
     root = mkdtempSync(join(tmpdir(), "mex-graph-read-"));
     vi.stubEnv("MEX_HOME", join(root, "home"));
+    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
     checkout = join(root, "repo");
     mkdirSync(join(checkout, "src"), { recursive: true });
     mkdirSync(join(checkout, "test"), { recursive: true });
@@ -81,7 +82,7 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     const published = openCurrentGraph(checkout)!;
     try {
       expect(published.prepare("PRAGMA main.user_version").get()).toMatchObject({
-        user_version: process.env.MEX_GRAPH_STORAGE === "v5" ? 5 : 0,
+        user_version: 5,
       });
     } finally { published.close(); }
     // The file index marks test files and re-checks changed ones, as in a real checkout.

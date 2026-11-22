@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureGraphCurrent, rebuildGraph, refreshGraph } from "../maintenance.js";
 import { openGraphRead } from "../overlay-open.js";
 import { graphLocation, readGraphPointer } from "../storage.js";
@@ -15,6 +15,10 @@ import { graphLocation, readGraphPointer } from "../storage.js";
  */
 
 const roots: string[] = [];
+// Compare v4 row digests throughout the replay.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
+
 afterAll(() => {
   for (const root of roots.splice(0)) {
     try { git(root, "worktree", "prune"); } catch { /* not a repository */ }
@@ -26,8 +30,13 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "core.autocrlf=false", ...args], { cwd, encoding: "utf8", windowsHide: true });
 }
 async function inHome<T>(home: string, work: () => Promise<T> | T): Promise<T> {
-  vi.stubEnv("MEX_HOME", home);
-  try { return await work(); } finally { vi.unstubAllEnvs(); }
+  const previous = process.env.MEX_HOME;
+  process.env.MEX_HOME = home;
+  try { return await work(); }
+  finally {
+    if (previous === undefined) delete process.env.MEX_HOME;
+    else process.env.MEX_HOME = previous;
+  }
 }
 const TABLES: Record<string, string> = {
   nodes: "SELECT id, kind, name, qualified_name, file_path, start_line, end_line, body_hash FROM nodes",

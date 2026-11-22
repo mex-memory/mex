@@ -3,7 +3,7 @@ import { currentGraphPath } from "../src/graph/storage.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MexConfig } from "../src/types.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { openSqlite } from "../src/graph/db/sqlite.js";
@@ -22,7 +22,11 @@ import type { NodeKind } from "../src/graph/types.js";
 
 const roots: string[] = [];
 
+// These fixtures exercise the writable v4 layout.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) {
     try {
       rmSync(root, { recursive: true, force: true });

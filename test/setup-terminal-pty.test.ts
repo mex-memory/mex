@@ -356,6 +356,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     f.cli = join(runtime, "dist/cli.js");
     f.workerRecord = join(f.root, "graph-worker.json");
     f.env.MEX_PTY_GRAPH_RECORD = f.workerRecord;
+    f.env.MEX_GRAPH_STORAGE = "v4";
     writeFileSync(join(runtime, "dist/graph-candidate.js"), String.raw`
 import { writeFileSync, writeSync } from "node:fs";
 process.once("message", request => {
