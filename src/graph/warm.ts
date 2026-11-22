@@ -1,4 +1,6 @@
 import { graphLocation, readGraphPointer } from "./storage.js";
+import { graphStorageV5 } from "./engine-languages.js";
+import type { ProcessUsage } from "./process-stats.js";
 
 export interface WarmEditResult {
   /** published: a new overlay is live. unchanged: nothing to do. cold: queue a refresh. */
@@ -9,6 +11,7 @@ export interface WarmEditResult {
   /** From the call to the published pointer. */
   ms: number;
   phases: Record<string, number>;
+  engineUsage?: ProcessUsage;
 }
 
 export interface WarmGraphCheckout {
@@ -19,7 +22,7 @@ export interface WarmGraphCheckout {
 
 /** Open a resident engine for the checkout's published v5 graph. */
 export async function openWarmCheckout(root: string): Promise<WarmGraphCheckout> {
-  if (process.env.MEX_GRAPH_STORAGE !== "v5") throw new Error("Schema v4 edits use a normal graph refresh.");
+  if (!graphStorageV5()) throw new Error("Schema v4 edits use a normal graph refresh.");
   const location = graphLocation(root);
   const pointer = readGraphPointer(location);
   if (pointer) {

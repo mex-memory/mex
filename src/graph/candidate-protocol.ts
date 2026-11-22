@@ -47,8 +47,11 @@ const buildResult = z.object({
     files: count,
     fallbackFiles: count,
     fellBack: z.string().max(200).optional(),
+    runtime: z.enum(["native", "wasi", "node"]).optional(),
+    nativeUnavailable: z.string().max(200).optional(),
     wallMs: count.optional(),
     peakRssMb: count.optional(),
+    cpuMs: count.optional(),
   }).strict().optional(),
   // Fixed-vocabulary reasons and counts only; no path crosses this boundary.
   refresh: z.object({
@@ -66,6 +69,7 @@ const buildResult = z.object({
 const candidateUsage = z.object({
   cpuMs: count,
   peakRssMb: count,
+  enginePeakRssMb: count.optional(),
 }).strict();
 export type GraphCandidateUsage = z.infer<typeof candidateUsage>;
 
@@ -73,7 +77,7 @@ export const graphCandidateMessage = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready") }).strict(),
   z.object({ type: z.literal("progress"), progress: graphCandidateProgress }).strict(),
   z.object({ type: z.literal("complete"), result: buildResult, usage: candidateUsage.optional() }).strict(),
-  z.object({ type: z.literal("failed"), category: z.enum(["compatibility", "staging", "failed"]) }).strict(),
+  z.object({ type: z.literal("failed"), category: z.enum(["compatibility", "staging", "failed"]), usage: candidateUsage.optional() }).strict(),
 ]);
 export type GraphCandidateMessage = z.infer<typeof graphCandidateMessage>;
 

@@ -3,8 +3,9 @@ import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { spawnGraphEngine, writeEngineRequest, type EngineEvent, type EngineRequest,
+import { spawnGraphEngine, writeEngineRequest, type EngineEvent, type EngineRequest, type GraphEngineUsage,
   type EngineRequestConfig, type EngineRequestFile, type GraphEngineBuildMetadata } from "./native-engine.js";
+import type { ProcessUsage } from "./process-stats.js";
 
 export interface ServeRequest extends Omit<EngineRequest, "mode" | "output"> {
   mode: "serve";
@@ -28,9 +29,9 @@ export interface ServeStamp {
 }
 
 type ServeResult = Extract<EngineEvent, { type: "result" }> & { id: number };
-type Reply = ServeResult | { type: "ready" }
+type Reply = (ServeResult | { type: "ready" }
   | { type: "verified"; id: number; matches: boolean; wallMs: number }
-  | { type: "accepted" | "discarded"; id: number };
+  | { type: "accepted" | "discarded"; id: number }) & { usage?: GraphEngineUsage };
 
 const REPLY_TIMEOUT_MS = 120_000;
 const CLOSE_TIMEOUT_MS = 1_000;
@@ -41,6 +42,8 @@ export class NativeGraphServer {
   private closing = false;
   private exited = false;
   private problem: Error | undefined;
+  private usage: ProcessUsage | undefined;
+  private cpuAccounted = 0;
   private waiting: {
     type: Reply["type"]; id: number | undefined; resolve: (reply: Reply) => void;
     reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>;
@@ -51,6 +54,12 @@ export class NativeGraphServer {
     lines.on("line", (line) => {
       try {
         const event = JSON.parse(line) as Reply | Extract<EngineEvent, { type: "error" }>;
+        if (event.usage && Number.isFinite(event.usage.peakRssMb)) {
+          this.usage = {
+            cpuMs: Math.max(this.usage?.cpuMs ?? this.cpuAccounted, event.usage.cpuMs ?? 0),
+            peakRssMb: Math.max(this.usage?.peakRssMb ?? 0, event.usage.peakRssMb),
+          };
+        }
         if (event.type === "error") {
           this.stop(new Error(event.message));
           return;
@@ -91,6 +100,15 @@ export class NativeGraphServer {
 
   get pid(): number | undefined { return this.child.pid; }
   get live(): boolean { return !this.closing && !this.exited; }
+
+  takeUsage(): ProcessUsage | undefined {
+    const sample = this.usage;
+    if (!sample) return undefined;
+    this.usage = undefined;
+    const cpuMs = sample.cpuMs - this.cpuAccounted;
+    this.cpuAccounted = sample.cpuMs;
+    return { cpuMs, peakRssMb: sample.peakRssMb };
+  }
 
   async edit(input: ServeEdit): Promise<ServeResult> {
     const id = ++this.nextId;

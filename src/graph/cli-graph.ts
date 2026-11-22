@@ -11,7 +11,7 @@ import {
   refreshGraph,
   type GraphMaintenanceResult,
 } from "./maintenance.js";
-import { graphEngineFallbackMessage } from "./engine-languages.js";
+import { graphEngineFallbackMessage, graphEngineRuntimeLabel } from "./engine-languages.js";
 import { inspectGraphStatus } from "./status.js";
 import { coverageFields, readStoredGraphCoverage, type GraphCoverageObservation } from "./coverage.js";
 
@@ -109,7 +109,9 @@ function printEngineReport(report: GraphRefreshResult["engine"]): void {
     return;
   }
   const usage = report.wallMs === undefined ? "" : ` in ${report.wallMs}ms, peak ${report.peakRssMb} MiB`;
-  console.log(`Rust graph engine built ${report.files} ${languages} file(s)${usage}.`);
+  const engine = report.runtime ? `Graph engine (${graphEngineRuntimeLabel(report.runtime)})` : "Rust graph engine";
+  console.log(`${engine} built ${report.files} ${languages} file(s)${usage}.`);
+  if (report.nativeUnavailable) console.log(`WASI fallback ran because ${report.nativeUnavailable}.`);
   if (report.fallbackFiles > 0) console.log(graphEngineFallbackMessage(report));
 }
 

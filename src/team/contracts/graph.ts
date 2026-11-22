@@ -48,7 +48,9 @@ export interface GraphSourceChanges {
   grammarChanged: boolean;
 }
 
-/** What the Rust graph engine (OSS-73) built in one pass. */
+export type GraphEngineRuntime = "native" | "wasi" | "node";
+
+/** What the graph engine (OSS-73) built in one pass. */
 export interface GraphEngineReport {
   /** The languages it was asked to build. */
   languages: string[];
@@ -58,13 +60,17 @@ export interface GraphEngineReport {
   fallbackFiles: number;
   /** Why the engine could not build any of the requested files. */
   fellBack?: string;
+  runtime?: GraphEngineRuntime;
+  /** Why a WASI job used the shipped module. */
+  nativeUnavailable?: string;
   /** The engine job's elapsed time and peak sampled memory. */
   wallMs?: number;
   peakRssMb?: number;
+  cpuMs?: number;
 }
 
 /** Published fallback coverage, independent of the job's runtime measurements. */
-export type GraphEngineFallback = Omit<GraphEngineReport, "wallMs" | "peakRssMb">;
+export type GraphEngineFallback = Pick<GraphEngineReport, "languages" | "files" | "fallbackFiles" | "fellBack">;
 
 export interface GraphStatus {
   status: GraphStatusKind;
@@ -85,6 +91,8 @@ export interface GraphStatus {
   grammarVersion: string | null;
   /** Published coverage for files built after a Rust engine fallback. */
   engineFallback?: GraphEngineFallback;
+  engineRuntime?: GraphEngineRuntime;
+  nativeEngineUnavailable?: string;
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];

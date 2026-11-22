@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir, totalmem, freemem } from "node:os";
 import { getHeapStatistics } from "node:v8";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuildResult } from "./engine.js";
 import {
@@ -12,6 +12,7 @@ import {
   type GraphCandidateRequest,
 } from "./candidate-protocol.js";
 import { phaseTimingsWorkerEnv } from "./phase-timing.js";
+import { createGraphWorkspace } from "./storage.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STARTUP_TIMEOUT_MS = 15_000;
@@ -132,7 +133,9 @@ function candidateEntrypoint(): string {
 /** Construct only the parent's candidate. Lease and publication stay in maintenance. */
 export async function runGraphCandidateProcess(options: GraphCandidateProcessOptions): Promise<BuildResult> {
   if (options.signal?.aborted) throw new GraphCandidateProcessError("cancelled");
-  const workspace = mkdtempSync(join(tmpdir(), "mex-graph-candidate-"));
+  const workspace = createGraphWorkspace(/^graph-tmp-\d+-[a-z0-9-]+\.db$/u.test(basename(options.candidatePath))
+    ? options.candidatePath + ".worker-"
+    : join(tmpdir(), "mex-graph-candidate-"));
   const workspaceIdentity = identity(workspace);
   try {
     const request: GraphCandidateRequest = {
@@ -242,11 +245,11 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
         }
       } else if (message.type === "complete") {
         result = message.result;
-        if (message.usage) {
-          try { options.onUsage?.(message.usage); } catch { /* the usage log never fails a build */ }
-        }
       } else {
         stop(fail("worker-error", message.category));
+      }
+      if ((message.type === "complete" || message.type === "failed") && message.usage) {
+        try { options.onUsage?.(message.usage); } catch { /* the usage log never fails a build */ }
       }
     });
     child.once("close", (code, signal) => {

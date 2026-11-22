@@ -3,20 +3,27 @@
 // reads load, can fold the choice in without loading the engine client.
 
 import type { GraphEngineFallback } from "./engine.js";
+import type { GraphEngineRuntime } from "../team/contracts/graph.js";
 import type { Language } from "./types.js";
 
-/** Languages that can opt into the engine, e.g. `python`. */
+/** A comma-separated override for the engine's default language families. */
 export const GRAPH_ENGINE_LANGUAGES_ENV = "MEX_GRAPH_ENGINE_LANGUAGES";
-const OPT_IN_LANGUAGES = new Set(["python", "rust", "csharp"]);
 const ECMASCRIPT_FAMILIES = ["javascript", "typescript"] as const;
+const ENGINE_LANGUAGES = ["csharp", "javascript", "python", "rust", "typescript"];
 export const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v4";
 /** Bumped when the engine's rows for a language change. */
 const ENGINE_EXTRACTOR_VERSION = "v1";
 
-/** ECMAScript always uses the engine when available. Other languages opt in. */
 export function graphEngineLanguages(env: NodeJS.ProcessEnv = process.env): string[] {
-  const listed = (env[GRAPH_ENGINE_LANGUAGES_ENV] ?? "").split(",").map((name) => name.trim().toLowerCase());
-  return [...new Set([...ECMASCRIPT_FAMILIES, ...listed.filter((name) => OPT_IN_LANGUAGES.has(name))])].sort();
+  const override = env[GRAPH_ENGINE_LANGUAGES_ENV];
+  if (override === undefined) return [...ENGINE_LANGUAGES];
+  const listed = override.split(",").map((name) => name.trim().toLowerCase());
+  return ENGINE_LANGUAGES.filter((name) => listed.includes(name));
+}
+
+/** Schema v5 is used when the selected engine covers the whole corpus. */
+export function graphStorageV5(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.MEX_GRAPH_STORAGE !== "v4";
 }
 
 /** Group JSX with JavaScript and TSX with TypeScript for engine selection. */
@@ -50,11 +57,21 @@ export function graphEngineFallbackMessage(fallback: GraphEngineFallback): strin
   return `Rust graph engine not used for ${files}: ${reason}. Node's tree-sitter extractors processed those files.`;
 }
 
+export function graphEngineRuntimeLabel(runtime: GraphEngineRuntime): string {
+  switch (runtime) {
+    case "native": return "native (Rust)";
+    case "wasi": return "WASI (Rust)";
+    case "node": return "Node tree-sitter";
+  }
+}
+
 /** Persisted fallback reasons contain only owned messages and bounded engine codes. */
 export function isGraphEngineFallbackReason(reason: unknown): reason is string {
   return typeof reason === "string" && (
     [
       "no mex-graph binary was found",
+      "the mex-graph binary could not be executed",
+      "the WASI graph engine could not start",
       "mex-graph version did not identify a contract",
       "mex-graph version printed something that isn't JSON",
       "the engine job could not be started",

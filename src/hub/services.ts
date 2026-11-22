@@ -1,4 +1,4 @@
-import { graphEngineFallbackMessage } from "../graph/engine-languages.js";
+import { graphEngineFallbackMessage, graphEngineRuntimeLabel } from "../graph/engine-languages.js";
 import { DiagramRepository } from "../statechart/repository.js";
 import { readAgentLoggingPolicy, setAgentLoggingPolicy } from "../logging/policy.js";
 import {
@@ -1536,11 +1536,14 @@ function projectGraphHealthStatus(
     status: status.status === "fresh" && status.parseHealth.failed === 0 && !status.engineFallback
       ? "healthy"
       : "degraded",
-    summary: graphHealthSummary(status),
+    summary: graphHealthSummary(status) + (status.engineRuntime ? ` Graph engine used ${graphEngineRuntimeLabel(status.engineRuntime)}.` : ""),
     diagnostics: status.diagnostics.slice(0, HUB_LIMITS.maxDiagnosticCount).map((diagnostic) => {
       const projected = projectGraphDiagnostic(diagnostic);
       if (diagnostic.code === "GRAPH_ENGINE_FALLBACK" && status.engineFallback) {
         projected.message = graphEngineFallbackMessage(status.engineFallback);
+      }
+      if (diagnostic.code === "GRAPH_ENGINE_WASI" && status.nativeEngineUnavailable) {
+        projected.message = `The WASI graph engine ran because ${status.nativeEngineUnavailable}.`;
       }
       return projected;
     }),

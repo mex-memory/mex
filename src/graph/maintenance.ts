@@ -1,6 +1,5 @@
 import { materializeOverlay } from "./overlay-materialize.js";
-import { openRecord } from "../record/index.js";
-import { recordBuildUsage } from "../record/build-usage.js";
+import { logGraphUsage, startGraphUsage } from "./usage.js";
 import type { GraphCandidateUsage } from "./candidate-protocol.js";
 import { acquireGraphWriter, adoptSiblingBase, assertGraphDirectory, cloneGraph, collectGraphGarbage, currentGraphPath, discardGraphTemporary, enforceIndexCap, finalizeGraph, graphLocation, graphStoragePathAllowed, verifiedGraphLocation, graphTemporary, publishGraph, publishGraphOverlay, publishGraphPointer, readGraphPointer, siblingBase, siblingBases, withGraphStorageContext, type GraphLocation } from "./storage.js";
 import { overlayTooLarge, planOverlay, writeOverlay, type OverlayPlan } from "./overlay-write.js";
@@ -43,7 +42,9 @@ import { GraphStore } from "./db/store.js";
 import { FingerprintStore, transferGroundingBaselines } from "./fingerprint-store.js";
 import { installGraphViews, overlayBase } from "./overlay.js";
 import { NativeGraphJobError, prepareNativeGraphBuild, type NativeGraphBuild, type NativeGraphFile, type NativeGraphRefresh } from "./native-build.js";
-import { graphEngineBinary, type GraphEngineBuildMetadata } from "./native-engine.js";
+import { hasGraphEngine, type GraphEngineBuildMetadata } from "./native-engine.js";
+import { graphStorageV5 } from "./engine-languages.js";
+import { withEngineUsage, type ProcessUsage } from "./process-stats.js";
 import { auditRecordProvenInProcess, holdsAuditedBytes, recordAuditedDatabase } from "./audit-record.js";
 import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
 import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing, restoreGraphAliases, restoreOverlayAliases } from "./engine-impl.js";
@@ -276,15 +277,19 @@ export function acquireGraphMaintenanceLease(
       sweepOrphanCandidates(paths);
       // One operation reads each unchanged source once; see source-memo.
       if (operation === "repair") return await withGraphStorageContext(() => withSourceMemo(() => repairGraphWithLease(paths, merged)));
-      const meter = startUsageMeter();
+      const meter = startGraphUsage();
+      const engineUsage: ProcessUsage = { cpuMs: 0, peakRssMb: 0 };
       let outcome: GraphMaintenanceResult | undefined;
       try {
-        outcome = operation === "refresh"
-          ? await withGraphStorageContext(() => withSourceMemo(() => refreshGraphWithLease(paths, merged)))
-          : await withGraphStorageContext(() => withSourceMemo(() => rebuildGraphWithLease(paths, merged)));
+        outcome = await withEngineUsage(engineUsage, () => operation === "refresh"
+          ? withGraphStorageContext(() => withSourceMemo(() => refreshGraphWithLease(paths, merged)))
+          : withGraphStorageContext(() => withSourceMemo(() => rebuildGraphWithLease(paths, merged))));
         return outcome;
       } finally {
-        logGraphUsage(paths, operation === "rebuild" ? "build" : "refresh", meter, merged.__usage?.candidate, outcome);
+        const candidate = merged.__usage?.candidate;
+        const unchanged = outcome?.filesIndexed === 0 && outcome.nodesCreated === 0 && !candidate;
+        logGraphUsage(paths.location, operation === "rebuild" ? "build" : "refresh", meter, engineUsage, candidate,
+          outcome?.refresh?.filesChanged ?? outcome?.filesIndexed ?? 0, !outcome ? "failed" : unchanged ? "unchanged" : "ok");
       }
     } finally {
       active = false;
@@ -335,7 +340,7 @@ export async function ensureGraphCurrent(
 }
 
 function shouldRetryEngine(status: GraphStatus): boolean {
-  return status.engineFallback !== undefined && graphEngineBinary() !== undefined;
+  return status.engineFallback !== undefined && hasGraphEngine();
 }
 
 /** Explicit correctness-first refresh. Reads never call this function. */
@@ -397,7 +402,7 @@ async function refreshGraphWithLease(
     // reuses their band hashes instead of deriving them again.
     const bandHashMemo = new Map<string, readonly string[]>();
     const statBeforeInspect = liveDatabaseStat(paths.database);
-    const v5Pointer = process.env.MEX_GRAPH_STORAGE === "v5" && !options.__internal?.publishAsBase
+    const v5Pointer = graphStorageV5() && !options.__internal?.publishAsBase
       ? readGraphPointer(paths.location) : undefined;
     const v5Base = v5Pointer ? join(paths.location.directory, v5Pointer.base) : undefined;
     const v5Identity = v5Base ? captureDatabaseIdentity(v5Base) : undefined;
@@ -408,6 +413,48 @@ async function refreshGraphWithLease(
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
     progress(options, "discover", "Inspecting the current graph snapshot and source corpus.");
+    // A refresh that would publish nothing, not even coverage or HEAD, needs
+    // no candidate (issue #209): the live graph is already what a candidate
+    // would become, and it is left byte-identical. Anything else, including a
+    // coverage change, takes the normal validated publication.
+    // An inspection that already saw a change settles it without a second
+    // corpus walk; skipping the check only ever takes the normal path.
+    // A degraded graph differs from a fresh one only by partially parsed
+    // files, which unchanged sources would parse the same way again.
+    const statBefore = liveDatabaseStat(paths.database);
+    const sameStorage = priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION
+      ? Boolean(v5Pointer && native && native.runtime === priorStatus.engineRuntime)
+      : !native;
+    if (sameStorage && !shouldRetryEngine(priorStatus)
+      && (priorStatus.status === "fresh" || priorStatus.status === "degraded")
+      && timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database, {
+        sourcesInspected: !options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore),
+      }))) {
+      native?.assertInputsUnchanged();
+      assertNotAborted(options.signal);
+      assertMaintenanceDirectoryUnchanged(paths);
+      assertClearSidecars(paths.database);
+      if (sameLiveDatabaseStat(statBefore, liveDatabaseStat(paths.database))) {
+        // The inspection audited these bytes in full, or proved them the
+        // bytes of an earlier audit. Recording them spares the next
+        // inspection that audit, as a publication's record does.
+        if (!options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore)
+          && !auditRecordProvenInProcess(realpathSync.native(paths.database), statBefore!)) {
+          const audited = captureDatabaseIdentity(paths.database);
+          if (sameLiveDatabaseStat(statBeforeInspect, audited)) {
+            recordAuditedDatabase(realpathSync.native(paths.database), audited.size, audited.digest);
+          }
+        }
+        const finished = currentDate(options);
+        return maintenanceResult(
+          started,
+          finished,
+          { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 },
+          { status: priorStatus, diagnostics: priorStatus.diagnostics },
+        );
+      }
+    }
+
     if (native || priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION || shouldRetryEngine(priorStatus)) {
       const priorIdentity = captureDatabaseIdentity(paths.database);
       candidatePath = ownedPath(paths, "candidate", createToken(options));
@@ -447,7 +494,8 @@ async function refreshGraphWithLease(
         // from an empty candidate. The same captured inputs and facts cache apply.
         buildResult = patch?.result ?? await buildStandaloneCandidate(paths, candidatePath, options, native);
       } catch (error) {
-        if (!native?.hasEcmaScript || !(error instanceof NativeGraphJobError)) throw error;
+        assertNotAborted(options.signal);
+        if (!(error instanceof NativeGraphJobError)) throw error;
         patch = undefined;
         chosenBase = undefined;
         buildResult = await rebuildAfterEngineFailure(paths, candidatePath, options, error);
@@ -478,41 +526,6 @@ async function refreshGraphWithLease(
       }, published);
     }
 
-    // A refresh that would publish nothing, not even coverage or HEAD, needs
-    // no candidate (issue #209): the live graph is already what a candidate
-    // would become, and it is left byte-identical. Anything else, including a
-    // coverage change, takes the normal validated publication.
-    // An inspection that already saw a change settles it without a second
-    // corpus walk; skipping the check only ever takes the normal path.
-    // A degraded graph differs from a fresh one only by partially parsed
-    // files, which unchanged sources would parse the same way again.
-    const statBefore = liveDatabaseStat(paths.database);
-    if ((priorStatus.status === "fresh" || priorStatus.status === "degraded")
-      && timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database, {
-        sourcesInspected: !options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore),
-      }))) {
-      assertMaintenanceDirectoryUnchanged(paths);
-      assertClearSidecars(paths.database);
-      if (sameLiveDatabaseStat(statBefore, liveDatabaseStat(paths.database))) {
-        // The inspection audited these bytes in full, or proved them the
-        // bytes of an earlier audit. Recording them spares the next
-        // inspection that audit, as a publication's record does.
-        if (!options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore)
-          && !auditRecordProvenInProcess(realpathSync.native(paths.database), statBefore!)) {
-          const audited = captureDatabaseIdentity(paths.database);
-          if (sameLiveDatabaseStat(statBeforeInspect, audited)) {
-            recordAuditedDatabase(realpathSync.native(paths.database), audited.size, audited.digest);
-          }
-        }
-        const finished = currentDate(options);
-        return maintenanceResult(
-          started,
-          finished,
-          { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0 },
-          { status: priorStatus, diagnostics: priorStatus.diagnostics },
-        );
-      }
-    }
     const priorIdentity = captureDatabaseIdentity(paths.database);
     // A checkout reads its base plus its overlay; the refresh starts from the
     // base alone, so the result can be published as an overlay over that base.
@@ -614,7 +627,7 @@ async function rebuildGraphWithLease(
       try {
         buildResult = await timeGraphPhaseAsync("envelope.build", () => buildStandaloneCandidate(paths, candidatePath!, options, native));
       } catch (error) {
-        if (!native?.hasEcmaScript || !(error instanceof NativeGraphJobError)) throw error;
+        if (!(error instanceof NativeGraphJobError)) throw error;
         buildResult = await rebuildAfterEngineFailure(paths, candidatePath!, options, error);
       }
     } catch (error) {
@@ -871,6 +884,8 @@ function maintenanceEngine(
         check();
       },
       engineFallbackReason,
+      sourceSpoolDirectory: paths.location.directory,
+      sourceSpoolPrefix: basename(candidatePath) + ".sources-",
       afterSourcesStaged: check,
       afterExtraction: check,
       beforePublication: check,
@@ -1449,6 +1464,7 @@ function assertRepairPublishableCandidate(status: GraphStatus): void {
 const PUBLISHABLE_DEGRADED_CODES = new Set([
   "GRAPH_PARSE_DEGRADED",
   "GRAPH_ENGINE_FALLBACK",
+  "GRAPH_ENGINE_WASI",
   "GRAPH_INDEX_HEAD_CHANGED",
   // Added by the per-file skip path. Without it the publish gate discarded the
   // candidate that path exists to produce.
@@ -1697,48 +1713,4 @@ function errorCode(error: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-interface UsageMeter { startedAt: number; cpu: NodeJS.CpuUsage }
-
-function startUsageMeter(): UsageMeter {
-  return { startedAt: performance.now(), cpu: process.cpuUsage() };
-}
-
-/**
- * One row of the usage log per build or refresh: wall time, CPU of this
- * process plus the candidate, and peak memory of both. Never fails the operation it measures.
- */
-function logGraphUsage(
-  paths: MaintenancePaths,
-  kind: "build" | "refresh",
-  meter: UsageMeter,
-  candidate: GraphCandidateUsage | undefined,
-  outcome: GraphMaintenanceResult | undefined,
-): void {
-  try {
-    const cpu = process.cpuUsage(meter.cpu);
-    const ownCpuMs = (cpu.user + cpu.system) / 1000;
-    const unchanged = !!outcome && outcome.filesIndexed === 0 && outcome.nodesCreated === 0 && !candidate;
-    const files = outcome?.refresh?.filesChanged ?? outcome?.filesIndexed ?? 0;
-    const writer = openRecord({ busyTimeoutMs: 1000 });
-    try {
-      recordBuildUsage(writer.db, {
-        projectId: paths.location.projectId,
-        checkout: paths.location.root,
-        kind,
-        files,
-        wallMs: performance.now() - meter.startedAt,
-        cpuMs: ownCpuMs + (candidate?.cpuMs ?? 0),
-        peakRssMb: candidate
-          ? candidate.peakRssMb
-          : process.memoryUsage().rss / 1024 ** 2,
-        result: !outcome ? "failed" : unchanged ? "unchanged" : "ok",
-      });
-    } finally {
-      writer.close();
-    }
-  } catch {
-    // The usage log is a report; a locked or missing record never fails a build.
-  }
 }

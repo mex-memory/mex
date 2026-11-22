@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { checkoutKey, indexDirectory, writeAtomic, writeLocator } from "../file-index/store.js";
 import { recordLocation, type LocationOptions } from "../record/location.js";
@@ -12,7 +12,9 @@ export const INDEX_DISK_CAP = 5 * 1024 ** 3;
 const GRACE_MS = 60_000;
 const BASE = /^graph-base-[a-z0-9-]+\.db$/;
 const OVERLAY = /^graph-o-[a-f0-9]{24}-[a-z0-9-]+\.db$/;
-const TEMP = /^graph-tmp-(\d+)-[a-z0-9-]+\.db(?:-(?:journal|wal|shm))?$/;
+const TEMP = /^graph-tmp-(\d+)-[a-z0-9-]+\.db$/;
+const TEMP_FILE = /^graph-tmp-(\d+)-[a-z0-9-]+\.db(?:-(?:journal|wal|shm|edit-request)|\.(?:request\.json|lock))?$/;
+const TEMP_DIRECTORY = /^graph-tmp-(\d+)-[a-z0-9-]+\.db\.(?:sources|worker)-[a-zA-Z0-9]{6}$/;
 export interface GraphPointer {
   version: 1; root: string; base: string;
   /** The checkout's overlay over `base`, or null when its files equal the base. */
@@ -160,10 +162,25 @@ export function graphTemporary(location: GraphLocation): string {
   mkdirSync(location.directory, { recursive: true, mode: 0o700 });
   return join(location.directory, `graph-tmp-${process.pid}-${Date.now().toString(36)}-${randomBytes(12).toString("hex")}.db`);
 }
+
+/** An orphan collector must be able to distinguish a job's directory from a replacement. */
+export function createGraphWorkspace(prefix: string): string {
+  const directory = mkdtempSync(prefix);
+  if (TEMP_DIRECTORY.test(basename(directory))) {
+    try {
+      const { dev, ino } = lstatSync(directory, { bigint: true });
+      writeFileSync(join(directory, ".owner"), `${dev}:${ino}`, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      rmSync(directory, { recursive: true, force: true });
+      throw error;
+    }
+  }
+  return directory;
+}
 export function discardGraphTemporary(file: string): void {
   if (!TEMP.test(basename(file))) throw new Error("Not a graph temporary file");
   assertGraphDirectory(dirname(file));
-  for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+  for (const suffix of ["", "-journal", "-wal", "-shm", "-edit-request", ".request.json"]) {
     const path = file + suffix;
     if (regular(path)) { try { unlinkSync(path); } catch { /* open Windows handle; collect later */ } }
   }
@@ -224,9 +241,31 @@ export function acquireGraphWriter(location: GraphLocation): { assertOwned(): vo
   mkdirSync(location.directory, { recursive: true, mode: 0o700 });
   const file = join(location.directory, "graph.lock");
   const token = randomBytes(24).toString("hex");
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      writeFileSync(file, JSON.stringify({ pid: process.pid, token }), { flag: "wx", mode: 0o600 });
+  const contents = JSON.stringify({ pid: process.pid, token });
+  const intent = graphTemporary(location) + ".lock";
+  // Publish a complete exclusive lease. A process killed during the write
+  // can leave a recoverable intent, never a truncated graph.lock.
+  writeFileSync(intent, contents, { flag: "wx", mode: 0o600 });
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        linkSync(intent, file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const before = lstatSync(file, { bigint: true, throwIfNoEntry: false });
+        if (!before) continue;
+        if (!before.isFile() || before.size > 4096n) throw new Error("Unsafe graph lock");
+        let owner: { pid: number };
+        try { owner = JSON.parse(readFileSync(file, "utf8")); }
+        catch (readError) {
+          if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw new Error("Invalid graph lock");
+        }
+        if (processAlive(owner.pid)) throw Object.assign(new Error("Another graph writer is active"), { code: "GRAPH_MAINTENANCE_LOCKED" });
+        const after = lstatSync(file, { bigint: true, throwIfNoEntry: false });
+        if (after && before.ino === after.ino && before.dev === after.dev && before.ctimeNs === after.ctimeNs) unlinkSync(file);
+        continue;
+      }
       const directoryIdentity = lstatSync(location.directory, { bigint: true });
       const lockIdentity = lstatSync(file, { bigint: true });
       const assertOwned = () => {
@@ -235,25 +274,18 @@ export function acquireGraphWriter(location: GraphLocation): { assertOwned(): vo
         const lockNow = lstatSync(file, { bigint: true });
         if (directoryNow.ino !== directoryIdentity.ino || directoryNow.dev !== directoryIdentity.dev
           || lockNow.ino !== lockIdentity.ino || lockNow.dev !== lockIdentity.dev
-          || !regular(file) || readFileSync(file, "utf8") !== JSON.stringify({ pid: process.pid, token })) throw new Error("Graph writer ownership changed");
+          || !regular(file) || readFileSync(file, "utf8") !== contents) throw new Error("Graph writer ownership changed");
       };
       try { collectGraphGarbage(location); } catch (error) { try { assertOwned(); unlinkSync(file); } catch { /* replaced owner */ } throw error; }
       return { assertOwned, release() {
         assertGraphDirectory(location.directory);
         try { assertOwned(); unlinkSync(file); } catch { /* replaced owner */ }
       } };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (!regular(file) || statSync(file).size > 4096) throw new Error("Unsafe graph lock");
-      const before = lstatSync(file, { bigint: true });
-      let owner: { pid: number };
-      try { owner = JSON.parse(readFileSync(file, "utf8")); } catch { throw new Error("Invalid graph lock"); }
-      if (processAlive(owner.pid)) throw Object.assign(new Error("Another graph writer is active"), { code: "GRAPH_MAINTENANCE_LOCKED" });
-      const after = lstatSync(file, { bigint: true });
-      if (before.ino === after.ino && before.dev === after.dev && before.ctimeNs === after.ctimeNs) unlinkSync(file);
     }
+    throw new Error("Graph lock changed during acquisition");
+  } finally {
+    try { unlinkSync(intent); } catch { /* the next writer collects */ }
   }
-  throw new Error("Graph lock changed during acquisition");
 }
 function pointers(directory: string): GraphPointer[] {
   assertGraphDirectory(directory);
@@ -275,6 +307,22 @@ export function collectGraphGarbage(location: GraphLocation, now = Date.now()): 
   let names: string[]; try { names = readdirSync(location.directory); } catch { return 0; }
   for (const name of names) {
     const file = join(location.directory, name);
+    const workspace = TEMP_DIRECTORY.exec(name);
+    if (workspace && !processAlive(Number(workspace[1]))) {
+      try {
+        const stat = lstatSync(file, { bigint: true });
+        if (!stat.isDirectory()) continue;
+        const marker = join(file, ".owner");
+        if (regular(marker) && statSync(marker).size <= 64 && readFileSync(marker, "utf8") === `${stat.dev}:${stat.ino}`) {
+          rmSync(file, { recursive: true });
+          count++;
+        } else if (readdirSync(file).length === 0) {
+          rmdirSync(file);
+          count++;
+        }
+      } catch { /* a child may still be exiting */ }
+      continue;
+    }
     if (!regular(file)) continue;
     // An audit record goes with its database.
     if (name.endsWith(".db-audit.json")) {
@@ -284,7 +332,7 @@ export function collectGraphGarbage(location: GraphLocation, now = Date.now()): 
       }
       continue;
     }
-    const temp = TEMP.exec(name);
+    const temp = TEMP_FILE.exec(name);
     if ((temp && !processAlive(Number(temp[1]))) || ((BASE.test(name) || OVERLAY.test(name)) && !live.has(name) && now - statSync(file).mtimeMs > GRACE_MS)) {
       try { unlinkSync(file); count++; } catch { /* reader may hold the old base on Windows */ }
     }

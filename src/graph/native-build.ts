@@ -8,15 +8,15 @@ import { openSqlite } from "./db/sqlite.js";
 import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows, v5SourceObservations } from "./db/v5.js";
 import { discoverGraphBuildSources, GraphSourceSpool, type NativeSourceObservation } from "./engine-impl.js";
 import {
-  engineFileExtractorVersion, graphEngineHandlesEcmaScript, graphEngineLanguageFamily, graphEngineLanguages, isEcmaScriptLanguage,
+  engineFileExtractorVersion, graphEngineHandlesEcmaScript, graphEngineLanguageFamily, graphEngineLanguages, graphStorageV5,
 } from "./engine-languages.js";
 import type { BuildResult } from "./engine.js";
 import { detectLanguage } from "./extraction/grammars.js";
 import { discoverGraphConfigSources, graphManifestFromSources } from "./manifest.js";
-import { GRAPH_ENGINE_IDENTITY, graphEngineBinary, graphEngineFailureReason, graphEngineVersion, runGraphEngine, type EngineRequestConfig, type EngineRequestFile, type GraphEngineBuildMetadata } from "./native-engine.js";
+import { GRAPH_ENGINE_IDENTITY, graphEngineFailureReason, hasGraphEngine, resolveGraphEngine, runResolvedGraphEngine, type EngineRequestConfig, type EngineRequestFile, type GraphEngineBuildMetadata } from "./native-engine.js";
 import { computeSourceCorpusDigest, gitProvenanceChanged, readGraphGitProvenance } from "./snapshot.js";
 import { GraphSourceStagingError } from "./source-errors.js";
-import { graphLocation } from "./storage.js";
+import { graphLocation, graphTemporary } from "./storage.js";
 import { timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 import { attachedV5Base, installGraphViews, overlayBase } from "./overlay.js";
 import { holdsAuditedBytes } from "./audit-record.js";
@@ -52,7 +52,7 @@ export class NativeGraphJobError extends Error {
 }
 
 export interface NativeGraphBuild {
-  hasEcmaScript: boolean;
+  runtime?: "native" | "wasi";
   build(candidate: string, options: GraphMaintenanceOptions): Promise<BuildResult>;
   refresh(candidate: string, options: GraphMaintenanceOptions, against: string): Promise<NativeGraphRefresh | undefined>;
   editInputs(): NativeGraphInputs;
@@ -64,12 +64,14 @@ export interface NativeGraphBuild {
 
 /** Select v5 only when the complete indexable corpus can use the engine. */
 export async function prepareNativeGraphBuild(root: string, base?: string, previous?: string, resident = false): Promise<NativeGraphBuild | undefined> {
-  if (process.env.MEX_GRAPH_STORAGE !== "v5") return undefined;
+  if (!graphStorageV5() || (!resident && !hasGraphEngine())) return undefined;
   const languages = graphEngineLanguages();
+  if (languages.length === 0) return undefined;
   const git = readGraphGitProvenance(root);
   const observedAt = new Date().toISOString();
   const owned = (path: string) => languages.includes(graphEngineLanguageFamily(detectLanguage(path)));
-  const spool = new GraphSourceSpool(undefined, true);
+  const location = graphLocation(root);
+  const spool = new GraphSourceSpool(location.directory, true, basename(graphTemporary(location)) + ".sources-");
   const repoInspection = new AbortController();
   const fullRepo = inspectRepoState(root, observedAt, { signal: repoInspection.signal });
   const staged = new Set<string>();
@@ -85,7 +87,6 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
       }
     }, observed?.sources));
     if (corpus.files.length === 0 || corpus.files.some(file => !owned(file.relPath))) return undefined;
-    const hasEcmaScript = corpus.files.some(file => isEcmaScriptLanguage(detectLanguage(file.relPath)));
 
     const paths = old ? [...staged].slice(0, 4) : [];
     const repo = paths.length === 0 ? fullRepo : Promise.race([
@@ -103,18 +104,8 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
       return bytes.length <= MAX_WALK_BYTES ? deflateRawSync(bytes, { level: 1 }).toString("hex") : undefined;
     });
     const manifest = graphManifestFromSources(root, configs, ENGINE_GRAPH_SCHEMA_VERSION);
-    const binary = resident ? undefined : graphEngineBinary();
-    if (!resident) {
-      if (!binary) {
-        if (hasEcmaScript) return undefined;
-        throw new Error("Schema v5 requires a mex-graph binary. Set MEX_GRAPH_ENGINE to the compatible engine.");
-      }
-      const version = timeGraphPhase("native.version", () => graphEngineVersion(binary));
-      if ("problem" in version) {
-        if (hasEcmaScript) return undefined;
-        throw new Error(`Schema v5 engine unavailable: ${version.problem}.`);
-      }
-    }
+    const runner = resident ? undefined : timeGraphPhase("native.version", resolveGraphEngine);
+    if (runner && "problem" in runner) return undefined;
     const requestedLanguages = [...new Set(corpus.files.map(file =>
       graphEngineLanguageFamily(detectLanguage(file.relPath))))].sort();
     const enabled = nativeEngineLanguageIds(languages);
@@ -155,7 +146,7 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
         }]);
       }
     };
-    const factsCache = join(graphLocation(root).directory, "facts");
+    const factsCache = join(location.directory, "facts");
     let filesReextracted: number | undefined;
     const editInputs = (): NativeGraphInputs => {
       const coverage = timeGraphPhase("native.coverage", () => observed?.coverage ?? JSON.parse(captureGraphCoverage(root, V5_COVERAGE_CACHE_LIMITS)) as CoverageCache | null);
@@ -167,10 +158,10 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
     };
     const runCandidate = async (candidate: string, options: GraphMaintenanceOptions, refresh?: { base: string; overlay?: string; changed: string[] }) => {
       const started = Date.now();
-      if (!binary) throw new Error("The resident capture has no one-shot engine.");
+      if (!runner) throw new Error("The resident capture has no one-shot engine.");
       const mode = refresh ? "refresh" : "build";
       const input = editInputs();
-      const run = await timeGraphPhaseAsync(`native.${mode}`, () => runGraphEngine(binary, {
+      const run = await timeGraphPhaseAsync(`native.${mode}`, () => runResolvedGraphEngine(runner, {
         mode, root, languages: enabled, output: candidate, factsCache, observationRoot,
         ...input,
         ...refresh,
@@ -188,16 +179,20 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
         if (options.signal?.aborted) throw error;
         throw new NativeGraphJobError(`Schema v5 ${mode} could not start.`, "the engine job could not be started");
       });
+      if (run.error?.code === "graph_engine_parent_error") {
+        throw new Error(`Schema v5 ${mode} failed (${run.error.message}).`);
+      }
+      if (run.signal === "SIGKILL") throw new Error("The graph engine was killed (SIGKILL).");
       if (refresh && run.error?.code === "graph_refresh_base_incompatible") return undefined;
       if (run.exitCode !== 0 || !run.result || run.result.files !== files.length) {
         const issue = run.error?.message ?? run.signal ?? run.exitCode ?? "missing result";
-        if (run.error?.code === "graph_engine_parent_error") throw new Error(`Schema v5 ${mode} failed (${issue}).`);
         throw new NativeGraphJobError(`Schema v5 ${mode} failed (${issue}).`, graphEngineFailureReason(run));
       }
       const candidateStat = lstatSync(candidate, { throwIfNoEntry: false });
       if (!candidateStat) throw new NativeGraphJobError("The graph engine did not produce a candidate.", "the engine did not produce a candidate");
       if (!candidateStat.isFile() || candidateStat.isSymbolicLink()) throw new Error("The graph candidate is unsafe.");
-      const db = openSqlite(candidate, { readOnly: true, immutable: true });
+      const viaWasi = run.runner.kind === "wasi";
+      const db = viaWasi ? openSqlite(candidate) : openSqlite(candidate, { readOnly: true, immutable: true });
       try {
         if (!hasV5GraphSchema(db)) {
           throw new NativeGraphJobError("The graph engine did not write a schema v5 candidate.", "the engine returned an incompatible candidate");
@@ -209,13 +204,19 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
           `SELECT source_count - partial_count - failed_count AS ok, partial_count AS partial, failed_count AS failed
            FROM main.snapshot`,
         ).get() as NonNullable<BuildResult["health"]>;
+        if (viaWasi) {
+          const setMeta = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+          setMeta.run("engine_runtime", "wasi");
+          if (run.runner.nativeUnavailable) setMeta.run("native_engine_unavailable", run.runner.nativeUnavailable);
+        }
         const result: BuildResult = {
           filesIndexed: run.result.files, nodesCreated: run.result.nodes, edgesCreated: run.result.edges,
           durationMs: Date.now() - started, health,
           ...(corpus.skipped.length ? { skipped: corpus.skipped } : {}),
           engine: {
             languages: requestedLanguages, files: run.result.files, fallbackFiles: 0,
-            wallMs: run.result.usage.wallMs, peakRssMb: run.result.usage.peakRssMb,
+            runtime: run.runner.kind, nativeUnavailable: run.runner.nativeUnavailable,
+            ...run.result.usage,
           },
         };
         filesReextracted = run.result.filesReextracted ?? run.result.files;
@@ -224,7 +225,7 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
     };
     handedOff = true;
     return {
-      hasEcmaScript,
+      runtime: runner?.kind,
       editInputs,
       get filesReextracted() { return filesReextracted; },
       async build(candidate, options) {

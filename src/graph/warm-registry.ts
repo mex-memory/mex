@@ -13,6 +13,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { childProcessUsage, WARM_GRAPH_SERVER } from "./process-stats.js";
+import { graphStorageV5 } from "./engine-languages.js";
 import { GRAPH_SERVER_CAP_MB } from "./sizing.js";
 import { readGraphState, type GraphState } from "./jobs.js";
 import type { GraphLocation } from "./storage.js";
@@ -142,7 +143,7 @@ export class WarmRegistry {
 
   private async apply(root: string, projectId: string, paths: string[]): Promise<void> {
     const now = this.now();
-    if (process.env.MEX_GRAPH_STORAGE !== "v5") {
+    if (!graphStorageV5()) {
       this.close(root, "cold");
       this.host.log?.(`warm: ${root} stays cold: Schema v4 edits use a normal graph refresh.`);
       this.wait(root, projectId, now);
@@ -169,7 +170,9 @@ export class WarmRegistry {
     const cpu = process.cpuUsage();
     const result = await entry.checkout.edit(paths);
     const used = process.cpuUsage(cpu);
-    this.host.noteUsage?.(projectId, root, result, (used.user + used.system) / 1000, process.memoryUsage().rss / 1024 ** 2 + this.serverRssMb, this.serverRssMb || undefined);
+    const engineRss = result.engineUsage?.peakRssMb;
+    this.host.noteUsage?.(projectId, root, result, (used.user + used.system) / 1000 + (result.engineUsage?.cpuMs ?? 0),
+      process.memoryUsage.rss() / 1024 ** 2 + (engineRss ?? 0), engineRss);
     if (result.status === "cold") {
       this.host.log?.(`warm: ${root} went cold: ${result.reason ?? "unknown"}`);
       this.close(root, "cold");

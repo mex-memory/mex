@@ -12,6 +12,10 @@ import { withSourceMemo } from "./source-memo.js";
 import { inspectGraphStatus } from "./status.js";
 import { currentGraphPath, discardGraphTemporary, graphLocation, graphTemporary } from "./storage.js";
 import { writeGraphState } from "./jobs.js";
+import { withEngineUsage, type ProcessUsage } from "./process-stats.js";
+import type { GraphCandidateUsage } from "./candidate-protocol.js";
+import type { BuildUsageResult } from "../record/build-usage.js";
+import { logGraphUsage, startGraphUsage } from "./usage.js";
 
 export type GraphVerifyOutcome =
   | { status: "skipped"; reason: string; files: number }
@@ -51,9 +55,13 @@ export async function verifyGraph(root: string, options: { now?: Date; afterBuil
 
   // The fresh build goes into a private temporary graph file beside the published ones.
   const candidate = graphTemporary(location);
+  const meter = startGraphUsage();
+  const engineUsage: ProcessUsage = { cpuMs: 0, peakRssMb: 0 };
+  let workerUsage: GraphCandidateUsage | undefined;
+  let result: BuildUsageResult = "failed";
   try {
     if (native) {
-      const built = await withSourceMemo(async () => {
+      const built = await withEngineUsage(engineUsage, () => withSourceMemo(async () => {
         const capture = await prepareNativeGraphBuild(root);
         if (!capture) return false;
         try {
@@ -61,14 +69,21 @@ export async function verifyGraph(root: string, options: { now?: Date; afterBuil
           capture.assertInputsUnchanged();
           return true;
         } finally { capture.dispose(); }
-      });
-      if (!built) return { status: "skipped", reason: "v5 is unavailable for the current corpus", files: 0 };
+      }));
+      if (!built) {
+        result = "unchanged";
+        return { status: "skipped", reason: "v5 is unavailable for the current corpus", files: 0 };
+      }
     } else {
       const { runGraphCandidateProcess } = await import("./candidate-process.js");
-      await runGraphCandidateProcess({ projectRoot: root, candidatePath: candidate, operation: "rebuild" });
+      await runGraphCandidateProcess({ projectRoot: root, candidatePath: candidate, operation: "rebuild",
+        onUsage: (usage) => { workerUsage = usage; } });
     }
     options.afterBuild?.(candidate);
-    if (currentGraphPath(root) !== live) return { status: "skipped", reason: "the graph changed during verification", files: 0 };
+    if (currentGraphPath(root) !== live) {
+      result = "unchanged";
+      return { status: "skipped", reason: "the graph changed during verification", files: 0 };
+    }
     const fresh = openGraphFile(candidate);
     let built: Map<string, string>;
     try { built = rowsOf(fresh); } finally { fresh.close(); }
@@ -82,8 +97,10 @@ export async function verifyGraph(root: string, options: { now?: Date; afterBuil
       return { status: "differ", files: built.size, differing };
     }
     writeGraphState(location.directory, { version: 1, warm: "on", checkedAt, schemaVersion, checkout: root });
+    result = "ok";
     return { status: "match", files: built.size };
   } finally {
     discardGraphTemporary(candidate);
+    logGraphUsage(location, "verify", meter, engineUsage, workerUsage, published.size, result);
   }
 }

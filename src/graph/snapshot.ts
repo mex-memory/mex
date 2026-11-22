@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { isGraphEngineFallbackReason } from "./engine-languages.js";
 import type { GraphEngineFallback } from "./engine.js";
+import type { GraphEngineRuntime } from "../team/contracts/graph.js";
 
 export const GRAPH_SNAPSHOT_METADATA_KEY = "graph_snapshot_v1" as const;
 export const GRAPH_SNAPSHOT_VERSION = 1 as const;
@@ -31,6 +32,8 @@ export interface GraphSnapshot {
   sourceCorpusDigest: string;
   sourceCount: number;
   engineFallback?: GraphEngineFallback;
+  engineRuntime?: GraphEngineRuntime;
+  nativeEngineUnavailable?: string;
   parseHealth: GraphSnapshotParseHealth;
 }
 
@@ -58,6 +61,8 @@ export interface CreateGraphSnapshotInput {
   manifestHash: string;
   sources: readonly GraphSnapshotSource[];
   engineFallback?: GraphEngineFallback;
+  engineRuntime?: GraphEngineRuntime;
+  nativeEngineUnavailable?: string;
 }
 
 /** Hash only stable corpus identity: sorted repository path and exact content hash. */
@@ -89,6 +94,8 @@ export function createGraphSnapshot(input: CreateGraphSnapshotInput): GraphSnaps
     sourceCorpusDigest: computeSourceCorpusDigest(input.sources),
     sourceCount: input.sources.length,
     ...(input.engineFallback ? { engineFallback: input.engineFallback } : {}),
+    ...(input.engineRuntime ? { engineRuntime: input.engineRuntime } : {}),
+    ...(input.nativeEngineUnavailable ? { nativeEngineUnavailable: input.nativeEngineUnavailable } : {}),
     parseHealth,
   };
 }
@@ -110,6 +117,8 @@ export function serializeGraphSnapshot(snapshot: GraphSnapshot): string {
     sourceCorpusDigest: snapshot.sourceCorpusDigest,
     sourceCount: snapshot.sourceCount,
     ...(snapshot.engineFallback ? { engineFallback: snapshot.engineFallback } : {}),
+    ...(snapshot.engineRuntime ? { engineRuntime: snapshot.engineRuntime } : {}),
+    ...(snapshot.nativeEngineUnavailable ? { nativeEngineUnavailable: snapshot.nativeEngineUnavailable } : {}),
     parseHealth: {
       total: snapshot.parseHealth.total,
       ok: snapshot.parseHealth.ok,
@@ -142,6 +151,9 @@ export function parseGraphSnapshot(value: string | null | undefined): GraphSnaps
     || !isRecord(parsed.parseHealth)) return null;
   const engineFallback = parseEngineFallback(parsed.engineFallback);
   if (parsed.engineFallback !== undefined && !engineFallback) return null;
+  const { engineRuntime, nativeEngineUnavailable } = parsed;
+  if (engineRuntime != null && engineRuntime !== "native" && engineRuntime !== "wasi" && engineRuntime !== "node") return null;
+  if (nativeEngineUnavailable != null && (engineRuntime !== "wasi" || !isGraphEngineFallbackReason(nativeEngineUnavailable))) return null;
   const { total, ok, partial, failed } = parsed.parseHealth;
   if (!isNonNegativeInteger(total)
     || !isNonNegativeInteger(ok)
@@ -165,6 +177,8 @@ export function parseGraphSnapshot(value: string | null | undefined): GraphSnaps
     sourceCorpusDigest: parsed.sourceCorpusDigest,
     sourceCount: parsed.sourceCount,
     ...(engineFallback ? { engineFallback } : {}),
+    ...(engineRuntime ? { engineRuntime } : {}),
+    ...(typeof nativeEngineUnavailable === "string" ? { nativeEngineUnavailable } : {}),
     parseHealth: { total, ok, partial, failed },
   };
 }

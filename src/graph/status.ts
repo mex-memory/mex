@@ -1063,6 +1063,15 @@ async function inspectGraphStatusAttempt(
         message: graphEngineFallbackMessage(snapshot.engineFallback),
       });
     }
+    if (snapshot?.nativeEngineUnavailable) {
+      diagnostics.push({
+        code: "GRAPH_ENGINE_WASI",
+        severity: "info",
+        message: `The WASI graph engine ran because ${snapshot.nativeEngineUnavailable}.`,
+      });
+    }
+    const engineRuntime = snapshot?.engineRuntime
+      ?? (snapshot?.engineFallback?.files === 0 ? "node" : undefined);
     const indexedAt = snapshot?.indexedAt ?? latestIndexedAt(files);
     const lastSuccessfulIndexAt = snapshot?.lastSuccessfulIndexAt
       ?? metadataTimestamp(metadata.get("manifest_hash"));
@@ -1078,6 +1087,8 @@ async function inspectGraphStatusAttempt(
       extractorVersion: snapshot?.extractorVersion ?? metadata.get("extractor_version")?.value ?? null,
       grammarVersion: snapshot?.grammarHash ?? metadata.get("grammar_hash")?.value ?? null,
       ...(snapshot?.engineFallback ? { engineFallback: snapshot.engineFallback } : {}),
+      engineRuntime,
+      nativeEngineUnavailable: snapshot?.nativeEngineUnavailable,
       parseHealth,
       changes: sourceChanges.changes,
       diagnostics,
@@ -1253,6 +1264,8 @@ function graphStatus(input: {
   grammarVersion?: string | null;
   inspected?: boolean;
   engineFallback?: GraphStatus["engineFallback"];
+  engineRuntime?: GraphStatus["engineRuntime"];
+  nativeEngineUnavailable?: string;
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];
@@ -1270,6 +1283,8 @@ function graphStatus(input: {
     extractorVersion: input.extractorVersion ?? null,
     grammarVersion: input.grammarVersion ?? null,
     ...(input.engineFallback ? { engineFallback: input.engineFallback } : {}),
+    ...(input.engineRuntime ? { engineRuntime: input.engineRuntime } : {}),
+    ...(input.nativeEngineUnavailable ? { nativeEngineUnavailable: input.nativeEngineUnavailable } : {}),
     parseHealth: input.parseHealth,
     changes: input.changes,
     diagnostics: input.diagnostics,

@@ -3,7 +3,7 @@ import { assertTextSource, unavailableFileReason } from "./source-errors.js";
 import { discoverGraphReadPaths } from "./read-discovery.js";
 import { skippedByRule } from "../file-index/discover.js";
 import { coverageAllowsNodes, graphCoverage, type GraphCoverage } from "./read-coverage.js";
-import { currentGraphPath, graphStoragePathAllowed } from "./storage.js";
+import { createGraphWorkspace, currentGraphPath, graphStoragePathAllowed } from "./storage.js";
 import { graphManifest, configHashForSources, discoverGraphConfigSources, corpusExtractorVersion, RESOLVER_VERSION, type GraphManifest } from "./manifest.js";
 export { graphManifest, graphManifestHash, graphManifestDiffersOnlyByConfig, type GraphManifest, type GraphManifestInputs } from "./manifest.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
@@ -14,7 +14,6 @@ import {
   constants,
   fstatSync,
   lstatSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   realpath,
@@ -43,8 +42,9 @@ import {
   discoverBoundedGraphPaths,
   isPerFileCorpusLimitError,
 } from "./corpus-policy.js";
-import { captureGraphCoverage, GRAPH_COVERAGE_METADATA_KEY } from "./coverage.js";
+import { captureGraphCoverage, GRAPH_COVERAGE_METADATA_KEY, reuseV5Coverage } from "./coverage.js";
 import { DB_SCHEMA_VERSION, markGraphReady, openGraphDatabase } from "./db/database.js";
+import { readsV5Graph } from "./db/v5.js";
 import {
   GraphStore,
   type FileRecord,
@@ -123,6 +123,7 @@ export interface GraphEngineOptions {
 interface GraphEngineInternalHooks {
   /** Parent-owned workspace for cleanup after a candidate process aborts. */
   sourceSpoolDirectory?: string;
+  sourceSpoolPrefix?: string;
   /** Skip engine staging when the standalone engine job already failed. */
   engineFallbackReason?: string;
   /** Numeric construction progress; never carries source paths or content. */
@@ -175,8 +176,8 @@ export class GraphSourceSpool {
   private readonly held = new Map<string, string>();
   private disposed = false;
 
-  constructor(parentDirectory = tmpdir(), private readonly diskOnly = false) {
-    this.directory = mkdtempSync(join(parentDirectory, "mex-graph-stage-"));
+  constructor(parentDirectory = tmpdir(), private readonly diskOnly = false, prefix = "mex-graph-stage-") {
+    this.directory = createGraphWorkspace(join(parentDirectory, prefix));
   }
 
   stage(relPath: string, source: string): void {
@@ -441,7 +442,7 @@ class GraphEngineImpl implements GraphEngine {
     // One discovery serves both the unchanged check and staging (issue #209):
     // the corpus is read, hashed and spooled once, and the check compares the
     // very bytes that would be staged.
-    const sourceSpool = new GraphSourceSpool(this.internal.sourceSpoolDirectory);
+    const sourceSpool = new GraphSourceSpool(this.internal.sourceSpoolDirectory, false, this.internal.sourceSpoolPrefix);
     let prepared: PreparedCorpus | undefined;
     try {
       const corpus = await timeGraphPhaseAsync("sync.discover", () =>
@@ -449,7 +450,7 @@ class GraphEngineImpl implements GraphEngine {
       if (changedSources.length === 0) {
         const unchanged = unchangedGraphSnapshot(store, gitBeforeStaging, manifest, corpus.files);
         if (unchanged && !(unchanged.engineFallback
-          && (await import("./native-engine.js")).graphEngineBinary())) {
+          && (await import("./native-engine.js")).hasGraphEngine())) {
           timeGraphPhase("sync.coverage", () => this.recordUnchangedRefresh(store, unchanged, gitBeforeStaging));
           return { filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: Date.now() - started };
         }
@@ -589,6 +590,8 @@ class GraphEngineImpl implements GraphEngine {
         contentHash: file.record.contentHash,
         parseStatus: file.record.parseStatus ?? "ok",
       })),
+      engineRuntime: staged.engine?.runtime ?? "node",
+      nativeEngineUnavailable: staged.engine?.nativeUnavailable,
       ...(staged.engine && staged.engine.fallbackFiles > 0 ? {
         engineFallback: {
           languages: staged.engine.languages,
@@ -826,6 +829,7 @@ export function refreshWouldPublishNothing(
   try {
     const store = new GraphStore(db);
     const git = readGraphGitProvenance(root);
+    const v5 = readsV5Graph(db);
     if (options.sourcesInspected) {
       // A fresh or degraded inspection of these exact bytes already found the
       // manifest, branch and every source file unchanged. Only HEAD and
@@ -835,8 +839,9 @@ export function refreshWouldPublishNothing(
         && store.getMetadata("manifest_hash") === snapshot.manifestHash
         && snapshot.indexedBranch === git.branch
         && snapshot.indexedHead === git.head
-        && store.getMetadata(GRAPH_COVERAGE_METADATA_KEY) === captureGraphCoverage(root);
+        && (v5 ? !!reuseV5Coverage(db, root) : store.getMetadata(GRAPH_COVERAGE_METADATA_KEY) === captureGraphCoverage(root));
     }
+    if (v5) return false;
     const manifest = graphManifest(root);
     if (store.getMetadata("manifest_hash") !== manifest.manifestHash) return false;
     const corpus = timeGraphPhase("envelope.noOpDiscover", () => discoverSourceFiles(root, NODE_SOURCE_FILE_ACCESS).files);
@@ -906,7 +911,7 @@ async function stageCorpus(
   /** A corpus already discovered into its spool; staging takes ownership of the spool. */
   prepared?: PreparedCorpus,
 ): Promise<StagedCorpus> {
-  const sourceSpool = prepared?.sourceSpool ?? new GraphSourceSpool(internal.sourceSpoolDirectory);
+  const sourceSpool = prepared?.sourceSpool ?? new GraphSourceSpool(internal.sourceSpoolDirectory, false, internal.sourceSpoolPrefix);
   try {
     const { files: discovered, skipped } = prepared?.corpus ?? await timeGraphPhaseAsync("stage.discover", () =>
       discoverSourceFilesConcurrently(root, sourceFileAccess, sourceSpool));
@@ -930,7 +935,7 @@ async function stageCorpus(
     internal.afterSourcesStaged?.();
     const engine = await timeGraphPhaseAsync("stage.engine", () => stageWithGraphEngine(
       root, discovered, graphEngineLanguages(), configSources,
-      internal.sourceSpoolDirectory, internal.engineFallbackReason,
+      sourceSpool.directory, internal.engineFallbackReason,
     ));
     internal.afterExtraction?.();
 
@@ -1386,20 +1391,18 @@ async function stageWithGraphEngine(
   const files = new Map<string, EngineStagedFile>();
   const fellBack = (reason: string): EngineStaging => {
     files.clear();
-    return { files, report: { languages: requestedLanguages, files: 0, fallbackFiles: paths.length, fellBack: reason } };
+    return { files, report: { languages: requestedLanguages, files: 0, fallbackFiles: paths.length, fellBack: reason, runtime: "node" } };
   };
   if (forcedFallback) return fellBack(forcedFallback);
-  const { graphEngineBinary, graphEngineVersion, graphEngineFailureReason, runGraphEngine } = await import("./native-engine.js");
-  const binary = graphEngineBinary();
-  if (!binary) return fellBack("no mex-graph binary was found");
-  const version = graphEngineVersion(binary);
-  if ("problem" in version) return fellBack(version.problem);
+  const { resolveGraphEngine, graphEngineFailureReason, runResolvedGraphEngine } = await import("./native-engine.js");
+  const runner = resolveGraphEngine();
+  if ("problem" in runner) return fellBack(runner.problem);
   const enabled = requestedLanguages.flatMap((language) =>
     language === "typescript" ? [language, "tsx"] : language === "javascript" ? [language, "jsx"] : [language]);
   const seen = new Set<string>();
-  let run: Awaited<ReturnType<typeof runGraphEngine>>;
+  let run: Awaited<ReturnType<typeof runResolvedGraphEngine>>;
   try {
-    run = await runGraphEngine(binary, {
+    run = await runResolvedGraphEngine(runner, {
       mode: "stage",
       root,
       files: paths.map((file) => ({ path: file.relPath, size: file.size })),
@@ -1424,6 +1427,7 @@ async function stageWithGraphEngine(
   } catch {
     return fellBack("the engine job could not be started");
   }
+  if (run.signal === "SIGKILL") throw new Error("The graph engine was killed (SIGKILL).");
   if (run.exitCode !== 0 || !run.result) {
     // Codes only: the report crosses the candidate boundary, where no path may.
     return fellBack(graphEngineFailureReason(run));
@@ -1448,7 +1452,9 @@ async function stageWithGraphEngine(
     files,
     report: {
       languages: requestedLanguages, files: files.size, fallbackFiles: paths.length - files.size,
-      wallMs: run.result.usage.wallMs, peakRssMb: run.result.usage.peakRssMb,
+      runtime: files.size === 0 ? "node" : run.runner.kind,
+      ...(files.size > 0 && run.runner.nativeUnavailable ? { nativeUnavailable: run.runner.nativeUnavailable } : {}),
+      ...run.result.usage,
     },
   };
 }

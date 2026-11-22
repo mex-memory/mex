@@ -6,7 +6,7 @@ import { reuseV5Coverage } from "./coverage.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows, v5SourceObservations } from "./db/v5.js";
 import { captureNativeGraphSource, nativeGraphSourcePaths, preciseSourceIdentity } from "./engine-impl.js";
-import { graphEngineLanguageFamily, graphEngineLanguages } from "./engine-languages.js";
+import { graphEngineLanguageFamily, graphEngineLanguages, graphStorageV5 } from "./engine-languages.js";
 import { detectLanguage } from "./extraction/grammars.js";
 import { pinWarmGraphArtifact, publishNativeWarmOverlay, type WarmGraphArtifact } from "./maintenance.js";
 import { discoverGraphConfigSources, graphManifestDiffersOnlyByConfig, graphManifestFromSources, type GraphManifest } from "./manifest.js";
@@ -151,7 +151,7 @@ export class NativeWarmCheckout implements WarmGraphCheckout {
     try {
       if (!hasV5GraphSchema(db)) return undefined;
       if (active.has(key)) throw new Error("The checkout already has a resident graph engine.");
-      if (process.env.MEX_GRAPH_STORAGE !== "v5") throw new Error("Schema v5 is no longer selected.");
+      if (!graphStorageV5()) throw new Error("Schema v5 is no longer selected.");
       active.add(key);
       reserved = true;
       return await withSourceMemo(async () => {
@@ -178,7 +178,7 @@ export class NativeWarmCheckout implements WarmGraphCheckout {
         if (manifest.manifestHash !== metadata.manifestHash) proof = undefined;
         const configs = nativeEngineConfigs(languages, config);
         const binary = graphEngineBinary();
-        if (!binary) throw new Error("No mex-graph binary was found.");
+        if (!binary) throw new Error("Native mex-graph is unavailable. Edits use a one-shot graph refresh.");
         const version = graphEngineVersion(binary);
         if ("problem" in version) throw new Error(version.problem);
         base.assertCurrent();
@@ -205,16 +205,18 @@ export class NativeWarmCheckout implements WarmGraphCheckout {
     this.lastEditAt = Date.now();
     const started = performance.now();
     const phases: Record<string, number> = {};
-    const done = (status: WarmEditResult["status"], files: string[], reason?: string, finished = performance.now()): WarmEditResult =>
-      ({ status, files, ms: finished - started, phases, ...(reason ? { reason } : {}) });
-    if (this.closed || this.editing) return done("cold", [], "the resident checkout is busy or closed");
+    if (this.closed || this.editing) return { status: "cold", files: [], ms: 0, phases, reason: "the resident checkout is busy or closed" };
+    const done = (status: WarmEditResult["status"], files: string[], reason?: string, finished = performance.now()): WarmEditResult => {
+      const engineUsage = this.server.takeUsage();
+      return { status, files, ms: finished - started, phases, ...(reason ? { reason } : {}), ...(engineUsage ? { engineUsage } : {}) };
+    };
     this.editing = true;
     const root = this.location.root;
     let writer: ReturnType<typeof acquireGraphWriter> | undefined;
     try {
       return await withSourceMemo(async () => {
         if (!this.server.live) throw new Error("The resident graph engine exited.");
-        if (process.env.MEX_GRAPH_STORAGE !== "v5" || graphEngineLanguages().join(",") !== this.languages.join(",")) {
+        if (!graphStorageV5() || graphEngineLanguages().join(",") !== this.languages.join(",")) {
           throw new Error("The engine language or storage selection changed.");
         }
         writer = acquireGraphWriter(this.location);

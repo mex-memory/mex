@@ -458,6 +458,8 @@ UNION ALL SELECT 'graph_snapshot_v1', json_object(
   'resolverVersion', resolver_version, 'grammarHash', lower(hex(grammar_hash)), 'configHash', lower(hex(config_hash)),
   'manifestHash', lower(hex(manifest_hash)), 'sourceCorpusDigest', lower(hex(corpus_digest)),
   'sourceCount', source_count,
+  'engineRuntime', coalesce((SELECT value FROM main.meta WHERE key = 'engine_runtime'), 'native'),
+  'nativeEngineUnavailable', (SELECT value FROM main.meta WHERE key = 'native_engine_unavailable'),
   'parseHealth', json_object('total', source_count, 'ok', source_count - partial_count - failed_count,
                              'partial', partial_count, 'failed', failed_count)
 ), indexed_at FROM main.snapshot

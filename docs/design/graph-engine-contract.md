@@ -45,9 +45,15 @@ shipped extensions.
 
 ## Starting a job
 
-1. Node writes the request to a job file and spawns the engine in its own process group, with an allowlisted environment. For a database job the request sits in the candidate's folder.
-2. The engine reads and validates the request, starts its guard (memory cap, deadline, parent watch), then waits for `start\n` on stdin. Source reads begin after the start barrier.
+1. Node writes the request to a private job file and spawns the engine with an allowlisted environment. For a database job the request sits beside the candidate.
+2. The native engine validates the request and starts its memory, deadline and parent guard. The WASI host owns these checks for the module. Source reads begin after the start barrier.
 3. Node writes `start\n`. The engine works and writes events on stdout, one JSON object per line. Logs go to stderr.
+
+The parent validates a complete candidate before updating the checkout
+pointer. A killed engine aborts that job. A surviving parent removes its
+request, source spool and candidate. After a killed parent, a subsequent
+writer reclaims the dead lease and its owned job files and directories.
+The lease is published with complete owner data in one filesystem operation.
 
 ## Request
 
@@ -68,22 +74,43 @@ shipped extensions.
 ```
 
 - `files` gives the git-aware paths Node discovered, with sizes. `configs` accepts repository-relative paths or objects with a repository-relative `path` and captured `source` text. The engine reads named files and configs only under `root`. For ECMAScript staging, Node supplies the tsconfig, jsconfig and package.json texts from discovery so resolution uses that snapshot.
-- `languages` names the registry ids this engine run handles. Node stages TypeScript and JavaScript on the engine by default when a binary resolves.
+- `languages` names the registry ids this engine run handles.
 - For `build`, `output` is the absolute path to a new candidate in an existing folder. Temporary files sit beside it. For `stage`, set `mode` to `"stage"`. The engine ignores a supplied `output` path or `null` and opens no database.
 - `base` and `changed` are set for `refresh`. `base` is the absolute path of the published v5 base and is opened read-only. An optional `overlay` names the current published overlay for that base. `changed` lists repository-relative paths, including deletions. `files` still lists the complete current corpus. The engine compares its complete input to the current publication, so omitted hints cannot hide a change.
 - `factsCache` optionally names an absolute directory for disposable file-local facts. In `facts-v2.db`, workers encode complete facts as binary records and group them into Zstandard-compressed blocks. The SQLite index keys records by path, language adapter version, facts and framework-capture versions, and source SHA-256. Reads verify the block checksum, decode bounds, record format, path, language and source hash. A single writer commits the blocks in one transaction and evicts the oldest blocks as needed. The payload budget is 12 KiB per observed source file, bounded to 64–256 MiB, and a smaller checkout never reduces a shared cache's budget. Missing, incompatible, corrupt, contended and oversized entries are ordinary misses.
-- `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, `jsx` for `.jsx`, `rust` for `.rs`, and `csharp` for `.cs`. TypeScript includes TSX, and JavaScript includes JSX. Set `MEX_GRAPH_ENGINE_LANGUAGES` to a comma-separated list of `python`, `rust` or `csharp` to opt those languages in.
+- `stage` uses the same guard and start barrier as `build` and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, `jsx` for `.jsx`, `rust` for `.rs`, and `csharp` for `.cs`.
 - `build` includes framework rows. Stage requests opt in by sending `"frameworks": true`. A binary that handled the pass sets `frameworksResolved` on its staged events so Node can skip framework extraction for those files. If a file falls back because the native read differed from discovery, Node recomputes framework rows from the captured corpus.
 
 ### Routing and fallback
 
-The default store is schema v4. Node stages the selected languages in one
-engine job and writes the v4 graph. An unavailable or failed engine job
-falls back to Node's tree-sitter extractors and resolver. This also applies
-when a v5 job for a corpus containing TypeScript or JavaScript fails, in
-which case Node publishes a v4 graph. The build report and published graph
-Health record how many files took the fallback and why. An explicit graph
-maintenance command retries the engine when a binary resolves.
+Node selects `MEX_GRAPH_ENGINE`, the installed platform executable, or a
+checkout build under `native/engine/target/{release,debug}`, in that order.
+An explicit override selects that path for native execution. A `.wasm`
+override selects a specific WASI module. Node checks the engine contract
+before starting maintenance. A missing or blocked native executable uses
+the WASI module shipped with `mex-agent`.
+
+The default engine languages are TypeScript, JavaScript, Python, Rust and
+C#. Set `MEX_GRAPH_ENGINE_LANGUAGES` to the exact comma-separated set to
+enable. TypeScript includes TSX and JavaScript includes JSX. An empty value
+uses Node for all languages. Schema v5 is the default for a fully covered
+corpus. Set `MEX_GRAPH_STORAGE=v4` to use the Node writer with engine staging.
+Node also uses it if a language in the corpus is outside the selection.
+If neither engine can run, Node's tree-sitter extractors publish schema v4
+and Health shows `GRAPH_ENGINE_FALLBACK`. Status reports `engineRuntime`
+as `native`, `wasi` or `node`. Health also explains a switch to WASI.
+
+The trusted WASI module uses the `node:wasi` Preview 1 host already
+available in supported Node releases. It uses one extraction thread and
+supports `build`, `refresh` and `stage`. It uses private filesystem mounts
+for the checkout, staged sources and job files. The optional `moduleRoot`
+carries the original checkout path for absolute module resolution.
+WASI skips the shared facts cache and the Rust phase timing sink. The Node
+host measures and guards the whole WASI subprocess. Resident `serve` needs
+native threads. WASI checkouts use one-shot refresh after edits settle.
+Node's Preview 1 API is experimental. The WASI child disables V8 fast API
+calls after a Node 22 GC crash in WASI filesystem calls.
+[Node WASI documentation](https://nodejs.org/api/wasi.html)
 
 The build manifest includes the extractor, resolver, grammar, corpus policy
 and config identities. The compiler-era manifest differs, so old snapshots
@@ -93,7 +120,7 @@ the engine.
 
 ### Published schema v5 candidates
 
-When all indexed languages are engine-owned and `MEX_GRAPH_STORAGE=v5`,
+When all indexed languages are engine-owned and schema v5 is selected,
 Node uses `build` for rebuild and `refresh` over a compatible v5 base. It
 supplies `sourceDirectory` and private `staged` basenames for captured source
 text, with `contentHash`, `modifiedAt` and `extractorVersion` from contained
@@ -158,7 +185,8 @@ and ranks against the live corpus's BM25 statistics.
 
 The TypeScript and Go graph readers both read published schema v4 and v5
 graphs. They inspect `PRAGMA main.user_version` on the database selected by
-the checkout pointer. For v5, the Go hook attaches at most one read-only
+the checkout pointer. The next eligible refresh or rebuild writes a v5
+base from a v4 graph. For v5, the Go hook attaches at most one read-only
 base and applies the overlay's file ownership rules. Its queries use the
 integer keys and export symbol IDs as `kind:hex`. A row in
 `unresolved_calls` with one call candidate contributes a through-call to
@@ -178,12 +206,13 @@ coverage.
 
 ```json
 {"type":"progress","phase":"parse","done":1024,"total":1454}
-{"type":"result","files":1454,"nodes":15516,"edges":34653,"coverageGaps":2,"usage":{"wallMs":1500,"peakRssMb":310}}
+{"type":"result","files":1454,"nodes":15516,"edges":34653,"coverageGaps":2,"usage":{"wallMs":1500,"cpuMs":2130,"peakRssMb":310}}
 {"type":"error","code":"graph_contract_mismatch","message":"the request is contract 1, this engine is 3"}
 ```
 
 - `build` can report `progress` while writing the candidate and records per-file coverage gaps there. `stage` reports each file as described below.
-- `result` is the last line of a successful job. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files, failed parses and files with basic resolution. `usage` gives elapsed milliseconds (`wallMs`) and peak sampled resident memory in MiB (`peakRssMb`). Node owns validation, publication and usage logging.
+- `result` is the last line of a successful native job. The WASI host follows it with a `usage` frame for the host and its worker. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files, failed parses and files with basic resolution. Node owns validation, publication and usage logging.
+- Usage includes elapsed and CPU milliseconds and peak RSS in MiB. The log sums CPU over all attempts and records engine RSS separately in `server_rss_mb`. Resident replies carry cumulative CPU and peak RSS. Node records CPU deltas in the per-minute warm usage rows. A killed child contributes its last reported sample if one reached the parent.
 
 `MEX_GRAPH_PHASE_TIMINGS` also enables the engine's JSONL timing records
 (`engine.build`, `engine.refresh`, `engine.stage`, and `engine.serve`). The engine appends to

@@ -107,6 +107,7 @@ pub(crate) fn write(
     })?;
     counts.nodes = node_keys.len();
     drop(declarations);
+    progress("parse", request.files.len(), request.files.len())?;
 
     // The published rows already own these fields. Release their allocations
     // before building the resolver models and dependency recorder.
