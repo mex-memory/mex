@@ -84,11 +84,15 @@ impl Guard {
         let parent_gone = Arc::new(AtomicBool::new(false));
         let peak = Arc::new(AtomicU64::new(0));
         let on_breach = Mutex::new(Some(on_breach));
+        // `start` returns after the first sample, so even a job that ends
+        // before the guard thread would be scheduled is checked once.
+        let (sampled, first_sample) = std::sync::mpsc::channel::<()>();
         let thread = {
             let (stop, parent_gone, peak) = (stop.clone(), parent_gone.clone(), peak.clone());
             std::thread::Builder::new()
                 .name("mex-graph-guard".into())
                 .spawn(move || {
+                    let mut sampled = Some(sampled);
                     while !stop.load(Ordering::Acquire) {
                         let breach = if parent_gone.load(Ordering::Acquire) {
                             Some(Breach::ParentGone)
@@ -107,11 +111,16 @@ impl Guard {
                             }
                             return;
                         }
+                        if let Some(sampled) = sampled.take() {
+                            let _ = sampled.send(());
+                        }
                         std::thread::sleep(limits.interval);
                     }
                 })
                 .expect("spawn the guard thread")
         };
+        // An error means the first sample breached and the breach handler ran.
+        let _ = first_sample.recv();
         Guard {
             stop,
             parent_gone,
