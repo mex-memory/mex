@@ -1,0 +1,11 @@
+[package]
+name = "mex-graph-ecmascript"
+description = "The ECMAScript adapter for the MEX graph engine."
+version.workspace = true
+edition.workspace = true
+license = "MIT AND Apache-2.0 AND Unicode-DFS-2016"
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
