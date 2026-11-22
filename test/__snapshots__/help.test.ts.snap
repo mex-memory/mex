@@ -30,7 +30,7 @@ Commands:
   setup [options]                       Turn MEX on for this repo (the same as
                                         \`mex\`)
   note|log [options] <text>             Save a personal note and why it matters
-  recall [options] <words>              Find a note by words, without a model
+  recall [options] <words-or-id>        Find a note by words, without a model
                                         call
   expand [options] <id>                 Read a note, its source and its checks
   edit [options] <id> <text>            Correct a note; preview changes to team
