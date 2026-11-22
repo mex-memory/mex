@@ -261,7 +261,8 @@ async function main() {
     change(oldBody);
     const session = "joined-shell-write";
     start(session);
-    change(newBody);
+    // The shell command rewrites the file; nothing refreshes the index.
+    writeFileSync(join(checkout, file), source(newBody));
     hook("codex", "PostToolUse", {
       session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
       tool_input: { command: `sed -i "s/31/470/" ${file}` }, tool_response: "Exit code: 0\nOutput:\n",
