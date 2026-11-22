@@ -107,7 +107,7 @@ export async function runChain(options) {
           const started = performance.now();
           const parameters = { adapter, command, profile, pin, timeoutMs };
           const session = await runTurn({ ...parameters, prompt: taskPrompt(task) });
-          await runTurn({ ...parameters, session, prompt: task.reviewerNotes });
+          if (task.reviewerNotes !== undefined) await runTurn({ ...parameters, session, prompt: task.reviewerNotes });
           wallMs = Math.round(performance.now() - started);
           native = readSession(adapter, profile, session, pin.model);
         } finally {
@@ -124,7 +124,7 @@ export async function runChain(options) {
         if (arm === "mex") cursor = mexCalls.at(-1)?.id ?? cursor;
         unlinkDependencies(workspace);
         renameSync(workspace, join(completed, stem));
-        rows.push({ task: task.id, arm, accepted: gradeResult.accepted, agentUsage: native.usage, mexCalls, turns: 2, wallMs, resources });
+        rows.push({ task: task.id, arm, accepted: gradeResult.accepted, agentUsage: native.usage, mexCalls, turns: task.reviewerNotes === undefined ? 1 : 2, wallMs, resources });
       }
     }
     rows.findLast(row => row.arm === "mex").mexCalls.push(...readModelCalls(mex, cursor));

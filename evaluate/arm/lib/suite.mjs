@@ -13,8 +13,10 @@ export function loadSuite(file) {
   if (suite.setupBase !== undefined && !nonblank(suite.setupBase)) throw new Error("Invalid setupBase");
   const ids = new Set();
   for (const task of suite.tasks) {
+    // A PR with no reviewer lesson has no turn 2: notes are the PR's own, never written for the run.
     if (!identifier(task.id) || ids.has(task.id) || !nonblank(task.base) || !nonblank(task.prompt)
-        || !nonblank(task.reviewerNotes) || !Array.isArray(task.testNames) || !task.testNames.every(nonblank)) {
+        || (task.reviewerNotes !== undefined && !nonblank(task.reviewerNotes))
+        || !Array.isArray(task.testNames) || !task.testNames.every(nonblank)) {
       throw new Error("Invalid or duplicate task");
     }
     ids.add(task.id);

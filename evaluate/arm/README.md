@@ -72,6 +72,8 @@ fields. It adds `testNames` and `reviewerNotes`.
 
 - Turn 1 appends only the names the hidden tests call. Use the same notes
   from the PR for turn 2. The runner resumes the exact native session.
+  A PR with no reviewer lesson leaves `reviewerNotes` out: that task runs one
+  turn, and the report counts it as one. Never write notes for the run.
 - The old `hiddenTests.fromCommit` and `files` form still works.
   Use `fromDirectory` relative to the suite for an external test source.
   The harness stages either form after turn 2. Each task starts from its

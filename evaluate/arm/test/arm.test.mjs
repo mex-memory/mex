@@ -1,10 +1,12 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runChain } from "../index.mjs";
 import { adapters } from "../lib/agents.mjs";
 import { buildReport, renderReport } from "../lib/report.mjs";
+import { loadSuite } from "../lib/suite.mjs";
 import { records, sessionUsage } from "../lib/usage.mjs";
 import { built, fixtureOptions, fixtureRoot } from "./demo.mjs";
 
@@ -46,6 +48,23 @@ describe("release harness native token accounting", () => {
     const rendered = renderReport(report, { agent: "codex", suite: "fixture", prices: { profile: "fixture", date: "2026-11-16" } });
     expect(rendered).toContain("| mex | 1 / 1 | 23 | 1 | 59 | 16 | to confirm | 2 | 0 | to confirm |");
     expect(rendered).toContain("List prices to confirm for gpt-6.2-sol.");
+  });
+});
+
+describe("release harness suites", () => {
+  it("accepts a task with no reviewer notes as one turn, and rejects blank notes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mex-arm-suite-"));
+    const suite = JSON.parse(readFileSync(fixture("dry.json"), "utf8"));
+    delete suite.tasks[1].reviewerNotes;
+    const file = join(dir, "suite.json");
+    writeFileSync(file, JSON.stringify(suite));
+    const loaded = loadSuite(file);
+    expect(loaded.tasks.map(task => task.reviewerNotes === undefined)).toEqual([false, true]);
+    suite.tasks[1].reviewerNotes = " ";
+    writeFileSync(file, JSON.stringify(suite));
+    expect(() => loadSuite(file)).toThrow("Invalid or duplicate task");
+    unlinkSync(file);
+    rmdirSync(dir);
   });
 });
 
