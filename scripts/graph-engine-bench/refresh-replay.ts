@@ -88,35 +88,53 @@ function digest(rows: Iterable<unknown>) {
 /** Read the native rows directly. Surrogate keys and write clocks have no semantic identity. */
 function rawRows(db: ReturnType<typeof openGraphDatabase>) {
   const t = (table: string) => v5Rows(db, table);
-  const nodes = t("nodes");
-  const files = t("files");
-  const kinds = t("edge_kinds");
-  const names = t("unresolved_names");
-  const reasons = t("unresolved_reasons");
+  const overlay = t("files") !== "main.files";
+  // Large full-table comparisons reuse a few integer-key joins many times.
+  // Index only those columns in scratch tables so SQLite does not build a
+  // fresh automatic index for each use of the overlay UNION ALL views.
+  const index = (table: string, column: string) => {
+    if (!overlay) return t(table);
+    const lookup = `temp.replay_${table}`;
+    db.exec(`CREATE TABLE ${lookup} (id INTEGER PRIMARY KEY, ${column});
+      INSERT INTO ${lookup} SELECT id, ${column} FROM ${t(table)};`);
+    return lookup;
+  };
+  if (overlay) db.pragma("query_only = OFF");
+  let keys: Record<string, string>;
+  try {
+    keys = {
+      nodes: index("nodes", "public_id"), files: index("files", "path"),
+      kinds: index("edge_kinds", "name"), names: index("unresolved_names", "name"),
+      reasons: index("unresolved_reasons", "name"),
+      provenance: index("provenances", "name"), methods: index("resolution_methods", "name"),
+      nodeKinds: index("node_kinds", "name"), languages: index("languages", "name"),
+    };
+  } finally { if (overlay) db.pragma("query_only = ON"); }
+  const { nodes, files, kinds, names, reasons, provenance, methods, nodeKinds, languages } = keys;
   const tables = {
     files: `SELECT f.path, hex(f.content_hash), l.name, f.size, f.parse_status, f.error_count, f.missing_count,
-      f.error_coverage, f.extractor_version FROM ${files} f JOIN ${t("languages")} l ON l.id = f.language ORDER BY f.path`,
+      f.error_coverage, f.extractor_version FROM ${t("files")} f JOIN ${languages} l ON l.id = f.language ORDER BY f.path`,
     resolution: `SELECT f.path, hex(r.digest) FROM ${t("file_resolution")} r
       JOIN ${files} f ON f.id = r.file ORDER BY f.path`,
     diagnostics: `SELECT f.path, d.position, d.code, d.start_line, d.end_line FROM ${t("file_diagnostics")} d
       JOIN ${files} f ON f.id = d.file ORDER BY f.path, d.position`,
     nodes: `SELECT hex(n.public_id) AS id, k.name AS kind, f.path, hex(p.public_id) AS parent, n.name,
       n.qualified_name, n.start_line, n.start_col, n.end_line, n.end_col, n.signature, n.flags,
-      hex(n.body_hash) AS body_hash, n.docstring, n.visibility, n.return_type FROM ${nodes} n
-      JOIN ${t("node_kinds")} k ON k.id = n.kind JOIN ${files} f ON f.id = n.file
+      hex(n.body_hash) AS body_hash, n.docstring, n.visibility, n.return_type FROM ${t("nodes")} n
+      CROSS JOIN ${nodeKinds} k ON k.id = n.kind CROSS JOIN ${files} f ON f.id = n.file
       LEFT JOIN ${nodes} p ON p.id = n.parent ORDER BY id`,
     attributes: `SELECT hex(n.public_id) AS id, a.kind, a.position, a.value FROM ${t("node_attributes")} a
       JOIN ${nodes} n ON n.id = a.node ORDER BY id, a.kind, a.position`,
     edges: `SELECT hex(s.public_id) AS src, hex(d.public_id) AS dst, k.name AS kind, e.line, e.col,
       f.path, p.name AS provenance, e.confidence, m.name AS method, e.target_name, e.detail_kind, e.detail, e.argument
-      FROM ${t("edges")} e JOIN ${nodes} s ON s.id = e.source JOIN ${nodes} d ON d.id = e.target
-      JOIN ${kinds} k ON k.id = e.kind JOIN ${t("provenances")} p ON p.id = e.provenance
-      JOIN ${t("resolution_methods")} m ON m.id = e.method LEFT JOIN ${files} f ON f.id = e.site_file
+      FROM ${t("edges")} e CROSS JOIN ${nodes} s ON s.id = e.source CROSS JOIN ${nodes} d ON d.id = e.target
+      CROSS JOIN ${kinds} k ON k.id = e.kind CROSS JOIN ${provenance} p ON p.id = e.provenance
+      CROSS JOIN ${methods} m ON m.id = e.method LEFT JOIN ${files} f ON f.id = e.site_file
       ORDER BY src, dst, kind, e.line, e.col`,
     calls: `SELECT hex(s.public_id) AS src, n.name, w.name AS written, r.name AS reason, k.name AS kind,
       u.line, u.col, hex(c.public_id) AS candidate, v.name AS receiver FROM ${t("unresolved_calls")} u
-      JOIN ${nodes} s ON s.id = u.source JOIN ${names} n ON n.id = u.name JOIN ${reasons} r ON r.id = u.reason
-      JOIN ${kinds} k ON k.id = u.kind LEFT JOIN ${nodes} c ON c.id = u.candidate
+      CROSS JOIN ${nodes} s ON s.id = u.source CROSS JOIN ${names} n ON n.id = u.name CROSS JOIN ${reasons} r ON r.id = u.reason
+      CROSS JOIN ${kinds} k ON k.id = u.kind LEFT JOIN ${nodes} c ON c.id = u.candidate
       LEFT JOIN ${names} v ON v.id = u.receiver LEFT JOIN ${names} w ON w.id = u.written_name
       ORDER BY src, u.line, u.col, n.name, written, reason, kind, candidate, receiver`,
     unresolved: `SELECT hex(s.public_id) AS src, n.name, r.name AS reason, k.name AS kind, u.line, u.col
@@ -130,7 +148,6 @@ function rawRows(db: ReturnType<typeof openGraphDatabase>) {
       JOIN ${files} f ON f.id = c.file ORDER BY f.path, c.start_line`,
   };
   // A contentless FTS table still exposes the token counts of each indexed chunk.
-  const overlay = t("files") !== "main.files";
   const fts = (schema: string) => `SELECT f.path, c.start_line, hex(x.sz)
     FROM ${schema}.source_chunks c JOIN ${schema}.files f ON f.id = c.file
     JOIN ${schema}.source_chunks_fts_docsize x ON x.id = c.id${schema === "base"
