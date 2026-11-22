@@ -342,8 +342,8 @@ pub(super) struct Corpus<'a> {
 }
 
 impl Corpus<'_> {
-    /// Installs per-origin results before emitting any public row. This keeps
-    /// cross-file callback ownership independent of traversal and write order.
+    /// Overlays install origin commitments before deciding which public rows
+    /// to replace. A base streams public rows and defers callback owners.
     pub(super) fn resolve(
         &self,
         writer: &mut Writer,
@@ -1119,7 +1119,10 @@ impl<'a> NodeKeys<'a> {
         let key = if let Some(key) = key {
             key
         } else if allocate {
-            self.next += 1;
+            self.next = self
+                .next
+                .checked_add(1)
+                .ok_or_else(|| JobError::request("Overlay node keys exhausted"))?;
             self.next
         } else {
             return Err(JobError::request(format!("Missing projected node {id}")));

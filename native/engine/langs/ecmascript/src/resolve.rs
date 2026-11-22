@@ -121,7 +121,7 @@ pub fn parameter_invocations(facts: &FileFacts) -> Vec<(usize, u32)> {
         .ecmascript
         .as_ref()
         .is_some_and(|extra| !extra.parameter_calls.is_empty())
-        && let Some(index) = FileIndex::new(facts)
+        && let Some(index) = FileIndex::with_invocations(facts)
     {
         calls.extend(index.parameter_invocations());
         calls.sort_unstable();

@@ -577,14 +577,19 @@ impl Writer {
     /// Retained projections keep their integer endpoints. Never recycle an
     /// overlay key, including the former maximum after a deletion.
     pub fn previous_node_upper_bound(&self) -> rusqlite::Result<i64> {
-        if self.previous_overlay {
-            self.conn.query_row(
-                "SELECT CAST(value AS INTEGER) FROM previous.meta WHERE key = 'resolution_node_upper_bound'",
-                [], |row| row.get(0),
-            )
-        } else {
-            Ok(OVERLAY_KEY_START)
+        if !self.previous_overlay {
+            return Ok(OVERLAY_KEY_START);
         }
+        let value: String = self.conn.query_row(
+            "SELECT value FROM previous.meta WHERE key = 'resolution_node_upper_bound'",
+            [],
+            |row| row.get(0),
+        )?;
+        value
+            .parse::<i64>()
+            .ok()
+            .filter(|&key| key >= OVERLAY_KEY_START)
+            .ok_or(Error::InvalidQuery)
     }
 
     pub fn set_node_upper_bound(&self, key: i64) -> rusqlite::Result<()> {

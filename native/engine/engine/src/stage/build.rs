@@ -197,11 +197,15 @@ impl OutgoingBuild<'_> {
         outgoing: relations::Outgoing<'_>,
     ) -> Result<(), JobError> {
         let _timer = Timer::start("v5.relationships");
+        let digest = outgoing.digest(|key| {
+            self.public_ids
+                .get(key as usize)
+                .copied()
+                .filter(|_| key > 0)
+                .ok_or_else(|| JobError::request("Missing projected node"))
+        })?;
         writer
-            .set_file_resolution(
-                file,
-                &outgoing.digest(|key| Ok(self.public_ids[key as usize]))?,
-            )
+            .set_file_resolution(file, &digest)
             .map_err(JobError::write)?;
         self.edges += outgoing.write(writer)?;
         self.written += 1;

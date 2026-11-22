@@ -125,43 +125,26 @@ pub(super) enum ExportEntry<'a> {
 
 impl<'a> FileIndex<'a> {
     pub(super) fn new(file: &'a FileFacts) -> Option<Self> {
-        let facts = file.ecmascript.as_ref()?;
-        let mut index = Self {
-            facts,
-            scopes: &file.scopes,
-            names: OrdinalBuckets::new(),
-            members: OrdinalBuckets::new(),
-            explicit_this: facts.explicit_this.iter().copied().collect(),
-            this_bindings: facts
-                .this_bindings
-                .iter()
-                .map(|binding| (binding.scope, binding.owner))
-                .collect(),
-            bases: HashMap::new(),
-            class_bases: facts
-                .class_bases
-                .iter()
-                .map(|&(class, scope, base)| (class, (scope, base)))
-                .collect(),
-            callable_defs: facts.callable_defs.iter().copied().collect(),
-            formal_types: HashMap::new(),
-            constructs: HashMap::new(),
-            aliases: facts
-                .type_aliases
-                .iter()
-                .map(|ty| (ty.def as usize, *ty))
-                .collect(),
-            returns: HashMap::new(),
-            initializers: facts.initializer_scopes.iter().copied().collect(),
-            invokes: HashMap::new(),
-            exports: HashMap::new(),
-            stars: Vec::new(),
-            commonjs: None,
-            commonjs_members: HashMap::new(),
-        };
-        for (i, binding) in facts.bindings.iter().enumerate().rev() {
-            index.names.prepend((binding.scope, &binding.name), i);
-        }
+        let mut index = Self::with_invocations(file)?;
+        let facts = index.facts;
+        index.explicit_this = facts.explicit_this.iter().copied().collect();
+        index.this_bindings = facts
+            .this_bindings
+            .iter()
+            .map(|binding| (binding.scope, binding.owner))
+            .collect();
+        index.class_bases = facts
+            .class_bases
+            .iter()
+            .map(|&(class, scope, base)| (class, (scope, base)))
+            .collect();
+        index.callable_defs = facts.callable_defs.iter().copied().collect();
+        index.aliases = facts
+            .type_aliases
+            .iter()
+            .map(|ty| (ty.def as usize, *ty))
+            .collect();
+        index.initializers = facts.initializer_scopes.iter().copied().collect();
         for (i, member) in facts.members.iter().enumerate().rev() {
             index.members.prepend((member.owner, &member.name), i);
         }
@@ -193,17 +176,49 @@ impl<'a> FileIndex<'a> {
                 .or_default()
                 .push(*ret);
         }
-        let signatures: HashSet<_> = facts.signature_defs.iter().copied().collect();
-        for &call in &facts.parameter_calls {
-            if let Some((function, argument)) =
-                index.parameter_invocation(call.scope, call.expression)
-                // The compiler's selected overload signature has no body.
-                && !signatures.contains(&(function as i32))
-            {
-                index.invokes.entry(function).or_default().insert(argument);
+        index.index_exports(file);
+        Some(index)
+    }
+
+    // Edit signatures only use the lexical binding proof for parameter calls.
+    pub(super) fn with_invocations(file: &'a FileFacts) -> Option<Self> {
+        let facts = file.ecmascript.as_ref()?;
+        let mut index = Self {
+            facts,
+            scopes: &file.scopes,
+            names: OrdinalBuckets::new(),
+            members: OrdinalBuckets::new(),
+            explicit_this: HashMap::new(),
+            this_bindings: HashMap::new(),
+            bases: HashMap::new(),
+            class_bases: HashMap::new(),
+            callable_defs: HashSet::new(),
+            formal_types: HashMap::new(),
+            constructs: HashMap::new(),
+            aliases: HashMap::new(),
+            returns: HashMap::new(),
+            initializers: HashMap::new(),
+            invokes: HashMap::new(),
+            exports: HashMap::new(),
+            stars: Vec::new(),
+            commonjs: None,
+            commonjs_members: HashMap::new(),
+        };
+        for (i, binding) in facts.bindings.iter().enumerate().rev() {
+            index.names.prepend((binding.scope, &binding.name), i);
+        }
+        if !facts.parameter_calls.is_empty() {
+            let signatures: HashSet<_> = facts.signature_defs.iter().copied().collect();
+            for &call in &facts.parameter_calls {
+                if let Some((function, argument)) =
+                    index.parameter_invocation(call.scope, call.expression)
+                    // The compiler's selected overload signature has no body.
+                    && !signatures.contains(&(function as i32))
+                {
+                    index.invokes.entry(function).or_default().insert(argument);
+                }
             }
         }
-        index.index_exports(file);
         Some(index)
     }
 
