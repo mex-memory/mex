@@ -335,7 +335,7 @@ fn function_comments<'src>(
     result
 }
 
-fn tags(raw: &str) -> impl Iterator<Item = (usize, &str, &str)> {
+pub(super) fn tags(raw: &str) -> impl Iterator<Item = (usize, &str, &str)> {
     let contents = raw
         .strip_prefix("/**")
         .and_then(|s| s.strip_suffix("*/"))
@@ -352,7 +352,7 @@ fn tags(raw: &str) -> impl Iterator<Item = (usize, &str, &str)> {
     })
 }
 
-fn tag_annotation(body: &str) -> Option<(&str, &str)> {
+pub(super) fn tag_annotation(body: &str) -> Option<(&str, &str)> {
     let body = body.strip_prefix('{')?;
     let mut depth = 0;
     for (offset, c) in body.char_indices() {

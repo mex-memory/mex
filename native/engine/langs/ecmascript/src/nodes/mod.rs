@@ -7,6 +7,7 @@ mod binder;
 mod declarations;
 mod documentation;
 mod grammar;
+mod references;
 mod source;
 mod syntax;
 
@@ -108,7 +109,7 @@ impl EcmaScript {
         let source = Source::new(text, root, offsets);
         facts.health = source.health();
         if facts.health.status != ParseStatus::Failed {
-            facts.defs = declarations::extract(
+            let (defs, drafts) = declarations::extract(
                 root,
                 &source,
                 path,
@@ -117,6 +118,8 @@ impl EcmaScript {
                 &mut self.sketches,
                 &mut facts.health,
             );
+            facts.defs = defs;
+            references::extract(root, &source, &mut facts, &drafts);
         }
         facts
     }

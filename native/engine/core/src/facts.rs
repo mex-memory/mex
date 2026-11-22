@@ -16,6 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod ecmascript;
+
 /// Bumped on incompatible changes to these types; part of the facts cache key.
 pub const FACTS_VERSION: u32 = 1;
 
@@ -120,6 +122,8 @@ pub struct FileFacts {
     pub bindings: Vec<Binding>,
     pub frameworks: Vec<FrameworkMarker>,
     pub health: Health,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ecmascript: Option<ecmascript::ReferenceFacts>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +213,8 @@ pub struct ImportBinding {
     pub local: Option<String>,
     /// Re-exports: the exported name (`*` for `export *`).
     pub exported: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub type_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,7 +245,13 @@ pub struct Export {
     pub local: Option<String>,
     pub def: i32,
     pub exported: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub type_only: bool,
     pub range: Range,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// What a call is made on: the evidence the resolver types receivers from.
@@ -265,6 +277,10 @@ pub enum Receiver {
     /// A literal of a built-in type (`[].map`, `"".join`).
     Builtin {
         name: String,
+    },
+    /// A reference into the ECMAScript expression arena.
+    Expression {
+        index: ecmascript::ExprId,
     },
     Other,
 }

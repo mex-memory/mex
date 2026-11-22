@@ -9,7 +9,7 @@ use mex_graph_core::fingerprint::{SketchBuilder, body_hash};
 
 use super::super::documentation::{annotated_return, documentation, parameter_properties};
 use super::super::syntax::{self, field, first_named, has_modifier, initializer, is_function_like};
-use super::{Binder, Declaration, Descriptor, ExportModifier, Form, Source, Span};
+use super::{Binder, Declaration, Descriptor, Drafts, ExportModifier, Form, Source, Span};
 use crate::scanner::append_token_names;
 
 pub(super) struct Materializer<'a> {
@@ -44,7 +44,7 @@ impl<'a> Materializer<'a> {
         declarations: &[Declaration<'_>],
         binder: &Binder<'_>,
         health: &mut Health,
-    ) -> Vec<Def> {
+    ) -> (Vec<Def>, Drafts) {
         let file_range = self.source.range(Span {
             start: self.source.start,
             end: self.source.text.len(),
@@ -76,6 +76,7 @@ impl<'a> Materializer<'a> {
         let mut draft_by_symbol = HashMap::new();
         let mut excluded = HashSet::new();
         let mut compatible = Vec::new();
+        let mut drafts = Drafts::new();
         for (i, entry) in declarations.iter().enumerate() {
             let parent = entry
                 .owner
@@ -89,6 +90,7 @@ impl<'a> Materializer<'a> {
                 && let Some(draft) = entry.symbol.and_then(|symbol| draft_by_symbol.get(&symbol))
             {
                 owner_by_declaration[i] = Some(*draft);
+                map_draft(&mut drafts, entry, *draft);
                 continue;
             }
 
@@ -135,6 +137,7 @@ impl<'a> Materializer<'a> {
             owner_by_declaration[i] = Some(index);
             for &member in &compatible {
                 owner_by_declaration[member] = Some(index);
+                map_draft(&mut drafts, &declarations[member], index);
             }
             if let Some(symbol) = entry.symbol {
                 draft_by_symbol.insert(symbol, index);
@@ -168,7 +171,7 @@ impl<'a> Materializer<'a> {
             }
         }
         assign_ordinals(path, &mut defs);
-        defs
+        (defs, drafts)
     }
 
     fn def<'tree, 'decl>(
@@ -382,6 +385,13 @@ impl<'a> Materializer<'a> {
                 token_count: sketch.token_count as u32,
             }),
         )
+    }
+}
+
+fn map_draft(drafts: &mut Drafts, declaration: &Declaration<'_>, index: usize) {
+    drafts.insert(declaration.node.id(), index as i32);
+    for decorator in &declaration.decorators {
+        drafts.insert(decorator.id(), index as i32);
     }
 }
 

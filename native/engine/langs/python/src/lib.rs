@@ -972,6 +972,7 @@ impl<'a> Extras<'a> {
                         local: Some(local),
                         // An aliased import binds the whole path, not its head.
                         exported: alias.map(|_| specifier),
+                        type_only: false,
                     }],
                     scope,
                     range,
@@ -1011,6 +1012,7 @@ impl<'a> Extras<'a> {
                 local: Some(alias.map_or_else(|| imported.clone(), |a| self.text.of(a).to_owned())),
                 imported,
                 exported: None,
+                type_only: false,
             });
         }
         if named_children(node)
@@ -1021,6 +1023,7 @@ impl<'a> Extras<'a> {
                 imported: "*".into(),
                 local: None,
                 exported: None,
+                type_only: false,
             });
         }
         self.imports.push(Import {

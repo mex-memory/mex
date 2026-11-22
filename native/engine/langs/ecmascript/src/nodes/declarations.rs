@@ -16,6 +16,10 @@ mod materialize;
 
 use materialize::Materializer;
 
+/// Syntax aliases (for example all signatures of one overload set) point to
+/// the same graph draft. The reference walk uses this map for caller identity.
+pub(super) type Drafts = HashMap<usize, i32>;
+
 pub(super) struct Declaration<'tree> {
     pub node: Node<'tree>,
     pub form: Form,
@@ -81,7 +85,7 @@ pub(super) fn extract<'a>(
     jsx: bool,
     sketches: &mut SketchBuilder,
     health: &mut Health,
-) -> Vec<Def> {
+) -> (Vec<Def>, Drafts) {
     let mut collector = Collector::new(root, source, path, javascript);
     collector.collect(root, path);
     for (declaration, symbol) in collector.binder.finish(source) {

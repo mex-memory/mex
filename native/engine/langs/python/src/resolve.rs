@@ -779,7 +779,9 @@ impl<'a> Resolver<'a> {
             }
             Receiver::Super => Value::Unknown("super"),
             Receiver::Builtin { .. } => Value::Unknown("builtin_receiver"),
-            Receiver::ThisMember { .. } | Receiver::Other => Value::Unknown("dynamic_receiver"),
+            Receiver::ThisMember { .. } | Receiver::Expression { .. } | Receiver::Other => {
+                Value::Unknown("dynamic_receiver")
+            }
         }
     }
 
