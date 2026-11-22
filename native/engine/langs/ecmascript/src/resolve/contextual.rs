@@ -29,7 +29,6 @@ impl<'a> Resolver<'a, '_> {
         files.within(file, || {
             let previous = self.preparing_context.replace(file);
             let stack = std::mem::take(&mut self.export_stack);
-            let cache = std::mem::take(&mut self.export_cache);
             for contextual in calls {
                 let call = &self.files.get(file).calls[contextual.call];
                 let Ok((target_file, target_def)) = self.resolve_call(file, call) else {
@@ -73,7 +72,6 @@ impl<'a> Resolver<'a, '_> {
                 }
             }
             self.export_stack = stack;
-            self.export_cache = cache;
             self.preparing_context = previous;
         });
     }

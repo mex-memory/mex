@@ -70,28 +70,35 @@ impl Resolver<'_, '_> {
         depth: usize,
     ) -> Lookup {
         check_depth(depth)?;
-        let root = self.export_stack.is_empty();
+        // An export at a fixed remaining depth is reusable across origins.
+        // Replay its read set on a cache hit so the incremental planner sees
+        // the same invalidation dependencies as an uncached lookup.
+        let memoizable =
+            self.export_stack.is_empty() && !require && self.preparing_context.is_none();
         let key = (file, name.to_owned(), lane);
         let cache_key = (file, name.to_owned(), lane, depth);
-        // CJS member fallback differs for `require` and an ES namespace's
-        // `default` view, so only ES lookup enters the export cache.
-        if root
-            && !require
-            && let Some(&value) = self.export_cache.get(&cache_key)
-        {
+        if memoizable && let Some(&(value, memo)) = self.export_cache.get(&cache_key) {
+            self.files.read_memo(memo);
             return value;
         }
         if self.export_stack.contains(&key) {
             return Err("export_cycle");
         }
         self.export_stack.push(key);
-        let result = self.compute_export(file, name, lane, require, depth + 1);
+        let result = if memoizable {
+            let memo = self.next_memo;
+            self.next_memo += 1;
+            let result = self.files.within_memo(memo, || {
+                self.compute_export(file, name, lane, require, depth + 1)
+            });
+            self.export_cache.insert(cache_key, (result, memo));
+            result
+        } else {
+            self.compute_export(file, name, lane, require, depth + 1)
+        };
         self.export_stack
             .pop()
             .expect("the export query on this stack");
-        if root && !require && result != Err("resolution_depth_limit") {
-            self.export_cache.insert(cache_key, result);
-        }
         result
     }
 

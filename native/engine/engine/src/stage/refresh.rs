@@ -122,7 +122,7 @@ pub(crate) fn write(
             .next()
             .ok_or_else(|| JobError::request("Unable to load resolver facts"))
     };
-    let loader = FactLoader::new(request, &enabled, &load);
+    let loader = FactLoader::new(request, &enabled, &load, u64::MAX);
     {
         let load = |path: &str| loader.get(path);
         let corpus = Corpus {

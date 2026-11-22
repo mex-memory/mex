@@ -142,7 +142,8 @@ pub struct Resolver<'a, 'modules> {
     contextual_this: HashMap<(usize, ExprId), Value>,
     context_ready: HashSet<usize>,
     preparing_context: Option<usize>,
-    export_cache: HashMap<(usize, String, Lane, usize), Lookup>,
+    export_cache: HashMap<(usize, String, Lane, usize), (Lookup, usize)>,
+    next_memo: usize,
     // Re-export cycles are tracked per query. The cycle itself is not a failed
     // export: a different star can still name the same symbol unambiguously.
     export_stack: Vec<(usize, String, Lane)>,
@@ -164,6 +165,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
             context_ready: HashSet::new(),
             preparing_context: None,
             export_cache: HashMap::new(),
+            next_memo: 0,
             export_stack: Vec::new(),
         }
     }
@@ -206,7 +208,6 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
 
     fn start(&mut self, file: usize) {
         self.files.origin(file);
-        self.export_cache.clear();
         self.prepare_context(file);
     }
 

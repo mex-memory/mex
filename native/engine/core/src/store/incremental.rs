@@ -16,14 +16,14 @@ CREATE TABLE resolution_reads (
     origin TEXT NOT NULL,
     PRIMARY KEY (kind, key, origin)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX resolution_reads_origin ON resolution_reads(origin);
+
 CREATE TABLE resolution_callbacks (
     owner TEXT NOT NULL,
     origin TEXT NOT NULL,
     projection BLOB NOT NULL,
     PRIMARY KEY (owner, origin)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX resolution_callbacks_origin ON resolution_callbacks(origin);
+
 CREATE TABLE resolution_heritage (
     target TEXT NOT NULL,
     target_def INTEGER NOT NULL,
@@ -31,14 +31,21 @@ CREATE TABLE resolution_heritage (
     origin_def INTEGER NOT NULL,
     PRIMARY KEY (target, target_def, origin, origin_def)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX resolution_heritage_origin ON resolution_heritage(origin);
+
 CREATE TABLE resolution_types (
     name TEXT NOT NULL,
     origin TEXT NOT NULL,
     declaration INTEGER NOT NULL,
     PRIMARY KEY (name, origin, declaration)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX resolution_types_origin ON resolution_types(origin);";
+";
+
+pub(super) const INDEXES: &str = "
+CREATE INDEX resolution_reads_origin ON resolution_reads(origin);
+CREATE INDEX resolution_callbacks_origin ON resolution_callbacks(origin);
+CREATE INDEX resolution_heritage_origin ON resolution_heritage(origin);
+CREATE INDEX resolution_types_origin ON resolution_types(origin);
+";
 
 impl Writer {
     /// A null projection masks the base inputs of a deleted file.

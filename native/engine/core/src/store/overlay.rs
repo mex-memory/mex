@@ -161,21 +161,54 @@ const CALL_KIND: &str = "coalesce((SELECT id FROM base.edge_kinds WHERE name = '
                                     (SELECT id FROM main.edge_kinds WHERE name = 'calls'))";
 
 impl Writer {
-    /// Unchanged paths retain the checkout's previously proven stat stamps.
-    pub fn copy_source_observations(&self, previous: bool, root: &str) -> rusqlite::Result<bool> {
+    /// Carry the previously proven observations. A base captured in the
+    /// same checkout can supply the untouched paths without copying them.
+    pub fn copy_source_observations(
+        &mut self,
+        previous: bool,
+        root: &str,
+    ) -> rusqlite::Result<bool> {
         let from = if previous { "previous" } else { "base" };
-        let same_root: bool = self.conn.query_row(&format!(
-            "SELECT EXISTS (SELECT 1 FROM {from}.meta WHERE key = 'observation_root' AND value = ?1)"
-        ), [root], |row| row.get(0))?;
-        if same_root {
-            self.conn.execute(
-                &format!(
-                    "INSERT INTO main.source_observations SELECT * FROM {from}.source_observations"
-                ),
-                [],
-            )?;
+        let matches_root = |schema| {
+            self.conn.query_row(&format!(
+            "SELECT EXISTS (SELECT 1 FROM {schema}.meta WHERE key = 'observation_root' AND value = ?1)"
+        ), [root], |row| row.get::<_, bool>(0))
+        };
+        if !matches_root(from)? {
+            return Ok(false);
         }
-        Ok(same_root)
+        self.sparse_observations = matches_root("base")?;
+        if self.sparse_observations {
+            self.set_meta("source_observation_storage", "sparse")?;
+            if previous {
+                let sparse: bool = self.conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM previous.meta
+                                    WHERE key = 'source_observation_storage' AND value = 'sparse')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if sparse {
+                    self.conn.execute_batch(
+                        "INSERT INTO main.source_observations SELECT * FROM previous.source_observations;
+                         INSERT INTO main.source_observation_gaps SELECT * FROM previous.source_observation_gaps;"
+                    )?;
+                } else {
+                    self.conn.execute_batch(
+                        "INSERT INTO main.source_observations SELECT p.* FROM previous.source_observations p
+                         LEFT JOIN base.source_observations b ON b.path = p.path
+                         WHERE b.path IS NULL OR b.identity <> p.identity OR b.utf8_size <> p.utf8_size;
+                         INSERT INTO main.source_observation_gaps
+                         SELECT b.path FROM base.source_observations b
+                         WHERE NOT EXISTS (SELECT 1 FROM previous.source_observations p WHERE p.path = b.path);"
+                    )?;
+                }
+            }
+        } else {
+            self.conn.execute_batch(&format!(
+                "INSERT INTO main.source_observations SELECT * FROM {from}.source_observations"
+            ))?;
+        }
+        Ok(true)
     }
 
     /// The previous overlay owns some of the unchanged wiring. Keep its

@@ -23,6 +23,20 @@ export function v5Rows(db: object, table: string): string {
     ? `temp.v5_${table}` : `main.${table}`;
 }
 
+/** Checkout-private stat memo. Sparse overlays inherit only the same root's stamps. */
+export function v5SourceObservations(db: SqliteDatabase): string {
+  if (!readsV5Overlay(db) || !db.prepare(`SELECT 1 FROM main.meta m JOIN base.meta b
+      ON b.key = m.key AND b.value = m.value
+      WHERE m.key = 'observation_root'
+        AND EXISTS (SELECT 1 FROM main.meta WHERE key = 'source_observation_storage' AND value = 'sparse')`).get()) {
+    return "main.source_observations";
+  }
+  return `(SELECT * FROM main.source_observations
+    UNION ALL SELECT b.* FROM base.source_observations b
+      WHERE NOT EXISTS (SELECT 1 FROM main.source_observations o WHERE o.path = b.path)
+        AND NOT EXISTS (SELECT 1 FROM main.source_observation_gaps g WHERE g.path = b.path))`;
+}
+
 function installV5Union(db: SqliteDatabase): void {
   db.exec(`CREATE TEMP VIEW v5_shadowed_files AS
      SELECT f.id FROM main.shadow_files s CROSS JOIN base.files f ON f.path = s.path;

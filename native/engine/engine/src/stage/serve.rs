@@ -47,7 +47,7 @@ pub(crate) struct Session {
 pub(crate) struct Pending {
     request: Request,
     facts: HashMap<String, ResidentFacts>,
-    deleted: Vec<String>,
+    discard_facts: Vec<String>,
     modules: Option<ModuleResolver>,
     context: String,
 }
@@ -208,6 +208,33 @@ impl Session {
             .iter()
             .filter(|file| edited.contains(&file.path))
             .collect();
+        let configs = read_configs(&request.root, &request.configs);
+        let context = if config_upsert {
+            build::resolution_context(&request.root, &request, &configs)
+        } else {
+            self.context.clone()
+        };
+        let topology_changed =
+            !edit.deleted.is_empty() || request.files.len() != self.request.files.len();
+        let replacement_modules = (topology_changed || context != self.context)
+            .then(|| incremental::project_modules(&request.root, &request, &configs));
+        let input_bytes = inputs
+            .iter()
+            .fold(0u64, |sum, file| sum.saturating_add(file.size));
+        if inputs.len() > MAX_RESIDENT_ORIGINS || input_bytes > MAX_RESIDENT_SOURCE_BYTES {
+            let discard_facts = edit.deleted.into_iter().chain(edited).collect();
+            let counts = timing::measure("resident.oneShot", || self.one_shot(&request))?;
+            return Ok((
+                counts,
+                Pending {
+                    request,
+                    facts: HashMap::new(),
+                    discard_facts,
+                    modules: replacement_modules,
+                    context,
+                },
+            ));
+        }
         let extracted = extract_files(&request.root, &request, &inputs, None);
         for entry in &extracted.files {
             extracted.file(entry).map_err(refresh::bad_source)?;
@@ -220,7 +247,6 @@ impl Session {
             .iter()
             .map(|(path, facts)| Ok((path.clone(), pack(facts)?)))
             .collect::<Result<HashMap<_, _>, JobError>>()?;
-        let configs = read_configs(&request.root, &request.configs);
         let mut writer =
             Writer::overlay(request.candidate_path(), self.base_path()).map_err(JobError::write)?;
         if let Some(overlay) = &self.overlay {
@@ -243,15 +269,6 @@ impl Session {
             .filter(|path| !sizes.contains_key(path))
             .collect::<HashSet<_>>();
         let enabled = incremental::framework_set(&writer, &configs, &changed, &removed)?;
-        let context = if config_upsert {
-            build::resolution_context(&request.root, &request, &configs)
-        } else {
-            self.context.clone()
-        };
-        let topology_changed =
-            !removed.is_empty() || changed.keys().any(|path| prior.file(path).is_none());
-        let replacement_modules = (topology_changed || context != self.context)
-            .then(|| incremental::project_modules(&request.root, &request, &configs));
         let modules = replacement_modules.as_ref().unwrap_or(&self.modules);
         let complete = context
             != prior
@@ -284,7 +301,7 @@ impl Session {
                 .insert(file.path.clone(), pack(&facts)?);
             Ok(facts)
         };
-        let loader = FactLoader::new(&request, &enabled, &load);
+        let loader = FactLoader::new(&request, &enabled, &load, MAX_RESIDENT_SOURCE_BYTES);
         let in_process = if complete {
             false
         } else {
@@ -298,11 +315,16 @@ impl Session {
                 modules: Some(modules),
             };
             let plan = Plan::new(&corpus, &prior, &writer, false, inputs.iter().copied())?;
-            if plan.resolution_count() <= MAX_RESIDENT_ORIGINS {
-                plan.write(&corpus, &mut writer, &enabled, &prior)?;
-                true
-            } else {
+            if loader.over_budget() || plan.resolution_count() > MAX_RESIDENT_ORIGINS {
                 false
+            } else {
+                let result = plan.write(&corpus, &mut writer, &enabled, &prior);
+                if loader.over_budget() {
+                    false
+                } else {
+                    result?;
+                    true
+                }
             }
         };
         loader.finish()?;
@@ -315,7 +337,7 @@ impl Session {
                 Pending {
                     request,
                     facts: packed,
-                    deleted: edit.deleted,
+                    discard_facts: edit.deleted,
                     modules: replacement_modules,
                     context,
                 },
@@ -360,7 +382,7 @@ impl Session {
             Pending {
                 request,
                 facts: packed,
-                deleted: edit.deleted,
+                discard_facts: edit.deleted,
                 modules: replacement_modules,
                 context,
             },
@@ -474,7 +496,7 @@ impl Session {
         overlay: PathBuf,
     ) -> Result<(), JobError> {
         let overlay = PublishedOverlay::open(overlay, self.base_path())?;
-        for path in pending.deleted {
+        for path in pending.discard_facts {
             self.facts.remove(&path);
         }
         self.facts.extend(pending.facts);
@@ -494,6 +516,7 @@ impl Session {
 }
 
 const MAX_RESIDENT_ORIGINS: usize = 192;
+const MAX_RESIDENT_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
 struct WorkerRequest(PathBuf);
 

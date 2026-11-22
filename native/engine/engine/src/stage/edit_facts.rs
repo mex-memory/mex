@@ -76,6 +76,7 @@ fn keep_surface(file: &mut FileFacts) {
         file.calls.clear();
         extra.references.clear();
         extra.arguments.clear();
+        retain_surface_bindings(&file.defs, &file.scopes, &file.imports, extra);
         prune_expressions(extra);
     } else {
         file.calls.clear();
@@ -100,6 +101,62 @@ fn keep_surface(file: &mut FileFacts) {
             binding.field_of.is_some() || visible_scopes.contains(&binding.scope)
         });
     }
+}
+
+// A lexical binding matters outside the edited origin only if a declaration,
+// import, exported value or other retained evidence can look it up. An
+// unvisited function or block may still contain calls that use that binding.
+fn retain_surface_bindings(
+    defs: &[mex_graph_core::facts::Def],
+    scopes: &[mex_graph_core::facts::Scope],
+    imports: &[mex_graph_core::facts::Import],
+    facts: &mut ReferenceFacts,
+) {
+    let roots = defs
+        .iter()
+        .map(|def| def.scope)
+        .chain(imports.iter().map(|import| import.scope))
+        .chain(facts.initializer_scopes.iter().map(|&(_, scope)| scope))
+        .chain(facts.members.iter().map(|member| member.scope))
+        .chain(facts.explicit_this.iter().map(|&(scope, _)| scope))
+        .chain(facts.bases.iter().map(|base| base.scope))
+        .chain(facts.class_bases.iter().map(|&(_, scope, _)| scope))
+        .chain(facts.formal_types.iter().map(|formal| formal.scope))
+        .chain(facts.returns.iter().map(|returned| returned.scope))
+        .chain(facts.type_aliases.iter().map(|alias| alias.scope))
+        .chain(
+            facts
+                .construct_signatures
+                .iter()
+                .map(|signature| signature.scope),
+        )
+        .chain(facts.export_values.iter().map(|export| export.scope))
+        .chain(facts.parameter_calls.iter().map(|call| call.scope));
+    let mut retained = HashSet::from([mex_graph_core::facts::NONE]);
+    for mut root in roots {
+        while retained.insert(root) {
+            let Some(scope) = scopes.get(root as usize) else {
+                break;
+            };
+            root = scope.parent;
+        }
+    }
+    let mut remap = Vec::with_capacity(facts.bindings.len());
+    let mut next = 0;
+    facts.bindings.retain(|binding| {
+        let keep = binding.def >= 0 || retained.contains(&binding.scope);
+        remap.push(keep.then_some(next));
+        next += usize::from(keep);
+        keep
+    });
+    facts.initializer_scopes.retain_mut(|(binding, _)| {
+        if let Some(index) = remap[*binding] {
+            *binding = index;
+            true
+        } else {
+            false
+        }
+    });
 }
 
 fn normalize(file: &mut FileFacts) -> Vec<Site> {

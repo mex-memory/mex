@@ -256,6 +256,7 @@ impl Outgoing {
         file_key: impl Fn(&str) -> i64,
         mut node_key: impl FnMut(&str) -> Result<i64, JobError>,
     ) -> Result<usize, JobError> {
+        let _timer = mex_graph_core::timing::Timer::start("v5.writeOutgoing");
         let mut count = 0;
         for (origin, edge) in self.edges() {
             count += usize::from(

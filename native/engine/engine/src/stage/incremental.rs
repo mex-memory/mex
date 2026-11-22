@@ -147,6 +147,8 @@ struct Recorder<'a> {
     reads: Vec<RefCell<Reads>>,
     origin: Cell<Option<usize>>,
     nested: RefCell<Vec<usize>>,
+    active_memo: Cell<Option<usize>>,
+    memos: RefCell<Vec<Reads>>,
 }
 
 impl<'a> Recorder<'a> {
@@ -158,6 +160,8 @@ impl<'a> Recorder<'a> {
                 .collect(),
             origin: Cell::new(None),
             nested: RefCell::default(),
+            active_memo: Cell::new(None),
+            memos: RefCell::default(),
         }
     }
 
@@ -168,47 +172,77 @@ impl<'a> Recorder<'a> {
             Access::Leave => {
                 self.nested.borrow_mut().pop();
             }
-            Access::File(_) | Access::Lookup(..) => {
-                let Some(origin) = self.origin.get() else {
-                    return;
-                };
-                let nested = self.nested.borrow();
-                let update = |origin| {
-                    let read: &RefCell<Reads> = &self.reads[origin];
-                    let mut read = read.borrow_mut();
-                    match access {
-                        Access::File(file) if file != origin => {
-                            read.files.insert(file);
-                        }
-                        Access::Lookup(kind, key) => {
-                            let keys = read.keys.entry(kind).or_default();
-                            if !keys.contains(key) {
-                                keys.insert(key.into());
+            Access::StartMemo(id) => {
+                debug_assert_eq!(self.active_memo.replace(Some(id)), None);
+                debug_assert_eq!(id, self.memos.borrow().len());
+                self.memos.borrow_mut().push(Reads::default());
+            }
+            Access::EndMemo => self.active_memo.set(None),
+            Access::ReadMemo(id) => {
+                let memo = &self.memos.borrow()[id];
+                self.record_to_origins(|_, target| {
+                    target.files.extend(memo.files.iter().copied());
+                    for (&kind, keys) in &memo.keys {
+                        let target = target.keys.entry(kind).or_default();
+                        for key in keys {
+                            if !target.contains(key) {
+                                target.insert(key.clone());
                             }
                         }
-                        _ => {}
                     }
+                });
+            }
+            Access::File(_) | Access::Lookup(..) => {
+                let update = |origin: Option<usize>, read: &mut Reads| match access {
+                    Access::File(file) if Some(file) != origin => {
+                        read.files.insert(file);
+                    }
+                    Access::Lookup(kind, key) => {
+                        let keys = read.keys.entry(kind).or_default();
+                        if !keys.contains(key) {
+                            keys.insert(key.into());
+                        }
+                    }
+                    _ => {}
                 };
-                update(origin);
-                for &file in nested.iter().filter(|&&file| file != origin) {
-                    update(file);
+                self.record_to_origins(|origin, read| update(Some(origin), read));
+                if let Some(id) = self.active_memo.get() {
+                    update(None, &mut self.memos.borrow_mut()[id]);
                 }
             }
         }
     }
 
-    fn write(&self, writer: &Writer, file: usize) -> Result<(), JobError> {
-        let path = self.paths[file];
-        let reads = self.reads[file].borrow();
-        for &file in &reads.files {
-            writer
-                .put_read(path, "file", self.paths[file])
-                .map_err(JobError::write)?;
-        }
-        for (&kind, keys) in &reads.keys {
-            for key in keys {
-                writer.put_read(path, kind, key).map_err(JobError::write)?;
+    fn record_to_origins(&self, mut update: impl FnMut(usize, &mut Reads)) {
+        if let Some(origin) = self.origin.get() {
+            update(origin, &mut self.reads[origin].borrow_mut());
+            for &file in self.nested.borrow().iter().filter(|&&file| file != origin) {
+                update(file, &mut self.reads[file].borrow_mut());
             }
+        }
+    }
+
+    fn write(&self, writer: &Writer, origins: &[usize]) -> Result<(), JobError> {
+        let _timer = Timer::start("resolve.dependencies");
+        let reads: Vec<_> = origins
+            .iter()
+            .map(|&file| (file, self.reads[file].borrow()))
+            .collect();
+        let mut rows = Vec::new();
+        for (file, reads) in &reads {
+            let origin = self.paths[*file];
+            for &target in reads.files.iter().filter(|&target| target != file) {
+                rows.push(("file", self.paths[target], origin));
+            }
+            for (&kind, keys) in &reads.keys {
+                rows.extend(keys.iter().map(|key| (kind, key.as_str(), origin)));
+            }
+        }
+        rows.sort_unstable();
+        for (kind, key, origin) in rows {
+            writer
+                .put_read(origin, kind, key)
+                .map_err(JobError::write)?;
         }
         Ok(())
     }
@@ -267,7 +301,6 @@ impl Corpus<'_> {
             let project = |index, file: super::StagedFile<'_>| -> Result<(), JobError> {
                 let facts = load(index);
                 relations::Projection::new(&file, facts)?.install(writer, &facts.path)?;
-                recorder.write(writer, index)?;
                 for marker in &facts.frameworks {
                     if marker.kind == DETECTION {
                         writer
@@ -312,6 +345,7 @@ impl Corpus<'_> {
                             }
                         }
                     };
+                    let timer = Timer::start("resolve.ecmascript");
                     let (stage, heritage) = ecmascript::Stage::resolve(
                         facts,
                         modules,
@@ -320,6 +354,7 @@ impl Corpus<'_> {
                         descendants,
                         true,
                     );
+                    drop(timer);
                     if let Some(error) = error.into_inner() {
                         return Err(JobError::write(error));
                     }
@@ -329,14 +364,14 @@ impl Corpus<'_> {
                             .put_heritage(paths[target], def, paths[origin], from)
                             .map_err(JobError::write)?;
                     }
-                    for index in origins {
+                    for &index in &origins {
                         project(index, stage.file(index, self.sizes[paths[index]], false))?;
                     }
                 }
                 Language::Python => {
                     let resolver = mex_graph_python::resolve::Resolver::with_files(facts);
                     let ids = Identities::new(facts);
-                    for index in origins {
+                    for &index in &origins {
                         let mut out = mex_graph_python::resolve::Resolution::default();
                         resolver.resolve_file(index, &mut out);
                         recorder.origin.set(None);
@@ -416,11 +451,12 @@ impl Corpus<'_> {
                     };
                     recorder.origin.set(None);
                     let stage = syntax::Stage::resolved(facts, adapter, results);
-                    for index in origins {
+                    for &index in &origins {
                         project(index, stage.file(index, self.sizes[paths[index]], false))?;
                     }
                 }
             }
+            recorder.write(writer, &origins)?;
         }
         Ok(())
     }
@@ -932,6 +968,9 @@ pub(super) struct FactLoader<'a> {
     load: &'a dyn Fn(&RequestFile) -> Result<FileFacts, JobError>,
     slots: HashMap<&'a str, (&'a RequestFile, std::cell::OnceCell<FileFacts>)>,
     problem: RefCell<Option<JobError>>,
+    byte_limit: u64,
+    loaded_bytes: Cell<u64>,
+    over_budget: Cell<bool>,
 }
 
 impl<'a> FactLoader<'a> {
@@ -939,6 +978,7 @@ impl<'a> FactLoader<'a> {
         request: &'a Request,
         enabled: &'a Enabled,
         load: &'a dyn Fn(&RequestFile) -> Result<FileFacts, JobError>,
+        byte_limit: u64,
     ) -> Self {
         Self {
             enabled,
@@ -949,28 +989,45 @@ impl<'a> FactLoader<'a> {
                 .map(|file| (file.path.as_str(), (file, std::cell::OnceCell::new())))
                 .collect(),
             problem: RefCell::new(None),
+            byte_limit,
+            loaded_bytes: Cell::new(0),
+            over_budget: Cell::new(false),
         }
     }
 
     pub(super) fn get(&self, path: &str) -> &FileFacts {
         let (file, slot) = &self.slots[path];
-        slot.get_or_init(|| match (self.load)(file) {
-            Ok(mut facts) => {
-                self.enabled.activate(std::slice::from_mut(&mut facts));
-                facts
-            }
-            Err(error) => {
-                *self.problem.borrow_mut() = Some(error);
-                FileFacts {
-                    path: path.into(),
-                    health: mex_graph_core::facts::Health {
-                        status: ParseStatus::Failed,
-                        ..Default::default()
-                    },
-                    ..Default::default()
+        slot.get_or_init(|| {
+            let bytes = self.loaded_bytes.get().saturating_add(file.size);
+            if self.over_budget.get() || bytes > self.byte_limit {
+                // Bounded edits are retried in a one-shot worker after
+                // discarding all rows planned with these empty inputs.
+                self.over_budget.set(true);
+            } else {
+                self.loaded_bytes.set(bytes);
+                match (self.load)(file) {
+                    Ok(mut facts) => {
+                        self.enabled.activate(std::slice::from_mut(&mut facts));
+                        return facts;
+                    }
+                    Err(error) => {
+                        *self.problem.borrow_mut() = Some(error);
+                    }
                 }
             }
+            FileFacts {
+                path: path.into(),
+                health: mex_graph_core::facts::Health {
+                    status: ParseStatus::Failed,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
         })
+    }
+
+    pub(super) fn over_budget(&self) -> bool {
+        self.over_budget.get()
     }
 
     pub(super) fn finish(self) -> Result<(), JobError> {

@@ -7,6 +7,9 @@ pub enum Access<'a> {
     Origin(usize),
     Enter(usize),
     Leave,
+    StartMemo(usize),
+    EndMemo,
+    ReadMemo(usize),
     File(usize),
     Lookup(&'static str, &'a str),
 }
@@ -71,6 +74,24 @@ impl<'a> Files<'a> {
                 observe(Access::Leave);
                 result
             }
+        }
+    }
+
+    pub fn within_memo<T>(self, memo: usize, run: impl FnOnce() -> T) -> T {
+        match self {
+            Self::Dense(_) => run(),
+            Self::Lazy { observe, .. } => {
+                observe(Access::StartMemo(memo));
+                let result = run();
+                observe(Access::EndMemo);
+                result
+            }
+        }
+    }
+
+    pub fn read_memo(self, memo: usize) {
+        if let Self::Lazy { observe, .. } = self {
+            observe(Access::ReadMemo(memo));
         }
     }
 

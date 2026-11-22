@@ -180,6 +180,7 @@ pub struct Writer {
     codes: HashMap<Code, HashMap<String, i64>>,
     edge_sequence: i64,
     previous_overlay: bool,
+    sparse_observations: bool,
     overlay: bool,
     next_code: i64,
     next_chunk: i64,
@@ -208,6 +209,7 @@ impl Writer {
         file.open(path)
             .map_err(|_| Error::InvalidPath(path.to_path_buf()))?;
         let conn = Connection::open(path)?;
+        conn.set_prepared_statement_cache_capacity(64);
         conn.execute_batch(
             "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = OFF;
@@ -227,6 +229,7 @@ impl Writer {
             codes: HashMap::new(),
             edge_sequence: offset,
             previous_overlay: false,
+            sparse_observations: false,
             overlay: base.is_some(),
             next_code: offset,
             next_chunk: offset,
@@ -315,6 +318,11 @@ impl Writer {
         self.conn
             .prepare_cached("DELETE FROM source_observations WHERE path = ?1")?
             .execute([path])?;
+        if self.sparse_observations {
+            self.conn
+                .prepare_cached("INSERT OR IGNORE INTO main.source_observation_gaps VALUES (?1)")?
+                .execute([path])?;
+        }
         Ok(())
     }
 
@@ -532,20 +540,36 @@ impl Writer {
     }
 
     fn parse_counts(&self) -> rusqlite::Result<[i64; 3]> {
+        let counts = |sql| {
+            self.conn
+                .query_row(sql, [], |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]))
+        };
+        if self.overlay
+            && let Some(base) =
+                counts("SELECT source_count, partial_count, failed_count FROM base.snapshot")
+                    .optional()?
+        {
+            let current: [i64; 3] = counts(
+                "SELECT count(*), count(*) FILTER(WHERE parse_status = 1),
+                        count(*) FILTER(WHERE parse_status = 2) FROM main.files",
+            )?;
+            let hidden: [i64; 3] = counts(
+                "SELECT count(*), count(*) FILTER(WHERE f.parse_status = 1),
+                        count(*) FILTER(WHERE f.parse_status = 2)
+                 FROM main.shadow_files s CROSS JOIN base.files f ON f.path = s.path",
+            )?;
+            return Ok(std::array::from_fn(|i| base[i] + current[i] - hidden[i]));
+        }
         let files = if self.overlay {
             "(SELECT parse_status FROM main.files UNION ALL SELECT parse_status FROM base.files
               WHERE path NOT IN (SELECT path FROM main.shadow_files))"
         } else {
             "main.files"
         };
-        self.conn.query_row(
-            &format!(
-                "SELECT count(*), count(*) FILTER(WHERE parse_status = 1),
-            count(*) FILTER(WHERE parse_status = 2) FROM {files}"
-            ),
-            [],
-            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
-        )
+        counts(&format!(
+            "SELECT count(*), count(*) FILTER(WHERE parse_status = 1),
+             count(*) FILTER(WHERE parse_status = 2) FROM {files}"
+        ))
     }
 
     pub fn set_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
@@ -557,7 +581,10 @@ impl Writer {
 
     pub fn finish(self) -> rusqlite::Result<()> {
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
-        crate::timing::measure("v5.indexes", || self.conn.execute_batch(INDEXES))?;
+        crate::timing::measure("v5.indexes", || {
+            self.conn.execute_batch(INDEXES)?;
+            self.conn.execute_batch(incremental::INDEXES)
+        })?;
         crate::timing::measure("v5.fingerprintNeighbours", || {
             if self.overlay {
                 self.finish_overlay_fingerprints()

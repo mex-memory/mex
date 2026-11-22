@@ -42,6 +42,9 @@ CREATE TABLE source_observations (
     utf8_size INTEGER NOT NULL CHECK(utf8_size BETWEEN 0 AND 4194304)
 ) STRICT, WITHOUT ROWID;
 
+-- A sparse v5 overlay inherits the base's observations of the same root.
+CREATE TABLE source_observation_gaps (path TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;
+
 -- The overlay-only shadow_files and overlay_info tables are created by
 -- store/overlay.rs. A shadow hides every row owned by the base file, even
 -- when that path was deleted. File and node keys are reused by path and

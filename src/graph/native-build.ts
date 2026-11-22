@@ -5,7 +5,7 @@ import { deflateRawSync, inflateRawSync } from "node:zlib";
 import type { GraphMaintenanceOptions } from "../team/contracts/graph.js";
 import { captureGraphCoverage, coveragePolicyHash, reuseV5Coverage, V5_COVERAGE_CACHE_LIMITS, type CoverageCache } from "./coverage.js";
 import { openSqlite } from "./db/sqlite.js";
-import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows } from "./db/v5.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows, v5SourceObservations } from "./db/v5.js";
 import { discoverGraphBuildSources, GraphSourceSpool, TREE_SITTER_EXTRACTOR_VERSION, type NativeSourceObservation } from "./engine-impl.js";
 import {
   engineExtractorSuffix, graphEngineHandlesEcmaScript, graphEngineLanguageFamily, graphEngineLanguages,
@@ -290,7 +290,7 @@ function readSourceObservations(file: string, root: string, rootDigest: string):
       } catch { /* An unusable walk is an ordinary cache miss. */ }
     }
     const rows = db.prepare(`SELECT o.path, o.identity, o.utf8_size AS utf8Size, lower(hex(f.content_hash)) AS contentHash
-      FROM main.source_observations o CROSS JOIN ${v5Rows(db, "files")} f ON f.path = o.path`).all() as Array<NativeSourceObservation & { path: string }>;
+      FROM ${v5SourceObservations(db)} o CROSS JOIN ${v5Rows(db, "files")} f ON f.path = o.path`).all() as Array<NativeSourceObservation & { path: string }>;
     return { sources: new Map(rows.map(({ path, ...observation }) => [path, observation])), coverage: reuseV5Coverage(db, root) };
   } catch { return undefined; }
   finally { db.close(); }

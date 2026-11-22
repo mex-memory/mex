@@ -4,7 +4,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { addGraphCorpusBytes, GRAPH_CONFIG_GLOBS, GRAPH_SUPPORTED_SOURCE_GLOB } from "./corpus-policy.js";
 import { reuseV5Coverage } from "./coverage.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
-import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows } from "./db/v5.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows, v5SourceObservations } from "./db/v5.js";
 import { captureNativeGraphSource, nativeGraphSourcePaths, preciseSourceIdentity } from "./engine-impl.js";
 import { graphEngineLanguageFamily, graphEngineLanguages } from "./engine-languages.js";
 import { detectLanguage } from "./extraction/grammars.js";
@@ -39,7 +39,7 @@ interface EditPlan {
 function graphFiles(db: SqliteDatabase): Map<string, NativeGraphFile> {
   const rows = db.prepare(`SELECT f.path, lower(hex(f.content_hash)) AS contentHash, f.size, f.modified_at AS modifiedAt,
     f.extractor_version AS extractorVersion, o.identity AS sourceIdentity, o.utf8_size AS utf8Size
-    FROM ${v5Rows(db, "files")} f LEFT JOIN main.source_observations o ON o.path = f.path ORDER BY f.path`).all() as NativeGraphFile[];
+    FROM ${v5Rows(db, "files")} f LEFT JOIN ${v5SourceObservations(db)} o ON o.path = f.path ORDER BY f.path`).all() as NativeGraphFile[];
   return new Map(rows.map(file => [file.path, file]));
 }
 
