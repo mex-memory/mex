@@ -11,7 +11,7 @@ use super::{
     build,
     incremental::{self, Corpus, FactLoader, Plan, Publication, PublishedOverlay},
 };
-use crate::facts_cache::FactsCache;
+use crate::facts_cache::{FactsCache, ResidentDecoder};
 use crate::job::{
     ConfigSource, JobCounts, JobError, Request, RequestFile, decode_hash, extract_files,
     refresh_format, request_facts_key,
@@ -95,21 +95,26 @@ pub(crate) fn write(
     let enabled = incremental::framework_set(&writer, configs, &changed, &removed)?;
     let complete =
         complete || enabled.names() != prior.current().frameworks().map_err(JobError::write)?;
-    let reader = RefCell::new(cache.and_then(FactsCache::reader));
+    // Dependency lookups jump between modules. Keep the consulted blocks
+    // for this job so a traversal does not reread the same SQLite pages.
+    let reader = RefCell::new(
+        cache
+            .and_then(FactsCache::reader)
+            .zip(ResidentDecoder::new(64 * 1024 * 1024)),
+    );
     let reextracted_new = RefCell::new(HashSet::new());
     let load = |input: &RequestFile| {
         if let Some(facts) = changed.get(&input.path) {
             return Ok(facts.clone());
         }
-        if let Some(facts) =
-            request_facts_key(&input.path, &request.languages).and_then(|(language, version)| {
-                let hash = input.content_hash.as_deref().and_then(decode_hash)?;
-                reader
-                    .borrow_mut()
-                    .as_mut()?
-                    .get(&input.path, language, &version, &hash)
-            })
-        {
+        let cached = timing::measure("worker.cacheRead", || {
+            let (language, version) = request_facts_key(&input.path, &request.languages)?;
+            let hash = input.content_hash.as_deref().and_then(decode_hash)?;
+            let mut cache = reader.borrow_mut();
+            let (reader, decoder) = cache.as_mut()?;
+            decoder.unpack(&reader.pin(&input.path, language, version, hash)?)
+        });
+        if let Some(facts) = cached {
             return Ok(facts);
         }
         let extracted = extract_files(root, request, &[input], cache);

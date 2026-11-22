@@ -208,6 +208,12 @@ impl<'a> FileIndex<'a> {
             .filter(move |&i| lane.admits(self.facts.bindings[i].space))
     }
 
+    pub(super) fn parameter_invocations(&self) -> impl Iterator<Item = (usize, u32)> + '_ {
+        self.invokes
+            .iter()
+            .flat_map(|(&def, positions)| positions.iter().map(move |&arg| (def, arg)))
+    }
+
     pub(super) fn binding(&self, mut scope: i32, name: &str, lane: Lane) -> Result<usize, Reason> {
         loop {
             let mut entries = self.names_at(scope, name, lane);

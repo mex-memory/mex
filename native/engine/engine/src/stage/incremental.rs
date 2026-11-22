@@ -301,6 +301,11 @@ impl Corpus<'_> {
             let project = |index, file: super::StagedFile<'_>| -> Result<(), JobError> {
                 let facts = load(index);
                 relations::Projection::new(&file, facts)?.install(writer, &facts.path)?;
+                if has_heritage(facts) {
+                    writer
+                        .put_read(&facts.path, "ts-heritage", "")
+                        .map_err(JobError::write)?;
+                }
                 for marker in &facts.frameworks {
                     if marker.kind == DETECTION {
                         writer
@@ -462,6 +467,13 @@ impl Corpus<'_> {
     }
 }
 
+fn has_heritage(facts: &FileFacts) -> bool {
+    facts
+        .ecmascript
+        .as_ref()
+        .is_some_and(|extra| !extra.bases.is_empty())
+}
+
 fn types(facts: &FileFacts) -> impl Iterator<Item = (&str, usize)> {
     facts.defs.iter().enumerate().filter_map(|(index, def)| {
         (facts.health.status != ParseStatus::Failed
@@ -591,9 +603,6 @@ impl<'a> Plan<'a> {
                 }
                 ts_dispatch |= topology_readers(corpus, prior, writer, &mut frontier)?;
             }
-            if ts_dispatch {
-                frontier.extend(writer.readers("ts-dispatch", "").map_err(JobError::write)?);
-            }
             let mut visited = HashSet::new();
             while let Some(path) = frontier.pop_front() {
                 if !visited.insert(path.clone()) {
@@ -604,6 +613,22 @@ impl<'a> Plan<'a> {
                     affected.insert(path);
                 }
                 frontier.extend(writer.readers("file", &path).map_err(JobError::write)?);
+            }
+            if ts_dispatch {
+                let new_heritage = surfaces
+                    .iter()
+                    .any(|path| has_heritage((corpus.load)(path)));
+                let old_heritage = writer.readers("ts-heritage", "").map_err(JobError::write)?;
+                if new_heritage || old_heritage.iter().any(|path| visited.contains(path)) {
+                    // Candidate hints are output rows. A caller of a hint's
+                    // owner does not depend on that owner's hint.
+                    for path in writer.readers("ts-dispatch", "").map_err(JobError::write)? {
+                        if let Some((&path, _)) = current.get_key_value(path.as_str()) {
+                            resolve.insert(path);
+                            affected.insert(path);
+                        }
+                    }
+                }
             }
             for (path, (mut rows, signature, positions)) in reusable {
                 if affected.contains(path) {

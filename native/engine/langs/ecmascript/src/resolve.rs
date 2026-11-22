@@ -111,6 +111,22 @@ impl Lane {
     }
 }
 
+/// Cross-file callback synthesis consults this set, rather than the
+/// extractor's over-approximation of potential parameter calls.
+pub fn parameter_invocations(facts: &FileFacts) -> Vec<(usize, u32)> {
+    let mut calls = Vec::new();
+    if facts
+        .ecmascript
+        .as_ref()
+        .is_some_and(|extra| !extra.parameter_calls.is_empty())
+        && let Some(index) = FileIndex::new(facts)
+    {
+        calls.extend(index.parameter_invocations());
+        calls.sort_unstable();
+    }
+    calls
+}
+
 pub fn resolve(files: &[FileFacts], modules: &ModuleResolver) -> Resolution {
     Resolver::new(Files::Dense(files), modules).resolve(0..files.len(), |_| Vec::new())
 }

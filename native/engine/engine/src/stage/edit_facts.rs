@@ -21,8 +21,8 @@ pub(super) struct Signature {
 impl Signature {
     pub(super) fn new(facts: &FileFacts) -> Result<Self, crate::job::JobError> {
         use sha2::{Digest, Sha256};
-        fn hash(file: &FileFacts) -> Result<[u8; 32], crate::job::JobError> {
-            let bytes = bincode::encode_to_vec(file, bincode::config::standard())
+        fn hash(value: impl bincode::Encode) -> Result<[u8; 32], crate::job::JobError> {
+            let bytes = bincode::encode_to_vec(value, bincode::config::standard())
                 .map_err(crate::job::JobError::write)?;
             Ok(Sha256::digest(bytes).into())
         }
@@ -35,10 +35,11 @@ impl Signature {
         }
         let sites = normalize(&mut file);
         let resolution = hash(&file)?;
+        let invoked_parameters = mex_graph_ecmascript::resolve::parameter_invocations(&file);
         keep_surface(&mut file);
         Ok(Self {
             resolution,
-            surface: hash(&file)?,
+            surface: hash((&file, invoked_parameters))?,
             sites,
         })
     }
@@ -68,6 +69,7 @@ impl Signature {
 
 fn keep_surface(file: &mut FileFacts) {
     if let Some(extra) = &mut file.ecmascript {
+        extra.parameter_calls.clear();
         // A contextual call can type an object that escapes the file.
         // Keep its entire arena when there is contextual evidence.
         if !extra.contextual_calls.is_empty() {
@@ -130,8 +132,7 @@ fn retain_surface_bindings(
                 .iter()
                 .map(|signature| signature.scope),
         )
-        .chain(facts.export_values.iter().map(|export| export.scope))
-        .chain(facts.parameter_calls.iter().map(|call| call.scope));
+        .chain(facts.export_values.iter().map(|export| export.scope));
     let mut retained = HashSet::from([mex_graph_core::facts::NONE]);
     for mut root in roots {
         while retained.insert(root) {
@@ -339,4 +340,28 @@ fn prune_expressions(facts: &mut ReferenceFacts) {
     visit_roots(facts, |id| {
         *id = remap[*id as usize].expect("a surface root")
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Signature;
+    use mex_graph_ecmascript::EcmaScript;
+
+    #[test]
+    fn only_proven_parameter_invocations_affect_the_callback_surface() {
+        let mut parser = EcmaScript::new();
+        let mut signature = |statement| {
+            let text = format!(
+                "import {{ work }} from './work'; export function run(callback: () => void) {{ {statement} }}"
+            );
+            Signature::new(&parser.extract("run.ts", &text, [0; 32])).unwrap()
+        };
+        let original = signature("");
+        let ordinary = signature("work();");
+        let callback = signature("callback();");
+        let duplicate_callback = signature("callback(); callback();");
+        assert!(original.same_surface(&ordinary));
+        assert!(!original.same_surface(&callback));
+        assert!(callback.same_surface(&duplicate_callback));
+    }
 }
