@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use mex_graph_core::facts::FileFacts;
+use mex_graph_ecmascript::{EcmaScript, language_for_path};
 use mex_graph_python::{EXCLUDED, Python};
 use sha2::{Digest, Sha256};
 
@@ -39,13 +40,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let root = root.ok_or("--root is required")?;
     let mut python = Python::new();
+    let mut ecmascript = EcmaScript::new();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    for path in paths.iter().filter(|p| p.ends_with(".py")) {
+    for path in &paths {
+        let is_python = path.ends_with(".py");
+        if !is_python && language_for_path(path).is_none() {
+            continue;
+        }
         let bytes = std::fs::read(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
         let text = String::from_utf8_lossy(&bytes);
         let hash: [u8; 32] = Sha256::digest(&bytes).into();
-        let facts = python.extract(path, &text, hash);
+        let facts = if is_python {
+            python.extract(path, &text, hash)
+        } else {
+            ecmascript.extract(path, &text, hash)
+        };
         print_facts(&mut out, &facts, full).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -55,14 +65,25 @@ fn print_facts(out: &mut impl Write, facts: &FileFacts, full: bool) -> std::io::
     if full {
         return writeln!(out, "{}", serde_json::to_string(facts).unwrap_or_default());
     }
-    for def in facts
+    let compiler = facts.language != "python";
+    let ids: Vec<_> = facts
         .defs
         .iter()
-        .filter(|d| !d.flags.iter().any(|f| f == EXCLUDED))
-    {
-        let line = serde_json::json!({
+        .map(|def| {
+            if compiler {
+                def.ordinal_id(&facts.path)
+            } else {
+                def.signature_id(&facts.path)
+            }
+        })
+        .collect();
+    for (i, def) in facts.defs.iter().enumerate() {
+        if def.flags.iter().any(|f| f == EXCLUDED) {
+            continue;
+        }
+        let mut line = serde_json::json!({
             "path": facts.path,
-            "id": def.signature_id(&facts.path),
+            "id": ids[i],
             "kind": def.kind.as_str(),
             "name": def.name,
             "qualifiedName": def.qualified_name,
@@ -79,6 +100,18 @@ fn print_facts(out: &mut impl Write, facts: &FileFacts, full: bool) -> std::io::
             "async": def.flags.iter().any(|f| f == "async"),
             "exported": def.exported,
         });
+        if compiler {
+            line["containerId"] = serde_json::json!(
+                usize::try_from(def.parent)
+                    .ok()
+                    .and_then(|parent| ids.get(parent))
+            );
+            line["visibility"] = serde_json::json!(def.visibility);
+            line["decorators"] = serde_json::json!(def.decorators);
+            line["typeParameters"] = serde_json::json!(def.type_parameters);
+            line["static"] = serde_json::json!(def.flags.iter().any(|f| f == "static"));
+            line["abstract"] = serde_json::json!(def.flags.iter().any(|f| f == "abstract"));
+        }
         writeln!(out, "{line}")?;
     }
     writeln!(

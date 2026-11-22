@@ -184,6 +184,7 @@ version = "0.1.0"
 dependencies = [
  "memory-stats",
  "mex-graph-core",
+ "mex-graph-ecmascript",
  "mex-graph-python",
  "rusqlite",
  "serde",
@@ -205,8 +206,12 @@ dependencies = [
 name = "mex-graph-ecmascript"
 version = "0.1.0"
 dependencies = [
+ "mex-graph-core",
  "serde",
  "serde_json",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-typescript",
 ]
 
 [[package]]
@@ -425,6 +430,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-javascript"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68204f2abc0627a90bdf06e605f5c470aa26fdcb2081ea553a04bdad756693f5"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-language"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -438,6 +453,16 @@ checksum = "b4066c6cf678f962f8c2c4561f205945c84834cce73d981e71392624fdc390a9"
 dependencies = [
  "cc",
  "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-typescript"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
 ]
 
 [[package]]

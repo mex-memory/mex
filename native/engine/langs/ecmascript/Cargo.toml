@@ -8,6 +8,10 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mex-graph-core = { path = "../../core" }
+tree-sitter = "0.26"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-typescript = "=0.23.2"
 serde_json = { version = "=1.0.154", features = ["preserve_order", "raw_value"] }
 
 [dev-dependencies]

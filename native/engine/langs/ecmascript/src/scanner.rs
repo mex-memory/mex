@@ -14,12 +14,17 @@ const MAX_KEYWORD_LENGTH: usize = 12;
 /// with trivia skipping enabled and the requested language variant. EOF is
 /// omitted. Each call starts at position zero and uses only `scan()`.
 pub fn scan_token_names(text: &str, jsx: bool) -> Vec<&'static str> {
-    let mut scanner = Scanner { text, pos: 0, jsx };
     let mut names = Vec::new();
+    append_token_names(text, jsx, &mut names);
+    names
+}
+
+pub(crate) fn append_token_names(text: &str, jsx: bool, names: &mut Vec<&'static str>) {
+    let mut scanner = Scanner { text, pos: 0, jsx };
     loop {
         let token = scanner.scan();
         if token == Kind::EndOfFileToken {
-            return names;
+            return;
         }
         names.push(token.name());
     }
