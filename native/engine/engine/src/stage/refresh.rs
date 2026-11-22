@@ -64,7 +64,9 @@ pub(crate) fn write(
                 })
         })
         .collect();
+    build::progress("parse", 0, inputs.len())?;
     let extracted = extract_files(root, request, &inputs, cache);
+    build::progress("parse", inputs.len(), inputs.len())?;
     let mut reextracted: HashSet<_> = extracted.reextracted.iter().copied().collect();
     let mut sizes: HashMap<_, _> = request
         .files
@@ -129,6 +131,7 @@ pub(crate) fn write(
             .ok_or_else(|| JobError::request("Unable to load resolver facts"))
     };
     let loader = FactLoader::new(request, &load, u64::MAX);
+    build::progress("resolve", 0, request.files.len())?;
     {
         let load = |path: &str| loader.get(path);
         let corpus = Corpus {

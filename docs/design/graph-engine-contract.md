@@ -210,7 +210,7 @@ coverage.
 {"type":"error","code":"graph_contract_mismatch","message":"the request is contract 1, this engine is 3"}
 ```
 
-- `build` can report `progress` while writing the candidate and records per-file coverage gaps there. `stage` reports each file as described below.
+- `build` and `refresh` report `progress` while writing the candidate and record per-file coverage gaps there. `stage` reports each file as described below.
 - `result` is the last line of a successful native job. The WASI host follows it with a `usage` frame for the host and its worker. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files, failed parses and files with basic resolution. Node owns validation, publication and usage logging.
 - Usage includes elapsed and CPU milliseconds and peak RSS in MiB. The log sums CPU over all attempts and records engine RSS separately in `server_rss_mb`. Resident replies carry cumulative CPU and peak RSS. Node records CPU deltas in the per-minute warm usage rows. A killed child contributes its last reported sample if one reached the parent.
 
@@ -282,18 +282,23 @@ Express, NestJS, Next.js, Flask and FastAPI preserve their existing route roles 
 | 70 | Internal error | rerun once with `--isolate` to find a bad file |
 | killed by a signal | Native crash | rerun once with `--isolate` |
 
-A failed database job deletes its candidate and temporary files. A TypeScript or JavaScript fallback builds a separate v4 candidate through the usual publication checks. Node cleans them up if the engine was killed. A failed `stage` job leaves cleanup of any streamed rows to Node. The stage guard can exit before writing an `error` event if stdout is blocked.
+A failed database job discards its candidate and temporary files. Node
+cleans up if the engine was killed. If Node was killed too, the next writer
+collects the interrupted job's files and lease before it starts. A fallback
+to Node builds a separate v4 candidate through the usual publication checks.
+Node discards rows from a failed `stage` job.
 
 ## Serve mode (M5 stage 2)
 
-Schema v5 edits use the resident engine. Schema v4 edits queue a normal refresh.
+Schema v5 edits use the native resident engine when available. Schema v4 and
+WASI checkouts queue a one-shot refresh.
 
 The startup request uses `mode: "serve"`, an absolute published `base`,
 and an optional absolute `overlay` beside it. Its `files` list describes the
 complete published base and overlay union, with hashes, sizes, and extractor
 versions. `configs`, `languages`, `factsCache`, `observationRoot`, and `limits`
 have the same meanings as for refresh. The startup request has no candidate
-path. After the `start\n` barrier, stdout sends `{"type":"ready"}`.
+path. After the `start\n` barrier, stdout sends a `ready` frame with usage.
 
 An edit is one JSONL frame with a caller-chosen integer `id` and a new
 absolute `output` path beside the base. `files` contains upserts with exact
@@ -306,7 +311,7 @@ describe the candidate checkout.
 
 ```json
 {"type":"edit","id":1,"output":"/abs/index/graph-tmp-42-1.db","files":[],"deleted":["src/old.py"]}
-{"type":"result","id":1,"files":82,"nodes":2140,"edges":1800,"coverageGaps":0,"filesReextracted":0,"shadowedFiles":3,"usage":{"wallMs":12.5,"peakRssMb":32}}
+{"type":"result","id":1,"files":82,"nodes":2140,"edges":1800,"coverageGaps":0,"filesReextracted":0,"shadowedFiles":3,"usage":{"wallMs":12.5,"cpuMs":52,"peakRssMb":32}}
 ```
 
 The result identifies a finished candidate. Node holds the writer lease,

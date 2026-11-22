@@ -452,7 +452,7 @@ pub(super) fn index_source(
     write_source_chunks(writer, file, &input.path, &source).map_err(JobError::write)
 }
 
-fn progress(phase: &str, done: usize, total: usize) -> Result<(), JobError> {
+pub(super) fn progress(phase: &str, done: usize, total: usize) -> Result<(), JobError> {
     emit(&serde_json::json!({
         "type": "progress", "phase": phase, "done": done, "total": total,
         "usage": process_usage(0, 0),

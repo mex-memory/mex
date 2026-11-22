@@ -463,6 +463,7 @@ async function refreshGraphWithLease(
       let buildResult: BuildResult;
       try {
         if (native && priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION && v5Base && v5Identity) {
+          progress(options, "stage", "Preparing an isolated schema v5 refresh candidate.");
           options.__internal?.beforeCandidateDatabaseOpen?.(candidatePath);
           assertMaintenanceDirectoryUnchanged(paths);
           revalidateLiveDatabase(v5Base, v5Identity);
