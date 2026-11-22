@@ -135,6 +135,9 @@ pub struct SyntaxReference {
     pub kind: ReferenceKind,
     pub name: String,
     pub range: Range,
+    /// The callee of a syntactic call receiver such as `make().run()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_call: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

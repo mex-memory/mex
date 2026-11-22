@@ -12,10 +12,12 @@ mod workers;
 use crate::workers::{inner::{new as worker_new}, State};
 struct Local;
 impl Local {
-    fn new() {}
+    fn new() -> Self { Self }
+    fn own(&self) {}
     fn run(&self) {
         Local::new();
         Self::new();
+        Local::new().own();
         external::Error::new();
         worker_new();
         State::Ready.step();
@@ -52,6 +54,8 @@ impl State { pub fn step(&self) {} }
         [
             ("Local::new", "Local::new"),
             ("Self::new", "Local::new"),
+            ("Local::new().own", "Local::own"),
+            ("Local::new", "Local::new"),
             ("worker_new", "inner::new"),
             ("State::Ready.step", "State::step"),
         ]

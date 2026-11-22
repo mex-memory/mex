@@ -398,6 +398,17 @@ impl Declarations<'_> {
     }
 
     pub fn add_reference(&mut self, from: usize, kind: ReferenceKind, name: &str, node: Node) {
+        self.add_reference_with_receiver(from, kind, name, node, None);
+    }
+
+    pub fn add_reference_with_receiver(
+        &mut self,
+        from: usize,
+        kind: ReferenceKind,
+        name: &str,
+        node: Node,
+        receiver_call: Option<String>,
+    ) {
         if name.is_empty() {
             return;
         }
@@ -410,6 +421,7 @@ impl Declarations<'_> {
             kind,
             name: name.into(),
             range: self.text.range(node),
+            receiver_call,
         });
     }
 

@@ -25,11 +25,11 @@ pub fn resolve(files: &[FileFacts]) -> Vec<FileResolution<'_>> {
                 let owner = (file, scope.import_owner(file, import));
                 let binding = import.bindings.first().expect("a Rust use binds a name");
                 let target = scope.import(owner, import, &any, &Cell::new(MAX_LOOKUP_STEPS));
-                let module = target.ok().map(|(module, _)| module).or_else(|| {
-                    // An indexed module is still an import edge when a written
-                    // member is external or conditional and has no indexed node.
-                    scope.module_prefix(owner, &import.specifier)
-                });
+                // An import edge names the written module. The binding can
+                // separately point through a re-export to its definition.
+                let module = scope
+                    .module_prefix(owner, &import.specifier)
+                    .or_else(|| target.ok().map(|(module, _)| module));
                 let edge = module
                     .filter(|&module| module != file)
                     .map(|module| (module, 0));
@@ -67,6 +67,7 @@ pub fn resolve(files: &[FileFacts]) -> Vec<FileResolution<'_>> {
 struct Scope<'a> {
     index: Index<'a>,
     imports: HashMap<DefRef, Vec<(&'a Import, &'a ImportBinding)>>,
+    returns: HashMap<DefRef, &'a str>,
     members: HashMap<String, Option<usize>>,
 }
 
@@ -76,6 +77,7 @@ impl<'a> Scope<'a> {
         let mut result = Self {
             index,
             imports: HashMap::new(),
+            returns: HashMap::new(),
             members: HashMap::new(),
         };
         for (&path, &file) in &result.index.files {
@@ -93,6 +95,13 @@ impl<'a> Scope<'a> {
             }
         }
         for (file, facts) in facts.iter().enumerate() {
+            for reference in &facts.syntax_references {
+                if reference.kind == ReferenceKind::Returns {
+                    result
+                        .returns
+                        .insert((file, reference.from), &reference.name);
+                }
+            }
             for import in &facts.imports {
                 let owner = (file, result.import_owner(file, import));
                 result
@@ -124,6 +133,8 @@ impl<'a> Scope<'a> {
             }
             let ty = if receiver == "self" {
                 self.impl_owner(from).ok_or("untyped_receiver")?
+            } else if let Some(callee) = &reference.receiver_call {
+                self.call_return_type(from, callee)?
             } else {
                 // A qualified enum variant is an instance of its written enum.
                 let path = split_path(receiver)
@@ -141,6 +152,16 @@ impl<'a> Scope<'a> {
                     || path.len() > 1
                     || def.kind == Kind::Function)
         })
+    }
+
+    fn call_return_type(&self, from: DefRef, callee: &str) -> Target {
+        let path = split_path(callee).ok_or("untyped_receiver")?;
+        let target = self.bind_path(from, &path, &|def| {
+            def.kind == Kind::Function || path.len() > 1 && def.kind == Kind::Method
+        })?;
+        let returned = self.returns.get(&target).ok_or("untyped_receiver")?;
+        let path = split_path(returned).ok_or("untyped_receiver")?;
+        self.bind_path(target, &path, &is_type)
     }
 
     fn bind_path(&self, from: DefRef, path: &[&str], accept: &impl Fn(&Def) -> bool) -> Target {

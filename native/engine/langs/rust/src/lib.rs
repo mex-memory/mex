@@ -324,14 +324,22 @@ impl<'tree> Walker<'tree, '_, '_> {
         };
         let text = &self.declarations.text;
         if function.kind() == "field_expression" {
-            let receiver = js_trim(text.field(function, "value"));
+            let Some(value) = function.child_by_field_name("value") else {
+                return;
+            };
+            let receiver = js_trim(text.of(value));
             let member = text.field(function, "field");
             if !receiver.is_empty() && !member.is_empty() {
-                self.declarations.add_reference(
+                let call = (value.kind() == "call_expression")
+                    .then(|| value.child_by_field_name("function"))
+                    .flatten()
+                    .map(|callee| path_text(text, callee));
+                self.declarations.add_reference_with_receiver(
                     owner,
                     ReferenceKind::Calls,
                     &format!("{receiver}.{member}"),
                     node,
+                    call,
                 );
             }
         } else {
