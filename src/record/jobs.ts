@@ -89,6 +89,11 @@ export interface JobKind<P = unknown, C = unknown> {
   ready?(job: JobRow, writer: RecordWriter): boolean;
   /** Optional owned recovery metadata for a batch whose runner died. */
   interrupted?(job: JobRow, writer: RecordWriter): Pick<Partial<JobRow>, "checkpoint" | "progress">;
+  /**
+   * Called inside the state change when the job first reaches a terminal state (done, failed, cancelled),
+   * to drop data the run kept only while it ran. Must be fast; a throw is ignored.
+   */
+  ended?(job: JobRow, db: DatabaseSync): void;
   display?(job: JobRow, reader: Pick<RecordReader, "all">): { used?: number; ceiling?: number; summary?: string };
   /**
    * Whether this unfinished job already serves a new request, so no second
@@ -122,6 +127,9 @@ function setState(db: DatabaseSync, job: JobRow, to: JobState, fields: Partial<J
   if (job.state !== to && !canTransition(job.state, to)) throw new JobTransitionError(job.state, to);
   const next: JobRow = { ...job, ...fields, state: to, updated_at: now() };
   if (TERMINAL_STATES.includes(to)) { next.finished_at = next.updated_at; next.owner = null; next.request = null; }
+  if (TERMINAL_STATES.includes(to) && !TERMINAL_STATES.includes(job.state)) {
+    try { kinds.get(job.kind)?.ended?.(next, db); } catch { /* cleanup is best effort; the state change stands */ }
+  }
   if (to === "queued" || to === "paused" || to === "waiting") next.owner = null;
   db.prepare(`UPDATE jobs SET state=?,reason=?,progress=?,checkpoint=?,tokens_used=?,tokens_estimate=?,updated_at=?,
     batch=?,results=?,failures=?,request=?,owner=?,finished_at=? WHERE id=?`).run(

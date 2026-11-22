@@ -225,38 +225,51 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 		if v.name == contract.ToolWrite {
 			old = currentText(v.path)
 		}
-		p := snap.Patterns()
-		for i := range snap.Items {
-			it := &snap.Items[i]
-			typ := bumpType(it)
-			if typ == "anti" && len(it.Entry.When) == 0 {
-				// A layer rule held by an import relation has no literal to
-				// match: the edit's imports are resolved instead.
-				if inScope(it, v.rel) {
-					if t, ok := relationBump(it, v.rel, added, old); ok {
-						out = append(out, bump{item: it, trigger: t, rel: v.rel, project: v.project, check: v.checkout})
-					}
+		for _, m := range matchEdit(snap, v.rel, added, old) {
+			m.project, m.check = v.project, v.checkout
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// matchEdit finds the rules in snap whose anti-pattern (or rejected option)
+// one edit adds at rel: added is the new text, old what it replaces. It is the
+// speed bump's whole matching rule, shared with the "would have fired" replay
+// so the two can never disagree.
+func matchEdit(snap *entries.Snapshot, rel, added, old string) []bump {
+	var out []bump
+	p := snap.Patterns()
+	for i := range snap.Items {
+		it := &snap.Items[i]
+		typ := bumpType(it)
+		if typ == "anti" && len(it.Entry.When) == 0 {
+			// A layer rule held by an import relation has no literal to
+			// match: the edit's imports are resolved instead.
+			if inScope(it, rel) {
+				if t, ok := relationBump(it, rel, added, old); ok {
+					out = append(out, bump{item: it, trigger: t, rel: rel})
 				}
+			}
+			continue
+		}
+		if typ == "" || !p.InEdit(added, it, typ) {
+			continue
+		}
+		// A rule within its scope; a rejected option within the decision's
+		// scope or in a manifest, where a dependency comes back.
+		if !inScope(it, rel) && !(typ == "rejected" && isManifest(rel)) {
+			continue
+		}
+		for _, t := range it.Entry.When {
+			if t.Type != typ || !precise(t) {
 				continue
 			}
-			if typ == "" || !p.InEdit(added, it, typ) {
-				continue
+			if occurrences(t, added) <= occurrences(t, old) {
+				continue // only an edit that adds the pattern
 			}
-			// A rule within its scope; a rejected option within the decision's
-			// scope or in a manifest, where a dependency comes back.
-			if !inScope(it, v.rel) && !(typ == "rejected" && isManifest(v.rel)) {
-				continue
-			}
-			for _, t := range it.Entry.When {
-				if t.Type != typ || !precise(t) {
-					continue
-				}
-				if occurrences(t, added) <= occurrences(t, old) {
-					continue // only an edit that adds the pattern
-				}
-				out = append(out, bump{item: it, trigger: t, rel: v.rel, project: v.project, check: v.checkout})
-				break
-			}
+			out = append(out, bump{item: it, trigger: t, rel: rel})
+			break
 		}
 	}
 	return out

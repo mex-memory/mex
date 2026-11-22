@@ -26,6 +26,11 @@ export interface Proposal {
   model: NonNullable<Entry["source"]["model"]> | "none";
   label?: string;
   replaces?: string;
+  /**
+   * Learn deeper only: "proposed" writes a lesson that waits for a person's tick (one PR, one strong signal).
+   * A later proposal can promote it to active; nothing demotes an active entry.
+   */
+  status?: "active" | "proposed";
   lasts?: unknown;
 }
 

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { openRecord, type RecordWriter } from "../record/index.js";
-import { assertPersonQuote, EntryIdSchema, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
+import { assertPersonQuote, EntryIdSchema, isLearnedEntry, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile, replaceEntryFile } from "./files.js";
 import { personalSnapshot, type KnowledgeOptions, type NoteInput, type PersonalEntry } from "./store.js";
 import { references } from "./references.js";
@@ -8,6 +8,7 @@ import { gateEntry, sanitizeText, stripHidden, hasSecret } from "./gates.js";
 import { knowledgeProject } from "./context.js";
 import { saveTombstone, tombstone, type Tombstone } from "./state.js";
 import { entryLabel } from "./labels.js";
+import { recordVerified } from "./gate.js";
 
 function assertId(id: string): void {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
@@ -107,4 +108,38 @@ export function forget(id: string, reason: string, options: KnowledgeOptions, no
 
 export function wrong(id: string, reason: string, options: KnowledgeOptions, now = new Date()): Tombstone {
   return forget(id, reason, options, now, "wrong");
+}
+
+/**
+ * A person's tick on the learn-deeper review list: a learned rule that waited for it comes into force,
+ * and the tick is recorded as its verification. Only learned rules wait for a tick; nothing else changes.
+ */
+export function tickLearned(id: string, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+  return setLearnedStatus(id, options, "active", now);
+}
+
+/** A person unticks a learned rule on the review list: it waits again and isn't delivered. */
+export function untickLearned(id: string, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+  return setLearnedStatus(id, options, "proposed", now);
+}
+
+function setLearnedStatus(id: string, options: KnowledgeOptions, to: "active" | "proposed", now: Date): PersonalEntry {
+  assertId(id);
+  const writer = openRecord(options);
+  try {
+    writer.db.exec("BEGIN IMMEDIATE");
+    const from = to === "active" ? "proposed" : "active";
+    const found = current(writer, options, id, [from]);
+    if (found.entry.mex.status !== from || !isLearnedEntry(found.entry.mex)) {
+      throw new KnowledgeError("INVALID_CHANGE", "Only a learned rule can be ticked or unticked on the review list.");
+    }
+    const changed: KnowledgeEntry = { ...found.entry, mex: { ...found.entry.mex, status: to } };
+    replaceEntryFile(found.directory, id, found.content, serializeEntry(changed));
+    if (to === "active") recordVerified(writer, found.projectId, id, "person", now);
+    writer.db.exec("COMMIT");
+    return { level: "personal", label: entryLabel(changed, "personal"), entry: changed };
+  } finally {
+    try { writer.db.exec("ROLLBACK"); } catch { /* already committed, or preserve the original failure */ }
+    writer.close();
+  }
 }

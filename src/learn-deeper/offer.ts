@@ -14,9 +14,9 @@ import { detectCaller } from "../repo-start/caller.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
 import { origin, PinnedTree, repoPath, revision } from "./git.js";
 import { hosts } from "./hosts.js";
-import { BACKFILL_PULLS_PER_BATCH, LEARN_COMMAND, LEARN_KIND, MAX_DOCS, MAX_PULLS, orderBackfillPulls, Plan, quoteCeiling, quoteTokens,
+import { LEARN_COMMAND, LEARN_KIND, Plan, quoteCeiling,
   reviewWindow, type LearningPlan } from "./plan.js";
-import { importsEnabled, previewImport, type ImportFile } from "./session-import.js";
+import { planHarvest } from "./harvest/index.js";
 
 type Print = (line: string) => void;
 type Confirm = (lines: readonly string[], details: readonly string[]) => Promise<boolean>;
@@ -35,10 +35,6 @@ interface OfferOptions {
 }
 
 const count = (n: number) => n.toLocaleString("en-US");
-function importCount(files: ImportFile[]): string {
-  const messages = files.reduce((n, file) => n + file.messages, 0);
-  return `${count(files.length)} past ${files.length === 1 ? "session" : "sessions"} and ${count(messages)} eligible ${messages === 1 ? "prompt" : "prompts"}`;
-}
 
 /** EOF and Ctrl+C close the offer without authorizing it. An Enter answer is explicit. */
 async function askEnter(lines: readonly string[], details: readonly string[], write: Print): Promise<boolean> {
@@ -128,15 +124,14 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       if (options.explicit) write("Learn deeper later: MEX is off here. Run `mex on` to turn it back on.");
       return;
     }
+    if (options.sessions) {
+      // Past-session learning has its own deferred bucket (D7): learn deeper reads reviews, past fixes and docs.
+      write("Past-session learning isn't available yet. Run `mex learn` without --sessions to learn from reviews, past fixes and docs.");
+      return;
+    }
     const window = reviewWindow();
-    // Past-session import is off unless asked for with --sessions, like the inactive session-import producer.
-    const preview = () => options.sessions !== true ? { files: [], gaps: [] } : previewImport({ checkout: root, project: projectId, window, store: reader });
     if (options.dryRun) {
-      const { files, gaps } = preview();
-      write(options.sessions !== true ? "Past-session import is off. Add --sessions to preview it."
-        : !importsEnabled(reader, projectId) ? "Past-session capture is off for this preview."
-        : `Past-session dry run found ${importCount(files)} for this checkout. Preview only · $0.`);
-      gaps.forEach(write);
+      write("Learn deeper dry run: nothing is read or spent. Run `mex learn` to see the estimate before anything starts.");
       return;
     }
     const old = latestJob(reader, projectId);
@@ -158,46 +153,41 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const head = await revision(root);
     const tree = head && await PinnedTree.open(root, head);
     if (!head || !tree) { write("Learn deeper later: the current Git revision couldn't be read."); return; }
-    const { files: sessions, gaps: importGaps } = preview();
-    const client = new ForgeClient(repo, await hostToken(root, repo));
-    const inventory = await hosts[repo.host].inventory(client, window, MAX_PULLS);
+    const forge = new ForgeClient(repo, await hostToken(root, repo));
+    const access = await hosts[repo.host].access(forge);
     const preferred = preferredFolders(projectId, root);
-    const near = (path: string) => preferred.some(folder => path.startsWith(folder + "/"));
-    const docs = tree.docs().sort((a, b) => Number(near(b)) - Number(near(a)));
-    if (!inventory.pulls.length && !docs.length && !sessions.length) {
-      write("Learn deeper found no recent merged changes, docs or eligible sessions in its source window.");
-      importGaps.forEach(write); return;
+    // GitLab review mining comes in 0.9.1; its repos still learn from local history and contributor docs.
+    const harvest = await planHarvest({ checkout: root, head, source: access.source, agent, ...window,
+      issues: reader.setting(projectId, "learning.deep.issues") === "true" }, { client: repo.host === "github.com" ? forge : undefined, tree });
+    const forgeCount = harvest.inventory.bands.reduce((sum, band) => sum + band.count, 0);
+    const local = harvest.inventory.local;
+    const localCount = local.revert.length + local.cause.length + local.adr.length + local.doc.length;
+    if (!forgeCount && !localCount) {
+      write("Learn deeper found no reviews, past fixes or contributor docs to learn from here · $0, nothing started.");
+      return;
     }
-    const gaps: string[] = [];
-    gaps.push(...importGaps);
-    if (inventory.more) gaps.push("Some merged changes were outside the source scan limit.");
-    if (docs.length > MAX_DOCS) gaps.push("Some docs were outside the source scan limit.");
     const setup = options.modelSetup ?? "best-only";
-    const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), agent, setup, sessions, BACKFILL_PULLS_PER_BATCH);
-    plan = Plan.parse({ checkout: root, head, origin: repo, source: inventory.source, visibility: inventory.visibility, agent,
-      setup, ...window, preferred, pulls: orderBackfillPulls(inventory.pulls), pullsPerBatch: BACKFILL_PULLS_PER_BATCH,
-      docs: docs.slice(0, MAX_DOCS), sessions, refresh: options.weekly !== false,
-      gaps, estimate, ceiling: quoteCeiling(estimate) });
+    const gaps = harvest.gaps.map(gap => gap.slice(0, 180)).slice(0, 12);
+    plan = Plan.parse({ checkout: root, head, origin: repo, source: access.source, visibility: access.visibility, agent,
+      setup, ...window, preferred, pulls: [], docs: [], sessions: [], refresh: options.weekly !== false,
+      gaps, estimate: Math.max(1, harvest.estimate), ceiling: Math.max(1, harvest.ceiling), harvest });
+    const estimate = plan.estimate;
     refreshUsageForQuote();
     const minutes = Math.max(1, Math.ceil(estimate / 12_000));
     const share = usageShare(reader, agent, estimate);
-    const topics = sessions.length ? "past reviews, docs, and sessions" : "past reviews and docs";
-    const lines = [`Learn from ${topics} using your agent plan?`,
+    const lines = ["Learn from past reviews, fixes and contributor docs using your agent plan?",
       `About ${minutes} ${minutes === 1 ? "minute" : "minutes"} · ${share}.`,
       `Estimate ${count(estimate)} tokens · ceiling ${count(plan.ceiling)} tokens.`];
-    if (inventory.anonymous) lines.push(`Fetching slowly without a ${repo.host === "github.com" ? "GitHub" : "GitLab"} login. Sign in with \`${repo.host === "github.com" ? "gh" : "glab"} auth login\` to speed it up.`);
+    if (forge.anonymous) lines.push(`Fetching slowly without a ${repo.host === "github.com" ? "GitHub" : "GitLab"} login. Sign in with \`${repo.host === "github.com" ? "gh" : "glab"} auth login\` to speed it up.`);
     if (plan.visibility === "private") lines.push("Review and doc excerpts from this private repo will be sent to your selected agent account. Start only if your organization allows it.");
-    if (sessions.length) lines.push(`Past-session dry run found ${importCount(sessions)} for this checkout. Eligible typed excerpts go to your selected agent account.`,
-      "For reviews and docs alone, decline and run `mex learn` without --sessions.");
     if (plan.refresh) lines.push("After this run, MEX checks for new reviews and docs every 7–14 days when idle, signed in, and within the 3% automatic allowance. Use `mex learn --no-weekly` for a one-time run.");
-    lines.push(...importGaps);
     const windows = usageWindows(reader).filter(item => item.agent === agent && Date.parse(item.observed_at) <= Date.now()).map(item => ({
       usedPercent: item.used_percent, status: item.status as PlanWindow["status"], resetsAt: item.resets_at,
     }));
     if (planWindow(windows, Date.now()).blocked) lines.push("Your agent's usage window needs to reset before model work can start.");
-    const details = [`Counted ${plan.pulls.length} merged changes and ${plan.docs.length} docs in the approved source scan. A small sample of closed issues and commit messages may supply context.`,
-      `Agent: ${agent === "claude" ? "Claude Code" : "Codex"} · ${plan.setup === "mixed" ? "cheap filter, best writer" : "best model"}.`,
-      "Historical docs are screened out during the scan.",
+    const details = [`Counted ${count(forgeCount)} merged or closed changes with discussion, ${count(local.revert.length + local.cause.length)} reverts and past fixes, and ${count(local.adr.length + local.doc.length)} docs and decision records.`,
+      `Agent: ${agent === "claude" ? "Claude Code" : "Codex"} · ${plan.setup === "mixed" ? "cheap sorting, best writer" : "best model"}.`,
+      "Each learned rule is checked against the code that prompted it before it's kept.",
       "Checked rules reach your sessions as learned, not shared. See `mex jobs` for progress and pause or cancel."];
     if (!await (options.confirm ?? ((lines, details) => askEnter(lines, details, write)))(lines, details)) return;
   } catch (error) {
