@@ -13,6 +13,7 @@ import { GRAPH_CANDIDATE_DIAGNOSTIC_BYTES, GraphCandidateProcessError, runGraphC
 import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 import { createGraphEngine } from "../engine-impl.js";
 import { rebuildGraph, refreshGraph, type GraphMaintenanceExecutionOptions } from "../maintenance.js";
+import { GRAPH_ENGINE_ENV, GRAPH_ENGINE_LANGUAGES_ENV, graphEngineBinary } from "../native-engine.js";
 import { openSqlite } from "../db/sqlite.js";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -156,6 +157,26 @@ function isolated(entrypoint: string, extra: Record<string, unknown> = {}): Grap
 }
 
 describe("isolated graph candidate construction", () => {
+  it.skipIf(!graphEngineBinary())("carries the Rust engine's report out of the worker", async () => {
+    const path = root();
+    writeFileSync(join(path, "caller.py"), "from service import service\n\ndef caller():\n    return service()\n");
+    const saved = [process.env[GRAPH_ENGINE_ENV], process.env[GRAPH_ENGINE_LANGUAGES_ENV]] as const;
+    // The bundled worker runs outside the checkout, so it is pointed at the engine.
+    process.env[GRAPH_ENGINE_ENV] = graphEngineBinary()!;
+    process.env[GRAPH_ENGINE_LANGUAGES_ENV] = "python";
+    try {
+      const built = await rebuildGraph(path, isolated(realEntry));
+      expect(built.state).toBe("succeeded");
+      expect(built.status.status).toBe("fresh");
+      expect(built.engine).toMatchObject({ languages: ["python"], files: 2, fallbackFiles: 0 });
+    } finally {
+      for (const [key, value] of [[GRAPH_ENGINE_ENV, saved[0]], [GRAPH_ENGINE_LANGUAGES_ENV, saved[1]]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("builds and refreshes a real candidate with numeric progress and a closed, valid published database", async () => {
     const path = root();
     const progress: string[] = [];
@@ -378,6 +399,13 @@ describe("isolated graph candidate construction", () => {
     expect(boundedCandidateMessage({ type: "failed", category: "failed", stack: "private" })).toBeNull();
     expect(boundedCandidateMessage({ type: "complete", result: { filesIndexed: -1, nodesCreated: 0, edgesCreated: 0, durationMs: 0 } })).toBeNull();
     expect(boundedCandidateMessage({ type: "failed", category: "x".repeat(1024 * 1024) })).toBeNull();
+  });
+
+  it("carries the Rust engine's report and nothing beyond it", () => {
+    const result = { filesIndexed: 1, nodesCreated: 1, edgesCreated: 0, durationMs: 1 };
+    const engine = { languages: ["python"], files: 1, fallbackFiles: 0, wallMs: 12, peakRssMb: 30 };
+    expect(boundedCandidateMessage({ type: "complete", result: { ...result, engine } })).not.toBeNull();
+    expect(boundedCandidateMessage({ type: "complete", result: { ...result, engine: { ...engine, path: "src/app.py" } } })).toBeNull();
   });
 
   it("reports a worker startup crash with its exit code and bounded local stderr", async () => {

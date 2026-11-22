@@ -1861,8 +1861,8 @@ async function stageWithGraphEngine(
     onEvent: (event) => { if (event.type === "staged") files.set(event.path, event); },
   });
   if (run.exitCode !== 0 || !run.result) {
-    const why = run.error ? `${run.error.code}: ${run.error.message}` : `exit ${run.exitCode ?? run.signal}`;
-    return fellBack(`the engine stopped (${why})`);
+    // Codes only: the report crosses the candidate boundary, where no path may.
+    return fellBack(`the engine stopped (${run.error?.code ?? `exit ${run.exitCode ?? run.signal}`})`);
   }
   return {
     files,

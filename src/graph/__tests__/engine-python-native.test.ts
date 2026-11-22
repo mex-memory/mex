@@ -58,7 +58,7 @@ interface Rows {
 }
 
 function rows(root: string): Rows {
-  const db = openSqlite(currentGraphPath(root), { readonly: true });
+  const db = openSqlite(currentGraphPath(root), { readOnly: true });
   try {
     const fingerprintTable = (db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'node_fingerprints%' ORDER BY name DESC",

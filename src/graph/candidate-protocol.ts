@@ -50,6 +50,15 @@ const buildResult = z.object({
     projects: z.record(z.string().max(4_096), z.string().max(200)),
     notes: z.array(z.object({ project: z.string().max(4_096), note: z.string().max(2_000) }).strict()).max(20_000),
   }).strict().optional(),
+  // Language ids, counts and a reason built from codes; no path or raw engine message.
+  engine: z.object({
+    languages: z.array(z.string().max(40)).max(32),
+    files: count,
+    fallbackFiles: count,
+    fellBack: z.string().max(200).optional(),
+    wallMs: count.optional(),
+    peakRssMb: count.optional(),
+  }).strict().optional(),
   // Fixed-vocabulary reasons and counts only; no path crosses this boundary.
   refresh: z.object({
     mode: z.enum(["incremental", "full"]),
