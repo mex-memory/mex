@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/mex-memory/mex/native/graph"
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
@@ -167,7 +168,15 @@ func StudySpans(ev contract.Event, env Environment) []SpanAnswer {
 		if ev.Agent == "claude-code" && ev.Kind == contract.PostTool {
 			origin = toolKey(tool)
 		}
-		return []SpanAnswer{{Path: hit.Path, Start: hit.Start, End: end, Text: text, SignatureOnly: signatureOnly, Origin: origin}}
+		head := ""
+		if sig := symbolSignature(ev.Checkout, hit); sig != "" {
+			head = fmt.Sprintf("%s:%d %s", hit.Path, hit.Start, sig)
+			if searchShows(tool.Output.Text)(sig) {
+				// The search showed the line: say where, not what.
+				head = fmt.Sprintf("%s:%d %s", hit.Path, hit.Start, name)
+			}
+		}
+		return []SpanAnswer{{Path: hit.Path, Start: hit.Start, End: end, Text: text, SignatureOnly: signatureOnly, Origin: origin, name: name, noisy: noisySearch(ev, tool), head: head, tool: tool}}
 	}
 	return nil
 }
@@ -179,6 +188,14 @@ type SpanAnswer struct {
 	End           int    `json:"end"`
 	Text          string `json:"text"`
 	SignatureOnly bool   `json:"signature_only"`
+	// name is the definition's name; noisy marks a search grep alone didn't
+	// settle (hits in several files), where the graph's lines are added.
+	name  string
+	noisy bool
+	// head is the span as one line, location and signature, for when the
+	// graph's lines need the room; tool is the search it answers.
+	head string
+	tool contract.Tool
 }
 
 // Strip only search/read line labels. Comparing complete lines prevents a hit
@@ -202,13 +219,84 @@ func spanReturned(output, body string) bool {
 }
 
 func searchCards(ev contract.Event, env Environment) []answerCard {
-	if !searchEvent(ev) || surfaceSetting(env, ev.ProjectID, "search-span") == "off" {
+	if !searchEvent(ev) {
 		return nil
 	}
-	spans := StudySpans(ev, env)
+	spanMode := surfaceSetting(env, ev.ProjectID, "search-span")
+	graphOn := ev.ProjectID != "" && ev.Checkout != "" && surfaceSetting(env, ev.ProjectID, graphCardSurface) != "off"
+	if spanMode == "off" && !graphOn {
+		return nil
+	}
+	var view graph.View
+	var done func()
+	defer func() {
+		if done != nil {
+			done()
+		}
+	}()
+	opened := false
+	open := func() bool {
+		if !opened {
+			opened = true
+			view, done = graphView(ev, env)
+		}
+		return done != nil
+	}
 	var out []answerCard
+	spans := StudySpans(ev, env)
 	for _, span := range spans {
-		out = append(out, answerCard{surface: "search-span", text: span.Text, id: "mex:span:" + contentHash(span.Text)[7:31], target: record.SurfaceTarget{Paths: []string{span.Path}, Start: span.Start, End: span.End, Origin: span.Origin}})
+		card := answerCard{surface: "search-span", text: span.Text, target: record.SurfaceTarget{Paths: []string{span.Path}, Start: span.Start, End: span.End, Origin: span.Origin}, symPath: span.Path, symName: span.name}
+		if span.noisy && graphOn && open() {
+			// One card: the definition, then the graph's callers and test. The
+			// whole body when the span card is on and there's room, else the
+			// definition's line. It is the graph's card then, on by default.
+			output := ""
+			if span.tool.Output != nil {
+				output = span.tool.Output.Text
+			}
+			heads := []string{span.head}
+			if spanMode == "on" && !span.SignatureOnly {
+				heads = []string{span.Text, span.head}
+			}
+			for _, head := range heads {
+				if head == "" {
+					continue
+				}
+				if lines, value, ok := graphSearchLines(ev, env, view, span, head, output); ok {
+					card.text, card.surface = head+"\n"+lines, graphCardSurface
+					card.value, card.detail = value, "search"
+					break
+				}
+			}
+		}
+		if card.surface == "search-span" && spanMode == "off" {
+			continue
+		}
+		card.id = "mex:span:" + contentHash(card.text)[7:31]
+		out = append(out, card)
+	}
+	if len(out) == 0 && graphOn {
+		// No span card: the search already showed the definition, or it was
+		// too long. The graph's card can still save the reads that follow.
+		tools := ev.Batch
+		if ev.Tool != nil {
+			tools = append([]contract.Tool{*ev.Tool}, tools...)
+		}
+		for i, tool := range tools {
+			if i >= 8 {
+				break
+			}
+			if tool.Name != contract.ToolSearch && tool.Name != contract.ToolShell {
+				continue
+			}
+			if name, _, ok := spanPattern(ev, tool); !ok || name == "" || !noisySearch(ev, tool) || !open() {
+				continue
+			}
+			if card, ok := graphSearchCard(ev, env, view, tool); ok {
+				out = append(out, card)
+				break
+			}
+		}
 	}
 	return out
 }

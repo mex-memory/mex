@@ -30,13 +30,14 @@ func (ev *Evaluator) indexBehindHead() bool {
 }
 
 // Index is the part of the file index the code checks use. *index.Reader
-// satisfies it; without one, symbol and pattern checks fall back to the
-// file hashes.
+// satisfies it; without one, symbol, pattern and relation checks fall back
+// to the file hashes.
 type Index interface {
 	Outline(path string) (*index.OutlineAnswer, *index.Miss)
 	FileInfo(path string) (*index.FileInfoAnswer, *index.Miss)
 	SymbolsNamed(name string) ([]index.SymbolHit, error)
 	PatternCounts(scope string, ids []string) (map[string]int, error)
+	ImportsFrom(glob string) (*index.ImportsAnswer, error)
 }
 
 // UseIndex lets symbol and pattern checks read the file index.

@@ -79,6 +79,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return checkStage(args[1:], getenv)
 		case "--check-run":
 			return checkRun(stdin, stdout)
+		case "--graph-read":
+			return graphRead(stdin, stdout)
 		case "--delivery-probe":
 			return deliveryProbe(stdin, stdout)
 		case "--brief-run":
@@ -322,7 +324,8 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		return profile.EmptyReply(nativeEvent)
 	}
 	noteJudgeEdits(ev, recordDirectory)
-	noteEdit(ev, recordDirectory)
+	noteChanged(ev, recordDirectory, noteEdit(ev, recordDirectory))
+	pruneChanged(ev, recordDirectory, now)
 	freeStage(ev, h, recordDirectory)
 	judgeReady := false
 	if ev.Kind == contract.Stop {
@@ -340,7 +343,10 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 	}
 	toModel, known := profile.Capabilities().Support(ev.Kind)
-	denv := delivery.Environment{Notices: canNotice, NoContext: !known || toModel.Context == adapter.ChannelNone, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, KeepSession: func(agent, id string) bool {
+	changes := sessionChanged(ev, recordDirectory)
+	denv := delivery.Environment{Notices: canNotice, NoContext: !known || toModel.Context == adapter.ChannelNone, CaptureDisabled: !captureOn, Trace: h.deliveryTrace, Scorer: h.scorer, Aids: h.aids, Surfaces: h.surfaces, Home: h.mex, RecordDirectory: recordDirectory, Now: now, Changed: changes.Lines, ShellMtimes: changes.ShellMtimes, RecordShellChanges: func(changed delivery.ChangedLines, mtimes map[string]int64) {
+		noteShellChanged(changedPath(recordDirectory, ev), changed, mtimes)
+	}, KeepSession: func(agent, id string) bool {
 		info, err := os.Stat(filepath.Join(h.heartbeatDir(agent), safeName(id)))
 		if err != nil {
 			return !os.IsNotExist(err)

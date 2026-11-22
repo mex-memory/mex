@@ -4,9 +4,36 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestWorktreePatch(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	root := captureRepo(t)
+	for path, text := range map[string]string{"README.md": "revised\n", "untracked file.ts": "export const x = 1\n"} {
+		if err := os.WriteFile(filepath.Join(root, path), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths := []string{"README.md", "untracked file.ts", ".gitattributes"}
+	patch, whole, ok := WorktreePatch(t.Context(), root, paths)
+	if !ok || !reflect.DeepEqual(whole, paths[1:2]) || !strings.Contains(patch, "@@ -1 +1 @@\n-initial\n+revised\n") || strings.Contains(patch, ".gitattributes") {
+		t.Fatalf("worktree patch: %q, whole files %v, ok %v", patch, whole, ok)
+	}
+
+	unborn := t.TempDir()
+	captureGit(t, unborn, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(unborn, "first.ts"), []byte("export const x = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	captureGit(t, unborn, "add", "first.ts")
+	if patch, whole, ok := WorktreePatch(t.Context(), unborn, []string{"first.ts"}); !ok || patch != "" || !reflect.DeepEqual(whole, []string{"first.ts"}) {
+		t.Fatalf("unborn patch: %q, whole files %v, ok %v", patch, whole, ok)
+	}
+}
 
 func captureGit(t *testing.T, root string, args ...string) string {
 	t.Helper()

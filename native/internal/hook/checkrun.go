@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/mex-memory/mex/native/check"
+	"github.com/mex-memory/mex/native/graph"
 	"github.com/mex-memory/mex/native/index"
 	localrecord "github.com/mex-memory/mex/native/record"
 )
@@ -118,6 +119,10 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 			if ix, err := index.Open(req.RecordDirectory, req.ProjectID, req.Checkout); err == nil {
 				defer ix.Close()
 				ev.UseIndex(ix)
+			}
+			if g, err := graph.OpenStore(req.RecordDirectory, req.ProjectID, req.Checkout, nil); err == nil {
+				defer g.Close()
+				ev.UseGraph(g)
 			}
 		}
 		if req.Action == "record-batch" {

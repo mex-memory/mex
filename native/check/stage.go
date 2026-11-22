@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/graph"
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/judgement"
 	"github.com/mex-memory/mex/native/internal/rulechange"
@@ -113,6 +114,11 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			defer ix.Close()
 			ev.UseIndex(ix)
 			asOf = ix.AsOf()
+		}
+		// Calls relations read the code graph when the checkout has one.
+		if g, err := graph.OpenStore(opts.RecordDirectory, opts.ProjectID, opts.Checkout, nil); err == nil {
+			defer g.Close()
+			ev.UseGraph(g)
 		}
 	}
 	cached := map[string]localrecord.Verdict{}
@@ -322,8 +328,11 @@ func (ev *Evaluator) inputsHash(l Loaded, asOf string) string {
 		for _, f := range targetFiles(c) {
 			lines = append(lines, "file "+f+" "+inputState(ev.files.read(f)))
 		}
-		if c.Kind == "symbol" || c.Kind == "pattern" {
+		if c.Kind == "symbol" || c.Kind == "pattern" || c.Kind == "relation" {
 			lines = append(lines, "index "+asOf)
+		}
+		if c.Kind == "relation" && str(c.Target, "query") == "calls" && ev.graph != nil {
+			lines = append(lines, "graph "+ev.graph.AsOf())
 		}
 		// A folder count read while the index is behind HEAD is re-read once it catches up.
 		if c.Kind == "pattern" && exactPatternFile(c.Target) == "" && ev.indexBehindHead() {
