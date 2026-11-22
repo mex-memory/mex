@@ -13,7 +13,7 @@ import { v5Rows } from "../../src/graph/db/v5.js";
 import { FingerprintStore } from "../../src/graph/fingerprint-store.js";
 import { collectGraphGarbage, currentGraphPath, graphLocation, readGraphPointer } from "../../src/graph/storage.js";
 import { openWarmCheckout } from "../../src/graph/warm.js";
-import { benchmarkFiles, commentFor, insertCall } from "./edit-cases.js";
+import { benchmarkFiles, changeExport, commentFor, insertCall } from "./edit-cases.js";
 
 const cli = resolve(process.env.MEX_BENCH_CLI ?? "dist/cli.js");
 const [, , reposDirectory, ...args] = process.argv;
@@ -380,6 +380,7 @@ function mixedEdits(root: string, language: Language, random?: number): ReplayEd
 function syntheticEdits(root: string, name: BenchmarkRepo): ReplayEdit[] {
   const path = benchmarkFiles[name];
   const file = join(root, path);
+  const toggleExport = () => writeFileSync(file, changeExport(path, readFileSync(file, "utf8")));
   let before: string;
   return [
     { label: "prepend on the benchmark file", paths: [path], apply() {
@@ -390,6 +391,8 @@ function syntheticEdits(root: string, name: BenchmarkRepo): ReplayEdit[] {
       writeFileSync(file, insertCall(path, before));
     } },
     { label: "remove the inserted call", paths: [path], apply() { writeFileSync(file, before); } },
+    { label: "add an export on the benchmark file", paths: [path], apply: toggleExport },
+    { label: "remove the export on the benchmark file", paths: [path], apply: toggleExport },
     ...mixedEdits(root, name === "flask" ? "py" : name === "ripgrep" ? "rs" : "ts"),
   ];
 }
