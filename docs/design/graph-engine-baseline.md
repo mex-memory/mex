@@ -408,6 +408,88 @@ inserted calls. The export-only run ended at 262.5 MiB. The mixed run
 reached 254.1 MiB across 26 edits. The surface-only reverse index loaded
 in 21.6 ms median (21.2–21.9 ms) across the export run.
 
+#### OSS-73 function export edits
+
+The comparison uses M6 head `3b74ce08` and the export-edit branch rebased
+onto it. Each engine was built clean in the dedicated Cargo target.
+Node 22.23.2 published 24 alternating additions and removals after two
+warm-ups. Phase logging was off. Cells show MEX p50/p95 in ms, engine
+p50/p95 in ms, and held MiB. Held memory is engine RSS plus the increase
+in Node RSS since opening the checkout.
+
+| Repository | `3b74ce08` | Rebased export-edit branch |
+|---|---:|---:|
+| Hono | 259.1/285.8 · 214.7/217.9 · 67.9 | 37.2/41.4 · 17.0/17.4 · 64.2 |
+| Flask | 62.4/75.9 · 30.8/31.2 · 62.8 | 40.9/46.5 · 19.3/19.6 · 47.4 |
+| ripgrep | 54.7/68.1 · 22.2/22.5 · 63.8 | 29.2/32.2 · 10.6/10.8 · 43.3 |
+| NestJS | 677.0/710.7 · 615.6/627.0 · 86.3 | 35.7/37.2 · 18.0/18.3 · 91.6 |
+| novu | 225.4/360.4 · 71.1/71.6 · 289.0 | 55.1/56.5 · 32.8/33.2 · 217.6 |
+
+Four repositories met the 50 ms p50 target. In separate profiled runs the
+rebased branch recorded MEX p50 of 38.8 ms on Hono, 37.2 on NestJS, and
+54.3 on novu. Novu held 247.5 MiB in that run. It spent 20.7 ms in the
+resident engine job and 12.8 ms proving filesystem identities. Node
+audited, synced and published the overlay.
+
+Whole-file reads used to send Hono and NestJS into the refresh worker for a
+function name no other origin looked up. The new proof checks the prior
+facts and consults recorded spellings, including misses. Node now checks
+removed-node aliases through indexed integer-key rows.
+
+| Profiled median phase (ms) | Hono | NestJS |
+|---|---:|---:|
+| Resident engine job | 215.2 → 16.2 | 616.7 → 15.5 |
+| Extract edited file | 9.5 → 9.4 | 6.6 → 6.6 |
+| Resident reverse-read index | 0.2 → — | 3.1 → — |
+| Refresh worker wall time | 202.0 → — | 602.3 → — |
+| Resolve and stage rows | 107.7 → 0.8 | 262.2 → 2.3 |
+| Node continuity | 25.7 → 4.8 | 35.7 → 4.6 |
+| Node validation | 4.9 → 4.6 | 4.4 → 3.3 |
+| Filesystem proof | 0.9 → 0.8 | 3.4 → 3.1 |
+
+The resolution phase is measured in the refresh worker before and in the
+resident engine after. Worker wall time includes its resolution phase.
+Novu's Node continuity median fell from 135.7 to 4.6 ms.
+
+The append, prepend and call controls also published 24 edits per case.
+Values are MEX p50/p95 in milliseconds.
+
+| Repository and edit | `3b74ce08` | Rebased export-edit branch |
+|---|---:|---:|
+| Hono append | 34.9/36.0 | 35.0/36.4 |
+| Hono prepend | 37.0/39.2 | 37.3/38.6 |
+| Hono call | 36.9/37.7 | 39.8/46.1 |
+| novu append | 45.9/47.7 | 45.7/47.0 |
+| novu prepend | 46.4/48.8 | 46.3/48.1 |
+| novu call | 54.1/54.7 | 53.1/56.2 |
+
+The Hono call repeat ran in reverse order. MEX p50/p95 was 39.6/45.6 ms
+before and 39.4/44.7 ms after.
+
+The cold comparison used `measure.mjs --checkout` with empty graph homes.
+Hono and novu ran three alternating pairs. The other repositories ran one
+pair each. Cold and refresh times are end-to-end milliseconds. Peak RSS
+includes the process tree.
+
+| Repository | Cold build ms | Refresh ms | Peak MiB | Base bytes |
+|---|---:|---:|---:|---:|
+| Hono | 1319 → 1336 | 231 → 234 | 237 → 237 | 18313216 → 18272256 |
+| Flask | 364 → 330 | 189 → 189 | 144 → 146 | 2605056 → 2607104 |
+| ripgrep | 520 → 530 | 198 → 212 | 160 → 163 | 7041024 → 7041024 |
+| NestJS | 2290 → 2280 | 336 → 345 | 319 → 308 | 33255424 → 33185792 |
+| novu | 13870 → 14486 | 840 → 876 | 959 → 858 | 214888448 → 214814720 |
+
+Novu's cold times ranged from 13.7 to 16.7 s before and 13.5 to 15.4 s
+after. Two of the three paired cold builds were faster on the export-edit
+branch. Its one-shot refresh took 31–63 ms longer in the three pairs. The
+larger projection frames offset the space for recorded names. Node counts
+matched in all five repositories. Flask used one extra 2 KiB page.
+
+The rebased replay published 440 overlays in each arm with zero differences
+against independent cold builds. It covered 47 Hono edits, 22 Flask edits,
+17 each for ripgrep, NestJS and novu, and 160 each for the seeded TypeScript
+and Python fixtures.
+
 ### Novu one-shot refresh
 
 Three fresh bases per arm and edit. Times give the median and [min–max]
