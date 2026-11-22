@@ -1,4 +1,4 @@
-//! Project language facts and resolution into rows for Node's schema v4 writer.
+//! Project language facts and resolution for both graph writers.
 
 use std::path::Path;
 
@@ -9,24 +9,30 @@ use mex_graph_python::{EXCLUDED, LANGUAGE};
 use serde::Serialize;
 use serde_json::{Number, Value, json};
 
-use crate::hex;
-use crate::job::{ExtractedFile, ExtractedFiles, JobCounts, JobError, RequestConfig, emit};
+use crate::frameworks::{self, Enabled};
+use crate::job::{ConfigSource, ExtractedFile, ExtractedFiles, JobCounts, JobError, emit};
+use crate::syntax_language::SyntaxLanguage;
+use crate::{hex, is_compiler_language};
 
 pub(super) mod build;
 mod ecmascript;
+mod framework;
+mod syntax;
 
 pub(super) fn write(
     extracted: &ExtractedFiles<'_>,
     root: &Path,
-    configs: &[RequestConfig],
+    configs: &[ConfigSource<'_>],
+    frameworks: Option<&Enabled>,
 ) -> Result<JobCounts, JobError> {
     let mut counts = JobCounts::default();
     project(
         extracted,
         root,
         configs,
+        frameworks,
         true,
-        |file| file.emit(&mut counts),
+        |file| file.emit(&mut counts, frameworks.is_some()),
         |path, reason| {
             emit(&serde_json::json!({
                 "type": "file", "path": path, "status": "skipped", "reason": reason,
@@ -46,7 +52,8 @@ pub(super) fn write(
 fn project(
     extracted: &ExtractedFiles<'_>,
     root: &Path,
-    configs: &[RequestConfig],
+    configs: &[ConfigSource<'_>],
+    frameworks: Option<&Enabled>,
     include_nodes: bool,
     mut file_ready: impl FnMut(StagedFile<'_>) -> Result<(), JobError>,
     mut skipped: impl FnMut(&str, &str) -> Result<(), JobError>,
@@ -63,8 +70,16 @@ fn project(
     // Cross-file edge targets can be written later in the stream. Keep an id
     // per written definition, but only assemble one file's rows at a time.
     let ids: Vec<_> = extracted.facts.iter().map(node_ids).collect();
-    let ecmascript = (!extracted.ecmascript.is_empty())
-        .then(|| ecmascript::Stage::new(&extracted.ecmascript, &extracted.modules(root, configs)));
+    let ecmascript = (!extracted.ecmascript.is_empty()).then(|| {
+        ecmascript::Stage::new(
+            &extracted.ecmascript,
+            &extracted.modules(root, configs),
+            frameworks,
+        )
+    });
+    let python_frameworks = frameworks.map(|registry| registry.links(&extracted.facts, None));
+    let syntax = SyntaxLanguage::ALL
+        .map(|language| syntax::Stage::new(&extracted.syntax[language as usize], language));
     for entry in &extracted.files {
         let (index, size) = match *entry {
             ExtractedFile::Python { index, size } => (index, size),
@@ -74,6 +89,14 @@ fn project(
                     size,
                     include_nodes,
                 ))?;
+                continue;
+            }
+            ExtractedFile::Syntax {
+                language,
+                index,
+                size,
+            } => {
+                file_ready(syntax[language as usize].file(index, size, include_nodes))?;
                 continue;
             }
             ExtractedFile::Skipped { path, reason } => {
@@ -127,6 +150,11 @@ fn project(
                 });
             }
         }
+        if let Some(links) = &python_frameworks {
+            framework::add_links(&mut file, &links[index], index, |(f, d)| {
+                node_id(&ids[f], d)
+            });
+        }
         file_ready(file)?;
     }
     debug_assert!(edges.next().is_none() && unresolved.next().is_none());
@@ -148,10 +176,10 @@ fn node_ids(facts: &FileFacts) -> Vec<Option<String>> {
 }
 
 fn identity_key(facts: &FileFacts, def: &Def) -> String {
-    if facts.language == LANGUAGE {
-        def.signature_identity(&facts.path)
-    } else {
+    if is_compiler_language(&facts.language) && frameworks::route_framework(def).is_none() {
         def.ordinal_identity(&facts.path)
+    } else {
+        def.signature_identity(&facts.path)
     }
 }
 
@@ -180,13 +208,15 @@ struct StagedFile<'a> {
     content_hash: String,
     size: u64,
     language: &'a str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    frameworks_resolved: bool,
     parse_status: ParseStatus,
     health: StagedHealth<'a>,
     nodes: Vec<StagedNode<'a>>,
     edges: Vec<StagedEdge<'a>>,
     unresolved: Vec<StagedRef<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    imports: Vec<ecmascript::StagedImport<'a>>,
+    imports: Vec<StagedImport<'a>>,
 }
 
 impl<'a> StagedFile<'a> {
@@ -202,6 +232,7 @@ impl<'a> StagedFile<'a> {
             content_hash: hex(&facts.content_hash),
             size,
             language: &facts.language,
+            frameworks_resolved: false,
             parse_status: facts.health.status,
             health: StagedHealth::from(&facts.health),
             nodes: Vec::new(),
@@ -209,9 +240,19 @@ impl<'a> StagedFile<'a> {
             unresolved: Vec::new(),
             imports: Vec::new(),
         };
-        let compiler = facts.language != LANGUAGE;
+        let compiler_language = is_compiler_language(&facts.language);
         for (def, id, parent) in declared_nodes(facts, ids) {
-            if let Some(parent) = parent {
+            let framework = frameworks::route_framework(def);
+            if let Some((resolver, source)) = framework.zip(node_id(ids, 0)) {
+                file.edges.push(framework::contains(
+                    source,
+                    id,
+                    &facts.path,
+                    def.range.start_line + 1,
+                    resolver,
+                ));
+            } else if let Some(parent) = parent {
+                let compiler = compiler_language && framework.is_none();
                 file.edges.push(StagedEdge {
                     source: parent,
                     target: id,
@@ -240,12 +281,13 @@ impl<'a> StagedFile<'a> {
         file
     }
 
-    fn emit(&self, counts: &mut JobCounts) -> Result<(), JobError> {
+    fn emit(mut self, counts: &mut JobCounts, frameworks_resolved: bool) -> Result<(), JobError> {
+        self.frameworks_resolved = frameworks_resolved;
         counts.files += 1;
         counts.nodes += self.nodes.len();
         counts.edges += self.edges.len();
         counts.coverage_gaps += usize::from(self.parse_status == ParseStatus::Failed);
-        emit(self)
+        emit(&self)
     }
 }
 
@@ -335,7 +377,10 @@ struct StagedNode<'a> {
 
 impl<'a> StagedNode<'a> {
     fn new(facts: &'a FileFacts, def: &'a Def, id: &'a str, parent: Option<&'a str>) -> Self {
-        let compiler = facts.language != LANGUAGE;
+        let compiler = is_compiler_language(&facts.language);
+        let csharp = facts.language == mex_graph_csharp::LANGUAGE;
+        let writes_visibility = compiler || csharp || facts.language == mex_graph_rust::LANGUAGE;
+        let writes_modifiers = compiler || csharp;
         let has_flag = |name: &str| def.flags.iter().any(|flag| flag == name);
         Self {
             id,
@@ -353,18 +398,18 @@ impl<'a> StagedNode<'a> {
             signature: (!def.signature.is_empty()).then_some(def.signature.as_str()),
             docstring: def.docstring.as_deref(),
             return_type: def.return_type.as_deref(),
-            is_async: if compiler {
-                has_flag("async").then_some(true)
-            } else {
+            is_async: if facts.language == LANGUAGE {
                 matches!(def.kind, Kind::Function | Kind::Method).then(|| has_flag("async"))
+            } else {
+                has_flag("async").then_some(true)
             },
             is_exported: def.exported,
             is_default_export: def.is_default_export,
-            visibility: def.visibility.as_deref().filter(|_| compiler),
-            is_static: (compiler && has_flag("static")).then_some(true),
-            is_abstract: (compiler && has_flag("abstract")).then_some(true),
+            visibility: def.visibility.as_deref().filter(|_| writes_visibility),
+            is_static: (writes_modifiers && has_flag("static")).then_some(true),
+            is_abstract: (writes_modifiers && has_flag("abstract")).then_some(true),
             decorators: if compiler { &def.decorators } else { &[] },
-            type_parameters: if compiler { &def.type_parameters } else { &[] },
+            type_parameters: &def.type_parameters,
             body_hash: def.body_hash.as_ref().map(|hash| hex(hash)),
             minhash: def.sketch.as_ref().map(|sketch| sketch.minhash.as_slice()),
             token_count: def.sketch.as_ref().map(|sketch| sketch.token_count),
@@ -422,4 +467,20 @@ struct StagedRef<'a> {
     receiver: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     qualifier: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedImport<'a> {
+    binding_key: String,
+    file_path: &'a str,
+    local_name: &'a str,
+    imported_name: &'a str,
+    module_specifier: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_file_path: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_id: Option<&'a str>,
+    is_type_only: bool,
+    metadata: Value,
 }

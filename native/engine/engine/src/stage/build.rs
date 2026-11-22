@@ -7,22 +7,27 @@ use mex_graph_core::store::{EdgeEvidence, EdgeRow, FileRow, NodeRow, UnresolvedR
 use serde_json::Value;
 
 use super::{StagedEdge, StagedFile, StagedNode, declared_nodes, node_ids, project};
-use crate::job::{ExtractedFile, ExtractedFiles, JobCounts, JobError, Request, emit, read_source};
+use crate::frameworks::Enabled;
+use crate::job::{
+    ConfigSource, ExtractedFile, ExtractedFiles, JobCounts, JobError, Request, emit, read_source,
+};
 
 pub(crate) fn write(
     output: &Path,
     extracted: &ExtractedFiles<'_>,
     root: &Path,
     request: &Request,
+    configs: &[ConfigSource<'_>],
+    frameworks: &Enabled,
 ) -> Result<JobCounts, JobError> {
     let write = JobError::write;
     let mut writer = Writer::create(output).map_err(write)?;
     let mut counts = JobCounts::default();
     let mut file_keys = HashMap::new();
     let mut node_keys = HashMap::new();
-    // Resolve the integer keys before writing relationships. Inserting edges
-    // ahead of nodes forces SQLite to find deferred references each time a
-    // target appears, while the secondary edge indexes are still absent.
+    // The facts already include synthesized routes. Resolve every integer key
+    // before writing relationships, so SQLite can check endpoints without
+    // scanning for deferred references before the secondary indexes exist.
     for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
         if index.is_multiple_of(256) {
             progress("parse", index, request.files.len())?;
@@ -30,6 +35,11 @@ pub(crate) fn write(
         let (facts, size) = match *entry {
             ExtractedFile::Python { index, size } => (&extracted.facts[index], size),
             ExtractedFile::EcmaScript { index, size } => (&extracted.ecmascript[index], size),
+            ExtractedFile::Syntax {
+                language,
+                index,
+                size,
+            } => (&extracted.syntax[language as usize][index], size),
             ExtractedFile::Skipped { path, reason } => {
                 if request.build_metadata.is_some() {
                     return Err(JobError::request(format!(
@@ -114,7 +124,8 @@ pub(crate) fn write(
     project(
         extracted,
         root,
-        &request.configs,
+        configs,
+        Some(frameworks),
         false,
         |file| {
             counts.edges +=
@@ -254,6 +265,11 @@ fn edge_evidence<'a>(
             Some(EdgeEvidence::Callback(index as u32)),
             (file != owning_file).then_some(file),
         )
+    } else if edge.provenance == "framework" {
+        let binding = evidence.get("importBinding").and_then(Value::as_str);
+        (Some(EdgeEvidence::Framework(binding)), None)
+    } else if let Some(specifier) = evidence.get("moduleSpecifier").and_then(Value::as_str) {
+        (Some(EdgeEvidence::SyntaxImport(specifier)), None)
     } else {
         (None, None)
     }

@@ -55,6 +55,8 @@ export interface EngineRequest {
   buildMetadata?: GraphEngineBuildMetadata;
   configs?: Array<string | { path: string; source: string }>;
   languages: string[];
+  /** Ask stage to include framework rows when the binary supports them. */
+  frameworks?: boolean;
   /** The candidate database; `stage` writes none. */
   output?: string;
   base?: string | null;
@@ -71,6 +73,7 @@ export interface EngineStagedFile {
   size: number;
   language: Language;
   parseStatus: "ok" | "partial" | "failed";
+  frameworksResolved?: boolean;
   health: {
     status: "ok" | "partial" | "failed";
     diagnosticCount: number;

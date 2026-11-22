@@ -105,6 +105,8 @@ pub enum EdgeEvidence<'a> {
     Heritage,
     Expression(&'a str),
     Callback(u32),
+    Framework(Option<&'a str>),
+    SyntaxImport(&'a str),
 }
 
 pub struct UnresolvedRow<'a> {
@@ -295,6 +297,8 @@ impl Writer {
             Some(EdgeEvidence::Heritage) => (Some(3), None, None),
             Some(EdgeEvidence::Expression(text)) => (Some(4), Some(text), None),
             Some(EdgeEvidence::Callback(index)) => (Some(5), None, Some(index)),
+            Some(EdgeEvidence::Framework(binding)) => (Some(6), binding, None),
+            Some(EdgeEvidence::SyntaxImport(specifier)) => (Some(7), Some(specifier), None),
         };
         self.edge_sequence += 1;
         let inserted = self

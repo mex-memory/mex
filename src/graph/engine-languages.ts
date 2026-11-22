@@ -7,7 +7,7 @@ import type { Language } from "./types.js";
 /** Languages the engine builds instead of today's extractors, e.g. `python`. */
 export const GRAPH_ENGINE_LANGUAGES_ENV = "MEX_GRAPH_ENGINE_LANGUAGES";
 /** Languages the engine can take over today. */
-const ENGINE_LANGUAGES = new Set(["python", "typescript", "javascript"]);
+const ENGINE_LANGUAGES = new Set(["python", "typescript", "javascript", "rust", "csharp"]);
 /** Bumped when the engine's rows for a language change. */
 const ENGINE_EXTRACTOR_VERSION = "v1";
 

@@ -6,10 +6,13 @@ use mex_graph_ecmascript::modules::ModuleResolver;
 use mex_graph_ecmascript::resolve::{
     DefRef, Edge, EdgeSite, ImportResolution, UnresolvedHeritage, resolve_for_stage,
 };
-use serde::Serialize;
 use serde_json::{Number, Value, json};
 
-use super::{StagedEdge, StagedEdgeMetadata, StagedFile, StagedRef, node_id, node_ids};
+use super::{
+    StagedEdge, StagedEdgeMetadata, StagedFile, StagedImport, StagedRef, framework, node_id,
+    node_ids,
+};
+use crate::frameworks::{Enabled, Link};
 use crate::hex;
 
 const RESOLVER: &str = "engine-ecmascript";
@@ -21,10 +24,15 @@ pub(super) struct Stage<'a> {
     calls: Vec<Vec<(usize, &'static str, Option<DefRef>)>>,
     heritage: Vec<Vec<UnresolvedHeritage>>,
     imports: Vec<Vec<ImportResolution>>,
+    frameworks: Option<Vec<Vec<Link<'a>>>>,
 }
 
 impl<'a> Stage<'a> {
-    pub(super) fn new(facts: &'a [FileFacts], modules: &ModuleResolver) -> Self {
+    pub(super) fn new(
+        facts: &'a [FileFacts],
+        modules: &ModuleResolver,
+        frameworks: Option<&Enabled>,
+    ) -> Self {
         let (resolution, imports) = resolve_for_stage(facts, modules);
         // The resolver visits sites in file order. A callback's edge belongs
         // to the callee's file even when the argument is in a different file.
@@ -50,6 +58,7 @@ impl<'a> Stage<'a> {
             edges,
             calls,
             heritage,
+            frameworks: frameworks.map(|registry| registry.links(facts, Some(&imports))),
             imports,
         }
     }
@@ -109,6 +118,9 @@ impl<'a> Stage<'a> {
                 reference.candidate_id = candidate.and_then(|node| self.id(node));
             }
             file.unresolved.extend(reference);
+        }
+        if let Some(links) = &self.frameworks {
+            framework::add_links(&mut file, &links[index], index, |id| self.id(id));
         }
         file
     }
@@ -267,20 +279,4 @@ fn call_name(call: &Call) -> &str {
     } else {
         &call.text
     }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct StagedImport<'a> {
-    binding_key: String,
-    file_path: &'a str,
-    local_name: &'a str,
-    imported_name: &'a str,
-    module_specifier: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resolved_file_path: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_id: Option<&'a str>,
-    is_type_only: bool,
-    metadata: Value,
 }

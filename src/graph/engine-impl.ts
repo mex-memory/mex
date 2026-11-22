@@ -320,6 +320,7 @@ interface StagedFile {
   references: UnresolvedRefRecord[];
   imports: ImportBindingRecord[];
   compilerNodes?: CompilerExtractedNode[];
+  frameworksResolved?: boolean;
   /**
    * Present on files the Rust engine staged: its sketches by node id, which
    * fingerprinting uses instead of tokenizing the file again.
@@ -1412,6 +1413,7 @@ function stageFrameworkAndFallbackResolution(
    */
   corpus?: WarmResolutionCorpus,
 ): void {
+  if (files.every((file) => file.frameworksResolved)) return;
   const ordered = (staged: readonly GraphNode[]): GraphNode[] => corpus ? corpus.merge(staged) : [...staged];
   const initialNodes = ordered(files.flatMap((file) => file.nodes));
   const fileByPath = new Map(files.map((file) => [file.record.path, file]));
@@ -1435,7 +1437,7 @@ function stageFrameworkAndFallbackResolution(
     .map((node) => [node.filePath, node]));
 
   for (const file of files) {
-    if (file.record.parseStatus !== "ok") continue;
+    if (file.record.parseStatus !== "ok" || file.frameworksResolved) continue;
     const language = detectLanguage(file.record.path);
     const matchingResolvers = resolvers.filter((resolver) =>
       resolver.extract && (!resolver.languages || resolver.languages.includes(language)));
@@ -1849,8 +1851,7 @@ async function stageWithGraphEngine(
 ): Promise<EngineStaging | undefined> {
   const paths = discovered.filter((file) => {
     const language = detectLanguage(file.relPath);
-    return languages.includes(graphEngineLanguageFamily(language))
-      && (language !== "python" || file.relPath.endsWith(".py"));
+    return languages.includes(graphEngineLanguageFamily(language));
   });
   if (paths.length === 0) return undefined;
   const requested = new Map(paths.map((file) => [file.relPath, file]));
@@ -1878,6 +1879,7 @@ async function stageWithGraphEngine(
         configs: [...configs].map(([path, source]) => ({ path, source })),
       } : {}),
       languages: enabled,
+      frameworks: true,
       limits: ENGINE_STAGE_LIMITS,
     }, {
       requestDir,
@@ -1899,6 +1901,21 @@ async function stageWithGraphEngine(
     return fellBack(`the engine stopped (${run.error?.code ?? `exit ${run.exitCode ?? run.signal}`})`);
   }
   if (seen.size !== paths.length) return fellBack("the engine did not report every requested file");
+  if (files.size !== paths.length) {
+    // Framework detection and handler resolution can depend on any engine
+    // file. If one read disagreed with discovery, rerun that pass over the
+    // authoritative spool, including the unrelated files the engine staged.
+    for (const file of files.values()) {
+      if (!file.frameworksResolved) continue;
+      file.frameworksResolved = false;
+      const frameworkIds = new Set(file.edges
+        .filter((edge) => edge.kind === "contains" && edge.provenance === "framework")
+        .map((edge) => edge.target));
+      file.nodes = file.nodes.filter((node) => !frameworkIds.has(node.id));
+      file.edges = file.edges.filter((edge) => edge.provenance !== "framework");
+      file.unresolved = file.unresolved.filter((ref) => !frameworkIds.has(ref.fromNodeId));
+    }
+  }
   return {
     files,
     report: {
@@ -1918,7 +1935,7 @@ function stageEngineFile(discovered: DiscoveredFile, staged: EngineStagedFile): 
   });
   const health = staged.health;
   const family = graphEngineLanguageFamily(staged.language);
-  const extractor = family === "python" ? TREE_SITTER_EXTRACTOR_VERSION : TYPESCRIPT_COMPILER_EXTRACTOR_VERSION;
+  const extractor = COMPILER_LANGUAGES.has(family) ? TYPESCRIPT_COMPILER_EXTRACTOR_VERSION : TREE_SITTER_EXTRACTOR_VERSION;
   return {
     discovered,
     record: {
@@ -1941,6 +1958,7 @@ function stageEngineFile(discovered: DiscoveredFile, staged: EngineStagedFile): 
     references: staged.unresolved,
     imports: staged.imports ?? [],
     sketches,
+    frameworksResolved: staged.frameworksResolved,
   };
 }
 
@@ -1957,7 +1975,9 @@ function demoteDanglingEngineEdges(files: StagedFile[]): void {
       file.references.push({
         fromNodeId: edge.source, referenceName: String(edge.metadata?.targetName ?? edge.target), referenceKind: edge.kind,
         filePath: file.record.path, language: file.record.language, line: edge.line, column: edge.column,
-        status: "unresolved", resolver: edge.resolutionMethod, metadata: { reason: "target_changed_during_build" },
+        status: "unresolved",
+        resolver: edge.resolutionMethod?.startsWith("engine-") ? edge.resolutionMethod : `engine-${file.record.language}`,
+        metadata: { reason: "target_changed_during_build" },
       });
       return false;
     });

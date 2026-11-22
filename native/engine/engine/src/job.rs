@@ -14,15 +14,19 @@ use std::time::{Duration, Instant};
 use mex_graph_core::CONTRACT_VERSION;
 use mex_graph_core::facts::FileFacts;
 use mex_graph_core::store::BuildMetadata;
+use mex_graph_csharp::CSharp;
 use mex_graph_ecmascript::modules::ModuleResolver;
 use mex_graph_ecmascript::{EcmaScript, language_for_path};
 use mex_graph_python::resolve::{Resolution, resolve};
 use mex_graph_python::{LANGUAGE, Python};
+use mex_graph_rust::Rust;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::frameworks::{self, Enabled};
 use crate::guard::{Breach, Guard, Limits, ProcessSampler};
 use crate::stage;
+use crate::syntax_language::SyntaxLanguage;
 
 const GUARD_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -38,6 +42,8 @@ pub struct Request {
     pub(super) configs: Vec<RequestConfig>,
     #[serde(default)]
     pub languages: Vec<String>,
+    #[serde(default)]
+    frameworks: bool,
     // Validated for build and cleared for stage before starting the job.
     output: Option<PathBuf>,
     #[serde(default)]
@@ -258,10 +264,28 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
         .root
         .canonicalize()
         .map_err(|e| JobError::request(format!("root: {e}")))?;
-    let extracted = extract_files(&root, request);
+    let mut extracted = extract_files(&root, request);
+    let configs = read_configs(&root, &request.configs);
+    let enabled = if request.frameworks || request.output.is_some() {
+        let package = configs
+            .iter()
+            .find(|(path, _)| *path == "package.json")
+            .map(|(_, text)| text.as_ref());
+        let enabled = Enabled::detect(&extracted.facts, &extracted.ecmascript, package);
+        enabled.activate(&mut extracted.facts);
+        enabled.activate(&mut extracted.ecmascript);
+        enabled
+    } else {
+        Enabled::default()
+    };
     match request.output.as_deref() {
-        Some(output) => stage::build::write(output, &extracted, &root, request),
-        None => stage::write(&extracted, &root, &request.configs),
+        Some(output) => stage::build::write(output, &extracted, &root, request, &configs, &enabled),
+        None => stage::write(
+            &extracted,
+            &root,
+            &configs,
+            request.frameworks.then_some(&enabled),
+        ),
     }
 }
 
@@ -271,15 +295,30 @@ struct Extracted {
 }
 
 pub(super) enum ExtractedFile<'a> {
-    Python { index: usize, size: u64 },
-    EcmaScript { index: usize, size: u64 },
-    Skipped { path: &'a str, reason: &'static str },
+    Python {
+        index: usize,
+        size: u64,
+    },
+    EcmaScript {
+        index: usize,
+        size: u64,
+    },
+    Syntax {
+        language: SyntaxLanguage,
+        index: usize,
+        size: u64,
+    },
+    Skipped {
+        path: &'a str,
+        reason: &'static str,
+    },
 }
 
 pub(super) struct ExtractedFiles<'a> {
     /// Dense Python facts, including failed parses, indexed by its resolver.
     pub(super) facts: Vec<FileFacts>,
     pub(super) ecmascript: Vec<FileFacts>,
+    pub(super) syntax: [Vec<FileFacts>; 2],
     /// One entry per requested path, including skips, in request order.
     pub(super) files: Vec<ExtractedFile<'a>>,
 }
@@ -289,8 +328,7 @@ impl ExtractedFiles<'_> {
         resolve(&self.facts)
     }
 
-    pub(super) fn modules(&self, root: &Path, configs: &[RequestConfig]) -> ModuleResolver {
-        let configs = read_configs(root, configs);
+    pub(super) fn modules(&self, root: &Path, configs: &[ConfigSource<'_>]) -> ModuleResolver {
         let files = self.ecmascript.iter().map(|file| file.path.as_str());
         let config_text = configs.iter().map(|(path, text)| (*path, text.as_ref()));
         match root.to_str().filter(|path| path.starts_with('/')) {
@@ -304,6 +342,7 @@ impl ExtractedFiles<'_> {
 enum Adapter {
     Python,
     EcmaScript,
+    Syntax(SyntaxLanguage),
 }
 
 /// Resolve inputs in request order and retain one extraction result per input.
@@ -315,15 +354,18 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
         .iter()
         .map(|file| {
             let adapter = if python_enabled
-                && Path::new(&file.path)
-                    .extension()
-                    .is_some_and(|ext| ext == "py")
+                && file
+                    .path
+                    .rsplit_once('.')
+                    .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("py"))
             {
                 Some(Adapter::Python)
             } else if language_for_path(&file.path).is_some_and(enabled) {
                 Some(Adapter::EcmaScript)
             } else {
-                None
+                SyntaxLanguage::for_path(&file.path)
+                    .filter(|language| enabled(language.name()))
+                    .map(Adapter::Syntax)
             };
             request.source_path(root, file).and_then(|path| {
                 adapter
@@ -346,16 +388,30 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
                 scope.spawn(|| {
                     let mut python = None;
                     let mut ecmascript = None;
+                    let mut rust = None;
+                    let mut csharp = None;
                     while let Some(input) = inputs.get(next.fetch_add(1, Ordering::Relaxed)) {
                         if let Ok((file, canonical, adapter, result)) = input {
                             result.get_or_init(|| {
-                                extract(file, canonical, |path, text, hash| match adapter {
-                                    Adapter::Python => python
-                                        .get_or_insert_with(Python::new)
-                                        .extract(path, text, hash),
-                                    Adapter::EcmaScript => ecmascript
-                                        .get_or_insert_with(EcmaScript::new)
-                                        .extract(path, text, hash),
+                                extract(file, canonical, |path, text, hash| {
+                                    let mut facts = match adapter {
+                                        Adapter::Python => python
+                                            .get_or_insert_with(Python::new)
+                                            .extract(path, text, hash),
+                                        Adapter::EcmaScript => ecmascript
+                                            .get_or_insert_with(EcmaScript::new)
+                                            .extract(path, text, hash),
+                                        Adapter::Syntax(SyntaxLanguage::Rust) => rust
+                                            .get_or_insert_with(Rust::new)
+                                            .extract(path, text, hash),
+                                        Adapter::Syntax(SyntaxLanguage::CSharp) => csharp
+                                            .get_or_insert_with(CSharp::new)
+                                            .extract(path, text, hash),
+                                    };
+                                    if request.frameworks || request.output.is_some() {
+                                        frameworks::capture(&mut facts, text);
+                                    }
+                                    facts
                                 })
                             });
                         }
@@ -367,6 +423,7 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
 
     let mut facts = Vec::new();
     let mut ecmascript = Vec::new();
+    let mut syntax = [Vec::new(), Vec::new()];
     let files = inputs
         .into_iter()
         .zip(&request.files)
@@ -394,6 +451,16 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
                         size: extracted.size,
                     }
                 }
+                Ok((Adapter::Syntax(language), extracted)) => {
+                    let facts = &mut syntax[language as usize];
+                    let index = facts.len();
+                    facts.push(extracted.facts);
+                    ExtractedFile::Syntax {
+                        language,
+                        index,
+                        size: extracted.size,
+                    }
+                }
                 Err(reason) => ExtractedFile::Skipped {
                     path: &file.path,
                     reason,
@@ -404,6 +471,7 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
     ExtractedFiles {
         facts,
         ecmascript,
+        syntax,
         files,
     }
 }
@@ -485,7 +553,9 @@ pub(super) fn read_source(
     Ok((text.into_owned(), size, hash))
 }
 
-fn read_configs<'a>(root: &Path, configs: &'a [RequestConfig]) -> Vec<(&'a str, Cow<'a, str>)> {
+pub(super) type ConfigSource<'a> = (&'a str, Cow<'a, str>);
+
+fn read_configs<'a>(root: &Path, configs: &'a [RequestConfig]) -> Vec<ConfigSource<'a>> {
     configs
         .iter()
         .filter_map(|config| match config {

@@ -64,7 +64,8 @@ CREATE TABLE node_attributes (
 
 -- line/col use -1 for no location so the primary key matches v4 call-site identity.
 -- Evidence codes: 1 declaration role, 2 imported file, 3 heritage, 4 expression,
--- 5 callback wiring. target_name is the written name; the qualified name comes
+-- 5 callback wiring, 6 framework wiring (optional import binding), 7 syntax
+-- import specifier. target_name is the written name; the qualified name comes
 -- from the target row.
 CREATE TABLE edges (
     source      INTEGER NOT NULL REFERENCES nodes(id),
@@ -77,7 +78,7 @@ CREATE TABLE edges (
     confidence  REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
     method      INTEGER NOT NULL REFERENCES resolution_methods(id),
     target_name TEXT,
-    detail_kind INTEGER CHECK(detail_kind BETWEEN 1 AND 5),
+    detail_kind INTEGER CHECK(detail_kind BETWEEN 1 AND 7),
     detail      TEXT,
     argument    INTEGER CHECK(argument >= 0),
     sequence    INTEGER NOT NULL CHECK(sequence > 0),

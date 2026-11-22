@@ -9,12 +9,15 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use mex_graph_core::facts::FileFacts;
+use mex_graph_core::facts::{FileFacts, ReferenceKind};
+use mex_graph_csharp::CSharp;
 use mex_graph_ecmascript::{EcmaScript, language_for_path};
 use mex_graph_python::{EXCLUDED, Python};
+use mex_graph_rust::Rust;
 use sha2::{Digest, Sha256};
 
-use crate::hex;
+use crate::syntax_language::SyntaxLanguage;
+use crate::{hex, is_compiler_language};
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut root = None;
@@ -41,20 +44,30 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let root = root.ok_or("--root is required")?;
     let mut python = Python::new();
     let mut ecmascript = EcmaScript::new();
+    let mut rust = None;
+    let mut csharp = None;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     for path in &paths {
-        let is_python = path.ends_with(".py");
-        if !is_python && language_for_path(path).is_none() {
+        let is_python = path
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("py"));
+        let syntax = SyntaxLanguage::for_path(path);
+        if !is_python && syntax.is_none() && language_for_path(path).is_none() {
             continue;
         }
         let bytes = std::fs::read(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
         let text = String::from_utf8_lossy(&bytes);
         let hash: [u8; 32] = Sha256::digest(&bytes).into();
-        let facts = if is_python {
-            python.extract(path, &text, hash)
-        } else {
-            ecmascript.extract(path, &text, hash)
+        let facts = match syntax {
+            Some(SyntaxLanguage::Rust) => rust
+                .get_or_insert_with(Rust::new)
+                .extract(path, &text, hash),
+            Some(SyntaxLanguage::CSharp) => csharp
+                .get_or_insert_with(CSharp::new)
+                .extract(path, &text, hash),
+            None if is_python => python.extract(path, &text, hash),
+            None => ecmascript.extract(path, &text, hash),
         };
         print_facts(&mut out, &facts, full).map_err(|e| e.to_string())?;
     }
@@ -65,25 +78,32 @@ fn print_facts(out: &mut impl Write, facts: &FileFacts, full: bool) -> std::io::
     if full {
         return writeln!(out, "{}", serde_json::to_string(facts).unwrap_or_default());
     }
-    let compiler = facts.language != "python";
+    let compiler = is_compiler_language(&facts.language);
     let ids: Vec<_> = facts
         .defs
         .iter()
         .map(|def| {
-            if compiler {
-                def.ordinal_id(&facts.path)
+            if def.flags.iter().any(|flag| flag == EXCLUDED) {
+                None
+            } else if compiler {
+                Some(def.ordinal_id(&facts.path))
             } else {
-                def.signature_id(&facts.path)
+                Some(def.signature_id(&facts.path))
             }
         })
         .collect();
     for (i, def) in facts.defs.iter().enumerate() {
-        if def.flags.iter().any(|f| f == EXCLUDED) {
+        let Some(id) = ids[i].as_deref() else {
             continue;
-        }
-        let mut line = serde_json::json!({
+        };
+        let identity = if compiler {
+            def.ordinal_identity(&facts.path)
+        } else {
+            def.signature_identity(&facts.path)
+        };
+        let line = serde_json::json!({
             "path": facts.path,
-            "id": ids[i],
+            "id": id,
             "kind": def.kind.as_str(),
             "name": def.name,
             "qualifiedName": def.qualified_name,
@@ -99,19 +119,14 @@ fn print_facts(out: &mut impl Write, facts: &FileFacts, full: bool) -> std::io::
             "returnType": def.return_type,
             "async": def.flags.iter().any(|f| f == "async"),
             "exported": def.exported,
+            "identityKey": identity,
+            "containerId": usize::try_from(def.parent).ok().and_then(|parent| ids.get(parent)?.as_deref()),
+            "visibility": def.visibility,
+            "decorators": def.decorators,
+            "typeParameters": def.type_parameters,
+            "static": def.flags.iter().any(|f| f == "static"),
+            "abstract": def.flags.iter().any(|f| f == "abstract"),
         });
-        if compiler {
-            line["containerId"] = serde_json::json!(
-                usize::try_from(def.parent)
-                    .ok()
-                    .and_then(|parent| ids.get(parent))
-            );
-            line["visibility"] = serde_json::json!(def.visibility);
-            line["decorators"] = serde_json::json!(def.decorators);
-            line["typeParameters"] = serde_json::json!(def.type_parameters);
-            line["static"] = serde_json::json!(def.flags.iter().any(|f| f == "static"));
-            line["abstract"] = serde_json::json!(def.flags.iter().any(|f| f == "abstract"));
-        }
         writeln!(out, "{line}")?;
     }
     writeln!(
@@ -121,7 +136,8 @@ fn print_facts(out: &mut impl Write, facts: &FileFacts, full: bool) -> std::io::
             "path": facts.path,
             "summary": true,
             "status": facts.health.status,
-            "calls": facts.calls.len(),
+            "calls": facts.calls.len() + facts.syntax_references.iter()
+                .filter(|reference| reference.kind == ReferenceKind::Calls).count(),
             "imports": facts.imports.len(),
             "bindings": facts.bindings.len(),
         })

@@ -27,11 +27,7 @@ export async function prepareNativeGraphBuild(root: string): Promise<NativeGraph
   if (languages.length === 0) return undefined;
   const git = readGraphGitProvenance(root);
   const manifest = graphManifest(root, ENGINE_GRAPH_SCHEMA_VERSION);
-  const owned = (path: string) => {
-    const language = detectLanguage(path);
-    return languages.includes(graphEngineLanguageFamily(language))
-      && (language !== "python" || path.endsWith(".py"));
-  };
+  const owned = (path: string) => languages.includes(graphEngineLanguageFamily(detectLanguage(path)));
   const spool = new GraphSourceSpool(undefined, true);
   let handedOff = false;
   try {
@@ -57,7 +53,8 @@ export async function prepareNativeGraphBuild(root: string): Promise<NativeGraph
       language === "typescript" ? [language, "tsx"] : language === "javascript" ? [language, "jsx"] : [language]);
     const files = corpus.files.map(file => {
       const family = graphEngineLanguageFamily(detectLanguage(file.relPath));
-      const extractor = family === "python" ? TREE_SITTER_EXTRACTOR_VERSION : TYPESCRIPT_COMPILER_EXTRACTOR_VERSION;
+      const extractor = graphEngineHandlesEcmaScript([family])
+        ? TYPESCRIPT_COMPILER_EXTRACTOR_VERSION : TREE_SITTER_EXTRACTOR_VERSION;
       return {
         path: file.relPath, size: file.size, modifiedAt: file.modifiedAt,
         contentHash: file.contentHash, staged: spool.capturedName(file.relPath),

@@ -238,6 +238,15 @@ SELECT e.source AS source_key, e.target AS target_key, e.kind AS kind_key, e.seq
          WHEN 4 THEN json_array(json_object('expression', e.detail))
          WHEN 5 THEN json_array(json_object('argumentIndex', e.argument, 'callee', sn.qualified_name,
               'wiringSite', json_object('filePath', coalesce(site.path, sf.path), 'line', e.line, 'column', e.col)))
+         WHEN 6 THEN CASE
+           WHEN k.name = 'contains' THEN json_array(json_object(
+             'wiringSite', json_object('filePath', sf.path, 'line', e.line)))
+           WHEN e.detail IS NULL THEN json_array(json_object('resolver', m.name,
+             'wiringSite', json_object('filePath', sf.path, 'line', e.line, 'column', e.col)))
+           ELSE json_array(json_object('resolver', m.name, 'importBinding', e.detail,
+             'wiringSite', json_object('filePath', sf.path, 'line', e.line, 'column', e.col)))
+         END
+         WHEN 7 THEN json_array(json_object('moduleSpecifier', e.detail))
          ELSE '[]'
        END AS evidence
 FROM main.edges e JOIN main.edge_kinds k ON k.id = e.kind
@@ -271,8 +280,12 @@ SELECT r.id, r.candidate AS candidate_key, n.id AS from_node_id, names.name AS r
        candidate.id AS candidate_id, NULL AS target_id, NULL AS import_source, NULL AS ref_key,
        CASE WHEN candidate.id IS NOT NULL THEN json_array(candidate.id) END AS candidates,
        json_object('reason', reason.name) AS metadata,
-       CASE WHEN n.language = 'python' THEN NULL ELSE 0 END AS confidence,
-       CASE WHEN n.language = 'python' THEN 'engine-python' ELSE 'engine-ecmascript' END AS resolver
+       CASE WHEN n.language = 'python' AND n.kind <> 'route' THEN NULL ELSE 0 END AS confidence,
+       CASE
+         WHEN n.kind = 'route' AND kind.name = 'function_ref' THEN 'engine-framework'
+         WHEN n.language IN ('python', 'rust', 'csharp') THEN 'engine-' || n.language
+         ELSE 'engine-ecmascript'
+       END AS resolver
 FROM refs r JOIN temp.nodes n ON n.node_key = r.source JOIN main.unresolved_names names ON names.id = r.name
 JOIN main.edge_kinds kind ON kind.id = r.kind JOIN main.unresolved_reasons reason ON reason.id = r.reason
 LEFT JOIN main.unresolved_names receiver ON receiver.id = r.receiver

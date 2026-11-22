@@ -5,15 +5,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod facts_cmd;
+mod frameworks;
 mod guard;
 mod job;
 mod stage;
+mod syntax_language;
 
 const USAGE: &str = "usage: mex-graph version | languages | build --request <file> | \
     stage --request <file> | facts --root <dir> <path>...";
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn is_compiler_language(language: &str) -> bool {
+    matches!(language, "typescript" | "tsx" | "javascript" | "jsx")
 }
 
 fn main() -> ExitCode {
