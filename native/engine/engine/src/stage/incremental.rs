@@ -137,80 +137,111 @@ pub(super) fn modules<'a>(
     }
 }
 
-#[derive(Default)]
-struct Reads {
-    files: HashSet<usize>,
-    keys: HashMap<&'static str, HashSet<String>>,
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+enum Read {
+    File(usize),
+    Import(usize, usize),
+    Lookup(usize),
 }
 
-struct Recorder<'a> {
-    paths: &'a [&'a str],
+#[derive(Default)]
+struct Reads {
+    items: HashSet<Read>,
+    memos: HashSet<usize>,
+}
+
+#[derive(Default)]
+struct Lookups {
+    ids: HashMap<&'static str, HashMap<Rc<str>, usize>>,
+    keys: Vec<(&'static str, Rc<str>)>,
+}
+
+impl Lookups {
+    fn intern(&mut self, kind: &'static str, key: &str) -> usize {
+        let ids = self.ids.entry(kind).or_default();
+        if let Some(&id) = ids.get(key) {
+            return id;
+        }
+        let id = self.keys.len();
+        let key: Rc<str> = key.into();
+        ids.insert(key.clone(), id);
+        self.keys.push((kind, key));
+        id
+    }
+}
+
+struct Recorder {
     reads: Vec<RefCell<Reads>>,
+    lookups: RefCell<Lookups>,
     origin: Cell<Option<usize>>,
     nested: RefCell<Vec<usize>>,
     active_memo: Cell<Option<usize>>,
-    memos: RefCell<Vec<Reads>>,
+    memos: RefCell<Vec<HashSet<Read>>>,
+    last_file: Cell<Option<usize>>,
 }
 
-impl<'a> Recorder<'a> {
-    fn new(paths: &'a [&'a str]) -> Self {
+impl Recorder {
+    fn new(files: usize) -> Self {
         Self {
-            paths,
-            reads: (0..paths.len())
-                .map(|_| RefCell::new(Reads::default()))
-                .collect(),
+            reads: (0..files).map(|_| RefCell::new(Reads::default())).collect(),
+            lookups: RefCell::default(),
             origin: Cell::new(None),
             nested: RefCell::default(),
             active_memo: Cell::new(None),
             memos: RefCell::default(),
+            last_file: Cell::new(None),
         }
     }
 
+    fn stop(&self) {
+        self.origin.set(None);
+        self.last_file.set(None);
+    }
+
     fn observe(&self, access: Access<'_>) {
-        match access {
-            Access::Origin(origin) => self.origin.set(Some(origin)),
-            Access::Enter(origin) => self.nested.borrow_mut().push(origin),
+        let previous_file = self.last_file.take();
+        let item = match access {
+            Access::Origin(origin) => return self.origin.set(Some(origin)),
+            Access::Enter(origin) => return self.nested.borrow_mut().push(origin),
             Access::Leave => {
                 self.nested.borrow_mut().pop();
+                return;
             }
             Access::StartMemo(id) => {
-                debug_assert_eq!(self.active_memo.replace(Some(id)), None);
-                debug_assert_eq!(id, self.memos.borrow().len());
-                self.memos.borrow_mut().push(Reads::default());
+                debug_assert!(self.active_memo.get().is_none());
+                self.active_memo.set(Some(id));
+                let mut memos = self.memos.borrow_mut();
+                debug_assert_eq!(id, memos.len());
+                memos.push(HashSet::new());
+                return;
             }
-            Access::EndMemo => self.active_memo.set(None),
+            Access::EndMemo => return self.active_memo.set(None),
             Access::ReadMemo(id) => {
                 let memo = &self.memos.borrow()[id];
-                self.record_to_origins(|_, target| {
-                    target.files.extend(memo.files.iter().copied());
-                    for (&kind, keys) in &memo.keys {
-                        let target = target.keys.entry(kind).or_default();
-                        for key in keys {
-                            if !target.contains(key) {
-                                target.insert(key.clone());
-                            }
-                        }
+                self.record_to_origins(|_, reads| {
+                    if reads.memos.insert(id) {
+                        reads.items.extend(memo.iter().copied());
                     }
                 });
+                return;
             }
-            Access::File(_) | Access::Lookup(..) => {
-                let update = |origin: Option<usize>, read: &mut Reads| match access {
-                    Access::File(file) if Some(file) != origin => {
-                        read.files.insert(file);
-                    }
-                    Access::Lookup(kind, key) => {
-                        let keys = read.keys.entry(kind).or_default();
-                        if !keys.contains(key) {
-                            keys.insert(key.into());
-                        }
-                    }
-                    _ => {}
-                };
-                self.record_to_origins(|origin, read| update(Some(origin), read));
-                if let Some(id) = self.active_memo.get() {
-                    update(None, &mut self.memos.borrow_mut()[id]);
+            Access::File(file) => {
+                self.last_file.set(Some(file));
+                if self.origin.get().is_none() || previous_file == Some(file) {
+                    return;
                 }
+                Read::File(file)
             }
+            Access::Import(file, index) => Read::Import(file, index),
+            Access::Lookup(kind, key) => Read::Lookup(self.lookups.borrow_mut().intern(kind, key)),
+        };
+        self.record_to_origins(|origin, reads| {
+            if item != Read::File(origin) {
+                reads.items.insert(item);
+            }
+        });
+        if let Some(id) = self.active_memo.get() {
+            self.memos.borrow_mut()[id].insert(item);
         }
     }
 
@@ -223,23 +254,51 @@ impl<'a> Recorder<'a> {
         }
     }
 
-    fn write(&self, writer: &Writer, origins: &[usize]) -> Result<(), JobError> {
+    fn write<'a>(
+        &self,
+        writer: &Writer,
+        origins: &[usize],
+        paths: &[&str],
+        load: impl Fn(usize) -> &'a FileFacts,
+    ) -> Result<(), JobError> {
         let _timer = Timer::start("resolve.dependencies");
-        let reads: Vec<_> = origins
-            .iter()
-            .map(|&file| (file, self.reads[file].borrow()))
-            .collect();
-        let mut rows = Vec::new();
-        for (file, reads) in &reads {
-            let origin = self.paths[*file];
-            for &target in reads.files.iter().filter(|&target| target != file) {
-                rows.push(("file", self.paths[target], origin));
+        let lookups = self.lookups.borrow();
+        let reads: Vec<_> = self.reads.iter().map(RefCell::borrow).collect();
+        let mut imports = HashMap::new();
+        for &origin in origins {
+            for &item in &reads[origin].items {
+                if let Read::Import(file, index) = item {
+                    imports.entry((file, index)).or_insert_with(|| {
+                        let import = &load(file).imports[index];
+                        let kind = match import.form {
+                            mex_graph_core::facts::ImportForm::CommonJs => "ts-require",
+                            _ => "ts-import",
+                        };
+                        (kind, format!("{}\0{}", paths[file], import.specifier))
+                    });
+                }
             }
-            for (&kind, keys) in &reads.keys {
-                rows.extend(keys.iter().map(|key| (kind, key.as_str(), origin)));
+        }
+        let mut rows = Vec::new();
+        for &origin in origins {
+            for &item in &reads[origin].items {
+                let (kind, key) = match item {
+                    Read::File(file) if file == origin => continue,
+                    Read::File(file) => ("file", paths[file]),
+                    Read::Import(file, index) => {
+                        let (kind, key) = &imports[&(file, index)];
+                        (*kind, key.as_str())
+                    }
+                    Read::Lookup(id) => {
+                        let (kind, key) = &lookups.keys[id];
+                        (*kind, key.as_ref())
+                    }
+                };
+                rows.push((kind, key, paths[origin]));
             }
         }
         rows.sort_unstable();
+        rows.dedup();
         for (kind, key, origin) in rows {
             writer
                 .put_read(origin, kind, key)
@@ -291,8 +350,11 @@ impl Corpus<'_> {
             if origins.is_empty() {
                 continue;
             }
-            let recorder = Recorder::new(&paths);
-            let load = |file| (self.load)(paths[file]);
+            let recorder = Recorder::new(paths.len());
+            let loaded: Vec<_> = (0..paths.len())
+                .map(|_| std::cell::OnceCell::new())
+                .collect();
+            let load = |file: usize| *loaded[file].get_or_init(|| (self.load)(paths[file]));
             let observe = |access: Access<'_>| recorder.observe(access);
             let facts = Files::Lazy {
                 paths: &paths,
@@ -364,7 +426,7 @@ impl Corpus<'_> {
                     if let Some(error) = error.into_inner() {
                         return Err(JobError::write(error));
                     }
-                    recorder.origin.set(None);
+                    recorder.stop();
                     for ((origin, from), (target, def)) in heritage {
                         writer
                             .put_heritage(paths[target], def, paths[origin], from)
@@ -380,7 +442,7 @@ impl Corpus<'_> {
                     for &index in &origins {
                         let mut out = mex_graph_python::resolve::Resolution::default();
                         resolver.resolve_file(index, &mut out);
-                        recorder.origin.set(None);
+                        recorder.stop();
                         let links = enabled.file_links(index, load(index), &[]);
                         project(
                             index,
@@ -455,14 +517,14 @@ impl Corpus<'_> {
                         }
                         SyntaxLanguage::CSharp
                     };
-                    recorder.origin.set(None);
+                    recorder.stop();
                     let stage = syntax::Stage::resolved(facts, adapter, results);
                     for &index in &origins {
                         project(index, stage.file(index, self.sizes[paths[index]], false))?;
                     }
                 }
             }
-            recorder.write(writer, &origins)?;
+            recorder.write(writer, &origins, &paths, load)?;
         }
         Ok(())
     }

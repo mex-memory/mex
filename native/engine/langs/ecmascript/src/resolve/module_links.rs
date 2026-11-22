@@ -4,7 +4,7 @@ use mex_graph_core::facts::{ImportForm, Kind, NONE};
 use crate::modules::{ModuleTarget, Syntax};
 
 use super::index::ExportEntry;
-use super::{Lane, Lookup, ModuleLookup, Resolver, Value, check_depth, def_ref};
+use super::{Lane, Lookup, Resolver, Value, check_depth, def_ref};
 
 impl Resolver<'_, '_> {
     pub(super) fn import(&self, file: usize, index: usize) -> Lookup {
@@ -22,20 +22,17 @@ impl Resolver<'_, '_> {
         } else {
             Syntax::Import
         };
-        let key = if require { "ts-require" } else { "ts-import" };
         // The unresolved lookup is a dependency too: adding a previously
         // missing module can change this answer with no old graph edge.
+        self.files.import(file, index);
         let targets = self.imports[file].get_or_init(|| {
             (0..facts.imports.len())
                 .map(|_| Default::default())
                 .collect()
         });
-        let lookup = targets[index].get_or_init(|| ModuleLookup {
-            key: format!("{}\0{}", facts.path, import.specifier),
-            target: self.modules.resolve(&facts.path, &import.specifier, syntax),
-        });
-        self.files.lookup(key, &lookup.key);
-        match &lookup.target {
+        let target = targets[index]
+            .get_or_init(|| self.modules.resolve(&facts.path, &import.specifier, syntax));
+        match target {
             ModuleTarget::File { path, .. } => {
                 let file = self
                     .paths

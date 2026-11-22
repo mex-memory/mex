@@ -144,17 +144,12 @@ pub fn resolve_for_stage(
     (resolution, bindings)
 }
 
-struct ModuleLookup {
-    key: String,
-    target: ModuleTarget,
-}
-
 pub struct Resolver<'a, 'modules> {
     files: Files<'a>,
     index: Vec<OnceCell<Option<FileIndex<'a>>>>,
     paths: HashMap<&'a str, usize>,
     modules: &'modules ModuleResolver,
-    imports: Vec<OnceCell<Vec<OnceCell<ModuleLookup>>>>,
+    imports: Vec<OnceCell<Vec<OnceCell<ModuleTarget>>>>,
     contextual_this: HashMap<(usize, ExprId), Value>,
     context_ready: HashSet<usize>,
     preparing_context: Option<usize>,

@@ -11,6 +11,7 @@ pub enum Access<'a> {
     EndMemo,
     ReadMemo(usize),
     File(usize),
+    Import(usize, usize),
     Lookup(&'static str, &'a str),
 }
 
@@ -62,6 +63,12 @@ impl<'a> Files<'a> {
     pub fn lookup(self, kind: &'static str, key: &str) {
         if let Self::Lazy { observe, .. } = self {
             observe(Access::Lookup(kind, key));
+        }
+    }
+
+    pub fn import(self, file: usize, index: usize) {
+        if let Self::Lazy { observe, .. } = self {
+            observe(Access::Import(file, index));
         }
     }
 
