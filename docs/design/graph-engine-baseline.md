@@ -157,6 +157,22 @@ Most remaining misses are calls whose target the judge places on an interface or
 
 novu (9,856 files) builds in 3.85 s at 879 MB, against `next2`'s 77 s and 2.6 GB. The v5 graphs have no search tables yet, so disk is not like for like, as for Python.
 
+### graph-03's checks
+
+Two more checks were added to the TypeScript gate for graph-03 (#398). Both use scripts from that branch, unchanged.
+
+**Who calls this** (`scripts/graph-bench/callgraph.mjs`). Over 100 sampled definitions per repository, the TypeScript language service is the answer key. Each v4 graph's `calls` edges are read directly as the baseline arm; the flag-off graph is the compiler route. novu was left out for disk space.
+
+| Repo | Compiler graph P / R / F1 | Engine graph P / R / F1 |
+|---|---|---|
+| hono | 1.000 / 0.998 / 0.999 | 0.998 / 0.963 / 0.980 |
+| TypeScript compiler | 0.911 / 0.950 / 0.930 | 0.913 / 0.950 / 0.931 |
+| mex | 0.961 / 0.996 / 0.978 | **1.000** / 0.996 / **0.998** |
+
+The engine's recall is 95% of the compiler's overall and at least 96% on every repository. The run on the TypeScript compiler first found 0.845 recall. It came from a barrel bug: one `export *` of a generated, uncommitted module (`diagnosticInformationMap.generated.ts`) hid every name of the barrel. That is fixed: an unreadable star now contributes no names, as in TypeScript.
+
+**Knowledge bench `eight-kinds-v1`** (74 claims, 444 claim checks across five checkpoints, graph-03's evaluator and delivery). Three graphs were scored: graph-03's own compiler build, this branch with the flag off, and this branch with the flag on. All three give identical results: 0 stale claims served, 85.1% fresh retention, 87.6% accuracy, and a passing grade. Only 3 of the 74 claims are `calls` relations, so this is a light check of the graph itself.
+
 ### Through `mex graph`, into today's storage
 
 `MEX_GRAPH_ENGINE_LANGUAGES=typescript,javascript` stages TypeScript and JavaScript with one engine job and writes them into today's schema v4 graph. With the flag on, the compiler route is not loaded at all. Framework resolution still runs. Warm edits go to a normal refresh, so compiler captures never touch an engine-built graph.
