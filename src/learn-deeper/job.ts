@@ -27,6 +27,8 @@ import { importedSourceKey, importsEnabled, readImport, SESSIONS_PER_BATCH } fro
 import { cleanSourceText, DOC_PRIVACY_REASONS, documentExcerpt, sourceDigest, type LearningSource } from "./source.js";
 import { readGitHubWorkflows, saveGitHubWorkflows } from "./workflows.js";
 import { queuePatternRecount, quoteRefresh, RefreshDeferred, weeklySources } from "./weekly.js";
+import { clearRunRows, initialState, PipelineState, runPipelineBatch } from "./pipeline.js";
+import type { HarvestPlan } from "./harvest/types.js";
 import { DAY_MS, nextWeeklyAt, publishWeeklyWake, saveWeeklySchedule, scheduleFromPlan, sessionsActive, WEEKLY_KIND, WeeklySchedule, weeklySchedule } from "./weekly-schedule.js";
 
 const modelName = z.string().regex(/^[A-Za-z\d][A-Za-z\d./_:@+-]{0,127}$/u);
@@ -39,6 +41,8 @@ const checkpointSchema = z.object({
   rejected: z.record(RejectionReason, z.number().int().positive()).optional(),
   staleDocs: z.number().int().positive().optional(),
   writers: z.array(writerSchema).max(16).optional(),
+  /** Learn deeper v2's phase state. */
+  v2: PipelineState.optional(),
 }).strict();
 type Checkpoint = z.infer<typeof checkpointSchema>;
 type Context = BatchContext<unknown, Checkpoint>;
@@ -338,6 +342,19 @@ async function gateRound(context: Context, plan: LearningPlan, key: string, entr
   }
 }
 
+/** The job row's summary for a v2 run: every stage's counts, in plain words. */
+function pipelineSummary(state: PipelineState, gaps: readonly string[]): string {
+  const c = state.counts, n = (name: string) => c[name] ?? 0;
+  const harvested = Object.entries(c).filter(([name]) => name.startsWith("harvested.")).reduce((sum, [, v]) => sum + v, 0);
+  const dropped = Object.entries(c).filter(([name]) => name.startsWith("triage-dropped.")).reduce((sum, [, v]) => sum + v, 0);
+  const parts = [`Read ${harvested} sources; kept ${n("triage-kept")} after sorting (${dropped} dropped).`];
+  if (state.phase === "write" || state.phase === "finish") {
+    parts.push(`Lessons: ${n("cluster.write")} corroborated, ${n("cluster.propose")} single strong, ${n("cluster.drop")} dropped.`);
+    parts.push(`Saved ${n("saved")} rules: ${n("proven")} with a proven pattern, ${n("prose")} as scoped text, ${n("proposed")} waiting for your tick.`);
+  }
+  return [...parts, ...gaps].join(" ");
+}
+
 function waitOn(error: unknown, state: Checkpoint, now: number): BatchResult<Checkpoint> | undefined {
   if (error instanceof SourceError && error.problem !== "unavailable") {
     return { checkpoint: { ...state, retryAt: error.retryAt ?? now + (error.problem === "login" ? 60_000 : 30_000) }, wait: error.message };
@@ -481,6 +498,8 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
   return {
     name: weeklyMode ? WEEKLY_KIND : LEARN_KIND, label: weeklyMode ? "Weekly learning" : "Learn deeper",
     scope: "project", machineExclusive: true, sideEffects: "idempotent",
+    // Raw text read during the run is deleted however it ends: done, failed or cancelled.
+    ended(job, db) { if (job.project_id) clearRunRows(db, job.project_id, job.id); },
     display(job, reader) {
       const summary = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1", job.id)[0]?.summary;
       return { used: recordedModelSpend(reader, job.id), ceiling: weeklyMode ? undefined : Plan.parse(JSON.parse(job.params)).ceiling, summary };
@@ -529,6 +548,23 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
           checkpoint: { ...state, gaps: [...new Set([why, ...state.gaps])].slice(0, 24) }, done: true, sources: [], spent: spend(),
         }));
       if (!isDeepStrictEqual(await origin(params.checkout), params.origin)) return finishGap("The checkout's source repository changed.");
+      if (quoted?.harvest) {
+        try {
+          const tree = await PinnedTree.open(quoted.checkout, quoted.head);
+          if (!tree) return finishGap("The approved Git revision is no longer readable in this checkout.");
+          const client = quoted.origin.host === "github.com" ? await deps.client(quoted) : undefined;
+          const gaps = new Set(state.gaps);
+          const out = await runPipelineBatch({ context, plan: quoted as LearningPlan & { harvest: HarvestPlan }, state: state.v2 ?? initialState(),
+            deps: { model: deps.model, now: deps.now, client, tree }, weekly: false, gaps });
+          const next: Checkpoint = { ...state, v2: out.state, gaps: [...gaps].slice(0, 24) };
+          return { checkpoint: next, results: out.results, tokens: Math.max(0, spend() - context.job.tokens_used), done: out.done,
+            gaps: out.done && next.gaps.length > 0, summary: pipelineSummary(out.state, next.gaps), progress: out.progress };
+        } catch (error) {
+          const wait = waitOn(error, state, deps.now());
+          if (wait) return wait;
+          throw error;
+        }
+      }
       try {
         const plan = quoted ?? state.weeklyPlan;
         let team: TeamCoverage | undefined;
