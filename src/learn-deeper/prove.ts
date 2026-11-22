@@ -59,6 +59,10 @@ export interface ProofResult {
   /** Added occurrences of the anti-pattern in later commits (R18). */
   historyAdds: number;
   notAlwaysFollowed: boolean;
+  /** Trial: a lesson an existing linter rule enforces, proposed as "enable rule X". */
+  lint?: { config: string; rule: string };
+  /** The options a decision beat, each with why it lost (trial: decision alternatives). */
+  alternatives: Array<{ option: string; reason: string }>;
   /** Why parts were removed; sent back in the one repair turn. */
   failures: string[];
   dropped?: string;
@@ -132,16 +136,19 @@ function literalCandidates(snippet: string, before: string): string[] {
   return found;
 }
 
-async function presentInScope(tree: PinnedTree, scope: readonly string[], literal: string): Promise<boolean> {
+/** True when the literal is in scope today; undefined when the scope was too large to read in full. */
+async function presentInScope(tree: PinnedTree, scope: readonly string[], literal: string): Promise<boolean | undefined> {
   const patterns = scope.map(glob => { try { return globToRegExp(glob); } catch { return undefined; } }).filter(Boolean) as RegExp[];
   let read = 0;
   for (const path of tree.paths()) {
     if (!patterns.some(pattern => pattern.test(path))) continue;
-    if (++read > PROOF_LIMITS.fixFiles) return false;
+    if (++read > PROOF_LIMITS.fixFiles) return undefined;
     if ((await tree.read(path))?.includes(literal)) return true;
   }
   return false;
 }
+
+const MANIFESTS = ["**/package.json", "**/go.mod", "**/requirements*.txt", "**/pyproject.toml", "**/Cargo.toml", "**/Gemfile", "**/pom.xml", "**/build.gradle*"];
 
 function fixFrom(draft: WriterEntry, pairs: readonly EvidencePair[]): ProvenFix | string {
   if (!draft.fix) return "no fix range given";
@@ -189,7 +196,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   const members = new Map(cluster.members.map((member: Triaged) => [member.candidate.id, member.candidate]));
   const pairs = evidencePairs(cluster.members);
   const result: ProofResult = { cluster, draft, pairs, claim: draft.claim, reasons: [], quotes: [], scope: [], when: [], historyAdds: 0,
-    notAlwaysFollowed: false, failures };
+    notAlwaysFollowed: false, alternatives: [], failures };
   const drop = (why: string) => ({ ...result, dropped: why });
 
   // Clause provenance: quotes must be found verbatim (whitespace aside) in their own member.
@@ -321,7 +328,31 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
       result.fix = fix;
       const before = pairs.map(pair => pair.before.text).join("\n");
       for (const literal of literalCandidates(fix.snippet, before)) {
-        if (await presentInScope(context.tree, result.scope, literal)) { result.fixLiteral = literal; break; }
+        if (await presentInScope(context.tree, result.scope, literal) === true) { result.fixLiteral = literal; break; }
+      }
+    }
+  }
+  // Trial: a lesson the repo's linter already has a rule for becomes "enable rule X", unless it's already enabled.
+  if (draft.lint) {
+    const config = await context.tree.read(draft.lint.config);
+    if (config === undefined) failures.push(`the linter config ${draft.lint.config} isn't in the repo`);
+    else if (config.includes(draft.lint.rule)) return drop(`the linter config already names ${draft.lint.rule}`);
+    else result.lint = draft.lint;
+  }
+  // Trial: alternatives a decision beat. A rejected option still in use today isn't ruled out: the team may have changed course.
+  if (draft.alternatives?.length && (draft.route === "decision" || draft.route === "ruled-out")) {
+    for (const alternative of draft.alternatives) {
+      result.alternatives.push({ option: alternative.option, reason: alternative.reason });
+      const rejected = alternative.rejected;
+      if (!rejected || rejected.match !== "literal" || rejected.pattern.length < PROOF_LIMITS.minLiteral) continue;
+      const scopes = result.scope[0] === "**" ? ["**"] : [...result.scope, ...MANIFESTS];
+      const present = await presentInScope(context.tree, scopes, rejected.pattern);
+      if (present !== false) {
+        failures.push(present ? `the alternative ${alternative.option} is in use today, so it isn't ruled out` : `couldn't confirm ${alternative.option} is unused today`);
+        continue;
+      }
+      if (!result.when.some(item => item.type === "rejected" && item.pattern === rejected.pattern)) {
+        result.when.push({ type: "rejected", match: "literal", pattern: rejected.pattern, pairs: [], migration: false });
       }
     }
   }

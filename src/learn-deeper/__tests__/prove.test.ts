@@ -215,3 +215,40 @@ describe("writer and triage replies", () => {
     expect(outcome.missing).toEqual([candidates[1]!.id]);
   });
 });
+
+describe("trials", () => {
+  const plan = { host: "github.com", slug: "acme/app" }, model = { id: "best", version: "test" };
+
+  it("maps a lesson to an existing linter rule as enable-rule-X, withheld once the config names it", async () => {
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
+    const files = { ...HEAD, ".eslintrc.json": "{ \"rules\": { \"eqeqeq\": \"error\" } }\n" };
+    const entry = draft(cluster, { when: [], fix: undefined, lint: { config: ".eslintrc.json", rule: "no-console" } });
+    const proof = await proveEntry(entry, cluster, context({ tree: tree(files) }));
+    expect(proof.lint).toEqual({ config: ".eslintrc.json", rule: "no-console" });
+    const routed = routeEntry(proof, plan, model);
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proposal.text).toContain("enable `no-console` in `.eslintrc.json`");
+    expect(routed.proposal.checks).toContainEqual(expect.objectContaining({ kind: "pattern", role: "complete",
+      target: { scope: ".eslintrc.json", pattern: "no-console", match: "literal", expect: "exact" }, saw: { count: 0 } }));
+    const enabled = { ...files, ".eslintrc.json": "{ \"rules\": { \"no-console\": \"error\" } }\n" };
+    expect((await proveEntry(entry, cluster, context({ tree: tree(enabled) }))).dropped).toMatch(/already names no-console/u);
+  });
+
+  it("turns a decision's rejected alternative into a rejected pattern only while nobody uses it", async () => {
+    const reason = thread(5, "packages/api/src/users.ts", { kind: "closed-pr", text: "We decided against moment: it is too large. We use date-fns instead." });
+    const cluster = clusterOf([reason], "Dates use date-fns, not moment.");
+    const decision = draft(cluster, { route: "decision", kind: "decision", when: [], fix: undefined, claim: "Dates use date-fns, not moment.",
+      clauses: [{ text: "Dates use date-fns, not moment.", quotes: [{ id: reason.id, quote: "We use date-fns instead." }] }],
+      alternatives: [{ option: "moment", reason: "too large", rejected: { match: "literal", pattern: "from 'moment'" } }] });
+    const proof = await proveEntry(decision, cluster, context());
+    expect(proof.when).toEqual([{ type: "rejected", match: "literal", pattern: "from 'moment'", pairs: [], migration: false }]);
+    const routed = routeEntry(proof, plan, model);
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proposal.text).toContain("Considered and ruled out: moment (too large).");
+    expect(routed.proven).toBe(false);
+    const inUse = { ...HEAD, "packages/api/src/dates.ts": "import day from 'moment';\nimport x from 'moment'\n" };
+    const reversed = await proveEntry(decision, cluster, context({ tree: tree({ ...inUse, "packages/api/src/old.ts": "import m from 'moment'" }) }));
+    expect(reversed.when).toEqual([]);
+    expect(reversed.failures.join(" ")).toMatch(/in use today/u);
+  });
+});

@@ -328,7 +328,8 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
   const link = `https://github.com/${plan.source.slug}/${source === "issue" ? "issues" : "pull"}/${pull}`;
   const title = cleanText(string(row.title) ?? "", gaps, read.reviewers, 256);
   const rawDescription = string(row.body) ?? "";
-  const prText = cleanText(rawDescription, gaps, read.reviewers, PR_BYTES);
+  // A "Decisions" section is read first, so the excerpt keeps it however long the description is.
+  const prText = cleanText(decisionsFirst(rawDescription), gaps, read.reviewers, PR_BYTES);
   const changedPaths = [...new Set(connection(row.files).nodes.map(file => file.path).filter(safePath))];
   const smallPr = typeof row.changedFiles === "number" && Number.isSafeInteger(row.changedFiles) && row.changedFiles >= 0 && row.changedFiles < 20;
   const base = { at: point.at, title, changedPaths, ...(source === "issue" ? {} : { pull }) };
@@ -401,4 +402,17 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
 
 function followedFields({ reviewers, nodeIds, commentHashes }: Discussion): Pick<Candidate, "reviewers" | "nodeIds" | "commentHashes"> {
   return { reviewers, nodeIds, commentHashes };
+}
+
+/** Move a PR description's "Decisions" section (a heading, or a bold line) to the front; otherwise unchanged. */
+export function decisionsFirst(body: string): string {
+  const lines = body.replace(/\r\n?/gu, "\n").split("\n");
+  const heading = (line: string) => /^(#{1,4})\s/u.exec(line.trim())?.[1]?.length;
+  const bold = (line: string) => /^\*\*[^*]+\*\*:?\s*$/u.test(line.trim());
+  const start = lines.findIndex(line => /^(?:#{1,4}\s*Decisions?\b.*|\*\*Decisions?\*\*:?\s*)$/iu.test(line.trim()));
+  if (start <= 0) return body;
+  const level = heading(lines[start]!) ?? 4;
+  let end = start + 1;
+  while (end < lines.length && !((heading(lines[end]!) ?? 99) <= level) && !bold(lines[end]!)) end++;
+  return [...lines.slice(start, end), "", ...lines.slice(0, start), ...lines.slice(end)].join("\n").trim();
 }
