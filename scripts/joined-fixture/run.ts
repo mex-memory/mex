@@ -269,8 +269,19 @@ async function main() {
       session_id: session, cwd: checkout, hook_event_name: "PostToolUse", tool_name: "Bash",
       tool_input: { command: `sed -i "s/31/470/" ${file}` }, tool_response: "Exit code: 0\nOutput:\n",
     });
-    requireJoin(kept(session, read(session, newBody), result.entryId, fact),
-      `fact ${result.entryId} was restated after a shell command changed its symbol in the same session`);
+    const context = read(session, newBody);
+    requireJoin(!context.includes(fact), `fact ${result.entryId} was restated at the read after a shell command changed its symbol`);
+    // What the controller would send for the fact now, at any moment. Verdicts
+    // are keyed by the checkout root MEX registered (normalized per OS).
+    const mirrors = readdirSync(join(home, "hook-checkouts")).map(name => JSON.parse(readFileSync(join(home, "hook-checkouts", name), "utf8")));
+    const registered = mirrors.find(row => row.project_id === project)?.root;
+    requireJoin(registered, `no registered checkout for project ${project}`);
+    const probe = JSON.parse(run(binary, ["--delivery-probe"], { payload: {
+      checkout: registered, project_id: project, mex_home: home, record_directory: home, entries: [result.entryId],
+    } }));
+    const [answer] = probe.results ?? [];
+    requireJoin(probe.ok && answer && (answer.form === "withheld" || answer.form === "pointer") && !String(answer.text ?? "").includes(fact),
+      `fact ${result.entryId} would still be sent in full after a shell command changed its symbol (${answer?.verdict ?? "no verdict"}, ${answer?.form ?? "no form"})`);
   });
 }
 
