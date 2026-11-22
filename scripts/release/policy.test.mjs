@@ -1,18 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
-import { makePlan, authorize, requireEvidence, optionalFor, packageNameFor, TARGETS } from './plan.mjs';
+import { makePlan, authorize, requireEvidence, optionalFor, packagesFor, GRAPH_TARGETS } from './plan.mjs';
 import { platformPackageName } from '../../src/hooks/shim/binary.ts';
+import { graphPlatformPackage } from '../../src/graph/engine-platform.ts';
 import { checkManifest, verifyBundle } from './bundle.mjs';
 import { publishBundle, githubReleaseArgs } from './publish.mjs';
 import { localRegistry } from './registry.mjs';
 import { npm, run, npmEnvironment } from './commands.mjs';
 
 const commit = 'a'.repeat(40), version = '0.9.0-beta.1';
-const input = (extra = {}) => ({ event: 'pull_request', version, commit, platformVersions: Array(6).fill(extra.version || version), ...extra });
+const platformCount = packagesFor(version).length - 1;
+const input = (extra = {}) => ({ event: 'pull_request', version, commit, platformVersions: Array(platformCount).fill(extra.version || version), ...extra });
 const plan = makePlan(input());
 const passing = { result: 'success', commit };
 
@@ -21,27 +23,31 @@ test('release artifacts and optional dependencies match the shipped platform res
   for (const entry of plan.packages.filter((entry) => entry.target)) {
     const [os, cpu] = entry.target.split('-');
     const manifest = JSON.parse(readFileSync(new URL(`../../${entry.directory}/package.json`, import.meta.url)));
-    assert.equal(entry.name, platformPackageName(os, cpu));
+    assert.equal(entry.name, entry.executable === 'mex-graph' ? graphPlatformPackage(os, cpu) : platformPackageName(os, cpu));
     assert.equal(manifest.name, entry.name);
+    assert.equal(manifest.version, JSON.parse(readFileSync(new URL('../../package.json', import.meta.url))).version);
     assert.deepEqual(manifest.os, [os]);
     assert.deepEqual(manifest.cpu, [cpu]);
     assert.equal(entry.file, `${manifest.name}-${version}.tgz`);
     assert.equal(optional[manifest.name], version);
+    assert.deepEqual(manifest.files, ['bin']);
+    assert.equal(manifest.preferUnplugged, true);
   }
   assert.equal(optional['mex-agent-hook-windows-x64'], version);
   assert.equal(Object.hasOwn(optional, 'mex-agent-hook-win32-x64'), false);
+  assert.equal(graphPlatformPackage('win32', 'arm64'), undefined);
 });
 
-test('tags must match all seven versions and select exact dist-tags', () => {
+test('tags must match all package versions and select exact dist-tags', () => {
   for (const v of ['0.9.0-beta.1', '0.9.0-beta.1.1', '0.9.0-beta.2', '0.9.0-rc.3', '0.9.0']) {
     const p = makePlan(input({ version: v, event: 'push', refType: 'tag', refName: 'v' + v }));
     assert.equal(p.distTag, v.includes('-') ? 'next' : 'latest'); assert.equal(p.dryRun, false); assert.equal(p.requireGates, true);
-    assert.equal(p.packages.length, 7); assert.equal(p.packages.at(-1).name, 'mex-agent');
+    assert.equal(p.packages.length, 12); assert.equal(p.packages.at(-1).name, 'mex-agent');
   }
   assert.equal(makePlan(input({ version: '0.9.0-beta.1.1', event: 'push', refType: 'tag', refName: 'v0.9.0-beta.1.1' })).release, 'beta.1');
   for (const v of ['0.9.0-beta.1.0', '0.9.0-beta.1.01', '0.9.0-rc.1.1']) assert.throws(() => makePlan(input({ version: v })), /version/);
   assert.throws(() => makePlan(input({ event: 'push', refType: 'tag', refName: 'v0.9.0' })), /Tag/);
-  assert.throws(() => makePlan(input({ platformVersions: [version, version, version, version, version, '0.9.0'] })), /versions/);
+  assert.throws(() => makePlan(input({ platformVersions: [...Array(platformCount - 1).fill(version), '0.9.0'] })), /versions/);
   assert.throws(() => makePlan(input({ version: '0.9.0-alpha.1' })), /version/);
   assert.throws(() => makePlan(input({ event: 'push', refType: 'branch' })), /tag/);
 });
@@ -69,17 +75,17 @@ test('same-commit evidence is mandatory and absence really refuses', () => {
 test('every packed manifest must be exact and cannot omit platform constraints', () => {
   const root = plan.packages.at(-1);
   checkManifest({ name: root.name, version, optionalDependencies: optionalFor(version) }, root, plan);
-  assert.throws(() => checkManifest({ name: root.name, version, optionalDependencies: {} }, root, plan), /exactly six/);
+  assert.throws(() => checkManifest({ name: root.name, version, optionalDependencies: {} }, root, plan), /exactly the release platform packages/);
   assert.throws(() => checkManifest({ name: root.name, version: '0.9.0', optionalDependencies: optionalFor(version) }, root, plan), /mismatch/);
   const entry = plan.packages[0];
   assert.throws(() => checkManifest({ name: entry.name, version, os: ['linux'], cpu: ['arm64'] }, entry, plan), /constraints/);
 });
 
-test('publication rehearses all seven in order with no credentials; retries skip only existing versions', async () => {
+test('publication rehearses all packages in order with no credentials; retries skip only existing versions', async () => {
   const calls = [];
   const invoke = async (args, options) => { calls.push({ args, options }); return ''; };
   await publishBundle('/bundle', plan, {}, { invoke, log: () => {}, verify: async () => {} });
-  assert.equal(calls.length, 7);
+  assert.equal(calls.length, plan.packages.length);
   calls.forEach(({ args, options }, index) => {
     assert.ok(args.includes('--dry-run')); assert.ok(args.includes('--provenance')); assert.ok(args.includes(plan.packages[index].file) || args.some((arg) => arg.endsWith(plan.packages[index].file)));
     assert.equal(args[args.indexOf('--tag') + 1], 'next'); assert.equal(options.env.NODE_AUTH_TOKEN, '');
@@ -90,20 +96,22 @@ test('publication rehearses all seven in order with no credentials; retries skip
     if (args[0] === 'view') { if (args[1].startsWith(real.packages[0].name + '@')) return JSON.stringify(version); throw Object.assign(new Error('not found'), { stderr: 'E404' }); }
     published.push(args); return '';
   } });
-  assert.equal(published.length, 6); assert.ok(published.at(-1)[1].endsWith('mex-agent-' + version + '.tgz'));
+  assert.equal(published.length, platformCount); assert.ok(published.at(-1)[1].endsWith('mex-agent-' + version + '.tgz'));
   await assert.rejects(publishBundle('/bundle', real, passing, { log: () => {}, verify: async () => {}, env: { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'push', GITHUB_SHA: commit }, invoke: async () => { throw new Error('network unavailable'); } }), /network unavailable/);
 });
 
-test('tampered bundle checksum fails before extraction or publishing', async () => {
+test('tampered bundle checksum fails before extraction or publishing', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'mex-release-checksum-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(join(directory, 'release-plan.json'), JSON.stringify(plan));
   for (const entry of plan.packages) writeFileSync(join(directory, entry.file), 'tampered');
   writeFileSync(join(directory, 'SHA256SUMS'), plan.packages.map((entry) => '0'.repeat(64) + '  ' + entry.file).join('\n'));
   await assert.rejects(verifyBundle(directory, plan), /checksum/);
 });
 
-test('read-only registry installs only the selected platform, including renamed Windows x64', async () => {
+test('read-only registry installs only the selected platform, including Windows with and without a native graph package', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'mex-release-registry-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const entry of plan.packages) {
     const source = join(directory, entry.name); mkdirSync(join(source, 'package'), { recursive: true });
     const [os, cpu] = (entry.target || '').split('-');
@@ -113,16 +121,18 @@ test('read-only registry installs only the selected platform, including renamed 
   const registry = await localRegistry(directory, plan);
   try {
     const metadata = await (await fetch(registry.origin + '/mex-agent')).json();
-    assert.equal(Object.keys(metadata.versions[version].optionalDependencies).length, 6);
-    for (const selected of new Set([`${process.platform}-${process.arch}`, 'win32-x64'])) {
+    assert.equal(Object.keys(metadata.versions[version].optionalDependencies).length, platformCount);
+    for (const selected of new Set([`${process.platform}-${process.arch}`, 'win32-x64', 'win32-arm64'])) {
       const [os, cpu] = selected.split('-');
       const project = join(directory, 'consumer-' + selected); mkdirSync(project); writeFileSync(join(project, 'package.json'), '{"private":true}');
       await npm(['install', `mex-agent@${version}`, '--os', os, '--cpu', cpu, '--registry', registry.origin, '--cache', join(directory, 'cache'), '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: project, env: npmEnvironment() });
       const lock = JSON.parse(readFileSync(join(project, 'package-lock.json')));
       assert.equal(lock.packages['node_modules/mex-agent'].version, version);
       // npm may keep unsupported optional metadata in the lock; actual install is decisive.
-      const installed = TARGETS.filter((target) => { try { readFileSync(join(project, 'node_modules', packageNameFor(target), 'package.json')); return true; } catch { return false; } });
-      assert.deepEqual(installed, [selected]);
+      const installed = plan.packages.filter((entry) => entry.target).filter(({ name }) => {
+        try { readFileSync(join(project, 'node_modules', name, 'package.json')); return true; } catch { return false; }
+      });
+      assert.deepEqual(installed, plan.packages.filter((entry) => entry.target === selected));
     }
   } finally { await registry.close(); }
 });
@@ -132,7 +142,9 @@ test('workflow authorization, reusable gates, credentials and fast-disk topology
   assert.equal(workflow.on.workflow_dispatch.inputs.dry_run.default, true);
   assert.equal(workflow.on.workflow_dispatch.inputs.require_gates.default, true);
   assert.equal(workflow.concurrency['cancel-in-progress'], false);
-  for (const name of ['build', 'smoke', 'dry-run', 'publish', 'github-release']) assert.ok(workflow.jobs[name].needs.includes('release-gates'));
+  for (const name of ['graph-binaries', 'build', 'smoke', 'dry-run', 'publish', 'github-release']) assert.ok(workflow.jobs[name].needs.includes('release-gates'));
+  assert.deepEqual(workflow.jobs['graph-binaries'].strategy.matrix.include.map(({ target }) => target).sort(), [...GRAPH_TARGETS].sort());
+  assert.ok(workflow.jobs.build.needs.includes('graph-binaries'));
   assert.equal(workflow.jobs['gate-checks'].uses, './.github/workflows/gates.yml');
   assert.equal(workflow.jobs['release-gates'].name, 'Release authorization');
   assert.equal(workflow.jobs.publish.environment, 'npm-publish');

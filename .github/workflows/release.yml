@@ -21,10 +21,14 @@ on:
       - 'scripts/gates/**'
       - 'npm/**'
       - 'scripts/build-hook-binaries.mjs'
+      - 'scripts/build-graph-package.mjs'
+      - 'scripts/build-graph-wasi.sh'
+      - 'scripts/copy-graph-assets.mjs'
       - 'native/**'
       - 'package.json'
       - 'package-lock.json'
       - 'src/hooks/shim/**'
+      - 'src/graph/**'
 
 permissions:
   contents: read
@@ -87,9 +91,39 @@ jobs:
         id: verdict
         run: node scripts/release/cli.mjs authorize
 
-  build:
+  graph-binaries:
     needs: [plan, release-gates]
     if: always() && needs.plan.result == 'success' && needs.release-gates.result == 'success'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: linux-x64 }
+          - { os: ubuntu-22.04-arm, target: linux-arm64 }
+          - { os: macos-15-intel, target: darwin-x64 }
+          - { os: macos-15, target: darwin-arm64 }
+          - { os: windows-2022, target: win32-x64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Build unsigned graph binary on its target
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+        run: node scripts/build-graph-package.mjs ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graph-${{ matrix.target }}
+          path: npm/graph-${{ matrix.target }}/bin/
+          if-no-files-found: error
+          retention-days: 14
+
+  build:
+    needs: [plan, release-gates, graph-binaries]
+    if: always() && needs.plan.result == 'success' && needs.release-gates.result == 'success' && needs.graph-binaries.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     outputs:
@@ -113,9 +147,44 @@ jobs:
       - run: node --test scripts/release/*.test.mjs
       - run: npm run build
       - run: node scripts/build-hook-binaries.mjs
-      - name: Prove Linux binary version and pack seven artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: graph-*
+          path: ${{ runner.temp }}/graph-binaries
+      - name: Stage native graph packages
+        run: |
+          for artifact in "$RUNNER_TEMP"/graph-binaries/graph-*; do
+            mkdir -p "npm/$(basename "$artifact")/bin"
+            cp -a "$artifact"/. "npm/$(basename "$artifact")/bin/"
+          done
+          chmod +x npm/graph-*/bin/mex-graph
+      - name: Build and stage the WASI graph fallback
+        env:
+          WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+        run: |
+          archive="$RUNNER_TEMP/wasi-sdk.tar.gz"
+          curl -fLsS --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz -o "$archive"
+          echo "87d1d1a2879d139cdc624b968efad3d4a97b8078cdff95e63acafd1a0171  $archive" | sha256sum -c -
+          mkdir -p "$WASI_SDK_PATH"
+          tar -xzf "$archive" -C "$WASI_SDK_PATH" --strip-components=1
+          (cd native/engine && rustup target add wasm32-wasip1)
+          bash scripts/build-graph-wasi.sh
+          node scripts/build-graph-package.mjs --wasi
+      - name: Test packaged graph engines and the Go reader
+        env:
+          MEX_GRAPH_ENGINE: ${{ github.workspace }}/npm/graph-linux-x64/bin/mex-graph
+          MEX_TEST_REAL_HOOK_BINARY: '1'
+        run: >-
+          npx vitest run --maxWorkers=1
+          src/graph/__tests__/graph-engine-m6.test.ts
+          src/graph/__tests__/build-usage-log.test.ts
+          src/graph/__tests__/languages-storage.test.ts
+          src/graph/__tests__/go-graph-read.test.ts
+      - name: Prove Linux binaries and pack release artifacts
         run: |
           npm/hook-linux-x64/bin/mex-hook --self-test
+          npm/graph-linux-x64/bin/mex-graph version
           node scripts/release/cli.mjs pack "$RUNNER_TEMP/release-bundle"
           git diff --exit-code
       - id: artifact
@@ -130,14 +199,13 @@ jobs:
   smoke:
     needs: [plan, release-gates, build]
     if: always() && needs.release-gates.result == 'success' && needs.build.result == 'success'
-    # Each runner checks that npm picks its own platform package: Linux x64,
-    # macOS arm64, macOS x64 and Windows x64.
+    # Each runner checks that npm picks its own platform packages.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, macos-15-intel, windows-2022]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2022]
     env:
       RELEASE_PLAN: ${{ needs.plan.outputs.json }}
       RELEASE_GATE_RESULT: ${{ needs.release-gates.outputs.gate_result }}

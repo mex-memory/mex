@@ -1,0 +1,21 @@
+{
+  "name": "mex-agent-graph-win32-x64",
+  "version": "0.9.0-beta.1.1",
+  "description": "The mex-graph binary for win32 x64. Installed by mex-agent.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mex-memory/mex.git",
+    "directory": "npm/graph-win32-x64"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "preferUnplugged": true
+}

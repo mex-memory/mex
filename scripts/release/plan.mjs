@@ -1,14 +1,23 @@
 export const TARGETS = Object.freeze(['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64']);
 export const packageNameFor = (target) => `mex-agent-hook-${target === 'win32-x64' ? 'windows-x64' : target}`;
-export const packagesFor = (version) => [...TARGETS.map((target) => ({ name: packageNameFor(target), directory: `npm/hook-${target}`, file: `${packageNameFor(target)}-${version}.tgz`, target })), { name: 'mex-agent', directory: '.', file: `mex-agent-${version}.tgz` }];
-export const optionalFor = (version) => Object.fromEntries(TARGETS.map((target) => [packageNameFor(target), version]));
+export const GRAPH_TARGETS = Object.freeze(TARGETS.filter((target) => target !== 'win32-arm64'));
+const platformPackages = [
+  ...TARGETS.map((target) => ({ name: packageNameFor(target), directory: `npm/hook-${target}`, target, executable: 'mex-hook' })),
+  ...GRAPH_TARGETS.map((target) => ({ name: `mex-agent-graph-${target}`, directory: `npm/graph-${target}`, target, executable: 'mex-graph' })),
+];
+export const packagesFor = (version) => [
+  ...platformPackages.map((entry) => ({ ...entry, file: `${entry.name}-${version}.tgz` })),
+  { name: 'mex-agent', directory: '.', file: `mex-agent-${version}.tgz` },
+];
+export const optionalFor = (version) => Object.fromEntries(platformPackages.map(({ name }) => [name, version]));
+export const binaryFor = (entry) => entry.executable + (entry.target.startsWith('win32-') ? '.exe' : '');
 
 export function makePlan({ event, refType, refName, dryRun = true, requireGates = true, version, platformVersions, commit }) {
   if (!['push', 'pull_request', 'workflow_dispatch'].includes(event)) throw new Error('Unsupported release event');
   if (!/^0\.9\.0(?:-(?:beta\.(?:0|[1-9]\d*)(?:\.[1-9]\d*)?|rc\.(?:0|[1-9]\d*)))?$/.test(version)) throw new Error('Unsupported release version');
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid release commit');
   if (typeof dryRun !== 'boolean' || typeof requireGates !== 'boolean') throw new Error('Release switches must be booleans');
-  if (platformVersions.length !== 6 || platformVersions.some((value) => value !== version)) throw new Error('Platform package versions must equal the root version');
+  if (platformVersions.length !== platformPackages.length || platformVersions.some((value) => value !== version)) throw new Error('Platform package versions must equal the root version');
   if (refType === 'tag' && refName !== `v${version}`) throw new Error('Tag must equal the root and platform package versions');
   if (event === 'push' && refType !== 'tag') throw new Error('A release push must be a version tag');
   const dry = event === 'pull_request' || (event === 'workflow_dispatch' && dryRun);

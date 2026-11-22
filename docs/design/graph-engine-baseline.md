@@ -657,6 +657,33 @@ on Hono, zod and NestJS. Parity matched all 57,960 checked node ids and the
 framework rows, with the same field differences against `next2`. Hono's v5
 `callgraph.mjs --gate` measured 0.998 precision, 0.966 recall and 0.981 F1.
 
+## M6 — Shipping defaults and WASI
+
+Three cold builds per arm on macOS arm64 with Node 22.23.2, Rust 1.99.1 and
+wasi-sdk 29. Each build used a fresh MEX home and a temporary copy of the
+pinned checkout. Values are the median and [min–max] in seconds. Peak is
+median process-tree RSS in MiB, sampled every 50 ms. Other verification
+was running on the machine.
+
+| Repo | PR head with flags | Native default | WASI |
+|---|---:|---:|---:|
+| Hono | 3.373 [2.928–6.298] · 244 MiB | 3.295 [2.458–4.462] · 237 MiB | 4.855 [4.695–8.106] · 332 MiB |
+| Flask | 0.705 [0.643–0.860] · 148 MiB | 0.703 [0.634–0.825] · 149 MiB | 1.335 [1.115–1.732] · 263 MiB |
+
+WASI subprocess peak RSS was 223 MiB for Hono and 159 MiB for Flask.
+Sorted public node and edge rows matched across all three arms and all
+repetitions. The digests exclude operational timestamps and internal
+integer keys. The PR head used all five language families and
+`MEX_GRAPH_STORAGE=v5`. The native default used no graph overrides.
+
+| Repo | Nodes | Edges | Node and edge SHA-256 prefixes |
+|---|---:|---:|---|
+| Hono `676c8f80` | 15,516 | 29,425 | `0f09771a97f16597`, `56e98eed065a80f1` |
+| Flask `a29f88ce` | 2,198 | 3,549 | `ba8b47a61915eeda`, `6f2a3a8274423293` |
+
+WASI uses one extraction thread and skips the shared facts cache.
+It refreshes in one shot when edits settle. Resident edits use native Rust.
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.

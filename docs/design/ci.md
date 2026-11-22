@@ -12,7 +12,7 @@ advisory or path-filtered workflows.
 | `statechart-checker.yml` | Real TLC and packed skill on three OSes | Relevant source/skill/Hub/build/dependency PR paths; `next`/`main` pushes |
 | `release-performance.yml` | Pinned budgets and conditional fresh-runner confirmation | `next`/`main` pushes, 0.9 tags, manual; advisory; one tracking issue for red `next` results |
 | `gates.yml` | Seven release gates and three-OS `release-gates` verdict | Called by Release; manual once on `main` |
-| `release.yml` | Decisions, seven packages, three-OS registry smoke, dry/real publication | `v0.9.0*` tags; release-path PRs (always dry); manual once on `main` |
+| `release.yml` | Decisions, 12 packages, five-target registry smoke, dry/real publication | `v0.9.0*` tags, dry release-path PRs and manual runs on `main` |
 | `setup-agent-smoke.yml` | Setup with controlled fake agents | Manual |
 
 Docs-only PRs run two small jobs: change detection (which also lints any changed
@@ -68,7 +68,7 @@ design. Neither this cost nor strict timing failures qualify for a retry.
 ## Release path
 
 PR rehearsals skip the expensive gates, prove that absent same-commit evidence
-refuses a real release, and say so in the summary. They build and smoke all seven
+refuses a real release, and say so in the summary. They build and smoke all 12
 packages, run `npm publish --dry-run` in order, then print the GitHub release
 command. No credentials or environment approval are needed.
 
@@ -76,24 +76,28 @@ Real publication is currently blocked: required gate adapters are not built and
 the strict Windows timing budget is not satisfied. A rehearsal cannot certify
 those gates. For a real release:
 
-1. Commit matching root/lockfile and six platform manifest versions. Push the
+1. Commit matching root/lockfile and 11 platform manifest versions. Push the
    matching version tag. A mismatch stops immediately. Release calls gates once
    on that commit; every later job requires the same-commit `release-gates`
    verdict. The current gate profiles support beta.1, beta.2 and final/rc.
-2. Linux builds all binaries and the production app, packs seven tarballs and
-   writes `SHA256SUMS`. Checksums, versions, constraints and all six exact root
-   optional dependencies are checked before publication. Each OS installs
+2. Linux cross-builds the six Go hook binaries. Five native runners build the
+   Rust graph binaries for Linux x64/arm64, macOS x64/arm64 and Windows x64.
+   The Linux graph builds use Ubuntu 22.04 for its glibc baseline. CI builds
+   the WASI module on Linux and ships it in `mex-agent`. The graph binaries
+   use the same release signing policy as the hook. The release job packs
+   12 tarballs and checks their contents, checksums, versions, constraints
+   and 11 exact root optional dependencies. Each smoke runner installs
    `mex-agent@<version>` from a read-only loopback registry containing the actual
-   tarballs; public npm supplies other dependencies. npm must select only the
-   host package, its native resolver/self-test must pass, and `mex --version`
-   must match. There is no tarball-install shortcut.
+   tarballs. Public npm supplies other dependencies. The smoke checks the
+   selected host packages, the hook self-test, `mex --version` and both a
+   native and a WASI schema v5 graph build.
 3. A real publish waits for **`npm-publish`** environment approval. Checksum-pinned
-   npm 11.6.1 publishes with provenance/public access: Linux x64/arm64, macOS
-   x64/arm64, Windows x64/arm64, then `mex-agent`. Beta/rc use `next`; `0.9.0`
+   npm 11.6.1 publishes the hook packages, then the graph packages, then
+   `mex-agent`, with provenance and public access. Beta and rc use `next`. `0.9.0`
    uses `latest`. Existing versions are skipped on retry; registry/authentication
    errors fail. Nothing is unpublished. Failed-only reruns reuse the build artifact.
 4. After npm succeeds, another job creates the GitHub pre-release (beta/rc) or
-   release, attaching seven tarballs and checksums. It requires an existing tag
+   release, attaching 12 tarballs and checksums. It requires an existing tag
    and completes existing assets on retry. Releases per ref queue without cancellation.
 
 Manual inputs default to `dry_run: true`, `require_gates: true`. Only dry runs
@@ -101,6 +105,14 @@ may set `require_gates: false`; real manual runs also need the matching existing
 tag on this commit. Dispatch is unavailable until the workflow reaches `main`;
 until then use a release-path PR rehearsal. Tag pushes always take the real,
 gated path.
+
+To build a native graph package locally, run `node scripts/build-graph-package.mjs`
+on the matching OS and CPU. Use the pinned Rust toolchain from `native/engine`.
+For WASI, install `wasm32-wasip1` and set `WASI_SDK_PATH` to wasi-sdk 29.
+Run `bash scripts/build-graph-wasi.sh` to compile the C grammars, SQLite and
+Rust for Preview 1. After `npm run build`, run
+`node scripts/build-graph-package.mjs --wasi` to stage the module and licenses.
+The Node build already copies the WASI runner into `dist`.
 
 ## One-time owner setup
 
@@ -110,21 +122,22 @@ gated path.
   `mex-agent-hook-darwin-x64`, `mex-agent-hook-darwin-arm64`,
   `mex-agent-hook-windows-x64`, `mex-agent-hook-win32-arm64`; confirm publish rights
   for these and `mex-agent`.
+- Claim the five `mex-agent-graph-*` names in `npm/graph-*/package.json`.
 - Windows x64 uses the registered `mex-agent-hook-windows-x64` name after npm
   rejected `mex-agent-hook-win32-x64` as spam. Its target directory, npm `os`
   constraint and binary name remain `hook-win32-x64`, `win32` and `mex-hook.exe`.
 - Create `npm-publish` with required maintainer reviewers and release-ref restrictions.
-- Configure trusted publishing for all seven packages: this repository,
+- Configure trusted publishing for all 12 packages in this repository with
   `release.yml`, environment `npm-publish`. Alternatively set an authorized
   publishing token as the environment's `NPM_TOKEN` secret (supplied as
   `NODE_AUTH_TOKEN`). Without it npm uses OIDC. Only publish requests
   `id-token: write`; only GitHub-release requests `contents: write`.
   See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) and
   [provenance](https://docs.npmjs.com/generating-provenance-statements/).
-- After all six platform versions are published, commit all six exact root
+- After all platform versions are published, commit all 11 exact root
   `optionalDependencies` and regenerate/test the lock with npm 10 and 11. Until
   then packing stages them without changing the checkout: npm 10 omits
   unpublished entries, while npm 11 rejects that lock or creates versionless
-  placeholders. Packing always pins all six to the packed root's own version.
+  placeholders. Packing always pins all 11 to the packed root's own version.
 
 Keep actual tags, credentials, namespace claims and approval with the owner.
