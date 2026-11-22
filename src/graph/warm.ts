@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { hasV5GraphSchema } from "./db/v5.js";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import { GraphStore, type FileRecord } from "./db/store.js";
 import { warmStaging, type WarmResolutionCorpus, type WarmStagedFile } from "./engine-impl.js";
@@ -154,8 +155,13 @@ export class WarmCheckout {
     const location = graphLocation(root);
     const pointer = readGraphPointer(location);
     if (!pointer) throw new Error("The checkout has no published graph.");
+    const base = join(location.directory, pointer.base);
+    const opened = openSqlite(base, { immutable: true, readOnly: true });
+    try {
+      if (hasV5GraphSchema(opened)) throw new Error("Schema v5 graphs use a normal graph refresh for edits.");
+    } finally { opened.close(); }
     const working = graphTemporary(location);
-    cloneGraph(join(location.directory, pointer.base), working);
+    cloneGraph(base, working);
     const db = openSqlite(working);
     try {
       db.exec("PRAGMA journal_mode = DELETE; PRAGMA synchronous = OFF; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -16384; PRAGMA foreign_keys = OFF;");

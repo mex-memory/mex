@@ -129,7 +129,7 @@ const BODY_KINDS = new Set<GraphNode["kind"]>([
 ]);
 
 const COMPILER_LANGUAGES = new Set<Language>(["typescript", "javascript", "tsx", "jsx"]);
-const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v4";
+export const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v4";
 
 
 export interface GraphEngineOptions {
@@ -195,26 +195,33 @@ export interface GraphSourceFileAccess {
  * rest is written to disk; either way a read returns exactly the staged
  * bytes.
  */
-class GraphSourceSpool {
-  private readonly directory: string;
+export class GraphSourceSpool {
+  readonly directory: string;
   private readonly entries = new Map<string, string>();
   private readonly held = new Map<string, string>();
   private disposed = false;
 
-  constructor(parentDirectory = tmpdir()) {
+  constructor(parentDirectory = tmpdir(), private readonly diskOnly = false) {
     this.directory = mkdtempSync(join(parentDirectory, "mex-graph-stage-"));
   }
 
   stage(relPath: string, source: string): void {
     if (this.disposed) throw new Error("The graph source spool is closed.");
     if (this.entries.has(relPath) || this.held.has(relPath)) throw new Error(`Duplicate staged source: ${relPath}`);
-    if (reserveHeldBytes(Buffer.byteLength(source, "utf8"))) {
+    if (!this.diskOnly && reserveHeldBytes(Buffer.byteLength(source, "utf8"))) {
       this.held.set(relPath, source);
       return;
     }
     const stagedPath = join(this.directory, `${String(this.entries.size).padStart(8, "0")}.source`);
     writeFileSync(stagedPath, source, { encoding: "utf8", flag: "wx", mode: 0o600 });
     this.entries.set(relPath, stagedPath);
+  }
+
+  /** Private basename passed to an engine job reading its captured input. */
+  capturedName(path: string): string {
+    const entry = this.entries.get(path);
+    if (!entry || this.disposed) throw new Error("The immutable graph source spool is unavailable.");
+    return basename(entry);
   }
 
   read(file: DiscoveredFile): string {
@@ -284,7 +291,7 @@ const NODE_SOURCE_FILE_ACCESS: GraphSourceFileAccess = {
   read: (absolutePath) => readFileSync(absolutePath, "utf-8"),
 };
 
-interface DiscoveredFile {
+export interface DiscoveredFile {
   relPath: string;
   contentHash: string;
   size: number;
@@ -300,7 +307,7 @@ interface PreparedCorpus {
 }
 
 /** What one source walk found: the corpus, and what it declined to read. */
-interface DiscoveredCorpus {
+export interface DiscoveredCorpus {
   files: DiscoveredFile[];
   skipped: GraphSkippedSourceFile[];
 }
@@ -2071,6 +2078,25 @@ interface CompatibilityAliasPlan {
 }
 
 /** Plan continuity while old rows exist; retain only data needed after replacement. */
+/** Carry old anchors across a full build without retaining unrelated node payloads. */
+export function restoreGraphAliases(
+  previous: GraphStore,
+  destination: GraphStore,
+  previousFingerprints: FingerprintStore,
+  destinationFingerprints: FingerprintStore,
+): void {
+  const ids = new Set(destination.getAllNodeIds());
+  if (previous.getAllNodeIds().every(id => ids.has(id))) {
+    for (const alias of previous.getAllAliases()) {
+      destination.insertAlias(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
+    }
+    return;
+  }
+  const fresh = destination.getAllNodes();
+  const plan = planCompatibilityAliases(previous, fresh, previousFingerprints);
+  createCompatibilityAliases(destination, plan, fresh, destinationFingerprints);
+}
+
 function planCompatibilityAliases(
   store: GraphStore,
   fresh: readonly GraphNode[],
@@ -2339,10 +2365,18 @@ const DISCOVERY_READ_WINDOW = 512;
  * after another; status inspection already reads concurrently. Custom file
  * access (tests, hosts) keeps the sequential path.
  */
+/** The same bounded source capture used by v4's staging, before either engine runs. */
+export function discoverGraphBuildSources(
+  root: string,
+  stage: (path: string, source: string) => void,
+): Promise<DiscoveredCorpus> {
+  return discoverSourceFilesConcurrently(root, NODE_SOURCE_FILE_ACCESS, { stage });
+}
+
 async function discoverSourceFilesConcurrently(
   root: string,
   sourceFileAccess: GraphSourceFileAccess,
-  sourceSpool?: GraphSourceSpool,
+  sourceSpool?: Pick<GraphSourceSpool, "stage">,
 ): Promise<DiscoveredCorpus> {
   if (sourceFileAccess !== NODE_SOURCE_FILE_ACCESS) return discoverSourceFiles(root, sourceFileAccess, sourceSpool);
   let matches: string[];
@@ -2422,7 +2456,7 @@ async function discoverSourceFilesConcurrently(
 function discoverSourceFiles(
   root: string,
   sourceFileAccess: GraphSourceFileAccess,
-  sourceSpool?: GraphSourceSpool,
+  sourceSpool?: Pick<GraphSourceSpool, "stage">,
 ): DiscoveredCorpus {
   let matches: string[];
   const files: DiscoveredFile[] = [];

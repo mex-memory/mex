@@ -309,7 +309,7 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
     const pointer = readGraphPointer(storage)!;
     cloneGraph(lease.databasePath, draft);
     graph = createGraphEngine({ rootDir: config.projectRoot, dbPath: draft, readOnly: true });
-    db = openGraphDatabase(draft);
+    db = openGraphDatabase(draft, { allowV5ContinuityWrites: true });
     const fingerprints = new FingerprintStore(db);
     await prepareGroundingCodeHashing();
     const assembled = assembleGroundingRuntime(config.projectRoot, graph, db, fingerprints, anchorFingerprints);

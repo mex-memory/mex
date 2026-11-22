@@ -35,11 +35,16 @@ import type {
   GraphRefreshResult,
   GraphStatus,
 } from "../team/contracts/graph.js";
-import { DB_SCHEMA_VERSION, upgradeGraphDatabase } from "./db/database.js";
+import { DB_SCHEMA_VERSION, openGraphDatabase, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema } from "./db/v5.js";
+import { GraphStore } from "./db/store.js";
+import { FingerprintStore, transferGroundingBaselines } from "./fingerprint-store.js";
+import { installGraphViews } from "./overlay.js";
+import { prepareNativeGraphBuild, type NativeGraphBuild } from "./native-build.js";
 import { auditRecordProvenInProcess, recordAuditedDatabase } from "./audit-record.js";
 import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
-import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing } from "./engine-impl.js";
+import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing, restoreGraphAliases } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
@@ -375,6 +380,7 @@ async function refreshGraphWithLease(
 ): Promise<GraphMaintenanceResult> {
   const started = currentDate(options);
   let candidatePath: string | null = null;
+  let native: NativeGraphBuild | undefined;
   try {
     assertNotAborted(options.signal);
     // The candidate mostly keeps the live graph's fingerprints; its audit
@@ -387,6 +393,33 @@ async function refreshGraphWithLease(
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
     progress(options, "discover", "Inspecting the current graph snapshot and source corpus.");
+    native = await prepareNativeGraphBuild(paths.projectRoot);
+    if (native || priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION) {
+      // Schema v5 refresh is a full standalone build. A format switch also
+      // starts empty and transfers continuity only, never layering schemas.
+      const priorIdentity = captureDatabaseIdentity(paths.database);
+      candidatePath = ownedPath(paths, "candidate", createToken(options));
+      const buildResult = await buildStandaloneCandidate(paths, candidatePath, options, native);
+      assertMaintenanceDirectoryUnchanged(paths);
+      revalidateLiveDatabase(paths.database, priorIdentity);
+      const filesChanged = restoreStandaloneContinuity(paths.database, candidatePath);
+      await options.__internal?.afterCandidateBuilt?.(candidatePath);
+      progress(options, "validate", "Validating the refreshed graph candidate.");
+      const candidate = await validateCandidate(options, paths, candidatePath);
+      await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
+      native?.assertGitUnchanged();
+      const published = await publishCandidate({
+        paths, candidatePath, candidate, priorStatus, priorIdentity, retainRecovery: false, options,
+      });
+      candidatePath = null;
+      return maintenanceResult(started, currentDate(options), {
+        ...buildResult,
+        refresh: {
+          mode: "full", publication: "full", filesChanged,
+          filesReextracted: buildResult.filesIndexed, filesRewritten: buildResult.filesIndexed,
+        },
+      }, published);
+    }
 
     // A refresh that would publish nothing, not even coverage or HEAD, needs
     // no candidate (issue #209): the live graph is already what a candidate
@@ -466,6 +499,7 @@ async function refreshGraphWithLease(
     const finished = currentDate(options);
     return maintenanceResult(started, finished, buildResult, published);
   } finally {
+    native?.dispose();
     if (candidatePath) cleanupOwnedDatabase(paths, candidatePath);
     flushGraphPhaseTimings("refresh", paths.projectRoot);
   }
@@ -490,6 +524,7 @@ async function rebuildGraphWithLease(
 ): Promise<GraphMaintenanceResult> {
   const started = currentDate(options);
   let candidatePath: string | null = null;
+  let native: NativeGraphBuild | undefined;
   try {
     assertNotAborted(options.signal);
     progress(options, "discover", "Inspecting graph recovery prerequisites.");
@@ -500,7 +535,8 @@ async function rebuildGraphWithLease(
     if (databaseExists) assertClearSidecars(paths.database);
     const priorIdentity = databaseExists ? captureDatabaseIdentity(paths.database) : null;
 
-    const cloneForContinuity = Boolean(priorIdentity && shouldCloneForContinuity(priorStatus));
+    native = await prepareNativeGraphBuild(paths.projectRoot);
+    const cloneForContinuity = Boolean(!native && priorIdentity && shouldCloneForContinuity(priorStatus));
     let continuityFallback = false;
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     if (priorIdentity && cloneForContinuity) {
@@ -518,7 +554,7 @@ async function rebuildGraphWithLease(
     }
     let buildResult: BuildResult;
     try {
-      buildResult = await timeGraphPhaseAsync("envelope.build", () => rebuildCandidate(paths, candidatePath!, options));
+      buildResult = await timeGraphPhaseAsync("envelope.build", () => buildStandaloneCandidate(paths, candidatePath!, options, native));
     } catch (error) {
       if (!cloneForContinuity || !isContinuityCloneCompatibilityFailure(error)) throw error;
       // An older database may be readable enough to identify its version yet
@@ -540,6 +576,13 @@ async function rebuildGraphWithLease(
         }]);
       }
     }
+    if (priorIdentity && !cloneForContinuity && (
+      priorStatus.schemaVersion === DB_SCHEMA_VERSION || priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION
+    ) && (priorStatus.status === "fresh" || priorStatus.status === "stale" || priorStatus.status === "degraded")) {
+      assertMaintenanceDirectoryUnchanged(paths);
+      revalidateLiveDatabase(paths.database, priorIdentity);
+      restoreStandaloneContinuity(paths.database, candidatePath);
+    }
     await options.__internal?.afterCandidateBuilt?.(candidatePath);
     assertMaintenanceDirectoryUnchanged(paths);
     assertNotAborted(options.signal);
@@ -549,6 +592,7 @@ async function rebuildGraphWithLease(
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
+    native?.assertGitUnchanged();
     const retainRecovery = priorStatus.status === "corrupt"
       || priorStatus.status === "rebuild_required";
     const publication = await timeGraphPhaseAsync("envelope.publish", () => publishCandidate({
@@ -577,9 +621,55 @@ async function rebuildGraphWithLease(
     const finished = currentDate(options);
     return maintenanceResult(started, finished, buildResult, published);
   } finally {
+    native?.dispose();
     if (candidatePath) cleanupOwnedDatabase(paths, candidatePath);
     flushGraphPhaseTimings("rebuild", paths.projectRoot);
   }
+}
+
+async function buildStandaloneCandidate(
+  paths: MaintenancePaths,
+  candidate: string,
+  options: InternalMaintenanceOptions,
+  native: NativeGraphBuild | undefined,
+): Promise<BuildResult> {
+  if (!native) return rebuildCandidate(paths, candidate, options);
+  progress(options, "stage", "Building a schema v5 graph in a standalone candidate.");
+  options.__internal?.beforeCandidateDatabaseOpen?.(candidate);
+  assertMaintenanceDirectoryUnchanged(paths);
+  assertNotAborted(options.signal);
+  try {
+    return await native.build(candidate, options);
+  } catch (error) {
+    assertNotAborted(options.signal);
+    throw error;
+  }
+}
+
+function restoreStandaloneContinuity(previous: string, candidate: string): number {
+  assertRegularNonSymlink(candidate, "graph candidate");
+  assertClearSidecars(candidate);
+  const source = openGraphDatabase(previous, { readOnly: true, immutable: true });
+  try {
+    const destination = openGraphDatabase(candidate, { allowV5ContinuityWrites: true });
+    try {
+      const sourceFingerprints = new FingerprintStore(source);
+      const destinationFingerprints = new FingerprintStore(destination);
+      destination.transaction(() => {
+        restoreGraphAliases(new GraphStore(source), new GraphStore(destination), sourceFingerprints, destinationFingerprints);
+        transferGroundingBaselines(source, destinationFingerprints);
+      });
+      const hashes = (db: typeof source) => (db.prepare("SELECT path, content_hash FROM files").all() as
+        Array<{ path: string; content_hash: string }>);
+      const prior = new Map(hashes(source).map(row => [row.path, row.content_hash]));
+      let changed = 0;
+      for (const row of hashes(destination)) {
+        if (prior.get(row.path) !== row.content_hash) changed++;
+        prior.delete(row.path);
+      }
+      return changed + prior.size;
+    } finally { destination.close(); }
+  } finally { source.close(); }
 }
 
 async function refreshCandidate(
@@ -975,6 +1065,7 @@ function assertSnapshotWithinIdentityCheck(path: string): void {
   assertClearSidecars(path);
   const db = openSqlite(path, { readOnly: true, immutable: true });
   try {
+    if (hasV5GraphSchema(db)) installGraphViews(db, path);
     const row = db.prepare(
       "SELECT value FROM project_metadata WHERE key = ?",
     ).get(GRAPH_SNAPSHOT_METADATA_KEY) as { value?: unknown } | undefined;
@@ -1035,7 +1126,7 @@ function assertRefreshable(status: GraphStatus): void {
     "GRAPH_MANIFEST_INSPECTION_FAILED",
     "GRAPH_STATUS_OBSERVATION_RACE",
   ]);
-  if (status.schemaVersion !== DB_SCHEMA_VERSION
+  if ((status.schemaVersion !== DB_SCHEMA_VERSION && status.schemaVersion !== ENGINE_GRAPH_SCHEMA_VERSION)
     || status.status === "corrupt"
     || status.status === "rebuild_required"
     || status.diagnostics.some((diagnostic) => blockedCodes.has(diagnostic.code))) {
