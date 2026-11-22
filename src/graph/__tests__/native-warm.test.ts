@@ -90,6 +90,29 @@ describe.skipIf(!engine)("native warm checkout", () => {
     expect(callTargets(root)).toEqual([]);
   });
 
+  it("keeps signature aliases when a function moves from an already shadowed file", async () => {
+    const root = await fixture();
+    checkout = await openWarmCheckout(root);
+    const leaf = join(root, "leaf.ts");
+    appendFileSync(leaf, "// first overlay\n");
+    expect(await checkout.edit(["leaf.ts"])).toMatchObject({ status: "published" });
+    const before = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
+    let oldId: string;
+    try {
+      oldId = (before.prepare("SELECT id FROM nodes WHERE file_path = 'leaf.ts' AND name = 'leaf'").get() as { id: string }).id;
+    } finally { before.close(); }
+
+    writeFileSync(leaf, "export function unrelated() { return 2; }\n");
+    writeFileSync(join(root, "moved.ts"), "export function leaf() { return 1; }\n");
+    expect(await checkout.edit(["leaf.ts", "moved.ts"])).toMatchObject({ status: "published" });
+    const after = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
+    try {
+      expect(after.prepare(`SELECT n.file_path, a.match_method FROM node_aliases a JOIN nodes n
+        ON n.id = a.canonical_node_id WHERE a.alias_id = ?`).get(oldId))
+        .toEqual({ file_path: "moved.ts", match_method: "signature" });
+    } finally { after.close(); }
+  });
+
   it("warms a v5 checkout after a v4 verification failure and records a matching v5 check", async () => {
     const root = await fixture();
     const location = graphLocation(root);

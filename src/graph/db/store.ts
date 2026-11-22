@@ -788,23 +788,6 @@ export class GraphStore {
       .map(rowToNode);
   }
 
-  getNodesByName(kind: NodeKind, name: string): GraphNode[] {
-    return (this.db.prepare("SELECT * FROM nodes WHERE kind = ? AND name = ?").all(kind, name) as NodeRow[])
-      .map(rowToNode);
-  }
-
-  getNodesByBodyHash(kind: NodeKind, hash: string, limit: number): GraphNode[] {
-    if (readsV5Graph(this.db)) {
-      return (this.db.prepare(`SELECT current.* FROM ${v5Rows(this.db, "nodes")} raw
-         CROSS JOIN temp.nodes current ON current.node_key = raw.id
-         WHERE substr(raw.body_hash, 1, 8) = substr(unhex(?1), 1, 8)
-           AND raw.body_hash = unhex(?1) AND current.kind = ?2 LIMIT ?3`)
-        .all(hash, kind, limit) as NodeRow[]).map(rowToNode);
-    }
-    return (this.db.prepare("SELECT * FROM nodes WHERE body_hash = ? AND kind = ? LIMIT ?")
-      .all(hash, kind, limit) as NodeRow[]).map(rowToNode);
-  }
-
   /** Delete the edges, unresolved references and import bindings one file owns. */
   deleteFileRelations(filePath: string): void {
     this.db.prepare(

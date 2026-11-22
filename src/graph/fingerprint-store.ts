@@ -1,6 +1,6 @@
 import type { GroundedSource, GroundingBaseline, GroundingSubject } from "./grounding.js";
 import { assertFingerprint, bandHashInts, decodeMinhash, encodeMinhash, indexedInLsh } from "./fingerprint.js";
-import { BANDS, K, ROWS } from "./config.js";
+import { BANDS, K, MIN_TOKENS, ROWS } from "./config.js";
 import type { Fingerprint } from "./reconcile.js";
 import { parseV5PublicId, readsV5Graph, v5NodeKey, v5Rows } from "./db/v5.js";
 import type { SQLInputValue } from "node:sqlite";
@@ -169,6 +169,18 @@ export class FingerprintStore {
     }
     const row = fingerprintReadStatement(this.db).get(nodeId, nodeId) as FingerprintRow | undefined;
     return row ? decodeRow(row) : null;
+  }
+
+  /** Inspect the prior node's sketch by key before reading its neighbours. */
+  getV5AliasFingerprint(nodeKey: number, nodeId: string): Fingerprint | undefined {
+    const row = this.db.prepare(`SELECT node AS ref, minhash, token_count
+      FROM ${v5Rows(this.db, "fingerprints")} WHERE node = ?`).get(nodeKey) as V5FingerprintRow | undefined;
+    if (row) return row.token_count >= MIN_TOKENS ? decodeV5Fingerprint(row, v5FingerprintNeighbours(this.db)) : undefined;
+    const id = parseV5PublicId(nodeId);
+    if (id && this.db.prepare("SELECT 1 FROM main.aliases WHERE old_public_id = ?").get(id.digest)) {
+      return this.get(nodeId) ?? undefined;
+    }
+    return undefined;
   }
 
   lookup(fingerprint: Fingerprint): Array<{ nodeId: string; fingerprint: Fingerprint }> {

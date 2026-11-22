@@ -53,6 +53,8 @@ import {
   type UnresolvedRefRecord,
 } from "./db/store.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
+import { v5Rows } from "./db/v5.js";
+import type { SQLInputValue } from "node:sqlite";
 import {
   canonicalNodeIdentity,
   detectLanguage,
@@ -1653,35 +1655,47 @@ export function restoreGraphAliases(
 
 /** Overlay continuity looks up candidates only for IDs that disappeared. */
 export function restoreOverlayAliases(
-  previous: GraphStore,
-  destination: GraphStore,
-  vanished: readonly GraphNode[],
-  previousFingerprints: FingerprintStore,
+  source: SqliteDatabase,
+  candidate: SqliteDatabase,
+  missingByFile: ReadonlyMap<string, ReadonlySet<string>>,
   destinationFingerprints: FingerprintStore,
 ): void {
+  const previous = new GraphStore(source);
+  const destination = new GraphStore(candidate);
+  const previousFingerprints = new FingerprintStore(source);
+  const byFile = (db: SqliteDatabase, path: string) => v5AliasNodes(db,
+    `n.file = (SELECT id FROM ${v5Rows(db, "files")} WHERE path = ?)`, [path]);
+  const byName = (db: SqliteDatabase, node: AliasNode) =>
+    v5AliasNodes(db, "n.name = ? AND k.name = ?", [node.name, node.kind]);
+  const vanished = [...missingByFile].flatMap(([path, ids]) => byFile(source, path)
+    .filter(node => ids.has(node.id.slice(node.kind.length + 1)))
+    .map(node => ({ ...node, filePath: path })));
   const missing = new Set(vanished.map(node => node.id));
   const remapped = new Map<string, string>();
-  const one = (nodes: readonly GraphNode[]): GraphNode | undefined => nodes.length === 1 ? nodes[0] : undefined;
+  const one = (nodes: readonly AliasNode[]): AliasNode | undefined => nodes.length === 1 ? nodes[0] : undefined;
   for (const old of vanished) {
-    const qualified = one(destination.getNodesByFile(old.filePath)
+    const qualified = one(byFile(candidate, old.filePath)
       .filter(node => node.kind === old.kind && node.qualifiedName === old.qualifiedName));
-    let match = qualified && { node: qualified, method: "qualified-name", confidence: 1 };
+    let match: { node: { id: string }; method: string; confidence: number } | undefined =
+      qualified && { node: qualified, method: "qualified-name", confidence: 1 };
     if (!match && normalizedSignature(old.signature)) {
       const key = compatibilitySignatureKey(old);
-      const matchesSignature = (node: GraphNode) => compatibilitySignatureKey(node) === key;
-      if (one(previous.getNodesByName(old.kind, old.name).filter(matchesSignature))) {
-        const node = one(destination.getNodesByName(old.kind, old.name).filter(matchesSignature));
+      const matchesSignature = (node: AliasNode) => compatibilitySignatureKey(node) === key;
+      if (one(byName(source, old).filter(matchesSignature))) {
+        const node = one(byName(candidate, old).filter(matchesSignature));
         if (node) match = { node, method: "signature", confidence: 0.98 };
       }
     }
     if (!match && old.bodyHash) {
-      const node = one(destination.getNodesByBodyHash(old.kind, old.bodyHash, 2));
+      const node = one(v5AliasNodes(candidate,
+        "substr(n.body_hash, 1, 8) = substr(unhex(?1), 1, 8) AND n.body_hash = unhex(?1) AND k.name = ?2",
+        [old.bodyHash, old.kind], 2));
       if (node) match = { node, method: "body-hash", confidence: 0.95 };
     }
     if (!match) {
       // The v5 fingerprint projection already supplies canonical IDs with their kind.
       const kindPrefix = `${old.kind}:`;
-      match = fingerprintAliasMatch(old, previousFingerprints.get(old.id) ?? undefined, destinationFingerprints,
+      match = fingerprintAliasMatch(old, previousFingerprints.getV5AliasFingerprint(old.key, old.id), destinationFingerprints,
         id => destination.getNodeById(id) ?? undefined, id => id.startsWith(kindPrefix)) ?? undefined;
     }
     if (match) {
@@ -1693,6 +1707,20 @@ export function restoreOverlayAliases(
     const canonical = missing.has(alias.canonicalNodeId) ? remapped.get(alias.canonicalNodeId) : alias.canonicalNodeId;
     if (canonical) destination.insertAlias(alias.aliasId, canonical, alias.matchMethod, alias.confidence);
   }
+}
+
+type AliasNode = Pick<GraphNode, "id" | "kind" | "name" | "qualifiedName" | "signature" | "bodyHash"> & { key: number };
+
+// Continuity needs only these columns from the two publications. The full
+// node view can materialize the base while joining parent and attribute rows.
+function v5AliasNodes(
+  db: SqliteDatabase, where: string, args: SQLInputValue[], limit = -1,
+): AliasNode[] {
+  return db.prepare(`SELECT n.id AS key, k.name || ':' || lower(hex(n.public_id)) AS id,
+    k.name AS kind, n.name, n.qualified_name AS qualifiedName, coalesce(n.signature, '') AS signature,
+    lower(hex(n.body_hash)) AS bodyHash FROM ${v5Rows(db, "nodes")} n
+    CROSS JOIN ${v5Rows(db, "node_kinds")} k ON k.id = n.kind WHERE ${where} LIMIT ${limit}`)
+    .all(...args) as AliasNode[];
 }
 
 function planCompatibilityAliases(
@@ -1865,7 +1893,7 @@ function normalizedSignature(signature: string | undefined): string {
 }
 
 /** Signature-only moves require the same unambiguous symbol in both snapshots. */
-function compatibilitySignatureKey(node: GraphNode): string {
+function compatibilitySignatureKey(node: Pick<GraphNode, "kind" | "name" | "signature">): string {
   return `${node.kind}\0${node.name}\0${normalizedSignature(node.signature)}`;
 }
 

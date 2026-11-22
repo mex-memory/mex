@@ -37,7 +37,7 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, openGraphDatabase, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphInvariants, inspectV5GraphSchema, parseV5PublicId, v5Rows } from "./db/v5.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphInvariants, inspectV5GraphSchema, v5Rows } from "./db/v5.js";
 import { GraphStore } from "./db/store.js";
 import { FingerprintStore, transferGroundingBaselines } from "./fingerprint-store.js";
 import { installGraphViews, overlayBase } from "./overlay.js";
@@ -738,24 +738,22 @@ function restoreStandaloneContinuity(previous: string, candidate: string, delta 
   try {
     const destination = openGraphDatabase(candidate, { allowV5ContinuityWrites: true });
     try {
-      const sourceFingerprints = new FingerprintStore(source);
       const destinationFingerprints = new FingerprintStore(destination);
-      const sourceStore = new GraphStore(source);
-      const destinationStore = new GraphStore(destination);
       destination.transaction(() => {
         if (delta) {
           const paths = overlayShadowPaths(source, destination);
           const missing = overlayMissingNodeIds(source, destination, paths);
           if (missing.size) {
-            const vanished = [...missing].flatMap(([path, ids]) => sourceStore.getNodesByFile(path)
-              .filter(node => ids.has(parseV5PublicId(node.id)!.digest.toString("hex"))));
-            restoreOverlayAliases(sourceStore, destinationStore, vanished, sourceFingerprints, destinationFingerprints);
+            restoreOverlayAliases(source, destination, missing, destinationFingerprints);
           } else if (source.prepare("SELECT 1 FROM main.aliases LIMIT 1").get()) {
+            const sourceStore = new GraphStore(source);
+            const destinationStore = new GraphStore(destination);
             for (const alias of sourceStore.getAllAliases()) {
               destinationStore.insertAlias(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
             }
           }
-        } else restoreGraphAliases(sourceStore, destinationStore, sourceFingerprints, destinationFingerprints);
+        } else restoreGraphAliases(new GraphStore(source), new GraphStore(destination),
+          new FingerprintStore(source), destinationFingerprints);
         transferGroundingBaselines(source, destinationFingerprints);
       });
     } finally { destination.close(); }

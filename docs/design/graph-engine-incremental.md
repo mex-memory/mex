@@ -20,10 +20,17 @@ recreated from verified source without decoding their resolver facts.
    declarations, fingerprints, diagnostics and source search index. At
    identical sites the writer can copy the outgoing rows and digest directly.
    If a site correspondence is ambiguous, resolve that origin again.
-3. For a local reference change, resolve the edited origin. A declaration,
-   export, import or other effective surface change also invalidates the
-   reverse closure of recorded resolution reads. A file used by a resolver
-   is decoded when the resolver first needs it. `refresh` uses the disk
+3. For a local reference change, resolve the edited origin. A surface
+   change also invalidates the reverse closure of recorded resolution reads.
+   For an addition or removal of a trailing named module function in
+   ECMAScript, Python or Rust, compare the new facts with the previous
+   hash-verified facts. When all retained facts and their ordinals agree,
+   start invalidation at origins that read both the spelling and the edited
+   file. Include the file's own heritage and contextual lookups. A spelling
+   absent from the dictionary needs no reverse index. Topology changes,
+   cache misses and other surface edits start from the whole-file reads.
+   A file used by a resolver is decoded when the resolver first needs it.
+   `refresh` uses the disk
    facts cache and extracts a cache miss from the verified source. `serve`
    uses pinned compressed facts, an 8 MiB decompression cache and up to
    1,024 consulted files within a 64 MiB estimated decoded budget. Each
@@ -49,7 +56,9 @@ Warm publication inherits filesystem observations from a base captured in
 the same checkout and records changed or missing stamps in the overlay.
 Continuity looks for aliases of vanished nodes on shadowed paths. It checks
 qualified names, signatures, body hashes and fingerprints in the usual
-order. A fingerprint match can require a streaming sketch scan.
+order. It reads the alias candidates by file, name or body hash from the
+visible integer-key tables and checks the prior sketch by node key. A
+fingerprint match can require a streaming sketch scan.
 
 ## Private storage
 
@@ -64,11 +73,13 @@ order. A fingerprint match can require a streaming sketch scan.
   assigns IDs to tuples of lookup kind, file ID and name ID. A module probe
   names its importing file and specifier separately. A path probe can use
   an existing file ID or intern a spelling for a missing path.
-- `resolution_reads` has one row per origin with reads. The low bit of each
-  encoded ID distinguishes a file from a lookup. The row stores the sorted,
-  unique IDs as unsigned varint deltas. Surface and topology edits decode
-  the visible rows into a reverse index for the candidate. A surface-only
-  change keeps file, type, heritage and dispatch readers in the index.
+- `resolution_reads` has one row per origin with reads. The high tag marks
+  a function spelling from `resolution_names`. Other IDs use the low bit
+  to distinguish a file from a lookup. Sharing spellings lets multiple
+  modules reuse one dictionary entry. The row stores the sorted, unique IDs
+  as unsigned varint deltas. Edits that need reverse dependencies decode
+  visible rows into a reverse index for the candidate. A surface-only
+  change keeps file, type, heritage, dispatch and requested spelling reads.
   Topology edits also load module and path probes. Append, prepend and local
   reference edits can skip the index. Framework detection uses its own small
   table because it is checked on every edit.
