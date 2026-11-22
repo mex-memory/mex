@@ -4,6 +4,7 @@
 //! stdin, then touch the repository. Every way out other than success deletes
 //! the candidate first.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -36,7 +37,7 @@ pub struct Request {
     pub root: PathBuf,
     pub files: Vec<RequestFile>,
     #[serde(default)]
-    pub configs: Vec<String>,
+    configs: Vec<RequestConfig>,
     #[serde(default)]
     pub languages: Vec<String>,
     // Validated for build and cleared for stage before starting the job.
@@ -48,6 +49,13 @@ pub struct Request {
     #[serde(default)]
     pub facts_cache: Option<PathBuf>,
     pub limits: RequestLimits,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(super) enum RequestConfig {
+    Path(String),
+    Source { path: String, source: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,7 +257,7 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
     let extracted = extract_files(&root, request);
     match request.output.as_deref() {
         Some(output) => build(output, &extracted, &root, &request.configs),
-        None => stage::write(&extracted),
+        None => stage::write(&extracted, &root, &request.configs),
     }
 }
 
@@ -257,7 +265,7 @@ fn build(
     output: &Path,
     extracted: &ExtractedFiles<'_>,
     root: &Path,
-    configs: &[String],
+    configs: &[RequestConfig],
 ) -> Result<JobCounts, JobError> {
     let write = JobError::write;
     let mut writer = Writer::create(output).map_err(write)?;
@@ -320,13 +328,7 @@ fn build(
     )
     .map_err(write)?;
     if !extracted.ecmascript.is_empty() {
-        let configs = read_configs(root, configs);
-        let files = || extracted.ecmascript.iter().map(|file| file.path.as_str());
-        let config_text = || configs.iter().map(|(path, text)| (*path, text.as_str()));
-        let modules = match root.to_str().filter(|path| path.starts_with('/')) {
-            Some(root) => ModuleResolver::with_repository_root(root, files(), config_text()),
-            None => ModuleResolver::new(files(), config_text()),
-        };
+        let modules = extracted.modules(root, configs);
         let resolution = mex_graph_ecmascript::resolve::resolve(&extracted.ecmascript, &modules);
         write_resolution(
             &mut writer,
@@ -359,7 +361,7 @@ pub(super) enum ExtractedFile<'a> {
 pub(super) struct ExtractedFiles<'a> {
     /// Dense Python facts, including failed parses, indexed by its resolver.
     pub(super) facts: Vec<FileFacts>,
-    ecmascript: Vec<FileFacts>,
+    pub(super) ecmascript: Vec<FileFacts>,
     /// One entry per requested path, including skips, in request order.
     pub(super) files: Vec<ExtractedFile<'a>>,
 }
@@ -367,6 +369,16 @@ pub(super) struct ExtractedFiles<'a> {
 impl ExtractedFiles<'_> {
     pub(super) fn resolve(&self) -> Resolution {
         resolve(&self.facts)
+    }
+
+    pub(super) fn modules(&self, root: &Path, configs: &[RequestConfig]) -> ModuleResolver {
+        let configs = read_configs(root, configs);
+        let files = self.ecmascript.iter().map(|file| file.path.as_str());
+        let config_text = configs.iter().map(|(path, text)| (*path, text.as_ref()));
+        match root.to_str().filter(|path| path.starts_with('/')) {
+            Some(root) => ModuleResolver::with_repository_root(root, files, config_text),
+            None => ModuleResolver::new(files, config_text),
+        }
     }
 }
 
@@ -390,8 +402,7 @@ fn extract_files<'a>(root: &Path, request: &'a Request) -> ExtractedFiles<'a> {
                     .is_some_and(|ext| ext == "py")
             {
                 Some(Adapter::Python)
-            } else if request.output.is_some() && language_for_path(&file.path).is_some_and(enabled)
-            {
+            } else if language_for_path(&file.path).is_some_and(enabled) {
                 Some(Adapter::EcmaScript)
             } else {
                 None
@@ -499,16 +510,21 @@ fn extract(
     })
 }
 
-fn read_configs<'a>(root: &Path, paths: &'a [String]) -> Vec<(&'a str, String)> {
-    paths
+fn read_configs<'a>(root: &Path, configs: &'a [RequestConfig]) -> Vec<(&'a str, Cow<'a, str>)> {
+    configs
         .iter()
-        .filter_map(|path| {
-            let canonical = root.join(path).canonicalize().ok()?;
-            if !canonical.starts_with(root) || !canonical.is_file() {
-                return None;
+        .filter_map(|config| match config {
+            RequestConfig::Source { path, source } => {
+                Some((path.as_str(), Cow::Borrowed(source.as_str())))
             }
-            let text = std::fs::read_to_string(canonical).ok()?;
-            Some((path.as_str(), text))
+            RequestConfig::Path(path) => {
+                let canonical = root.join(path).canonicalize().ok()?;
+                if !canonical.starts_with(root) || !canonical.is_file() {
+                    return None;
+                }
+                let text = std::fs::read_to_string(canonical).ok()?;
+                Some((path.as_str(), Cow::Owned(text)))
+            }
         })
         .collect()
 }
@@ -615,7 +631,7 @@ impl From<&mex_graph_ecmascript::resolve::Edge> for ResolvedEdge {
             kind: edge.kind,
             line: edge.line,
             col: edge.col,
-            callback: edge.callback,
+            callback: edge.is_callback(),
             site_file: (edge.site_file != edge.from.0).then_some(edge.site_file),
         }
     }

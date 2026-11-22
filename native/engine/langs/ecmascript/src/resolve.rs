@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use mex_graph_core::facts::ecmascript::{ExprId, Expression, Owner, Space};
+use mex_graph_core::facts::ecmascript::{ExprId, Expression, ImportSite, Owner, Space};
 use mex_graph_core::facts::{
     Call, CallForm, Def, FileFacts, ImportForm, Kind, NONE, Range, Receiver, ScopeKind,
 };
@@ -29,8 +29,24 @@ pub struct Edge {
     /// 1-based line and UTF-16 column of the reference.
     pub line: u32,
     pub col: u32,
-    pub callback: bool,
     pub site_file: usize,
+    pub site: EdgeSite,
+}
+
+/// Evidence at the written site, indexed into that file's facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeSite {
+    Import(usize),
+    Heritage(usize),
+    Call(usize),
+    Callback { argument: u32 },
+    Identifier(ExprId),
+}
+
+impl Edge {
+    pub fn is_callback(&self) -> bool {
+        matches!(self.site, EdgeSite::Callback { .. })
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -38,6 +54,20 @@ pub struct Resolution {
     pub edges: Vec<Edge>,
     pub unresolved: Vec<(usize, Reason, u32)>,
     pub unresolved_calls: Vec<(usize, usize, Reason)>,
+    pub unresolved_heritage: Vec<UnresolvedHeritage>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnresolvedHeritage {
+    pub from: DefRef,
+    pub heritage: usize,
+    pub reason: Reason,
+}
+
+pub struct ImportResolution {
+    pub site: ImportSite,
+    pub module: Result<usize, Reason>,
+    pub target: Option<DefRef>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -78,14 +108,20 @@ impl Lane {
 }
 
 pub fn resolve(files: &[FileFacts], modules: &ModuleResolver) -> Resolution {
+    Resolver::new(files, modules).resolve_all()
+}
+
+/// Schema v4 also persists the explicit name bindings used by framework resolvers.
+pub fn resolve_for_stage(
+    files: &[FileFacts],
+    modules: &ModuleResolver,
+) -> (Resolution, Vec<Vec<ImportResolution>>) {
     let mut resolver = Resolver::new(files, modules);
-    let mut result = Resolution::default();
-    for file in 0..files.len() {
-        if resolver.index[file].is_some() {
-            resolver.resolve_file(file, &mut result);
-        }
-    }
-    result
+    let resolution = resolver.resolve_all();
+    let bindings = (0..files.len())
+        .map(|file| resolver.resolve_import_bindings(file))
+        .collect();
+    (resolution, bindings)
 }
 
 struct Resolver<'a> {
@@ -138,14 +174,66 @@ impl<'a> Resolver<'a> {
         &self.files[file].defs[def]
     }
 
+    fn resolve_all(&mut self) -> Resolution {
+        let mut result = Resolution::default();
+        for file in 0..self.files.len() {
+            if self.index[file].is_some() {
+                self.resolve_file(file, &mut result);
+            }
+        }
+        result
+    }
+
+    fn resolve_import_bindings(&mut self, file: usize) -> Vec<ImportResolution> {
+        let Some(index) = &self.index[file] else {
+            return Vec::new();
+        };
+        index
+            .facts
+            .import_sites
+            .iter()
+            .map(|&site| {
+                let binding = &self.files[file].imports[site.import].bindings[site.binding];
+                let (module, target) = match self.imports[file][site.import] {
+                    Ok(value @ Value::Module { file: target, .. }) => {
+                        let target_def = if binding.imported == "*" {
+                            Some((target, 0))
+                        } else {
+                            let lane = if binding.type_only {
+                                Lane::Type
+                            } else {
+                                Lane::Value
+                            };
+                            self.member(value, &binding.imported, lane, 0)
+                                .ok()
+                                .and_then(|value| self.referenced(value))
+                        };
+                        (Ok(target), target_def)
+                    }
+                    Err(reason) => (Err(reason), None),
+                    Ok(_) => unreachable!("import resolution only produces modules"),
+                };
+                ImportResolution {
+                    site,
+                    module,
+                    target,
+                }
+            })
+            .collect()
+    }
+
     fn resolve_file(&mut self, file: usize, result: &mut Resolution) {
         let facts = &self.files[file];
         let extra = self.model(file).facts;
         for site in &extra.import_sites {
             if let Ok(Value::Module { file: target, .. }) = self.imports[file][site.import] {
-                result
-                    .edges
-                    .push(edge((file, 0), (target, 0), "imports", site.range));
+                result.edges.push(edge(
+                    (file, 0),
+                    (target, 0),
+                    "imports",
+                    site.range,
+                    EdgeSite::Import(site.import),
+                ));
             }
         }
         for (import_index, import) in facts.imports.iter().enumerate() {
@@ -153,22 +241,33 @@ impl<'a> Resolver<'a> {
                 && import.bindings.is_empty()
                 && let Ok(Value::Module { file: target, .. }) = self.imports[file][import_index]
             {
-                result
-                    .edges
-                    .push(edge((file, 0), (target, 0), "imports", import.range));
+                result.edges.push(edge(
+                    (file, 0),
+                    (target, 0),
+                    "imports",
+                    import.range,
+                    EdgeSite::Import(import_index),
+                ));
             }
         }
         for base in &extra.bases {
             let heritage = &facts.defs[base.def as usize].heritage[base.heritage];
-            if let Ok(value) = self.eval(file, base.scope, base.expression, 0)
-                && let Some(target) = self.referenced(value)
-                && matches!(
-                    self.def(target).kind,
-                    Kind::Class | Kind::Interface | Kind::TypeAlias
-                )
-            {
-                result.edges.push(edge(
-                    (file, base.def as usize),
+            let from = (file, base.def as usize);
+            let target = self
+                .eval(file, base.scope, base.expression, 0)
+                .and_then(|value| {
+                    self.referenced(value)
+                        .filter(|&target| {
+                            matches!(
+                                self.def(target).kind,
+                                Kind::Class | Kind::Interface | Kind::TypeAlias
+                            )
+                        })
+                        .ok_or("heritage_target_not_indexed")
+                });
+            match target {
+                Ok(target) => result.edges.push(edge(
+                    from,
                     target,
                     if heritage.implements {
                         "implements"
@@ -176,7 +275,13 @@ impl<'a> Resolver<'a> {
                         "extends"
                     },
                     heritage.range,
-                ));
+                    EdgeSite::Heritage(base.heritage),
+                )),
+                Err(reason) => result.unresolved_heritage.push(UnresolvedHeritage {
+                    from,
+                    heritage: base.heritage,
+                    reason,
+                }),
             }
         }
         let mut reasons = BTreeMap::new();
@@ -197,6 +302,7 @@ impl<'a> Resolver<'a> {
                         target,
                         kind,
                         call.name_range,
+                        EdgeSite::Call(index),
                     ));
                     for argument in &mut callback_arguments {
                         if !self.model(target.0).invokes(target.1, argument.position) {
@@ -206,9 +312,16 @@ impl<'a> Resolver<'a> {
                             && let Some(callback) = self.referenced(value)
                         {
                             result.edges.push(Edge {
-                                callback: true,
                                 site_file: file,
-                                ..edge(target, callback, "calls", argument.range)
+                                ..edge(
+                                    target,
+                                    callback,
+                                    "calls",
+                                    argument.range,
+                                    EdgeSite::Callback {
+                                        argument: argument.position,
+                                    },
+                                )
                             });
                         }
                     }
@@ -231,9 +344,13 @@ impl<'a> Resolver<'a> {
                 && let Some(target) = self.referenced(value)
                 && target != from
             {
-                result
-                    .edges
-                    .push(edge(from, target, "references", reference.range));
+                result.edges.push(edge(
+                    from,
+                    target,
+                    "references",
+                    reference.range,
+                    EdgeSite::Identifier(reference.expression),
+                ));
             }
         }
     }
@@ -1012,14 +1129,14 @@ fn source(file: usize, caller: i32) -> DefRef {
     (file, usize::try_from(caller).unwrap_or(0))
 }
 
-fn edge(from: DefRef, to: DefRef, kind: &'static str, range: Range) -> Edge {
+fn edge(from: DefRef, to: DefRef, kind: &'static str, range: Range, site: EdgeSite) -> Edge {
     Edge {
         from,
         to,
         kind,
         line: range.start_line + 1,
         col: range.start_col,
-        callback: false,
         site_file: from.0,
+        site,
     }
 }

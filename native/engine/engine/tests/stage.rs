@@ -301,6 +301,129 @@ fn staging_is_byte_identical_across_thread_counts() {
 }
 
 #[test]
+fn stages_ecmascript_and_groups_callbacks_by_source_owner() {
+    let fixture = Fixture::new("ecmascript");
+    let call = r#"const result = ("🧪", run(done));"#;
+    std::fs::write(
+        fixture.dir.join("src/main.ts"),
+        format!(
+            "import {{ invoke as run }} from '@lib/util';\nexport function done(): number {{ return 1; }}\n{call}\nnew Missing();\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.dir.join("src/util.mts"),
+        "export function invoke(cb: () => number): number { return cb(); }\n",
+    )
+    .unwrap();
+    let variants = [
+        (
+            "component.tsx",
+            "tsx",
+            "export function View() { return <div/>; }",
+        ),
+        (
+            "component.jsx",
+            "jsx",
+            "export function View() { return <div/>; }",
+        ),
+        ("legacy.cts", "typescript", "export function legacy() {}"),
+        ("module.mjs", "javascript", "export function module() {}"),
+        ("module.cjs", "javascript", "function module() {}"),
+        ("module.js", "javascript", "function module() {}"),
+    ];
+    for (path, _, source) in variants {
+        std::fs::write(fixture.dir.join("src").join(path), source).unwrap();
+    }
+    // The staged text is the authority even when the on-disk config differs.
+    std::fs::write(fixture.dir.join("tsconfig.json"), "{}").unwrap();
+    let expected = [
+        ("src/main.ts".to_owned(), "typescript"),
+        ("src/target.py".to_owned(), "python"),
+        ("src/util.mts".to_owned(), "typescript"),
+    ]
+    .into_iter()
+    .chain(variants.map(|(path, language, _)| (format!("src/{path}"), language)))
+    .collect::<Vec<_>>();
+    let request = fixture.request(4, |request| {
+        request["files"] = json!(
+            expected
+                .iter()
+                .map(|(path, _)| json!({ "path": path }))
+                .collect::<Vec<_>>()
+        );
+        request["languages"] = json!(["typescript", "tsx", "javascript", "jsx", "python"]);
+        request["configs"] = json!([{
+            "path": "tsconfig.json",
+            "source": r#"{ "compilerOptions": { "paths": { "@lib/util": ["./src/util.mts"] } } }"#,
+        }]);
+    });
+    let output = run_job("stage", &request, "start\n");
+    assert!(output.status.success(), "{output:?}");
+    let records = events(&output);
+    for (file, (path, language)) in records.iter().zip(&expected) {
+        assert_eq!(file["type"], "staged", "{file:?}");
+        assert_eq!(file["path"], path.as_str());
+        assert_eq!(file["language"], *language);
+        assert_eq!(file["parseStatus"], "ok");
+        for edge in rows(file, "edges") {
+            assert!(
+                rows(file, "nodes")
+                    .iter()
+                    .any(|node| node["id"] == edge["source"])
+            );
+        }
+    }
+    assert_eq!(records.last().unwrap()["files"], expected.len());
+    assert_eq!(records.last().unwrap()["coverageGaps"], 0);
+
+    let main = &records[0];
+    let util = &records[2];
+    let done = node(main, "done");
+    let invoke = node(util, "invoke");
+    assert_eq!(done["identityKey"], "src/main.ts\0function\0done\0function");
+    assert_eq!(done["returnType"], "number");
+    assert_eq!(rows(done, "minhash").len(), 64);
+    let call_edge = rows(main, "edges")
+        .iter()
+        .find(|edge| edge["kind"] == "calls")
+        .unwrap();
+    assert_eq!(call_edge["target"], invoke["id"]);
+    assert_eq!(
+        call_edge["metadata"],
+        json!({"targetName": "run", "targetQualifiedName": "invoke"})
+    );
+    assert_eq!(
+        call_edge["column"],
+        call.split_once("run").unwrap().0.encode_utf16().count()
+    );
+    assert_eq!(main["imports"][0]["resolvedFilePath"], "src/util.mts");
+    assert_eq!(main["imports"][0]["targetId"], invoke["id"]);
+    assert!(
+        rows(main, "unresolved")
+            .iter()
+            .any(|reference| reference["referenceKind"] == "instantiates"
+                && reference["referenceName"] == "Missing")
+    );
+
+    let callback = rows(util, "edges")
+        .iter()
+        .find(|edge| edge["provenance"] == "callback-synthesis")
+        .unwrap();
+    assert_eq!(callback["source"], invoke["id"]);
+    assert_eq!(callback["target"], done["id"]);
+    assert_eq!(callback["resolutionMethod"], "engine-ecmascript");
+    assert_eq!(callback["confidence"], 0.85);
+    assert_eq!(
+        callback["evidence"][0]["wiringSite"],
+        json!({
+            "filePath": "src/main.ts", "line": 3,
+            "column": call.split_once("done").unwrap().0.encode_utf16().count(),
+        })
+    );
+}
+
+#[test]
 fn stage_refuses_contract_one_before_start() {
     let fixture = Fixture::new("contract");
     let request = fixture.request(1, |r| r["contract"] = 1.into());

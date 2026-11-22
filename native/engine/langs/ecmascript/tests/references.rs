@@ -32,7 +32,7 @@ impl Graph {
             .edges
             .iter()
             .filter(|e| {
-                e.from.0 == file && matches!(e.kind, "calls" | "instantiates") && !e.callback
+                e.from.0 == file && matches!(e.kind, "calls" | "instantiates") && !e.is_callback()
             })
             .map(|e| {
                 (
@@ -312,7 +312,7 @@ rest(done, () => { done(); });\n\
 shadow(done);\n",
         ),
     ]);
-    let callbacks: Vec<_> = graph.edges("calls").filter(|e| e.callback).collect();
+    let callbacks: Vec<_> = graph.edges("calls").filter(|e| e.is_callback()).collect();
     assert_eq!(callbacks.len(), 2, "{callbacks:?}");
     let invoke = callbacks[0];
     assert_eq!(graph.files[0].defs[invoke.from.1].name, "invoke");
@@ -323,7 +323,9 @@ shadow(done);\n",
     assert_eq!((rest.site_file, rest.line, rest.col), (1, 4, 11));
     let caller = graph
         .edges("calls")
-        .find(|e| !e.callback && e.line == 4 && graph.files[e.to.0].defs[e.to.1].name == "done")
+        .find(|e| {
+            !e.is_callback() && e.line == 4 && graph.files[e.to.0].defs[e.to.1].name == "done"
+        })
         .unwrap();
     assert_eq!(caller.from, rest.to);
 }
@@ -489,6 +491,12 @@ function quoted(...fns: (() => void)[]) { fns['0'](); }\n\
 function ready() {}\n\
 overloaded(ready); quoted(ready);\n",
     )]);
-    assert_eq!(graph.edges("calls").filter(|edge| edge.callback).count(), 0);
+    assert_eq!(
+        graph
+            .edges("calls")
+            .filter(|edge| edge.is_callback())
+            .count(),
+        0
+    );
     assert!(graph.calls(0).contains(&(5, "app.ts", "overloaded")));
 }
