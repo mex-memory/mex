@@ -234,7 +234,6 @@ function createCombinedDatabase(path: string, includeEntity = false): void {
       indexedAt: "2026-08-22T00:00:00.000Z",
       git: { branch: "fixture", head: "a".repeat(40) },
       schemaVersion: DB_SCHEMA_VERSION,
-      compilerVersion: "typescript-5.9-v2",
       extractorVersion: "typescript-5.9-v2",
       resolverVersion: "fixture-v1",
       grammarHash: "b".repeat(64),

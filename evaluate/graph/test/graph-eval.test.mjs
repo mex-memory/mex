@@ -67,18 +67,16 @@ function completeGraphSnapshot(overrides = {}) {
     indexedBranch: "main",
     indexedHead: "1".repeat(40),
     schemaVersion: 3,
-    compilerVersion: "5.9.3",
-    extractorVersion: "typescript-5.9-v1+tree-sitter-v2",
-    resolverVersion: "compiler-first-v2",
+    extractorVersion: "tree-sitter-v4+engine-javascript-typescript-v1",
+    resolverVersion: "engine-first-v4",
     grammarHash: digest("a"),
     configHash: digest("b"),
     manifestHash: digest("c"),
     sourceCorpusDigest: digest("d"),
     sourceCount: 1,
-    semanticInputs: [
-      { path: "config/base.json", contentHash: digest("e") },
-      { path: "config/missing.json", contentHash: null },
-    ],
+    engineFallback: {
+      languages: ["typescript"], files: 0, fallbackFiles: 1, fellBack: "no mex-graph binary was found",
+    },
     parseHealth: { total: 1, ok: 0, partial: 1, failed: 0 },
     ...overrides,
   };
@@ -183,7 +181,6 @@ test("current-schema integrity hashing includes graph rows and semantic metadata
   db.prepare(`INSERT INTO source_chunks_fts (
     rowid, path_terms, identifier_terms, comment_terms, source_text
   ) VALUES (?, ?, ?, ?, ?)`).run(1, "src a ts", "a", "", "function a() {}");
-  db.prepare("INSERT INTO project_metadata VALUES (?, ?, ?)").run("compiler_version", "5.9.3", 5);
   db.close();
 
   const first = inspectGraphDatabase(path, { nodesCreated: 1 });
@@ -261,10 +258,7 @@ test("graph snapshot hashing excludes only timestamps and Git coordinates", () =
 
   const reordered = Object.fromEntries(Object.entries(base).reverse());
   reordered.parseHealth = Object.fromEntries(Object.entries(base.parseHealth).reverse());
-  reordered.semanticInputs = base.semanticInputs.map(({ path: inputPath, contentHash }) => ({
-    contentHash,
-    path: inputPath,
-  }));
+  reordered.engineFallback = Object.fromEntries(Object.entries(base.engineFallback).reverse());
   writeRawGraphSnapshot(path, JSON.stringify(reordered, null, 2), 800);
   assert.equal(normalizedHash(path), baseHash, "JSON property order and whitespace must be normalized");
 
@@ -281,9 +275,8 @@ test("graph snapshot hashing retains every semantic provenance field", () => {
   const baseHash = normalizedHash(path);
   const semanticVariants = [
     ["schemaVersion", { ...base, schemaVersion: 2 }],
-    ["compilerVersion", { ...base, compilerVersion: "5.9.4" }],
-    ["extractorVersion", { ...base, extractorVersion: "typescript-5.9-v2+tree-sitter-v2" }],
-    ["resolverVersion", { ...base, resolverVersion: "compiler-first-v3" }],
+    ["extractorVersion", { ...base, extractorVersion: "tree-sitter-v5+engine-javascript-typescript-v1" }],
+    ["resolverVersion", { ...base, resolverVersion: "engine-first-v5" }],
     ["grammarHash", { ...base, grammarHash: digest("0") }],
     ["configHash", { ...base, configHash: digest("1") }],
     ["manifestHash", { ...base, manifestHash: digest("2") }],
@@ -293,27 +286,9 @@ test("graph snapshot hashing retains every semantic provenance field", () => {
       sourceCount: 2,
       parseHealth: { total: 2, ok: 0, partial: 2, failed: 0 },
     }],
-    ["semantic input path", {
-      ...base,
-      semanticInputs: [
-        { path: "config/alternate.json", contentHash: digest("e") },
-        base.semanticInputs[1],
-      ],
-    }],
-    ["semantic input digest", {
-      ...base,
-      semanticInputs: [
-        { path: base.semanticInputs[0].path, contentHash: digest("4") },
-        base.semanticInputs[1],
-      ],
-    }],
-    ["negative semantic input probe", {
-      ...base,
-      semanticInputs: [
-        base.semanticInputs[0],
-        { path: base.semanticInputs[1].path, contentHash: digest("5") },
-      ],
-    }],
+    ["engine fallback language", { ...base, engineFallback: { ...base.engineFallback, languages: ["javascript"] } }],
+    ["engine fallback reason", { ...base, engineFallback: { ...base.engineFallback, fellBack: "the engine stopped (exit 70)" } }],
+    ["engine fallback absent", { ...base, engineFallback: undefined }],
     ["parseHealth", { ...base, parseHealth: { total: 1, ok: 1, partial: 0, failed: 0 } }],
   ];
 
@@ -333,29 +308,21 @@ test("graph snapshot hashing fails closed on non-canonical or unsupported proven
     ["missing field", JSON.stringify(missingField)],
     ["unsupported version", JSON.stringify({ ...base, version: 2 })],
     ["unknown snapshot field", JSON.stringify({ ...base, futureSemanticField: true })],
-    ["unknown semantic-input field", JSON.stringify({
-      ...base,
-      semanticInputs: [{ ...base.semanticInputs[0], kind: "config" }, base.semanticInputs[1]],
+    ["unknown engine fallback field", JSON.stringify({
+      ...base, engineFallback: { ...base.engineFallback, rawError: "unsanitized" },
     })],
     ["unknown parse-health field", JSON.stringify({
       ...base,
       parseHealth: { ...base.parseHealth, unknown: 0 },
     })],
-    ["duplicate semantic-input path", JSON.stringify({
-      ...base,
-      semanticInputs: [base.semanticInputs[0], { ...base.semanticInputs[0] }],
+    ["duplicate fallback language", JSON.stringify({
+      ...base, engineFallback: { ...base.engineFallback, languages: ["typescript", "typescript"] },
     })],
-    ["unsorted semantic-input paths", JSON.stringify({
-      ...base,
-      semanticInputs: [...base.semanticInputs].reverse(),
+    ["invalid fallback language", JSON.stringify({
+      ...base, engineFallback: { ...base.engineFallback, languages: ["unknown"] },
     })],
-    ["unsafe semantic-input path", JSON.stringify({
-      ...base,
-      semanticInputs: [{ path: "../outside.json", contentHash: digest("e") }],
-    })],
-    ["invalid semantic-input digest", JSON.stringify({
-      ...base,
-      semanticInputs: [{ path: "config/base.json", contentHash: "not-a-digest" }],
+    ["inconsistent fallback count", JSON.stringify({
+      ...base, engineFallback: { ...base.engineFallback, fallbackFiles: 2 },
     })],
     ["inconsistent parse-health totals", JSON.stringify({
       ...base,

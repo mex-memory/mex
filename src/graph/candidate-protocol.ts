@@ -10,6 +10,7 @@ const identity = z.object({ realPath: text, dev: z.string().regex(/^\d+$/u), ino
 export const graphCandidateRequest = z.object({
   version: z.literal(1),
   operation: z.enum(["refresh", "rebuild"]),
+  engineFallbackReason: z.string().min(1).max(200).optional(),
   projectRoot: text,
   candidatePath: text,
   workspace: text,
@@ -40,16 +41,6 @@ const buildResult = z.object({
     observedBytes: count.optional(),
     message: text,
   }).strict()).max(20_000).optional(),
-  declinedInputs: z.array(z.object({
-    filePath: text,
-    reason: z.literal("outside-project-corpus"),
-    message: text,
-  }).strict()).max(20_000).optional(),
-  typescript: z.object({
-    compiler: z.string().max(400),
-    projects: z.record(z.string().max(4_096), z.string().max(200)),
-    notes: z.array(z.object({ project: z.string().max(4_096), note: z.string().max(2_000) }).strict()).max(20_000),
-  }).strict().optional(),
   // Language ids, counts and a reason built from codes; no path or raw engine message.
   engine: z.object({
     languages: z.array(z.string().max(40)).max(32),
@@ -71,12 +62,10 @@ const buildResult = z.object({
   }).strict().optional(),
 }).strict() satisfies z.ZodType<BuildResult>;
 
-/** CPU time and peak memory of the candidate process and its compiler servers, for the usage log. */
+/** CPU time and peak memory of the candidate process for the usage log. */
 const candidateUsage = z.object({
   cpuMs: count,
   peakRssMb: count,
-  serverCpuMs: count.optional(),
-  serverPeakRssMb: count.optional(),
 }).strict();
 export type GraphCandidateUsage = z.infer<typeof candidateUsage>;
 

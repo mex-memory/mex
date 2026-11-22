@@ -23,7 +23,7 @@ const NODE_HEAP_FAILURE = /^FATAL ERROR: (?:Reached heap limit|Ineffective mark-
 
 /**
  * Keep explicit user heap flags; otherwise allow a share of machine memory, leaving room for
- * native/compiler work. The heap is a ceiling: free memory at spawn does not cap it, because a
+ * native work. The heap is a ceiling: free memory at spawn does not cap it, because a
  * large repository that needs more than is free would otherwise fail outright instead of paging.
  */
 export function graphWorkerHeap(input: {
@@ -91,9 +91,10 @@ export interface GraphCandidateProcessOptions {
   projectRoot: string;
   candidatePath: string;
   operation: "refresh" | "rebuild";
+  engineFallbackReason?: string;
   signal?: AbortSignal;
   onProgress?: (progress: GraphCandidateProgress) => void;
-  /** CPU time and peak memory of the candidate and its compiler servers. */
+  /** CPU time and peak memory of the candidate process. */
   onUsage?: (usage: GraphCandidateUsage) => void;
   /** Deterministic subprocess fault seams; never exposed by the GraphPort. */
   __internal?: {
@@ -137,6 +138,7 @@ export async function runGraphCandidateProcess(options: GraphCandidateProcessOpt
     const request: GraphCandidateRequest = {
       version: 1,
       operation: options.operation,
+      ...(options.engineFallbackReason ? { engineFallbackReason: options.engineFallbackReason } : {}),
       projectRoot: options.projectRoot,
       candidatePath: options.candidatePath,
       workspace,
@@ -162,12 +164,11 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
       nodeOptions: process.env.NODE_OPTIONS, execArgv: process.execArgv });
     let child: ChildProcess;
     try {
-      // --expose-gc lets extraction collect each released compiler program.
-      child = spawn(process.execPath, [...heap.args, "--expose-gc", options.__internal?.entrypoint ?? candidateEntrypoint()], {
+      child = spawn(process.execPath, [...heap.args, options.__internal?.entrypoint ?? candidateEntrypoint()], {
         cwd: options.projectRoot,
         env: { ...process.env, ...phaseTimingsWorkerEnv(), MEX_TELEMETRY: "0", DO_NOT_TRACK: "1" },
         // FD 4 is a lifeline. A watchdog in the child observes EOF even while
-        // its main thread is inside synchronous TypeScript or SQLite work.
+        // its main thread is inside synchronous extraction or SQLite work.
         // Overlapped enables asynchronous reads on the inherited Windows
         // lifeline handle; it is identical to `pipe` on Unix.
         stdio: ["ignore", "ignore", "pipe", "ipc", "overlapped"],

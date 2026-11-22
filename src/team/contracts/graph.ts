@@ -1,3 +1,4 @@
+import type { GraphEngineFallback, GraphEngineReport } from "../../graph/engine.js";
 import type {
   CodeRef,
   Diagnostic,
@@ -65,6 +66,8 @@ export interface GraphStatus {
   schemaVersion: number | null;
   extractorVersion: string | null;
   grammarVersion: string | null;
+  /** Published coverage for files built after a Rust engine fallback. */
+  engineFallback?: GraphEngineFallback;
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];
@@ -106,29 +109,8 @@ export interface GraphRefreshResult extends IndexJobResult {
   edgesCreated: number;
   /** Optional and additive; absent when every discovered file was indexed. */
   skipped?: readonly GraphSkippedSource[];
-  /** Compiler config inputs outside the project corpus that were declined. */
-  declinedInputs?: readonly GraphDeclinedInput[];
-  /**
-   * Which compiler built the TypeScript graph, and why any project was built
-   * by another or had its tsconfig translated. Optional and additive.
-   */
-  typescript?: {
-    compiler: string;
-    projects: Readonly<Record<string, string>>;
-    notes: ReadonlyArray<{ project: string; note: string }>;
-  };
-  /**
-   * What the Rust graph engine built, while `MEX_GRAPH_ENGINE_LANGUAGES`
-   * hands it languages. Optional and additive.
-   */
-  engine?: {
-    languages: readonly string[];
-    files: number;
-    fallbackFiles: number;
-    fellBack?: string;
-    wallMs?: number;
-    peakRssMb?: number;
-  };
+  /** What the Rust graph engine built or why staging fell back. */
+  engine?: GraphEngineReport;
   /** How a refresh did its work. Optional and additive; absent from a rebuild. */
   refresh?: GraphRefreshWork;
 }
@@ -147,18 +129,6 @@ export interface GraphRefreshWork {
   publicationFallbackReason?: string;
   /** Files whose derived rows were written. */
   filesRewritten: number;
-}
-
-/**
- * A compiler config input the containment policy declined to read.
- *
- * No source file is missing from the graph, but the affected project's type
- * resolution is less complete than it looks, so it is reported.
- */
-export interface GraphDeclinedInput {
-  filePath: string;
-  reason: "outside-project-corpus";
-  message: string;
 }
 
 export interface GraphPage<T> extends Page<T> {

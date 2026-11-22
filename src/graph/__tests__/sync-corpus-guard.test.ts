@@ -13,12 +13,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openSqlite } from "../db/sqlite.js";
 import { createGraphEngine } from "../engine-impl.js";
-import {
-  GRAPH_SNAPSHOT_METADATA_KEY,
-  parseGraphSnapshot,
-  type GraphSnapshotSemanticInput,
-} from "../snapshot.js";
-
 const roots: string[] = [];
 
 afterEach(() => {
@@ -33,19 +27,6 @@ function temporaryRoot(): string {
 
 function sha256(source: string): string {
   return createHash("sha256").update(source).digest("hex");
-}
-
-function semanticInputs(root: string): GraphSnapshotSemanticInput[] {
-  const db = openSqlite(currentGraphPath(root));
-  try {
-    const row = db.prepare("SELECT value FROM project_metadata WHERE key = ?")
-      .get(GRAPH_SNAPSHOT_METADATA_KEY) as { value?: unknown } | undefined;
-    const snapshot = parseGraphSnapshot(typeof row?.value === "string" ? row.value : null);
-    if (!snapshot) throw new Error("Expected a valid graph snapshot.");
-    return snapshot.semanticInputs;
-  } finally {
-    db.close();
-  }
 }
 
 describe("GraphEngine empty sync corpus guard", () => {
@@ -95,47 +76,4 @@ describe("GraphEngine empty sync corpus guard", () => {
       engine.close();
     }
   }, 20_000);
-
-  it("rebuilds when persisted positive or negative semantic inputs change", async () => {
-    const root = temporaryRoot();
-    const basePath = join(root, "config", "base.json");
-    const optionalPath = join(root, "config", "optional.json");
-    const initialBase = JSON.stringify({ compilerOptions: { strict: true } });
-    const changedBase = JSON.stringify({ compilerOptions: { strict: false } });
-    const optional = JSON.stringify({ compilerOptions: { composite: true }, files: [] });
-    mkdirSync(join(root, "src"), { recursive: true });
-    mkdirSync(join(root, "config"), { recursive: true });
-    writeFileSync(join(root, "src", "entry.ts"), "export const semanticGuardFact: number = 1;\n");
-    writeFileSync(basePath, initialBase);
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./config/base.json",
-      references: [{ path: "./config/optional.json" }],
-      include: ["src/**/*.ts"],
-    }));
-
-    const engine = createGraphEngine({ rootDir: root });
-    try {
-      await engine.build();
-      expect(semanticInputs(root)).toEqual(expect.arrayContaining([
-        { path: "config/base.json", contentHash: sha256(initialBase) },
-        { path: "config/optional.json", contentHash: null },
-      ]));
-
-      writeFileSync(basePath, changedBase);
-      expect(await engine.sync([])).toMatchObject({ filesIndexed: 1 });
-      expect(semanticInputs(root)).toContainEqual({
-        path: "config/base.json",
-        contentHash: sha256(changedBase),
-      });
-
-      writeFileSync(optionalPath, optional);
-      expect(await engine.sync([])).toMatchObject({ filesIndexed: 1 });
-      expect(semanticInputs(root)).toContainEqual({
-        path: "config/optional.json",
-        contentHash: sha256(optional),
-      });
-    } finally {
-      engine.close();
-    }
-  });
 });

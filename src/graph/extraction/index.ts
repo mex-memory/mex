@@ -23,28 +23,6 @@ export {
 } from "./grammars.js";
 export { getExtractor, EXTRACTORS } from "./languages/index.js";
 export { canonicalNodeIdentity, generateNodeId } from "./node-id.js";
-export type {
-  CompilerDiagnosticSummary,
-  CompilerExtractedNode,
-  CompilerExtractionOptions,
-  CompilerFileCapture,
-  CompilerIncrementalInput,
-  CompilerProjectInputs,
-  CompilerExtractionResult,
-  CompilerFileExtraction,
-  CompilerImportBinding,
-  CompilerNodeKind,
-  CompilerParseStatus,
-  CompilerReference,
-  CompilerReferenceKind,
-  CompilerResolutionStatus,
-  CompilerSemanticInput,
-  CompilerSourceHealth,
-  CompilerSourceLanguage,
-  CompilerStagedInput,
-  DiscoveredTypeScriptProject,
-} from "./compiler.js";
-
 /** What one file's extraction yields, before the engine resolves/persists it. */
 export interface FileExtraction {
   language: Language;

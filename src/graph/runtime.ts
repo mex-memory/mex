@@ -19,7 +19,7 @@ import {
 import { codeHash, codeHashOfBody, formatCommittedCodeHash, prepareCodeHashing } from "./code-hash.js";
 import type { GraphEngine } from "./engine.js";
 import { detectLanguage, loadGrammars } from "./extraction/grammars.js";
-import type { CompilerSourceLanguage } from "./extraction/compiler.js";
+import { isEcmaScriptLanguage } from "./engine-languages.js";
 import type { GraphNode, Language } from "./types.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
@@ -620,23 +620,6 @@ function onlyGroundableDegradation(inspection: InternalGraphStatusInspection): I
 }
 
 /**
- * Compiler-extracted languages. Their spans and identities come from a whole
- * TypeScript program, so one edited file cannot be re-derived exactly without
- * a refresh. The `Record` makes a new compiler language a compile error here
- * rather than a silent tree-sitter approximation of a compiler span.
- */
-const COMPILER_SOURCE_LANGUAGES: Readonly<Record<CompilerSourceLanguage, true>> = {
-  typescript: true,
-  tsx: true,
-  javascript: true,
-  jsx: true,
-};
-
-function isCompilerSourceLanguage(language: Language): boolean {
-  return Object.hasOwn(COMPILER_SOURCE_LANGUAGES, language);
-}
-
-/**
  * Resolve grounded nodes against a snapshot that is stale only by changed
  * source (#228). `driftedSources` is the exhaustive added/modified/deleted
  * list the status inspection bound this session to.
@@ -647,7 +630,7 @@ function isCompilerSourceLanguage(language: Language): boolean {
  *   refresh uses (`extractFile`) over the current, contained read of that
  *   file, find the node by its Tier-1 id (path, kind, qualified name), and
  *   hash its line span with the graph's own body normalization.
- * - Everything else — a deleted file, an edited compiler-language file, a
+ * - Everything else — a deleted file, an edited TypeScript or JavaScript file, a
  *   node the extractor no longer emits under that id, a file that cannot be
  *   read within the corpus limits — is unverified. None of it is reported
  *   gone or moved: those need the whole refreshed corpus.
@@ -668,8 +651,8 @@ async function prepareSourceDriftGrounding(
   const gapRemedy = "fix or exclude them, then run `mex graph`";
   const modified = new Set(modifiedSources.filter((path) => drifted.has(path)));
   const treeLanguages = [...new Set([...modified].map((path) => detectLanguage(path)))]
-    .filter((language) => !isCompilerSourceLanguage(language));
-  // Fresh checks use stored spans. Only edited non-compiler files need extraction.
+    .filter((language) => !isEcmaScriptLanguage(language));
+  // Fresh checks use stored spans. Node's extractors cannot reproduce the engine's ECMAScript spans.
   const extractFile = treeLanguages.length > 0
     ? (await import("./extraction/index.js")).extractFile
     : undefined;
@@ -716,8 +699,8 @@ async function prepareSourceDriftGrounding(
         return { kind: "current", bodyHash: node.bodyHash, codeHash: () => currentNodeCodeHash(projectRoot, node) };
       }
       if (!modified.has(node.filePath)) return unverified(`${node.filePath} was deleted`);
-      if (isCompilerSourceLanguage(node.language) || isCompilerSourceLanguage(detectLanguage(node.filePath))) {
-        return unverified(`${node.filePath} changed; its compiler-derived span needs a refresh`);
+      if (isEcmaScriptLanguage(node.language) || isEcmaScriptLanguage(detectLanguage(node.filePath))) {
+        return unverified(`${node.filePath} changed; refresh the graph to verify its span`);
       }
       const current = rederive(node.filePath)?.get(nodeId);
       if (!current || current.kind !== node.kind) {

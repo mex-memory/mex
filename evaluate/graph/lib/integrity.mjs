@@ -14,8 +14,6 @@ const { DatabaseSync } = require("node:sqlite");
 
 const GRAPH_SNAPSHOT_METADATA_KEY = "graph_snapshot_v1";
 const GRAPH_SNAPSHOT_VERSION = 1;
-const GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS = 1_024;
-const GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUT_PATH_LENGTH = 4_096;
 const GRAPH_SNAPSHOT_KEYS = [
   "version",
   "indexedAt",
@@ -23,7 +21,6 @@ const GRAPH_SNAPSHOT_KEYS = [
   "indexedBranch",
   "indexedHead",
   "schemaVersion",
-  "compilerVersion",
   "extractorVersion",
   "resolverVersion",
   "grammarHash",
@@ -31,10 +28,9 @@ const GRAPH_SNAPSHOT_KEYS = [
   "manifestHash",
   "sourceCorpusDigest",
   "sourceCount",
-  "semanticInputs",
   "parseHealth",
 ];
-const GRAPH_SNAPSHOT_SEMANTIC_INPUT_KEYS = ["path", "contentHash"];
+const ENGINE_FALLBACK_KEYS = ["languages", "files", "fallbackFiles"];
 const GRAPH_SNAPSHOT_PARSE_HEALTH_KEYS = ["total", "ok", "partial", "failed"];
 
 const NORMALIZED_TABLES = [
@@ -212,7 +208,8 @@ function normalizeProjectMetadataRow(row) {
  * evaluation instead of being silently omitted from the determinism hash.
  */
 function semanticGraphSnapshot(snapshot) {
-  assertExactKeys(snapshot, GRAPH_SNAPSHOT_KEYS, "snapshot");
+  const fallback = snapshot?.engineFallback;
+  assertExactKeys(snapshot, fallback === undefined ? GRAPH_SNAPSHOT_KEYS : [...GRAPH_SNAPSHOT_KEYS, "engineFallback"], "snapshot");
   if (snapshot.version !== GRAPH_SNAPSHOT_VERSION) {
     invalidGraphSnapshot(`unsupported version (expected ${GRAPH_SNAPSHOT_VERSION})`);
   }
@@ -226,10 +223,9 @@ function semanticGraphSnapshot(snapshot) {
     || !isNonNegativeInteger(snapshot.sourceCount)) {
     invalidGraphSnapshot("schemaVersion and sourceCount must be non-negative integers");
   }
-  if (!isNonEmptyString(snapshot.compilerVersion)
-    || !isNonEmptyString(snapshot.extractorVersion)
+  if (!isNonEmptyString(snapshot.extractorVersion)
     || !isNonEmptyString(snapshot.resolverVersion)) {
-    invalidGraphSnapshot("compiler, extractor, and resolver versions must be non-empty strings");
+    invalidGraphSnapshot("extractor and resolver versions must be non-empty strings");
   }
   if (!isDigest(snapshot.grammarHash)
     || !isDigest(snapshot.configHash)
@@ -237,23 +233,17 @@ function semanticGraphSnapshot(snapshot) {
     || !isDigest(snapshot.sourceCorpusDigest)) {
     invalidGraphSnapshot("semantic hashes must be lowercase SHA-256 digests");
   }
-  if (!Array.isArray(snapshot.semanticInputs)
-    || snapshot.semanticInputs.length > GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS) {
-    invalidGraphSnapshot("semanticInputs must be a bounded array");
+  if (fallback !== undefined) {
+    assertExactKeys(fallback, fallback?.fellBack === undefined ? ENGINE_FALLBACK_KEYS : [...ENGINE_FALLBACK_KEYS, "fellBack"], "engineFallback");
+    if (!Array.isArray(fallback.languages) || fallback.languages.length === 0 || fallback.languages.length > 5
+      || fallback.languages.some(language => !["javascript", "typescript", "python", "rust", "csharp"].includes(language))
+      || new Set(fallback.languages).size !== fallback.languages.length
+      || !isNonNegativeInteger(fallback.files) || !isNonNegativeInteger(fallback.fallbackFiles)
+      || fallback.fallbackFiles === 0 || fallback.files + fallback.fallbackFiles > snapshot.sourceCount
+      || (fallback.fellBack !== undefined && (!isNonEmptyString(fallback.fellBack) || fallback.fellBack.length > 200))) {
+      invalidGraphSnapshot("engine fallback coverage or reason is invalid");
+    }
   }
-
-  let previousPath;
-  const semanticInputs = snapshot.semanticInputs.map((input) => {
-    assertExactKeys(input, GRAPH_SNAPSHOT_SEMANTIC_INPUT_KEYS, "semantic input");
-    if (!isSafeRelativePath(input.path) || !isNullableDigest(input.contentHash)) {
-      invalidGraphSnapshot("semantic inputs must contain a safe path and nullable SHA-256 digest");
-    }
-    if (previousPath !== undefined && compareText(previousPath, input.path) >= 0) {
-      invalidGraphSnapshot("semantic input paths must be unique and strictly code-point sorted");
-    }
-    previousPath = input.path;
-    return { path: input.path, contentHash: input.contentHash };
-  });
 
   assertExactKeys(snapshot.parseHealth, GRAPH_SNAPSHOT_PARSE_HEALTH_KEYS, "parseHealth");
   const { total, ok, partial, failed } = snapshot.parseHealth;
@@ -269,7 +259,6 @@ function semanticGraphSnapshot(snapshot) {
   return {
     version: snapshot.version,
     schemaVersion: snapshot.schemaVersion,
-    compilerVersion: snapshot.compilerVersion,
     extractorVersion: snapshot.extractorVersion,
     resolverVersion: snapshot.resolverVersion,
     grammarHash: snapshot.grammarHash,
@@ -277,7 +266,7 @@ function semanticGraphSnapshot(snapshot) {
     manifestHash: snapshot.manifestHash,
     sourceCorpusDigest: snapshot.sourceCorpusDigest,
     sourceCount: snapshot.sourceCount,
-    semanticInputs,
+    ...(fallback ? { engineFallback: fallback } : {}),
     parseHealth: { total, ok, partial, failed },
   };
 }
@@ -320,21 +309,6 @@ function isNonNegativeInteger(value) {
 
 function isDigest(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-}
-
-function isNullableDigest(value) {
-  return value === null || isDigest(value);
-}
-
-function isSafeRelativePath(value) {
-  if (typeof value !== "string"
-    || value.length === 0
-    || value.length > GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUT_PATH_LENGTH
-    || value.includes("\\")
-    || value.includes("\0")
-    || value.startsWith("/")
-    || /^[A-Za-z]:\//.test(value)) return false;
-  return value.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
 }
 
 function compareText(left, right) {

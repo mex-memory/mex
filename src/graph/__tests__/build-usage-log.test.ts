@@ -9,7 +9,7 @@ import { rebuildGraph, refreshGraph } from "../maintenance.js";
 import { graphLocation } from "../storage.js";
 
 // The usage log (record migration 6): every build and refresh records its
-// wall time, CPU time and peak memory, Node plus the compiler server.
+// wall time, CPU time and peak memory.
 
 /** Temporary folders this file made, removed after its tests; an open handle on Windows only leaves one behind. */
 const temporaries: string[] = [];
@@ -41,7 +41,7 @@ function rows(root: string): BuildUsageRow[] {
 }
 
 describe("graph usage log", () => {
-  it("records a build and a refresh run in the candidate process, with the compiler server's share", async () => {
+  it("records a build and a refresh run in the candidate process", async () => {
     const root = fixture();
     await rebuildGraph(root, { candidateExecution: "process" });
     writeFileSync(join(root, "a.ts"), "export function a(): number {\n  return 2;\n}\n");
@@ -53,9 +53,6 @@ describe("graph usage log", () => {
       expect(row.cpu_ms).toBeGreaterThan(0);
       expect(row.peak_rss_mb).toBeGreaterThan(20);
     }
-    // The candidate process reports the compiler server it ran.
-    expect(logged[0]!.server_rss_mb ?? 0).toBeGreaterThan(0);
-    expect(logged[0]!.peak_rss_mb).toBeGreaterThan(logged[0]!.server_rss_mb!);
     expect(logged[1]!.files).toBe(1);
     const location = graphLocation(root);
     const reader = openRecordReadOnly()!;

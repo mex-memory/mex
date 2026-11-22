@@ -42,30 +42,23 @@ export interface SkippedSourceFile {
   message: string;
 }
 
-/** Summary of a build/sync pass — for the `mex graph` CLI. */
-export interface GraphTypeScriptReport {
-  /** The compiler chosen for the repository, for example `tsrs 0.25.0`. */
-  compiler: string;
-  /** Projects by the compiler that built them. */
-  projects: Record<string, string>;
-  /** Per project, in plain words: a fallback and its reason, or a translated tsconfig. */
-  notes: Array<{ project: string; note: string }>;
-}
-
 /** What the Rust graph engine (OSS-73) built in one pass. */
 export interface GraphEngineReport {
   /** The languages it was asked to build. */
   languages: string[];
   /** Files whose rows came from the engine. */
   files: number;
-  /** Files today's extractors built instead, because the engine did not return the discovered bytes. */
+  /** Files built by Node's tree-sitter extractors after an engine fallback. */
   fallbackFiles: number;
-  /** Why today's extractors built every file instead, when they did. */
+  /** Why the engine could not build any of the requested files. */
   fellBack?: string;
   /** The engine job's elapsed time and peak sampled memory. */
   wallMs?: number;
   peakRssMb?: number;
 }
+
+/** Published fallback coverage, independent of the job's runtime measurements. */
+export type GraphEngineFallback = Omit<GraphEngineReport, "wallMs" | "peakRssMb">;
 
 export interface BuildResult {
   filesIndexed: number;
@@ -83,23 +76,7 @@ export interface BuildResult {
    * how well they parsed, and a skipped file is in none of those buckets.
    */
   skipped?: SkippedSourceFile[];
-  /**
-   * Compiler config inputs outside the project corpus that were declined.
-   *
-   * Distinct from `skipped`: no source file is missing from the graph, but the
-   * affected project's type resolution is less complete than it looks.
-   */
-  declinedInputs?: DeclinedCompilerInput[];
-  /**
-   * Which compiler built the TypeScript/JavaScript graph, and every project
-   * that was built differently or whose tsconfig was translated, with why.
-   * Absent when the corpus has no TypeScript or JavaScript.
-   */
-  typescript?: GraphTypeScriptReport;
-  /**
-   * What the Rust graph engine built, while `MEX_GRAPH_ENGINE_LANGUAGES`
-   * hands it languages. Absent otherwise.
-   */
+  /** What the Rust graph engine built or why staging fell back. */
   engine?: GraphEngineReport;
   /** How a refresh did its work (issue #209). Absent from a clean build. */
   refresh?: GraphRefreshReport;
@@ -122,13 +99,6 @@ export interface GraphRefreshReport extends GraphPublicationReport {
   /** Indexed files added, modified or deleted since the stored graph. */
   filesChanged: number;
   filesReextracted: number;
-}
-
-/** A compiler input the containment policy declined to read. */
-export interface DeclinedCompilerInput {
-  filePath: string;
-  reason: "outside-project-corpus";
-  message: string;
 }
 
 /** Options for {@link GraphEngine.searchNodes}. */

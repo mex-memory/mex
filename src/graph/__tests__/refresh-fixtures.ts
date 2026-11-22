@@ -93,7 +93,7 @@ export const TS_FIXTURE: Fixture = {
     "src/stream.ts": "export class StreamApi {\n  pipe(): number {\n    return 1;\n  }\n\n  onAbort(listener: () => void): void {\n    listener();\n  }\n\n  abort(): void {\n    this.onAbort(() => undefined);\n  }\n}\n",
     "src/stream-user.ts": "import { StreamApi } from \"./stream\";\n\nexport function openStream(): StreamApi {\n  const stream = new StreamApi();\n  stream.onAbort(() => undefined);\n  return stream;\n}\n",
     "src/stream-consumer.ts": "import { openStream } from \"./stream-user\";\n\nexport function closeStream(): void {\n  openStream().abort();\n}\n",
-    // Outside every tsconfig project: the compiler extracts it in its inferred program.
+    // Outside every tsconfig project: it is still in the source corpus.
     "docs/widget.js": "function setupWidget() {\n  return document.title;\n}\nsetupWidget();\n",
   },
   edits: [
@@ -129,8 +129,8 @@ export const TS_FIXTURE: Fixture = {
     ) },
     // A script's declarations are visible to the inferred program's other files.
     { name: "add a script outside every project", apply: write("docs/kapa.js", "function initKapa() {\n  return setupWidget();\n}\ninitKapa();\n") },
-    { name: "change the ambient declaration", apply: replace("src/globals.d.ts", "version: string", "version: string;\n    build: number"), expectMode: "full" },
-    // Neither field decides what the compiler resolves, so both are no-ops.
+    { name: "change the ambient declaration", apply: replace("src/globals.d.ts", "version: string", "version: string;\n    build: number"), expectMode: "incremental" },
+    // Neither field decides module resolution, so both are no-ops.
     { name: "change an insignificant tsconfig option", apply: replace("tsconfig.json", "\"strict\": true", "\"strict\": false") },
     { name: "rename the package", apply: replace("package.json", "\"fixture-ts\"", "\"fixture-ts-renamed\"") },
     { name: "change tsconfig", apply: replace("tsconfig.json", "\"target\": \"ES2022\"", "\"target\": \"ES2020\""), expectMode: "full" },

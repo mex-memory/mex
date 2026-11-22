@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildTypeScriptExtraction } from "../extraction/compiler.js";
+import { graphEngineBinary } from "../native-engine.js";
 import { createGraphEngine } from "../engine-impl.js";
 
 const roots: string[] = [];
@@ -26,7 +26,7 @@ function write(root: string, path: string, source: string): void {
   writeFileSync(absolute, source, "utf8");
 }
 
-describe("compiler input containment declines rather than aborting", () => {
+describe.skipIf(!graphEngineBinary())("ECMAScript engine input containment", () => {
   it("finishes a build whose tsconfig extends a package hoisted above the root", async () => {
     const { workspace, root } = nestedProject();
     // The hoisted layout every pnpm/yarn workspace produces: the package the
@@ -47,22 +47,14 @@ describe("compiler input containment declines rather than aborting", () => {
       const result = await engine.build();
 
       expect(result.filesIndexed).toBe(1);
-      // The config was declined, not read — and reported by dependency
-      // specifier rather than by absolute path.
-      expect(result.declinedInputs).toContainEqual(expect.objectContaining({
-        filePath: "node_modules/shared-config/tsconfig.json",
-        reason: "outside-project-corpus",
-      }));
-      for (const input of result.declinedInputs ?? []) {
-        expect(input.filePath.startsWith("node_modules/")).toBe(true);
-      }
+      expect(result.engine).toMatchObject({ files: 1, fallbackFiles: 0 });
       expect(engine.searchNodes("containedPrimary").length).toBeGreaterThan(0);
     } finally {
       engine.close();
     }
   }, 60_000);
 
-  it("declines an include and a project reference above the root without throwing", () => {
+  it("excludes a source and a project reference above the root", async () => {
     const { workspace, root } = nestedProject();
     write(workspace, "sibling/tsconfig.json", JSON.stringify({ compilerOptions: {} }));
     write(workspace, "sibling/src/other.ts", "export const other = 1;\n");
@@ -73,30 +65,14 @@ describe("compiler input containment declines rather than aborting", () => {
     }));
     write(root, "src/service.ts", "export function referencedPrimary(): number { return 1; }\n");
 
-    const result = buildTypeScriptExtraction(root, ["src/service.ts"], {
-      stagedInputs: [
-        { filePath: "tsconfig.json", source: JSON.stringify({
-          compilerOptions: { composite: true },
-          include: ["src/**/*", "../sibling/src/**/*"],
-          references: [{ path: "../sibling" }],
-        }) },
-        { filePath: "src/service.ts",
-          source: "export function referencedPrimary(): number { return 1; }\n" },
-      ],
-    });
-
-    expect(result.files.map((file) => file.filePath)).toEqual(["src/service.ts"]);
-    // The referenced project above the root is declined by path rather than
-    // traversed. (The `..` include is not declined here: TypeScript invokes
-    // readDirectory with the config's own directory and applies the include
-    // patterns inside its matcher, so that guard is reached only when a config
-    // names an out-of-root directory as the matcher root.)
-    expect(result.declinedInputs.map((input) => input.filePath))
-      .toEqual(["../sibling/tsconfig.json"]);
-    expect(result.declinedInputs[0]?.reason).toBe("outside-project-corpus");
-    // Nothing outside the root reached the graph's provenance.
-    for (const input of result.semanticInputs) {
-      expect(input.filePath.startsWith("..")).toBe(false);
-    }
+    const engine = createGraphEngine({ rootDir: root });
+    try {
+      const result = await engine.build();
+      expect(result.engine).toMatchObject({ files: 1, fallbackFiles: 0 });
+      expect(engine.searchNodes("referencedPrimary")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "referencedPrimary" }),
+      ]));
+      expect(engine.searchNodes("other")).toEqual([]);
+    } finally { engine.close(); }
   });
 });

@@ -568,7 +568,7 @@ describe("graph construction integration", () => {
     db.close();
   });
 
-  it("labels retrieval, and still re-stages, when compiler configuration changes without a source edit", async () => {
+  it("labels retrieval, and still re-stages, when module configuration changes without a source edit", async () => {
     const root = temporaryRoot("mex-graph-manifest-");
     mkdirSync(join(root, "src"), { recursive: true });
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "manifest-fixture", type: "module" }));
@@ -587,8 +587,8 @@ describe("graph construction integration", () => {
     const manifestBefore = before.getMetadata("manifest_hash");
     const configBefore = before.getMetadata("config_hash");
     expect(before.getMetadata("grammar_hash")).toMatch(/^[a-f0-9]{64}$/);
-    expect(before.getMetadata("compiler_version")).toMatch(/^(tsrs|tsgo)-/u);
-    expect(before.getMetadata("extractor_version")).toContain("typescript-api");
+    expect(before.getMetadata("resolver_version")).toBe("engine-first-v4");
+    expect(before.getMetadata("extractor_version")).toContain("tree-sitter-v4+engine-");
     beforeDb.close();
 
     expect(await engine.sync([])).toMatchObject({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0 });

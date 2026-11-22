@@ -1,6 +1,5 @@
 import { discoverGraphReadPaths } from "./read-discovery.js";
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { isSameResolvedPath, toPosix } from "../paths.js";
@@ -10,22 +9,16 @@ import {
 } from "./corpus-policy.js";
 import { graphConfigIdentity } from "./config-identity.js";
 import { DB_SCHEMA_VERSION } from "./db/database.js";
-import { engineExtractorSuffix, graphEngineHandlesEcmaScript, graphEngineLanguages } from "./engine-languages.js";
+import { engineExtractorSuffix, graphEngineLanguages, TREE_SITTER_EXTRACTOR_VERSION } from "./engine-languages.js";
 import { grammarManifestHash } from "./extraction/grammars.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
 import { recallSource, rememberSource } from "./source-memo.js";
 
-// Package metadata does not initialize the compiler on a graph read.
-const TYPESCRIPT_COMPILER_VERSION: string = createRequire(import.meta.url)("typescript/package.json").version;
-// Pinned against extraction by the read-manifest compatibility test.
-export const CORPUS_EXTRACTOR_VERSION = "typescript-api-v8+tree-sitter-v4";
-export const RESOLVER_VERSION = "compiler-first-v3";
+// A new manifest preimage prevents compiler-built graphs from being adopted.
+export const CORPUS_EXTRACTOR_VERSION = TREE_SITTER_EXTRACTOR_VERSION;
+export const RESOLVER_VERSION = "engine-first-v4";
 
-/**
- * The extractor version a build in this environment records: the corpus
- * version, plus the engine's languages while `MEX_GRAPH_ENGINE_LANGUAGES`
- * hands any to the Rust engine, so turning it on or off rebuilds once.
- */
+/** Corpus identity includes the default engine languages and any opt-ins. */
 export function corpusExtractorVersion(env: NodeJS.ProcessEnv = process.env): string {
   return CORPUS_EXTRACTOR_VERSION + engineExtractorSuffix(graphEngineLanguages(env));
 }
@@ -49,7 +42,6 @@ export interface GraphManifest {
 /** One fixed key order; the serialized form is the manifest hash preimage. */
 export interface GraphManifestInputs {
   db: number;
-  compiler: string;
   extractor: string;
   resolver: string;
   corpusPolicyHash: string;
@@ -66,7 +58,6 @@ export function graphManifestFromSources(root: string, configSources: ReadonlyMa
   const grammarHash = grammarManifestHash();
   const inputs: GraphManifestInputs = {
     db: schemaVersion,
-    compiler: TYPESCRIPT_COMPILER_VERSION,
     extractor: corpusExtractorVersion(),
     resolver: RESOLVER_VERSION,
     corpusPolicyHash: graphCorpusPolicyHash(root),
@@ -99,7 +90,6 @@ export function graphManifestForSchema(manifest: GraphManifest, schemaVersion: n
 export function graphManifestHash(inputs: GraphManifestInputs): string {
   return sha256(JSON.stringify({
     db: inputs.db,
-    compiler: inputs.compiler,
     extractor: inputs.extractor,
     resolver: inputs.resolver,
     corpusPolicyHash: inputs.corpusPolicyHash,
@@ -142,7 +132,7 @@ export function discoverGraphConfigSources(root: string): Map<string, string> {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
       ignore: graphCorpusIgnoreGlobs(root),
-    }, GRAPH_CORPUS_LIMITS.maxConfigFiles, graphEngineHandlesEcmaScript(graphEngineLanguages())).map(toPosix);
+    }, GRAPH_CORPUS_LIMITS.maxConfigFiles, true).map(toPosix);
   } catch (error) {
     throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]);
   }
@@ -175,13 +165,12 @@ export function discoverGraphConfigSources(root: string): Map<string, string> {
  * Hashing raw content made a dependency bump, an npm script or a reindent
  * indistinguishable from a change to module resolution, and every one of them
  * invalidated the index. `graphConfigIdentity` projects each file down to the
- * fields that decide what the compiler resolves, and falls back to exact bytes
+ * fields that affect module resolution, and falls back to exact bytes
  * for anything it cannot parse or recognize.
  */
 export function configHashForSources(configSources: ReadonlyMap<string, string>): string {
-  const engineEcmaScript = graphEngineHandlesEcmaScript(graphEngineLanguages());
   return sha256(JSON.stringify([...configSources.entries()]
-    .map(([path, source]) => [path, sha256(graphConfigIdentity(path, source, engineEcmaScript))])
+    .map(([path, source]) => [path, sha256(graphConfigIdentity(path, source))])
     .sort(([left], [right]) => compareCodePoints(left!, right!))));
 }
 

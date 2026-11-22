@@ -19,6 +19,7 @@ import type { GraphEdge, GraphNode, Language } from "./types.js";
 
 /** The contract version this module speaks; the engine must report the same. */
 export const GRAPH_ENGINE_CONTRACT = 3;
+export const GRAPH_ENGINE_IDENTITY = `mex-graph-contract-${GRAPH_ENGINE_CONTRACT}`;
 /** Points at a specific engine binary, for development and tests. */
 export const GRAPH_ENGINE_ENV = "MEX_GRAPH_ENGINE";
 export { GRAPH_ENGINE_LANGUAGES_ENV, graphEngineLanguages } from "./engine-languages.js";
@@ -27,6 +28,7 @@ export interface GraphEngineBuildMetadata {
   indexedAt: number;
   indexedBranch: string | null;
   indexedHead: string | null;
+  /** The engine identifier in the v5 contract's required legacy slot. */
   compilerVersion: string;
   extractorVersion: string;
   resolverVersion: string;
@@ -138,6 +140,7 @@ export function graphEngineVersion(binary: string): { version: string; contract:
   if (run.status !== 0) return { problem: `mex-graph version exited ${run.status ?? run.signal}` };
   try {
     const parsed = JSON.parse(run.stdout) as { version: string; contract: number };
+    if (!Number.isSafeInteger(parsed?.contract)) return { problem: "mex-graph version did not identify a contract" };
     if (parsed.contract !== GRAPH_ENGINE_CONTRACT) {
       return { problem: `the engine speaks contract ${parsed.contract}, MEX needs ${GRAPH_ENGINE_CONTRACT}` };
     }
@@ -145,6 +148,15 @@ export function graphEngineVersion(binary: string): { version: string; contract:
   } catch {
     return { problem: "mex-graph version printed something that isn't JSON" };
   }
+}
+
+/** Keep raw engine output and local paths out of the published report. */
+export function graphEngineFailureReason(run: EngineRun): string {
+  const code = run.error?.code;
+  const detail = typeof code === "string" && /^graph_[a-z0-9_]{1,64}$/u.test(code)
+    ? code
+    : run.signal ?? (run.exitCode ? `exit ${run.exitCode}` : "missing or invalid result");
+  return `the engine stopped (${detail})`;
 }
 
 /** The engine gets an allowlisted environment, never the caller's whole one. */

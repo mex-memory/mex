@@ -197,7 +197,7 @@ for (let i = 1; i <= runs; i++) {
         if (summary?.type !== "result") throw new Error("engine stdout must end with a result event");
       }
     } else {
-      try { const r = JSON.parse(build.stdout); summary = { files: r.filesIndexed, nodes: r.nodesCreated, edges: r.edgesCreated, compiler: r.typescript?.compiler }; } catch {}
+      try { const r = JSON.parse(build.stdout); summary = { files: r.filesIndexed, nodes: r.nodesCreated, edges: r.edgesCreated, engineFiles: r.engine?.files, fallbackFiles: r.engine?.fallbackFiles }; } catch {}
     }
     const files = engine
       ? [engineDb, `${engineDb}-wal`, `${engineDb}-shm`].filter((f) => existsSync(f))

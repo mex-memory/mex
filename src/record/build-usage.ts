@@ -14,11 +14,11 @@ export interface BuildUsage {
   kind: BuildUsageKind;
   files: number;
   wallMs: number;
-  /** This process, the candidate process and the compiler servers together. */
+  /** The processes used to build or refresh the graph. */
   cpuMs: number;
-  /** Node plus the compiler server. */
+  /** Node plus any engine process. */
   peakRssMb: number;
-  /** The compiler server alone, when it was measured. */
+  /** The engine process alone, when measured. */
   serverRssMb?: number;
   result: BuildUsageResult;
   at?: Date;

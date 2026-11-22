@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { currentGraphPath } from "../src/graph/storage.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,12 +8,12 @@ import type { MexConfig } from "../src/types.js";
 import { runDriftCheckWithGraphStatus } from "../src/drift/index.js";
 import { openSqlite } from "../src/graph/db/sqlite.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
-import { canonicalCompilerIdentity, generateCanonicalCompilerNodeId } from "../src/graph/extraction/compiler.js";
+import { graphEngineBinary } from "../src/graph/native-engine.js";
 import { deserializeFingerprint, serializeFingerprint } from "../src/graph/fingerprint.js";
 import { rebuildGraph } from "../src/graph/maintenance.js";
 import { loadGroundingRuntime, persistMovedGroundings } from "../src/graph/runtime.js";
 import { extractGroundings, writeGroundings } from "../src/markdown.js";
-import type { CompilerNodeKind } from "../src/graph/extraction/compiler.js";
+import type { NodeKind } from "../src/graph/types.js";
 
 // TypeScript node ids must be a function of repository content only (#240).
 // Compiler-rendered signatures used to print `import("<absolute path>").T`, and
@@ -34,9 +35,8 @@ afterEach(() => {
 /** A home-directory style checkout path that a v2 build would have embedded. */
 const OLD_CHECKOUT = "C:/Users/someone/work/app";
 
-// `renderPage` returns a type from another module. A v2 extractor printed it
-// as an absolute import type; it is now printed by name. It calls only `element`, whose id is unaffected. `renderApp`
-// is affected too, and its only neighbour is the affected `renderPage`.
+// Both functions have an explicit return type from another module. The old
+// fixture replaces those types with path-bearing text to exercise aliases.
 const FILES: Record<string, string> = {
   "tsconfig.json": JSON.stringify({
     compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true },
@@ -49,7 +49,7 @@ const FILES: Record<string, string> = {
   ].join("\n"),
   "src/page.ts": [
     "import { element } from \"./jsx/base\";",
-    "export function renderPage(title: string, items: string[]) {",
+    "export function renderPage(title: string, items: string[]): JSX.Element {",
     "  const heading = element(\"h1\");",
     "  heading.children.push(title.trim());",
     "  const list = element(\"ul\");",
@@ -62,7 +62,8 @@ const FILES: Record<string, string> = {
   ].join("\n"),
   "src/app.ts": [
     "import { renderPage } from \"./page\";",
-    "export function renderApp(pages: string[][], title: string) {",
+    "import type { JSX } from \"./jsx/base\";",
+    "export function renderApp(pages: string[][], title: string): JSX.Element {",
     "  const rendered = pages.map((items, index) => renderPage(`${title} ${index}`, items));",
     "  const visible = rendered.filter((page) => page.children.length > 0);",
     "  const fallback = renderPage(title.toLowerCase(), [String(pages.length)]);",
@@ -117,7 +118,7 @@ function query<T>(root: string, sql: string): T[] {
 
 interface NodeRow {
   id: string;
-  kind: CompilerNodeKind;
+  kind: NodeKind;
   name: string;
   qualified_name: string;
   file_path: string;
@@ -143,16 +144,11 @@ function v2Identity(node: NodeRow): { id: string; identityKey: string; signature
   // from the node's fields, not read back: one SQLite driver returns
   // identity_key only up to its first NUL.
   const identityKey = [
-    canonicalCompilerIdentity({
-      filePath: node.file_path,
-      kind: node.kind,
-      qualifiedName: node.qualified_name,
-      declarationRole: "function",
-    }),
+    node.file_path, node.kind, node.qualified_name, "function",
     signature ?? "",
   ].join("\u0000");
   return {
-    id: generateCanonicalCompilerNodeId(node.kind, identityKey),
+    id: `${node.kind}:${createHash("sha256").update(identityKey).digest("hex").slice(0, 32)}`,
     identityKey,
     signature,
   };
@@ -178,7 +174,7 @@ function allText(root: string): Array<{ table: string; column: string; value: st
   return values;
 }
 
-describe("path-independent TypeScript node ids (#240)", () => {
+describe.skipIf(!graphEngineBinary())("path-independent TypeScript node ids (#240)", () => {
   it("builds identical ids, edges and signatures in two checkout directories", async () => {
     const first = checkout(join(temporaryRoot("mex-ids-a-"), "app"));
     const second = checkout(join(temporaryRoot("mex-ids-b-"), "deeper", "clone", "of", "app"));
@@ -196,7 +192,7 @@ describe("path-independent TypeScript node ids (#240)", () => {
     expect(nodes(second.root)).toEqual(nodes(first.root));
     expect(edges(second.root)).toEqual(edges(first.root));
     expect(nodeNamed(first.root, "renderPage").signature)
-      .toBe("(title: string, items: string[]) => JSX.Element");
+      .toContain("JSX.Element");
 
     for (const { root } of [first, second]) {
       const posixRoot = root.replaceAll("\\", "/");

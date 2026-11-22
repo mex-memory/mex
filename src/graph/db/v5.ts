@@ -447,7 +447,6 @@ CREATE TEMP VIEW project_metadata AS
 SELECT 'manifest_hash' AS key, lower(hex(manifest_hash)) AS value, indexed_at AS updated_at FROM main.snapshot
 UNION ALL SELECT 'config_hash', lower(hex(config_hash)), indexed_at FROM main.snapshot
 UNION ALL SELECT 'grammar_hash', lower(hex(grammar_hash)), indexed_at FROM main.snapshot
-UNION ALL SELECT 'compiler_version', compiler_version, indexed_at FROM main.snapshot
 UNION ALL SELECT 'extractor_version', extractor_version, indexed_at FROM main.snapshot
 UNION ALL SELECT 'resolver_version', resolver_version, indexed_at FROM main.snapshot
 UNION ALL SELECT 'graph_snapshot_v1', json_object(
@@ -455,10 +454,10 @@ UNION ALL SELECT 'graph_snapshot_v1', json_object(
   'lastSuccessfulIndexAt', strftime('%Y-%m-%dT%H:%M:%fZ', indexed_at / 1000.0, 'unixepoch'),
   'indexedBranch', indexed_branch,
   'indexedHead', CASE WHEN indexed_head IS NOT NULL THEN lower(hex(indexed_head)) END,
-  'schemaVersion', 5, 'compilerVersion', compiler_version, 'extractorVersion', extractor_version,
+  'schemaVersion', 5, 'extractorVersion', extractor_version,
   'resolverVersion', resolver_version, 'grammarHash', lower(hex(grammar_hash)), 'configHash', lower(hex(config_hash)),
   'manifestHash', lower(hex(manifest_hash)), 'sourceCorpusDigest', lower(hex(corpus_digest)),
-  'sourceCount', source_count, 'semanticInputs', json('[]'),
+  'sourceCount', source_count,
   'parseHealth', json_object('total', source_count, 'ok', source_count - partial_count - failed_count,
                              'partial', partial_count, 'failed', failed_count)
 ), indexed_at FROM main.snapshot

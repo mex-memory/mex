@@ -1,7 +1,7 @@
 import { currentGraphPath, graphLocation, graphTemporary } from "../storage.js";
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,11 +51,10 @@ async function bundle(name: string, source: string): Promise<string> {
 }
 
 beforeAll(async () => {
-  // The temporary bundle lives under node_modules so external runtime imports
-  // resolve exactly as in an installation, without a TS loader in the child.
-  const cache = join(repository, "node_modules", ".cache");
-  mkdirSync(cache, { recursive: true });
-  bundleDir = mkdtempSync(join(cache, "mex-candidate-tests-"));
+  // Resolve the same external dependencies as the build from an owned directory.
+  bundleDir = mkdtempSync(join(tmpdir(), "mex-candidate-tests-"));
+  symlinkSync(join(repository, "node_modules"), join(bundleDir, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir");
   cpSync(join(repository, "src/graph/schema.sql"), join(bundleDir, "schema.sql"));
   cpSync(join(repository, "src/graph/wasm"), join(bundleDir, "wasm"), { recursive: true });
   realEntry = await bundle("real", 'import "./src/graph/candidate-entry.ts";');
@@ -171,7 +170,6 @@ describe("isolated graph candidate construction", () => {
       expect(built.state).toBe("succeeded");
       expect(built.status.status).toBe("fresh");
       expect(built.engine).toMatchObject({ languages: ["javascript", "python", "typescript"], files: 4, fallbackFiles: 0 });
-      expect(built.typescript).toBeUndefined();
       const db = openSqlite(currentGraphPath(path), { readOnly: true });
       try {
         expect(db.prepare(`
@@ -365,7 +363,7 @@ describe("isolated graph candidate construction", () => {
     expect(artifacts(path)).toEqual([]);
   });
 
-  it("enforces its hang deadline even when the compiler thread ignores SIGTERM", async () => {
+  it("enforces its hang deadline even when the worker ignores SIGTERM", async () => {
     const path = root();
     let pid = 0;
     await expect(runGraphCandidateProcess({
@@ -375,7 +373,7 @@ describe("isolated graph candidate construction", () => {
     expect(processAlive(pid)).toBe(false);
   });
 
-  it("stops an orphaned busy compiler when its parent is killed without running cleanup", async () => {
+  it("stops an orphaned busy worker when its parent is killed without running cleanup", async () => {
     const path = root();
     const parent = spawn(process.execPath, [parentEntry, path, graphTemporary(graphLocation(path, { create: true })), busyEntry], {
       stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true,

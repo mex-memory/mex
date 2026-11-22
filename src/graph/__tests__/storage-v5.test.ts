@@ -126,8 +126,8 @@ describe.skipIf(!engineBinary)("schema v5 with the Rust writer", () => {
     } finally { db.close(); }
 
     vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", undefined);
-    await expect(openWarmCheckout(root)).rejects.toThrow(/selected engine languages/);
-    vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "typescript,javascript");
+    const warm = await openWarmCheckout(root);
+    warm.close();
     vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
     expect((await refreshGraph(root)).status.schemaVersion).toBe(4);
     const switched = currentGraphPath(root);

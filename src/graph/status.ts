@@ -42,10 +42,9 @@ import {
   GRAPH_SUPPORTED_SOURCE_GLOB,
   GraphCorpusLimitError,
   addGraphCorpusBytes,
-  addGraphSemanticInput,
-  createGraphSemanticInputLedger,
 } from "./corpus-policy.js";
 import { graphManifest, graphManifestDiffersOnlyByConfig, graphManifestForSchema } from "./manifest.js";
+import { graphEngineFallbackMessage } from "./engine-languages.js";
 import { isSupportedSourceFile } from "./extraction/grammars.js";
 import { bandHashInts, decodeMinhash, indexedInLsh } from "./fingerprint.js";
 import type { Fingerprint } from "./reconcile.js";
@@ -54,7 +53,6 @@ import {
   GRAPH_SNAPSHOT_METADATA_KEY,
   parseGraphSnapshot,
   type GraphSnapshot,
-  type GraphSnapshotSemanticInput,
 } from "./snapshot.js";
 
 const execFileAsync = promisify(execFile);
@@ -77,7 +75,6 @@ const MAX_SCHEMA_OBJECTS = 1_000;
 const MAX_METADATA_VALUE_BYTES = 4_096;
 const STATUS_METADATA_KEYS = Object.freeze([
   GRAPH_SNAPSHOT_METADATA_KEY,
-  "compiler_version",
   "config_hash",
   "extractor_version",
   "grammar_hash",
@@ -295,7 +292,6 @@ export interface InspectGraphStatusOptions {
   internal?: {
     beforeFreshValidation?: (attempt: number) => void | Promise<void>;
     afterSourceRead?: (path: string, pass: "initial" | "validation") => void;
-    afterSemanticInputRead?: (path: string, pass: "initial" | "validation") => void;
     /** Force the live-source read concurrency so every platform tests both walks. */
     liveSourceReadConcurrency?: number;
     beforeDatabaseResult?: (status: GraphStatusKind, attempt: number) => void;
@@ -366,14 +362,6 @@ interface LiveSources {
   diagnostics: Diagnostic[];
 }
 
-interface LiveSemanticInputs {
-  hashes: Map<string, string | null>;
-  changedPaths: string[];
-  unavailablePaths: string[];
-  complete: boolean;
-  diagnostics: Diagnostic[];
-}
-
 interface RepoObservation {
   state: RepoState;
   complete: boolean;
@@ -407,7 +395,7 @@ interface InspectionContext {
 /**
  * @internal A known, bounded way a bindable store falls short of `fresh`.
  *
- * `config-drift` — the compiler inputs that produced its resolution changed,
+ * `config-drift` — the config inputs that produced its resolution changed,
  * so what it says about resolved references may be out of date.
  * `parse-degraded` — some files parsed partially or not at all, so what it
  * holds is incomplete. Its facts are still true; there are simply fewer of
@@ -439,8 +427,6 @@ export interface InternalGraphDegradedObservation {
 interface FreshObservation {
   repo: RepoObservation;
   live: LiveSources;
-  semantic: LiveSemanticInputs;
-  semanticInputs: readonly GraphSnapshotSemanticInput[];
   manifest: ReturnType<typeof graphManifest>;
   snapshotRaw: string;
   database: ContainedDatabasePath;
@@ -578,7 +564,7 @@ async function inspectGraphStatusAttempt(
   diagnostics.push(...live.diagnostics);
   let manifest = captured ? graphManifestForSchema(captured.manifest, DB_SCHEMA_VERSION)
     : timeGraphPhase("inspect.manifest", () => inspectCurrentManifest(projectRoot, diagnostics));
-  let buildPrerequisitesComplete = repo.complete && live.complete && manifest !== null;
+  const buildPrerequisitesComplete = repo.complete && live.complete && manifest !== null;
 
   let fileStat: ReturnType<typeof statSync>;
   try {
@@ -945,18 +931,6 @@ async function inspectGraphStatusAttempt(
       }));
     }
 
-    const semantic = snapshot
-      ? timeGraphPhase("inspect.semanticInputs", () => inspectSemanticInputs(
-          projectRoot,
-          database.projectRootRealPath,
-          snapshot.semanticInputs,
-          maxChangedPaths,
-          (path) => context.options.internal?.afterSemanticInputRead?.(path, "initial"),
-        ))
-      : emptySemanticInputs();
-    diagnostics.push(...semantic.diagnostics);
-    buildPrerequisitesComplete = buildPrerequisitesComplete && semantic.complete;
-
     const files = timeGraphPhase("inspect.files", () => readFiles(db!));
     if (context.options.sourceScope) {
       retainUnscopedSources(live, files.map(file => [file.path, file.content_hash]), context.options.sourceScope);
@@ -1000,7 +974,7 @@ async function inspectGraphStatusAttempt(
         message: "Repository HEAD differs from the commit recorded by the last successful graph snapshot.",
       });
     }
-    const comparedSources = compareSources(
+    const sourceChanges = compareSources(
       files,
       live,
       snapshot,
@@ -1009,13 +983,6 @@ async function inspectGraphStatusAttempt(
       metadata,
       maxChangedPaths,
     );
-    const semanticInputsChanged = !semantic.complete || semantic.changedPaths.length > 0;
-    const sourceChanges = semanticInputsChanged
-      ? {
-          ...comparedSources,
-          changes: { ...comparedSources.changes, configChanged: true },
-        }
-      : comparedSources;
     const rebuildRequired = metadata.get("rebuild_required")?.value === "1";
     if (rebuildRequired) {
       const reason = metadata.get("rebuild_reason")?.value;
@@ -1030,23 +997,6 @@ async function inspectGraphStatusAttempt(
         severity: "warning",
         message: "The current supported-source corpus does not match the successful graph snapshot.",
         remediation: [{ label: "Refresh graph", command: "mex graph refresh" }],
-      });
-    }
-    if (semantic.changedPaths.length > 0) {
-      diagnostics.push({
-        code: "GRAPH_SEMANTIC_INPUTS_CHANGED",
-        severity: "warning",
-        message: "Compiler configuration inputs no longer match the successful graph snapshot.",
-        ...(semantic.complete
-          ? { remediation: [{ label: "Republish graph with current inputs", command: "mex graph refresh" }] }
-          : {}),
-      });
-    }
-    if (!semantic.complete) {
-      diagnostics.push({
-        code: "GRAPH_SEMANTIC_INPUT_INSPECTION_INCOMPLETE",
-        severity: "warning",
-        message: "Compiler configuration input inspection was incomplete; graph freshness cannot be trusted.",
       });
     }
     if (sourceChanges.changes.branchChanged) {
@@ -1087,7 +1037,6 @@ async function inspectGraphStatusAttempt(
     }
 
     const freshnessUnproven = !live.complete
-      || !semantic.complete
       || !repo.complete
       || manifest === null;
     const stale = sourceChanges.changes.total > 0
@@ -1107,6 +1056,13 @@ async function inspectGraphStatusAttempt(
           ? "degraded"
           : "fresh";
 
+    if (snapshot?.engineFallback) {
+      diagnostics.push({
+        code: "GRAPH_ENGINE_FALLBACK",
+        severity: "warning",
+        message: graphEngineFallbackMessage(snapshot.engineFallback),
+      });
+    }
     const indexedAt = snapshot?.indexedAt ?? latestIndexedAt(files);
     const lastSuccessfulIndexAt = snapshot?.lastSuccessfulIndexAt
       ?? metadataTimestamp(metadata.get("manifest_hash"));
@@ -1121,6 +1077,7 @@ async function inspectGraphStatusAttempt(
       schemaVersion,
       extractorVersion: snapshot?.extractorVersion ?? metadata.get("extractor_version")?.value ?? null,
       grammarVersion: snapshot?.grammarHash ?? metadata.get("grammar_hash")?.value ?? null,
+      ...(snapshot?.engineFallback ? { engineFallback: snapshot.engineFallback } : {}),
       parseHealth,
       changes: sourceChanges.changes,
       diagnostics,
@@ -1155,6 +1112,7 @@ async function inspectGraphStatusAttempt(
       && !freshnessUnproven
       && !sourceChanges.changes.branchChanged
       && !sourceChanges.changes.grammarChanged
+      && (!sourceChanges.changes.manifestChanged || configDriftTolerated)
       && (configDriftTolerated || !sourceChanges.changes.configChanged)
       && (!sourceDrifted || sourceDriftBounded)
       && (!sourceChanges.digestChanged || sourceDriftBounded);
@@ -1186,8 +1144,6 @@ async function inspectGraphStatusAttempt(
     const observation: FreshObservation = {
       repo,
       live,
-      semantic,
-      semanticInputs: snapshot.semanticInputs,
       manifest,
       snapshotRaw,
       database,
@@ -1195,13 +1151,13 @@ async function inspectGraphStatusAttempt(
       ...(base ? { baseIdentity: base.identity } : {}),
     };
     const validation = await timeGraphPhaseAsync("inspect.validateObservation", () =>
-      validateFreshObservation(context, observation, degradations));
+      validateFreshObservation(context, observation));
     if (validation.stable) {
       observationRechecks.set(validation.freshObservation!, async () => {
         // The initial pass and its independent validation already established
-        // this class and database. Re-read sources, config, semantic inputs,
+        // this class and database. Re-read sources, config,
         // Git, containment, sidecars and snapshot identity at the final boundary.
-        const final = await validateFreshObservation(context, observation, degradations, true);
+        const final = await validateFreshObservation(context, observation, true);
         if (!final.stable) {
           // Failures retain the full inspector's current diagnostics. A later
           // restoration cannot erase a race that the exact final proof saw.
@@ -1296,6 +1252,7 @@ function graphStatus(input: {
   extractorVersion?: string | null;
   grammarVersion?: string | null;
   inspected?: boolean;
+  engineFallback?: GraphStatus["engineFallback"];
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];
@@ -1312,6 +1269,7 @@ function graphStatus(input: {
     schemaVersion: input.schemaVersion ?? null,
     extractorVersion: input.extractorVersion ?? null,
     grammarVersion: input.grammarVersion ?? null,
+    ...(input.engineFallback ? { engineFallback: input.engineFallback } : {}),
     parseHealth: input.parseHealth,
     changes: input.changes,
     diagnostics: input.diagnostics,
@@ -1548,7 +1506,6 @@ function stabilizeDatabaseResult(
 async function validateFreshObservation(
   context: InspectionContext,
   before: FreshObservation,
-  degradations: readonly GraphReadDegradation[] = [],
   rebaseGit = false,
 ): Promise<FreshValidation> {
   const firstSidecars = inspectGraphSidecars(before.database.canonicalPath);
@@ -1588,17 +1545,10 @@ async function validateFreshObservation(
   if (context.options.sourceScope) {
     retainUnscopedSources(live, before.live.hashes, context.options.sourceScope);
   }
-  const semantic = timeGraphPhase("inspect.validation.semanticInputs", () => inspectSemanticInputs(
-    context.projectRoot,
-    contained.database.projectRootRealPath,
-    before.semanticInputs,
-    context.maxChangedPaths,
-    (path) => context.options.internal?.afterSemanticInputRead?.(path, "validation"),
-  ));
   const manifestDiagnostics: Diagnostic[] = [];
   const manifest = timeGraphPhase("inspect.validation.manifest", () =>
     inspectCurrentManifest(context.projectRoot, manifestDiagnostics, before.manifest.inputs.db));
-  if (!repo.complete || !live.complete || !semantic.complete || manifest === null) {
+  if (!repo.complete || !live.complete || manifest === null) {
     const status = !repo.complete ? "degraded" : "stale";
     return {
       stable: false,
@@ -1607,7 +1557,6 @@ async function validateFreshObservation(
       diagnostics: [
         ...repo.diagnostics,
         ...live.diagnostics,
-        ...semantic.diagnostics,
         ...manifestDiagnostics,
         observationRaceDiagnostic(["freshness inputs"]),
       ],
@@ -1685,15 +1634,6 @@ async function validateFreshObservation(
   // applies; comparing either to the stored snapshot is the freshness question
   // the caller already answered.
   if (liveSourceIdentity(before.live) !== liveSourceIdentity(live)) changed.push("source corpus");
-  // Two comparisons live here. Whether the two observations agree with each
-  // other is a race check and always applies. Whether they agree with the
-  // stored snapshot is a freshness check, already decided by the caller — for
-  // a config-drifted read it is the very condition being served, so repeating
-  // it here would report a race that did not happen.
-  if (semanticInputIdentity(before.semantic) !== semanticInputIdentity(semantic)
-    || (!degradations.includes("config-drift") && semantic.changedPaths.length > 0)) {
-    changed.push("compiler semantic inputs");
-  }
   if (!sameManifest(before.manifest, manifest)) changed.push("graph manifest");
   if (before.snapshotRaw !== snapshotRaw || before.databaseIdentity !== identity || before.baseIdentity !== baseIdentity) changed.push("graph snapshot");
   if (finalContained.database.canonicalPath !== contained.database.canonicalPath
@@ -1716,14 +1656,10 @@ async function validateFreshObservation(
       }),
     };
   }
-  const unstable = unstableObservation(
-    changed.some((entry) => entry === "graph snapshot") ? "degraded" : "stale",
+  return unstableObservation(
+    changed.includes("graph snapshot") ? "degraded" : "stale",
     changed,
   );
-  return {
-    ...unstable,
-    diagnostics: [...semantic.diagnostics, ...unstable.diagnostics],
-  };
 }
 
 function readSnapshotIdentity(dbPath: string): { snapshotRaw: string; databaseIdentity: string; baseIdentity?: string } {
@@ -1801,124 +1737,6 @@ function sameManifest(
 
 function liveSourceIdentity(live: LiveSources): string {
   return JSON.stringify([...live.hashes].sort(([left], [right]) => compareCodePoints(left, right)));
-}
-
-function semanticInputIdentity(semantic: LiveSemanticInputs): string {
-  return JSON.stringify([
-    [...semantic.hashes].sort(([left], [right]) => compareCodePoints(left, right)),
-    semantic.changedPaths,
-    semantic.unavailablePaths,
-    semantic.complete,
-  ]);
-}
-
-function emptySemanticInputs(): LiveSemanticInputs {
-  return {
-    hashes: new Map(),
-    changedPaths: [],
-    unavailablePaths: [],
-    complete: true,
-    diagnostics: [],
-  };
-}
-
-function inspectSemanticInputs(
-  projectRoot: string,
-  projectRootRealPath: string,
-  expected: readonly GraphSnapshotSemanticInput[],
-  diagnosticLimit: number,
-  afterRead?: (path: string) => void,
-): LiveSemanticInputs {
-  const hashes = new Map<string, string | null>();
-  const changedPaths: string[] = [];
-  const unavailablePaths: string[] = [];
-  const diagnostics: Diagnostic[] = [];
-  let complete = true;
-  const semanticInputLedger = createGraphSemanticInputLedger();
-  let omittedDiagnostics = 0;
-  const report = (diagnostic: Diagnostic): void => {
-    if (diagnostics.length < diagnosticLimit) diagnostics.push(diagnostic);
-    else omittedDiagnostics += 1;
-  };
-  const reportCorpusLimit = (): void => {
-    if (diagnostics.some((diagnostic) =>
-      diagnostic.code === "GRAPH_SEMANTIC_INPUT_CORPUS_LIMIT_EXCEEDED")) return;
-    diagnostics.push({
-      code: "GRAPH_SEMANTIC_INPUT_CORPUS_LIMIT_EXCEEDED",
-      severity: "warning",
-      message: "The compiler semantic-input corpus exceeds MEX's bounded inspection policy.",
-    });
-  };
-
-  for (const input of expected) {
-    let contentHash: string | null | undefined;
-    try {
-      const content = readStableContainedUtf8File(
-        projectRoot,
-        projectRootRealPath,
-        input.path,
-        () => afterRead?.(input.path),
-      );
-      addGraphSemanticInput(
-        semanticInputLedger,
-        input.path,
-        Buffer.byteLength(content, "utf8"),
-      );
-      contentHash = sha256(content);
-    } catch (error) {
-      if (errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR") {
-        try {
-          assertSecurelyContainedMissingPath(projectRoot, projectRootRealPath, input.path);
-          addGraphSemanticInput(semanticInputLedger, input.path, null);
-          contentHash = null;
-        } catch (containmentError) {
-          error = containmentError;
-        }
-      }
-      if (contentHash === undefined) {
-        complete = false;
-        unavailablePaths.push(input.path);
-        const outsideProject = errorCode(error) === "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT";
-        const corpusLimit = error instanceof GraphCorpusLimitError;
-        if (corpusLimit) reportCorpusLimit();
-        else report({
-          code: outsideProject
-            ? "GRAPH_SEMANTIC_INPUT_PATH_OUTSIDE_PROJECT"
-            : "GRAPH_SEMANTIC_INPUT_READ_FAILED",
-          severity: "warning",
-          message: outsideProject
-            ? `Refused to inspect compiler semantic input ${input.path} because its resolved target escapes the project root.`
-            : `Could not hash compiler semantic input ${input.path} safely.`,
-          path: input.path,
-        });
-        if (corpusLimit) break;
-        continue;
-      }
-    }
-    hashes.set(input.path, contentHash);
-    if (contentHash !== input.contentHash) {
-      changedPaths.push(input.path);
-      const change = input.contentHash === null
-        ? "appeared"
-        : contentHash === null
-          ? "disappeared"
-          : "changed";
-      report({
-        code: "GRAPH_SEMANTIC_INPUT_CHANGED",
-        severity: "warning",
-        message: `Compiler semantic input ${input.path} ${change} after graph publication.`,
-        path: input.path,
-      });
-    }
-  }
-  if (omittedDiagnostics > 0) {
-    diagnostics.push({
-      code: "GRAPH_SEMANTIC_INPUT_DIAGNOSTICS_TRUNCATED",
-      severity: "info",
-      message: `${omittedDiagnostics} additional compiler semantic-input diagnostic(s) were omitted.`,
-    });
-  }
-  return { hashes, changedPaths, unavailablePaths, complete, diagnostics };
 }
 
 /**
@@ -2071,66 +1889,6 @@ async function readStableContainedUtf8FileAsync(
   }
 }
 
-function assertSecurelyContainedMissingPath(
-  projectRoot: string,
-  projectRootRealPath: string,
-  path: string,
-): void {
-  const absolutePath = resolve(projectRoot, path);
-  if (!isPathContained(projectRoot, absolutePath)) {
-    throw containedFileError(
-      "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",
-      "The repository-relative path escapes the project root.",
-    );
-  }
-  try {
-    const exact = lstatSync(absolutePath);
-    if (exact.isSymbolicLink()) {
-      throw containedFileError(
-        "GRAPH_CONTAINED_FILE_UNAVAILABLE",
-        "A missing repository path is represented by an unresolved symlink.",
-      );
-    }
-  } catch (error) {
-    if (errorCode(error) !== "ENOENT" && errorCode(error) !== "ENOTDIR") throw error;
-  }
-
-  let ancestor = dirname(absolutePath);
-  for (;;) {
-    try {
-      const canonicalAncestor = resolveRealPath(ancestor);
-      if (!isPathContained(projectRootRealPath, canonicalAncestor)) {
-        throw containedFileError(
-          "GRAPH_CONTAINED_FILE_OUTSIDE_PROJECT",
-          "The missing file's resolved ancestor escapes the project root.",
-        );
-      }
-      return;
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT" && errorCode(error) !== "ENOTDIR") throw error;
-      try {
-        if (lstatSync(ancestor).isSymbolicLink()) {
-          throw containedFileError(
-            "GRAPH_CONTAINED_FILE_UNAVAILABLE",
-            "A missing file's ancestor is an unresolved symlink.",
-          );
-        }
-      } catch (lstatError) {
-        if (errorCode(lstatError) !== "ENOENT" && errorCode(lstatError) !== "ENOTDIR") {
-          throw lstatError;
-        }
-      }
-      const parent = dirname(ancestor);
-      if (parent === ancestor) {
-        throw containedFileError(
-          "GRAPH_CONTAINED_FILE_UNAVAILABLE",
-          "No stable repository ancestor could be resolved.",
-        );
-      }
-      ancestor = parent;
-    }
-  }
-}
 
 function containedFileError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
