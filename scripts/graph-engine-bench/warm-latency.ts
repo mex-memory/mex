@@ -6,6 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { collectGraphGarbage, graphLocation } from "../../src/graph/storage.js";
 import { openWarmCheckout, type WarmEditResult } from "../../src/graph/warm.js";
 import { benchmarkFiles, changeExport, commentFor, insertCall } from "./edit-cases.js";
 import { childProcessUsage, WARM_GRAPH_SERVER } from "../../src/graph/process-stats.js";
@@ -57,6 +58,7 @@ globalThis.gc?.();
 const initialNodeRss = process.memoryUsage().rss / 1024 ** 2;
 const openStarted = performance.now();
 const warm = await openWarmCheckout(root);
+const location = graphLocation(root);
 const openMs = round(performance.now() - openStarted);
 const results: WarmEditResult[] = [];
 let maxMixedMiB = 0;
@@ -77,6 +79,9 @@ try {
     const result = await warm.edit([file]);
     if (result.status !== "published") throw new Error(`Edit ${i + 1} returned ${result.status}: ${result.reason ?? ""}`);
     if (i >= 2) results.push(result);
+    // This checkout belongs to the benchmark. Keep the current publication
+    // while freeing completed overlays before taking the next sample.
+    collectGraphGarbage(location, Date.now() + 120_000);
     if (mode === "mixed") maxMixedMiB = Math.max(maxMixedMiB, (await held()).enginePlusNodeDelta);
     checkDisk();
   }
