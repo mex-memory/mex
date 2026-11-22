@@ -10,7 +10,6 @@ advisory or path-filtered workflows.
 | --- | --- | --- |
 | `ci.yml` | Node 22/24 suites (two shards each), types/packages/evaluators, three-OS Go, serial portability parts, browser and workflow lint | Every PR; `next`/`main` pushes |
 | `statechart-checker.yml` | Real TLC and packed skill on three OSes | Relevant source/skill/Hub/build/dependency PR paths; `next`/`main` pushes |
-| `typescript-servers.yml` | Compiler-server parity on pinned repositories | Relevant PR paths; `next`/`main` pushes; manual |
 | `release-performance.yml` | Pinned budgets and conditional fresh-runner confirmation | `next`/`main` pushes, 0.9 tags, manual; advisory; one tracking issue for red `next` results |
 | `gates.yml` | Seven release gates and three-OS `release-gates` verdict | Called by Release; manual once on `main` |
 | `release.yml` | Decisions, seven packages, three-OS registry smoke, dry/real publication | `v0.9.0*` tags; release-path PRs (always dry); manual once on `main` |

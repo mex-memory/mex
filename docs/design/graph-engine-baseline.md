@@ -1,6 +1,6 @@
 # Graph engine baseline (OSS-73, M0)
 
-The baseline the Rust engine must beat, measured on 22 Nov 2026: MEX 0.8.5 (the released tarball) and `next2` at `2bb3b159` (graph-01 compiler route plus graph-02 storage), on twelve pinned repositories. Raw numbers: [graph-engine-baseline.json](graph-engine-baseline.json). Scripts: `scripts/graph-engine-bench/`.
+The baseline the Rust engine was measured against, recorded on 22 Nov 2026: MEX 0.8.5 (the released tarball) and `next2` at `2bb3b159` (graph-01 compiler route plus graph-02 storage), on twelve pinned repositories. Raw numbers: [graph-engine-baseline.json](graph-engine-baseline.json). Scripts: `scripts/graph-engine-bench/`.
 
 ## How it was measured
 
@@ -93,7 +93,7 @@ What these numbers don't cover yet:
 
 Precision rose because a call resolves only through scoping, imports, `self`, `super()` and evidence-typed receivers, and a name bound two ways in one scope stays unresolved. Recall rose because imports inside functions, package re-exports, inherited methods, typed parameters, `x = Cls()` and `self.x` fields now count. Most remaining misses are calls on untyped parameters and values (`untyped_receiver`).
 
-### Through `mex graph`, into today's storage
+### M3 CLI measurements on schema v4
 
 With `MEX_GRAPH_ENGINE_LANGUAGES=python`, `mex graph rebuild` takes Python from one engine `stage` job and writes it into today's schema v4 graph. Every other language, framework resolution and publication stay as they are. Same machine and method, this branch with the flag off and on (Django two runs, the others three):
 
@@ -173,9 +173,9 @@ The engine's recall is 99% of the compiler's overall (about 1,396 of 1,411 call 
 
 **Knowledge bench `eight-kinds-v1`** (74 claims, 444 claim checks across five checkpoints, graph-03's evaluator and delivery). Three graphs were scored: graph-03's own compiler build, this branch with the flag off, and this branch with the flag on. All three give identical results: 0 stale claims served, 85.1% fresh retention, 87.6% accuracy, and a passing grade. Only 3 of the 74 claims are `calls` relations, so this is a light check of the graph itself.
 
-### Through `mex graph`, into today's storage
+### M3 CLI measurements on schema v4
 
-`MEX_GRAPH_ENGINE_LANGUAGES=typescript,javascript` stages TypeScript and JavaScript with one engine job and writes them into today's schema v4 graph. With the flag on, the compiler route is not loaded at all. Framework resolution still runs. Warm edits go to a normal refresh, so compiler captures never touch an engine-built graph.
+At M3, `MEX_GRAPH_ENGINE_LANGUAGES=typescript,javascript` opted those languages into one engine staging job for schema v4. Framework resolution ran in that job, and edits used a normal refresh. The compiler was still the default for TypeScript and JavaScript at the time of these measurements.
 
 Flag off → on, medians of three runs per flag:
 
@@ -624,6 +624,21 @@ edit took 1.11–1.38 s. The engine `job` stayed at about 32 ms. Node recaptured
 coverage instead of reusing the walk observation (282 ms), and the engine
 call's wall time rose from 60 to 334 ms. This is not a stage 2c regression,
 but a save by rename still misses the 1 s target on novu.
+
+## M5 stage 3 — TypeScript and JavaScript default to the engine
+
+TypeScript and JavaScript now use the Rust engine whenever a compatible
+binary resolves. Node's tree-sitter extractors and resolver handle files
+when the engine is unavailable or its job fails. The CLI and graph Health
+report fallback coverage. Python, Rust and C# still opt in through
+`MEX_GRAPH_ENGINE_LANGUAGES`. Schema v4 is the default and edits refresh
+normally. With `MEX_GRAPH_STORAGE=v5`, eligible checkouts use `mex-graph serve`
+for warm edits.
+
+Compiler-era graphs require a rebuild because the build manifest changed.
+The engine keeps its existing node ids, spans and sketches. The archived
+`next2` compiler graphs remain the reference for parity, and TypeScript
+5.9 remains a development dependency for the TypeScript-based judges.
 
 ## Locked targets
 

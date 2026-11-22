@@ -41,12 +41,28 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 ```
 
 - `files` gives the git-aware paths Node discovered, with sizes. `configs` accepts repository-relative paths or objects with a repository-relative `path` and captured `source` text. The engine reads named files and configs only under `root`. For ECMAScript staging, Node supplies the tsconfig, jsconfig and package.json texts from discovery so resolution uses that snapshot.
-- `languages` names the languages this engine run handles. During migration Node keeps every other language on today's path.
+- `languages` names the languages this engine run handles. Node stages TypeScript and JavaScript on the engine by default when a binary resolves.
 - For `build`, `output` is the absolute path to a new candidate in an existing folder. Temporary files sit beside it. For `stage`, set `mode` to `"stage"`. The engine ignores a supplied `output` path or `null` and opens no database.
 - `base` and `changed` are set for `refresh`. `base` is the absolute path of the published v5 base and is opened read-only. An optional `overlay` names the current published overlay for that base. `changed` lists repository-relative paths, including deletions. `files` still lists the complete current corpus. The engine compares its complete input to the current publication, so omitted hints cannot hide a change.
 - `factsCache` optionally names an absolute directory for disposable file-local facts. In `facts-v2.db`, workers encode complete facts as binary records and group them into Zstandard-compressed blocks. The SQLite index keys records by path, language adapter version, facts and framework-capture versions, and source SHA-256. Reads verify the block checksum, decode bounds, record format, path, language and source hash. A single writer commits the blocks in one transaction and evicts the oldest blocks as needed. The payload budget is 12 KiB per observed source file, bounded to 64–256 MiB, and a smaller checkout never reduces a shared cache's budget. Missing, incompatible, corrupt, contended and oversized entries are ordinary misses.
-- `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, `jsx` for `.jsx`, `rust` for `.rs`, and `csharp` for `.cs`. Node's `MEX_GRAPH_ENGINE_LANGUAGES` flag accepts `python`, `typescript`, `javascript`, `rust` and `csharp` as comma-separated names. `typescript` also selects `tsx`, and `javascript` also selects `jsx`.
+- `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, `jsx` for `.jsx`, `rust` for `.rs`, and `csharp` for `.cs`. TypeScript includes TSX, and JavaScript includes JSX. Set `MEX_GRAPH_ENGINE_LANGUAGES` to a comma-separated list of `python`, `rust` or `csharp` to opt those languages in.
 - `build` includes framework rows. Stage requests opt in by sending `"frameworks": true`. A binary that handled the pass sets `frameworksResolved` on its staged events so Node can skip framework extraction for those files. If a file falls back because the native read differed from discovery, Node recomputes framework rows from the captured corpus.
+
+### Routing and fallback
+
+The default store is schema v4. Node stages the selected languages in one
+engine job and writes the v4 graph. An unavailable or failed engine job
+falls back to Node's tree-sitter extractors and resolver. This also applies
+when a v5 job for a corpus containing TypeScript or JavaScript fails, in
+which case Node publishes a v4 graph. The build report and published graph
+Health record how many files took the fallback and why. An explicit graph
+maintenance command retries the engine when a binary resolves.
+
+The build manifest includes the extractor, resolver, grammar, corpus policy
+and config identities. The compiler-era manifest differs, so old snapshots
+are stale and explicit maintenance rebuilds their facts before they can
+serve reads. TypeScript and JavaScript keep their ordinal node ids on
+the engine.
 
 ### Published schema v5 candidates
 
@@ -66,7 +82,9 @@ identities and applying the current ignore rules.
 Node rechecks the complete captured corpus, exact config and Git refs before
 publishing.
 The optional `buildMetadata` carries exact Git, manifest, corpus and coverage
-provenance for publication. The engine stores it relationally and adds the
+provenance for publication. The contract 3 field `buildMetadata.compilerVersion`
+and schema v5 column `snapshot.compiler_version` carry the engine identity
+`mex-graph-contract-3`. The engine stores the metadata relationally and adds the
 health counts from the files it wrote. It writes all declarations, including
 framework routes, before writing edges and unresolved references in a base.
 A standalone engine benchmark may omit the publication fields. Node retains
@@ -156,7 +174,7 @@ within declarations and FTS optimization within finalization.
 
 #### TypeScript and JavaScript rows
 
-- Nodes use the compiler route's ordinal profile for `id` and `identityKey`. They carry `containerId`, names, file and language, spans, and `isExported`. `docstring`, `signature`, `visibility`, `isAsync`, `isStatic`, `isAbstract`, `decorators`, `typeParameters` and `returnType` are included when present. Body kinds carry `bodyHash`, `minhash` and `tokenCount`. The engine derives display text from syntax.
+- Nodes use the ordinal profile established by the former compiler route for `id` and `identityKey`. They carry `containerId`, names, file and language, spans, and `isExported`. `docstring`, `signature`, `visibility`, `isAsync`, `isStatic`, `isAbstract`, `decorators`, `typeParameters` and `returnType` are included when present. Body kinds carry `bodyHash`, `minhash` and `tokenCount`. The engine derives display text from syntax.
 - `contains` uses the child's start line and column and `lexical-containment`. Resolved `calls`, `instantiates`, `imports`, `extends`, `implements` and `references` use `engine-ecmascript`. Resolved edges carry the written `metadata.targetName` and the target's `metadata.targetQualifiedName`. Structural and direct reference edges use `typescript-compiler` provenance and confidence 1, following the v4 compiler-route row convention. Callback edges use `callback-synthesis` and confidence 0.85. Their line and column describe the argument site, with `evidence[].wiringSite` giving its file and coordinates.
 - Unresolved entries use the corresponding reference kind, the written name and site, `status: "unresolved"`, `confidence: 0`, `candidates: []` and `resolver: "engine-ecmascript"`. The metadata includes the reason. The Node fallback resolver leaves these references as emitted.
 - When present, `imports` contains the named import bindings for the file. Bindings carry the local name, imported name, module specifier, type-only flag, binding key, site metadata and any resolved file path and target id.
@@ -184,9 +202,11 @@ Express, NestJS, Next.js, Flask and FastAPI preserve their existing route roles 
 | 70 | Internal error | rerun once with `--isolate` to find a bad file |
 | killed by a signal | Native crash | rerun once with `--isolate` |
 
-A failed database job deletes its candidate and temporary files. Node cleans them up if the engine was killed. A failed `stage` job leaves cleanup of any streamed rows to Node. The stage guard can exit before writing an `error` event if stdout is blocked.
+A failed database job deletes its candidate and temporary files. A TypeScript or JavaScript fallback builds a separate v4 candidate through the usual publication checks. Node cleans them up if the engine was killed. A failed `stage` job leaves cleanup of any streamed rows to Node. The stage guard can exit before writing an `error` event if stdout is blocked.
 
 ## Serve mode (M5 stage 2)
+
+Schema v5 edits use the resident engine. Schema v4 edits queue a normal refresh.
 
 The startup request uses `mode: "serve"`, an absolute published `base`,
 and an optional absolute `overlay` beside it. Its `files` list describes the
