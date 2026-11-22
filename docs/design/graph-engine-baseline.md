@@ -172,7 +172,7 @@ Flag off → on, medians of three runs per flag:
 
 Every node row and fingerprint that grounded anchors read is unchanged: ids, spans, containers, body hashes, export flags, minhash and token counts, on all 61,462 baseline nodes. The listed M3 differences remain (signatures, inherited docstrings, zod's one export flag, and Express's 90 extra `require()` binding nodes).
 
-Builds and refreshes take about half the time and memory, but no less, because today's storage now dominates. On NestJS the compiler or engine step falls from 7.9 s to 0.8 s and fingerprints from 0.9 s to 0.02 s, while writing v4 rows and fingerprints and validating the candidate still take 6.4 s either way. Schema v5 removes that cost: the engine writes NestJS's v5 graph in 0.58 s.
+Builds and refreshes take about half the time and memory, but no less, because today's storage now dominates. On NestJS the compiler or engine step falls from 7.9 s to 0.8 s and fingerprints from 0.9 s to 0.02 s, while writing v4 rows and fingerprints and validating the candidate take 7.0 s and 6.4 s. Schema v5 removes that cost: the engine writes NestJS's v5 graph in 0.58 s.
 
 ## Locked targets
 
