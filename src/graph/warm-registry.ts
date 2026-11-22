@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { childProcessUsage, enableCompilerServerProbes, WARM_GRAPH_SERVER } from "./process-stats.js";
 import { GRAPH_SERVER_CAP_MB } from "./sizing.js";
 import { readGraphState, type GraphState } from "./jobs.js";
+import { engineWarmDecline } from "./engine-languages.js";
 import type { GraphLocation } from "./storage.js";
 import type { WarmGraphCheckout, WarmEditResult } from "./warm.js";
 
@@ -144,6 +145,13 @@ export class WarmRegistry {
 
   private async apply(root: string, projectId: string, paths: string[]): Promise<void> {
     const now = this.now();
+    const compilerDecline = process.env.MEX_GRAPH_STORAGE !== "v5" ? engineWarmDecline() : undefined;
+    if (compilerDecline) {
+      this.close(root, "cold");
+      this.host.log?.(`warm: ${root} stays cold: ${compilerDecline}`);
+      this.wait(root, projectId, now);
+      return;
+    }
     let entry = this.warm.get(root);
     if (!entry) {
       // A repository whose last full-rebuild check differed stays cold.
