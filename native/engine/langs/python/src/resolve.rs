@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use mex_graph_core::facts::{CallForm, FileFacts, Kind, NONE, Receiver, TypeBasis};
 
-use mex_graph_core::resolve::Files;
+use mex_graph_core::resolve::{Files, LookupKind};
 
 use crate::EXCLUDED;
 
@@ -342,12 +342,12 @@ impl<'a> Resolver<'a> {
     }
 
     fn path_at(&self, path: &str) -> Option<usize> {
-        self.files.lookup("path", path);
+        self.files.lookup(LookupKind::Path, path);
         self.paths.get(path).copied()
     }
 
     fn module_at(&self, name: &str) -> Option<usize> {
-        self.files.lookup("python-module", name);
+        self.files.lookup(LookupKind::PythonModule, name);
         self.modules.get(name).copied()
     }
 

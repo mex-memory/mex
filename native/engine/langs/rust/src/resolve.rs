@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use mex_graph_core::facts::{
     Def, FileFacts, Import, ImportBinding, Kind, ReferenceKind, SyntaxReference,
 };
-use mex_graph_core::resolve::Files;
+use mex_graph_core::resolve::{Files, LookupKind};
 use mex_graph_core::text::js_trim;
 use mex_graph_syntax::resolve::{
     DefRef, FileResolution, ImportTarget, Index, Site, Target, accepts, unique, visible,
@@ -316,7 +316,7 @@ impl<'a> Resolver<'a> {
                 return Some((module, rest));
             }
             member if !rest.is_empty() => {
-                self.index.facts.lookup("rust-crate", member);
+                self.index.facts.lookup(LookupKind::RustCrate, member);
                 let mut candidates = self
                     .members
                     .get(member)?

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use mex_graph_core::facts::{FileFacts, Kind, ParseStatus, ReferenceKind, SyntaxReference};
-use mex_graph_core::resolve::Files;
+use mex_graph_core::resolve::{Files, LookupKind};
 use mex_graph_core::text::js_trim;
 use mex_graph_syntax::resolve::{
     DefRef, FileResolution, Index, Site, Target, accepts, last_segment, unique, visible,
@@ -171,7 +171,7 @@ impl<'a, 'index> Resolver<'a, 'index> {
             return Err("unproven_type_path");
         }
         let (qualifier, simple) = name.rsplit_once('.').unwrap_or(("", name));
-        self.index.facts.lookup("csharp-type", simple);
+        self.index.facts.lookup(LookupKind::CSharpType, simple);
         let candidates = (self.types)(simple);
         let types = candidates.iter().copied();
         let global_types = types.clone().filter(|&id| {

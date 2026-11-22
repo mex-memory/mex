@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use mex_graph_core::facts::{FileFacts, ParseStatus};
-use mex_graph_core::resolve::{Access, Files};
-use mex_graph_core::store::{BaseFile, RefreshBase, Writer};
+use mex_graph_core::resolve::{Access, Files, LookupKind};
+use mex_graph_core::store::{BaseFile, ReadId, RefreshBase, Writer};
 use mex_graph_core::timing::Timer;
 use mex_graph_ecmascript::modules::{ModuleResolver, Syntax};
 use mex_graph_ecmascript::resolve::DefRef;
@@ -152,12 +152,12 @@ struct Reads {
 
 #[derive(Default)]
 struct Lookups {
-    ids: HashMap<&'static str, HashMap<Rc<str>, usize>>,
-    keys: Vec<(&'static str, Rc<str>)>,
+    ids: HashMap<LookupKind, HashMap<Rc<str>, usize>>,
+    keys: Vec<(LookupKind, Rc<str>)>,
 }
 
 impl Lookups {
-    fn intern(&mut self, kind: &'static str, key: &str) -> usize {
+    fn intern(&mut self, kind: LookupKind, key: &str) -> usize {
         let ids = self.ids.entry(kind).or_default();
         if let Some(&id) = ids.get(key) {
             return id;
@@ -258,51 +258,61 @@ impl Recorder {
         &self,
         writer: &Writer,
         origins: &[usize],
-        paths: &[&str],
+        keys: &[i64],
         load: impl Fn(usize) -> &'a FileFacts,
     ) -> Result<(), JobError> {
+        use std::collections::hash_map::Entry;
         let _timer = Timer::start("resolve.dependencies");
-        let lookups = self.lookups.borrow();
-        let reads: Vec<_> = self.reads.iter().map(RefCell::borrow).collect();
+        let lookups = self
+            .lookups
+            .take()
+            .keys
+            .into_iter()
+            .map(|(kind, name)| writer.intern_lookup(kind, 0, &name))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(JobError::write)?;
         let mut imports = HashMap::new();
-        for &origin in origins {
-            for &item in &reads[origin].items {
-                if let Read::Import(file, index) = item {
-                    imports.entry((file, index)).or_insert_with(|| {
-                        let import = &load(file).imports[index];
-                        let kind = match import.form {
-                            mex_graph_core::facts::ImportForm::CommonJs => "ts-require",
-                            _ => "ts-import",
-                        };
-                        (kind, format!("{}\0{}", paths[file], import.specifier))
-                    });
-                }
+        let mut packed = Vec::new();
+        for (origin, reads) in self.reads.iter().enumerate() {
+            if origins.binary_search(&origin).is_err() {
+                continue;
             }
-        }
-        let mut rows = Vec::new();
-        for &origin in origins {
-            for &item in &reads[origin].items {
-                let (kind, key) = match item {
+            for item in reads.take().items {
+                let id = match item {
                     Read::File(file) if file == origin => continue,
-                    Read::File(file) => ("file", paths[file]),
-                    Read::Import(file, index) => {
-                        let (kind, key) = &imports[&(file, index)];
-                        (*kind, key.as_str())
-                    }
-                    Read::Lookup(id) => {
-                        let (kind, key) = &lookups.keys[id];
-                        (*kind, key.as_ref())
-                    }
+                    Read::File(file) => ReadId::file(keys[file]),
+                    Read::Import(file, index) => match imports.entry((file, index)) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let import = &load(file).imports[index];
+                            let kind = match import.form {
+                                mex_graph_core::facts::ImportForm::CommonJs => {
+                                    LookupKind::TsRequire
+                                }
+                                _ => LookupKind::TsImport,
+                            };
+                            *entry.insert(
+                                writer
+                                    .intern_lookup(kind, keys[file], &import.specifier)
+                                    .map_err(JobError::write)?,
+                            )
+                        }
+                    },
+                    Read::Lookup(id) => lookups[id],
                 };
-                rows.push((kind, key, paths[origin]));
+                packed.push(id);
             }
-        }
-        rows.sort_unstable();
-        rows.dedup();
-        for (kind, key, origin) in rows {
+            if has_heritage(load(origin)) {
+                packed.push(
+                    writer
+                        .intern_lookup(LookupKind::TsHeritage, 0, "")
+                        .map_err(JobError::write)?,
+                );
+            }
             writer
-                .put_read(origin, kind, key)
+                .put_reads(keys[origin], &mut packed)
                 .map_err(JobError::write)?;
+            packed.clear();
         }
         Ok(())
     }
@@ -327,8 +337,8 @@ impl Corpus<'_> {
         writer: &Writer,
         enabled: &Enabled,
         selected: &HashSet<&str>,
-        removed: &HashSet<&str>,
         overlay: bool,
+        file_key: impl Fn(&str) -> i64,
     ) -> Result<(), JobError> {
         let _timer = Timer::start("resolve.incremental");
         for language in Language::ALL {
@@ -350,6 +360,7 @@ impl Corpus<'_> {
             if origins.is_empty() {
                 continue;
             }
+            let keys: Vec<_> = paths.iter().map(|path| file_key(path)).collect();
             let recorder = Recorder::new(paths.len());
             let loaded: Vec<_> = (0..paths.len())
                 .map(|_| std::cell::OnceCell::new())
@@ -363,16 +374,12 @@ impl Corpus<'_> {
             };
             let project = |index, file: super::StagedFile<'_>| -> Result<(), JobError> {
                 let facts = load(index);
-                relations::Projection::new(&file, facts)?.install(writer, &facts.path)?;
-                if has_heritage(facts) {
-                    writer
-                        .put_read(&facts.path, "ts-heritage", "")
-                        .map_err(JobError::write)?;
-                }
+                relations::Projection::new(&file, facts, &file_key)?
+                    .install(writer, keys[index])?;
                 for marker in &facts.frameworks {
                     if marker.kind == DETECTION {
                         writer
-                            .put_read(&facts.path, DETECTION, &marker.name)
+                            .put_framework(keys[index], &marker.name)
                             .map_err(JobError::write)?;
                     }
                 }
@@ -388,22 +395,20 @@ impl Corpus<'_> {
                         &temporary
                     };
                     let paths_by_index: HashMap<_, _> =
-                        paths.iter().enumerate().map(|(i, &p)| (p, i)).collect();
+                        keys.iter().enumerate().map(|(i, &key)| (key, i)).collect();
                     let error = RefCell::new(None);
                     let descendants = |(file, def)| {
                         if !overlay {
                             return Vec::new();
                         }
-                        match writer.prior_descendants(paths[file], def) {
+                        match writer.prior_descendants(keys[file], def) {
                             Ok(rows) => rows
                                 .into_iter()
-                                .filter_map(|(path, from)| {
-                                    if selected.contains(path.as_str())
-                                        || removed.contains(path.as_str())
-                                    {
+                                .filter_map(|(key, from)| {
+                                    let &index = paths_by_index.get(&key)?;
+                                    if selected.contains(paths[index]) {
                                         return None;
                                     }
-                                    let &index = paths_by_index.get(path.as_str())?;
                                     (load(index).defs.get(from).is_some()).then_some((index, from))
                                 })
                                 .collect(),
@@ -429,7 +434,7 @@ impl Corpus<'_> {
                     recorder.stop();
                     for ((origin, from), (target, def)) in heritage {
                         writer
-                            .put_heritage(paths[target], def, paths[origin], from)
+                            .put_heritage(keys[target], def, keys[origin], from)
                             .map_err(JobError::write)?;
                     }
                     for &index in &origins {
@@ -475,12 +480,12 @@ impl Corpus<'_> {
                             for (name, def) in types(load(index)) {
                                 changed_types.entry(name).or_default().push((index, def));
                                 writer
-                                    .put_type(name, paths[index], def)
+                                    .put_type(name, keys[index], def)
                                     .map_err(JobError::write)?;
                             }
                         }
                         let by_path: HashMap<_, _> =
-                            paths.iter().enumerate().map(|(i, &p)| (p, i)).collect();
+                            keys.iter().enumerate().map(|(i, &key)| (key, i)).collect();
                         let cache = RefCell::new(HashMap::<String, Vec<DefRef>>::new());
                         let error = RefCell::new(None);
                         let lookup = |name: &str| {
@@ -492,11 +497,11 @@ impl Corpus<'_> {
                             if overlay {
                                 match writer.prior_types(name) {
                                     Ok(rows) => {
-                                        ids.extend(rows.into_iter().filter_map(|(path, def)| {
-                                            if selected.contains(path.as_str()) {
+                                        ids.extend(rows.into_iter().filter_map(|(key, def)| {
+                                            let &i = by_path.get(&key)?;
+                                            if selected.contains(paths[i]) {
                                                 return None;
                                             }
-                                            let &i = by_path.get(path.as_str())?;
                                             load(i).defs.get(def).map(|_| (i, def))
                                         }))
                                     }
@@ -524,7 +529,7 @@ impl Corpus<'_> {
                     }
                 }
             }
-            recorder.write(writer, &origins, &paths, load)?;
+            recorder.write(writer, &origins, &keys, load)?;
         }
         Ok(())
     }
@@ -593,7 +598,7 @@ impl<'a> Plan<'a> {
                 if complete {
                     continue;
                 }
-                let Some(blob) = writer.prior_projection(path).map_err(JobError::write)? else {
+                let Some(blob) = writer.prior_projection(old.key).map_err(JobError::write)? else {
                     surfaces.push(path);
                     continue;
                 };
@@ -616,7 +621,7 @@ impl<'a> Plan<'a> {
                 .iter()
                 .copied()
                 .chain(removed.iter().copied())
-                .map(str::to_owned)
+                .filter_map(|path| prior.file(path).map(|(file, _)| file.key))
                 .collect();
             let mut ts_dispatch = false;
             let mut csharp_types = BTreeSet::new();
@@ -624,7 +629,10 @@ impl<'a> Plan<'a> {
                 match Language::get(path, &corpus.request.languages) {
                     Some(Language::Ecma) => ts_dispatch = true,
                     Some(Language::CSharp) => {
-                        csharp_types.extend(writer.prior_types_in(path).map_err(JobError::write)?);
+                        if let Some((old, _)) = prior.file(path) {
+                            csharp_types
+                                .extend(writer.prior_types_in(old.key).map_err(JobError::write)?);
+                        }
                         if current.contains_key(path) {
                             csharp_types.extend(
                                 types((corpus.load)(path)).map(|(name, _)| name.to_owned()),
@@ -637,7 +645,7 @@ impl<'a> Plan<'a> {
             for name in csharp_types {
                 frontier.extend(
                     writer
-                        .readers("csharp-type", &name)
+                        .lookup_readers(LookupKind::CSharpType, &name)
                         .map_err(JobError::write)?,
                 );
             }
@@ -650,7 +658,11 @@ impl<'a> Plan<'a> {
                         .copied()
                         .filter(|path| prior.file(path).is_none()),
                 ) {
-                    frontier.extend(writer.readers("path", path).map_err(JobError::write)?);
+                    frontier.extend(
+                        writer
+                            .lookup_readers(LookupKind::Path, path)
+                            .map_err(JobError::write)?,
+                    );
                     if let Some(crate_path) = path.strip_suffix("/src/lib.rs") {
                         let name = crate_path
                             .rsplit('/')
@@ -659,7 +671,7 @@ impl<'a> Plan<'a> {
                             .replace('-', "_");
                         frontier.extend(
                             writer
-                                .readers("rust-crate", &name)
+                                .lookup_readers(LookupKind::RustCrate, &name)
                                 .map_err(JobError::write)?,
                         );
                     }
@@ -667,25 +679,36 @@ impl<'a> Plan<'a> {
                 ts_dispatch |= topology_readers(corpus, prior, writer, &mut frontier)?;
             }
             let mut visited = HashSet::new();
-            while let Some(path) = frontier.pop_front() {
-                if !visited.insert(path.clone()) {
+            while let Some(file) = frontier.pop_front() {
+                if !visited.insert(file) {
                     continue;
                 }
+                let path = writer.file_path(file).map_err(JobError::write)?;
                 if let Some((&path, _)) = current.get_key_value(path.as_str()) {
                     resolve.insert(path);
                     affected.insert(path);
                 }
-                frontier.extend(writer.readers("file", &path).map_err(JobError::write)?);
+                frontier.extend(
+                    writer
+                        .readers_of(ReadId::file(file))
+                        .map_err(JobError::write)?,
+                );
             }
             if ts_dispatch {
                 let new_heritage = surfaces
                     .iter()
                     .any(|path| has_heritage((corpus.load)(path)));
-                let old_heritage = writer.readers("ts-heritage", "").map_err(JobError::write)?;
-                if new_heritage || old_heritage.iter().any(|path| visited.contains(path)) {
+                let old_heritage = writer
+                    .lookup_readers(LookupKind::TsHeritage, "")
+                    .map_err(JobError::write)?;
+                if new_heritage || old_heritage.iter().any(|file| visited.contains(file)) {
                     // Candidate hints are output rows. A caller of a hint's
                     // owner does not depend on that owner's hint.
-                    for path in writer.readers("ts-dispatch", "").map_err(JobError::write)? {
+                    for file in writer
+                        .lookup_readers(LookupKind::TsDispatch, "")
+                        .map_err(JobError::write)?
+                    {
+                        let path = writer.file_path(file).map_err(JobError::write)?;
                         if let Some((&path, _)) = current.get_key_value(path.as_str()) {
                             resolve.insert(path);
                             affected.insert(path);
@@ -703,8 +726,9 @@ impl<'a> Plan<'a> {
                     resolve.remove(path);
                 } else if rows.rebase(facts, &positions)? {
                     rows.signature = signature;
-                    rows.install(writer, path)?;
-                    writer.carry_origin_index(path).map_err(JobError::write)?;
+                    let origin = prior.file(path).expect("reused origin is published").0.key;
+                    rows.install(writer, origin)?;
+                    writer.carry_origin_index(origin).map_err(JobError::write)?;
                     resolve.remove(path);
                 }
             }
@@ -728,14 +752,17 @@ impl<'a> Plan<'a> {
         enabled: &Enabled,
         prior: &Publication<'_>,
     ) -> Result<(), JobError> {
+        let files = FileKeys::new(&self.edited, prior, writer)?;
         for path in &self.removed {
             if prior.base_files.contains_key(*path) {
                 writer.shadow(path).map_err(JobError::write)?;
             }
-            writer.put_projection(path, None).map_err(JobError::write)?;
+            writer
+                .put_projection(files.get(path), None)
+                .map_err(JobError::write)?;
         }
         if !self.resolve.is_empty() {
-            corpus.resolve(writer, enabled, &self.resolve, &self.removed, true)?;
+            corpus.resolve(writer, enabled, &self.resolve, true, |path| files.get(path))?;
         }
         let _timer = Timer::start("project.incremental");
         let rewrite: Vec<_> = self.edited.union(&self.resolve).copied().collect();
@@ -745,19 +772,24 @@ impl<'a> Plan<'a> {
             .filter(|path| !self.copy_outgoing.contains(*path))
             .chain(self.removed.iter())
         {
+            let origin = files.get(path);
             callbacks.extend(
                 writer
-                    .prior_callback_owners(path)
+                    .prior_callback_owners(origin)
                     .map_err(JobError::write)?,
             );
-            callbacks.extend(writer.callback_owners(path).map_err(JobError::write)?);
+            callbacks.extend(writer.callback_owners(origin).map_err(JobError::write)?);
         }
+        let callbacks = callbacks
+            .into_iter()
+            .map(|key| writer.file_path(key))
+            .collect::<Result<HashSet<_>, _>>()
+            .map_err(JobError::write)?;
         let owners: HashSet<_> = rewrite
             .iter()
             .copied()
             .chain(callbacks.iter().map(String::as_str))
             .collect();
-        let files = FileKeys::new(&self.edited, prior);
         let mut keys = NodeKeys::new(writer, prior)?;
         let by_path: HashMap<_, _> = corpus
             .request
@@ -805,14 +837,14 @@ impl<'a> Plan<'a> {
                 continue;
             }
             let blob = writer
-                .projection(path)
+                .projection(key)
                 .map_err(JobError::write)?
                 .map_or_else(
-                    || writer.prior_projection(path).map_err(JobError::write),
+                    || writer.prior_projection(key).map_err(JobError::write),
                     |blob| Ok(Some(blob)),
                 )?
                 .ok_or_else(|| JobError::request(format!("Missing resolution for {path}")))?;
-            let rows = relations::Outgoing::load(writer, path, relations::decode(&blob)?)?;
+            let rows = relations::Outgoing::load(writer, key, path, relations::decode(&blob)?)?;
             let digest = rows.digest()?;
             if !self.edited.contains(path) {
                 let (file, previous) = prior.file(path).expect("new paths are edited");
@@ -895,7 +927,7 @@ fn topology_readers(
     corpus: &Corpus<'_>,
     prior: &Publication<'_>,
     writer: &Writer,
-    frontier: &mut VecDeque<String>,
+    frontier: &mut VecDeque<i64>,
 ) -> Result<bool, JobError> {
     use mex_graph_python::resolve::module_index;
     let paths = |language| {
@@ -924,7 +956,7 @@ fn topology_readers(
             if left.get(key).map(|&i| before[i]) != right.get(key).map(|&i| after[i]) {
                 frontier.extend(
                     writer
-                        .readers("python-module", key)
+                        .lookup_readers(LookupKind::PythonModule, key)
                         .map_err(JobError::write)?,
                 );
             }
@@ -938,15 +970,12 @@ fn topology_readers(
     let new = modules(corpus.root, after, corpus.configs);
     let mut changed = false;
     for (kind, syntax) in [
-        ("ts-import", Syntax::Import),
-        ("ts-require", Syntax::Require),
+        (LookupKind::TsImport, Syntax::Import),
+        (LookupKind::TsRequire, Syntax::Require),
     ] {
-        for key in writer.read_keys(kind).map_err(JobError::write)? {
-            let (path, specifier) = key
-                .split_once('\0')
-                .ok_or_else(|| JobError::request("Invalid module dependency"))?;
-            if old.resolve(path, specifier, syntax) != new.resolve(path, specifier, syntax) {
-                frontier.extend(writer.readers(kind, &key).map_err(JobError::write)?);
+        for (id, path, specifier) in writer.module_reads(kind).map_err(JobError::write)? {
+            if old.resolve(&path, &specifier, syntax) != new.resolve(&path, &specifier, syntax) {
+                frontier.extend(writer.readers_of(id).map_err(JobError::write)?);
                 changed = true;
             }
         }
@@ -960,14 +989,11 @@ struct FileKeys<'a> {
 }
 
 impl<'a> FileKeys<'a> {
-    fn new(edited: &HashSet<&'a str>, prior: &'a Publication<'a>) -> Self {
-        let mut next = prior
-            .overlay
-            .into_iter()
-            .flat_map(|overlay| overlay.files.values().map(|file| file.key))
-            .max()
-            .unwrap_or_default()
-            .max(mex_graph_core::store::OVERLAY_KEY_START);
+    fn new(
+        edited: &HashSet<&'a str>,
+        prior: &'a Publication<'a>,
+        writer: &Writer,
+    ) -> Result<Self, JobError> {
         let mut paths: Vec<_> = edited
             .iter()
             .copied()
@@ -976,12 +1002,9 @@ impl<'a> FileKeys<'a> {
         paths.sort_unstable();
         let new = paths
             .into_iter()
-            .map(|path| {
-                next += 1;
-                (path, next)
-            })
-            .collect();
-        Self { prior, new }
+            .map(|path| Ok((path, writer.allocate_path(path).map_err(JobError::write)?)))
+            .collect::<Result<_, JobError>>()?;
+        Ok(Self { prior, new })
     }
 
     fn get(&self, path: &str) -> i64 {
@@ -1128,17 +1151,14 @@ pub(super) fn framework_set(
     changed: &HashMap<String, FileFacts>,
     removed: &HashSet<&str>,
 ) -> Result<Enabled, JobError> {
-    let mut names = HashSet::new();
-    for key in writer.read_keys(DETECTION).map_err(JobError::write)? {
-        if writer
-            .readers(DETECTION, &key)
-            .map_err(JobError::write)?
-            .iter()
-            .any(|path| !changed.contains_key(path) && !removed.contains(path.as_str()))
-        {
-            names.insert(key);
-        }
-    }
+    let mut names: HashSet<_> = writer
+        .prior_frameworks()
+        .map_err(JobError::write)?
+        .into_iter()
+        .filter_map(|(path, name)| {
+            (!changed.contains_key(&path) && !removed.contains(path.as_str())).then_some(name)
+        })
+        .collect();
     names.extend(
         changed
             .values()

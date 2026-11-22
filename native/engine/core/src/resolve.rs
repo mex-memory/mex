@@ -3,6 +3,19 @@
 
 use crate::facts::FileFacts;
 
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LookupKind {
+    Path = 1,
+    PythonModule = 2,
+    RustCrate = 3,
+    CSharpType = 4,
+    TsImport = 5,
+    TsRequire = 6,
+    TsDispatch = 7,
+    TsHeritage = 8,
+}
+
 pub enum Access<'a> {
     Origin(usize),
     Enter(usize),
@@ -12,7 +25,7 @@ pub enum Access<'a> {
     ReadMemo(usize),
     File(usize),
     Import(usize, usize),
-    Lookup(&'static str, &'a str),
+    Lookup(LookupKind, &'a str),
 }
 
 #[derive(Clone, Copy)]
@@ -60,7 +73,7 @@ impl<'a> Files<'a> {
         }
     }
 
-    pub fn lookup(self, kind: &'static str, key: &str) {
+    pub fn lookup(self, kind: LookupKind, key: &str) {
         if let Self::Lazy { observe, .. } = self {
             observe(Access::Lookup(kind, key));
         }

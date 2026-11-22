@@ -11,6 +11,7 @@ pub use rusqlite::Error;
 pub const SCHEMA_VERSION: u32 = 5;
 const SCHEMA: &str = include_str!("schema_v5.sql");
 mod incremental;
+pub use incremental::ReadId;
 mod overlay;
 pub use overlay::{BaseFile, RefreshBase};
 pub const OVERLAY_KEY_START: i64 = 1 << 40;
@@ -179,6 +180,7 @@ pub struct CoverageGap {
 pub struct Writer {
     conn: Connection,
     codes: HashMap<Code, HashMap<String, i64>>,
+    dependencies: incremental::Dependencies,
     edge_sequence: i64,
     previous_overlay: bool,
     sparse_observations: bool,
@@ -228,6 +230,7 @@ impl Writer {
         Ok(Writer {
             conn,
             codes: HashMap::new(),
+            dependencies: incremental::Dependencies::default(),
             edge_sequence: offset,
             previous_overlay: false,
             sparse_observations: false,

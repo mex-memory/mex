@@ -23,7 +23,7 @@ pub(super) struct Projection {
     routes: [u8; 32],
     edges: Vec<Edge>,
     unresolved: Vec<Unresolved>,
-    remote: BTreeMap<String, Vec<Edge>>,
+    remote: BTreeMap<i64, Vec<Edge>>,
 }
 
 #[derive(Encode, Decode)]
@@ -92,9 +92,13 @@ struct Unresolved {
 }
 
 impl Projection {
-    pub(super) fn new(file: &StagedFile<'_>, facts: &FileFacts) -> Result<Self, JobError> {
+    pub(super) fn new(
+        file: &StagedFile<'_>,
+        facts: &FileFacts,
+        file_key: impl Fn(&str) -> i64,
+    ) -> Result<Self, JobError> {
         let mut edges = Vec::with_capacity(file.edges.len());
-        let mut remote: BTreeMap<String, Vec<Edge>> = BTreeMap::new();
+        let mut remote: BTreeMap<i64, Vec<Edge>> = BTreeMap::new();
         for edge in &file.edges {
             let (_, evidence) = build::edge_evidence(edge);
             let row = Edge {
@@ -109,7 +113,7 @@ impl Projection {
                 evidence: evidence.map(Evidence::from),
             };
             if let Some(owner) = edge.owner {
-                remote.entry(owner.into()).or_default().push(row);
+                remote.entry(file_key(owner)).or_default().push(row);
             } else {
                 edges.push(row);
             }
@@ -171,15 +175,15 @@ impl Projection {
         Ok(positions.iter().all(|(old, new)| old == new) && self.routes == routes(facts)?)
     }
 
-    pub(super) fn install(&self, writer: &Writer, path: &str) -> Result<(), JobError> {
+    pub(super) fn install(&self, writer: &Writer, origin: i64) -> Result<(), JobError> {
         let _timer = mex_graph_core::timing::Timer::start("v5.resolutionInputs");
         let blob = encode(self)?;
         writer
-            .put_projection(path, Some(&blob))
+            .put_projection(origin, Some(&blob))
             .map_err(JobError::write)?;
-        for (owner, edges) in &self.remote {
+        for (&owner, edges) in &self.remote {
             writer
-                .put_callback(owner, path, &encode(edges)?)
+                .put_callback(owner, origin, &encode(edges)?)
                 .map_err(JobError::write)?;
         }
         Ok(())
@@ -193,12 +197,22 @@ pub(super) struct Outgoing {
 }
 
 impl Outgoing {
-    pub(super) fn load(writer: &Writer, path: &str, local: Projection) -> Result<Self, JobError> {
+    pub(super) fn load(
+        writer: &Writer,
+        file: i64,
+        path: &str,
+        local: Projection,
+    ) -> Result<Self, JobError> {
         let mut callbacks = writer
-            .callbacks_for(path)
+            .callbacks_for(file)
             .map_err(JobError::write)?
             .into_iter()
-            .map(|(origin, blob)| Ok((origin, decode(&blob)?)))
+            .map(|(origin, blob)| {
+                Ok((
+                    writer.file_path(origin).map_err(JobError::write)?,
+                    decode(&blob)?,
+                ))
+            })
             .collect::<Result<Vec<_>, JobError>>()?;
         callbacks.sort_unstable_by(|(left, _), (right, _)| {
             left.encode_utf16().cmp(right.encode_utf16())

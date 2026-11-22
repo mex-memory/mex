@@ -478,7 +478,7 @@ const FRAMEWORK_CAPTURE_VERSION: u32 = 1;
 /// Bump the prefix when persisted projection, dependency or digest semantics change.
 pub(super) fn refresh_format() -> String {
     format!(
-        "4:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
+        "5:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
         mex_graph_python::ADAPTER_VERSION,
         mex_graph_ecmascript::ADAPTER_VERSION,
         mex_graph_rust::ADAPTER_VERSION,

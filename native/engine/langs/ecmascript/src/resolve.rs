@@ -10,7 +10,7 @@ use mex_graph_core::facts::{
     Call, CallForm, Def, FileFacts, ImportForm, Kind, NONE, Range, Receiver, ScopeKind,
 };
 
-use mex_graph_core::resolve::Files;
+use mex_graph_core::resolve::{Files, LookupKind};
 
 use crate::modules::{ModuleResolver, ModuleTarget};
 
@@ -241,7 +241,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         for (file, index, interface) in sites {
             if active_file != Some(file) {
                 self.start(file);
-                self.files.lookup("ts-dispatch", "");
+                self.files.lookup(LookupKind::TsDispatch, "");
                 active_file = Some(file);
                 cache.clear();
             }

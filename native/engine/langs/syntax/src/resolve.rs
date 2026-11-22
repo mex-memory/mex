@@ -7,7 +7,7 @@ use mex_graph_core::facts::{
     Def, Import, Kind, ParseStatus, Range, ReferenceKind, SyntaxReference,
 };
 
-use mex_graph_core::resolve::Files;
+use mex_graph_core::resolve::{Files, LookupKind};
 
 use crate::EXCLUDED;
 
@@ -130,7 +130,7 @@ impl<'a> Index<'a> {
     }
 
     pub fn file(&self, path: &str) -> Option<usize> {
-        self.facts.lookup("path", path);
+        self.facts.lookup(LookupKind::Path, path);
         self.paths.get(path).copied().filter(|&index| {
             let facts = self.facts.get(index);
             facts.health.status != ParseStatus::Failed && !facts.defs.is_empty()

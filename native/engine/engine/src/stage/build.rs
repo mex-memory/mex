@@ -95,7 +95,9 @@ pub(crate) fn write(
         load: &load,
         modules: None,
     }
-    .resolve(&writer, frameworks, &selected, &HashSet::new(), false)?;
+    .resolve(&writer, frameworks, &selected, false, |path| {
+        file_keys[path]
+    })?;
     for (index, input) in request
         .files
         .iter()
@@ -104,13 +106,14 @@ pub(crate) fn write(
     {
         let _timer = Timer::start("v5.relationships");
         let path = &input.path;
+        let key = file_keys[path.as_str()];
         let blob = writer
-            .projection(path)
+            .projection(key)
             .map_err(write)?
             .ok_or_else(|| JobError::request("Missing build projection"))?;
-        let outgoing = relations::Outgoing::load(&writer, path, relations::decode(&blob)?)?;
+        let outgoing = relations::Outgoing::load(&writer, key, path, relations::decode(&blob)?)?;
         writer
-            .set_file_resolution(file_keys[path.as_str()], &outgoing.digest()?)
+            .set_file_resolution(key, &outgoing.digest()?)
             .map_err(write)?;
         counts.edges +=
             outgoing.write(&mut writer, |path| file_keys[path], |id| Ok(node_keys[id]))?;

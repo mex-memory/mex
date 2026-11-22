@@ -217,6 +217,7 @@ impl Writer {
         self.conn
             .execute("ATTACH DATABASE ?1 AS previous", [immutable_uri(previous)?])?;
         self.previous_overlay = true;
+        self.carry_dependency_dictionaries()?;
         for code in [
             super::Code::Language,
             super::Code::NodeKind,
