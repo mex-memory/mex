@@ -16,6 +16,7 @@ mkdirSync(dist, { recursive: true });
 
 // 1) The frozen SQLite schema → dist/schema.sql
 cpSync(join(graphSrc, "schema.sql"), join(dist, "schema.sql"));
+cpSync(join(graphSrc, "wasi-engine.mjs"), join(dist, "wasi-engine.mjs"));
 
 // 2) The vendored tree-sitter grammar WASMs → dist/wasm/*.wasm
 const wasmSrc = join(graphSrc, "wasm");

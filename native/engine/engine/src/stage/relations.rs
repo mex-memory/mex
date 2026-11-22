@@ -314,7 +314,7 @@ impl<'a> Outgoing<'a> {
             )
             .map_err(JobError::write)?;
         }
-        digest.update(bytes.len().to_le_bytes());
+        digest.update((bytes.len() as u64).to_le_bytes());
         digest.update(&bytes);
         bytes.clear();
         for row in &self.local.unresolved {

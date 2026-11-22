@@ -185,6 +185,7 @@ impl Session {
         let config_upsert = edit.configs.is_some();
         let request = Request {
             root: self.request.root.clone(),
+            module_root: None,
             mode: self.request.mode.clone(),
             contract: self.request.contract,
             limits: self.request.limits,

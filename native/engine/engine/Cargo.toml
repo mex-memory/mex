@@ -29,6 +29,9 @@ toml = { version = "0.9", default-features = false, features = ["parse", "serde"
 tree-sitter = "0.26"
 zstd = { version = "0.13", default-features = false }
 
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+cpu-time = "1.0"
+
 [lints]
 workspace = true
 

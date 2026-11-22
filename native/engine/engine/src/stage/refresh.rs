@@ -132,7 +132,7 @@ pub(crate) fn write(
     {
         let load = |path: &str| loader.get(path);
         let corpus = Corpus {
-            root,
+            root: request.module_root(root),
             request,
             configs,
             sizes: &sizes,

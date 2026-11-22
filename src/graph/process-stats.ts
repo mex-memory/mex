@@ -1,12 +1,29 @@
 // Usage of the candidate process and resident Rust engines. Linux reads /proc,
 // Windows queries CIM, and macOS samples current RSS through ps.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 
 export interface ProcessUsage {
   cpuMs: number;
   peakRssMb: number;
+}
+
+// One maintenance operation can run more than one engine job (for example,
+// an oversized overlay followed by a base build). Sum CPU and keep peak RSS.
+const engineUsage = new AsyncLocalStorage<ProcessUsage>();
+
+export function withEngineUsage<T>(usage: ProcessUsage, run: () => T): T {
+  return engineUsage.run(usage, run);
+}
+
+export function addEngineUsage(usage: { cpuMs?: number; peakRssMb: number }): void {
+  const total = engineUsage.getStore();
+  if (total) {
+    total.cpuMs += usage.cpuMs ?? 0;
+    total.peakRssMb = Math.max(total.peakRssMb, usage.peakRssMb);
+  }
 }
 
 export interface ChildProcessUsage extends ProcessUsage {

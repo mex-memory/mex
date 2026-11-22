@@ -36,6 +36,7 @@ pub struct Request {
     pub contract: u32,
     pub mode: String,
     pub root: PathBuf,
+    pub(super) module_root: Option<PathBuf>,
     pub files: Vec<RequestFile>,
     #[serde(default)]
     pub(super) configs: Vec<RequestConfig>,
@@ -127,7 +128,23 @@ pub(super) fn emit(value: &impl Serialize) -> Result<(), JobError> {
 }
 
 pub fn emit_error(code: &str, message: &str) {
-    let _ = emit(&serde_json::json!({ "type": "error", "code": code, "message": message }));
+    let _ = emit(&serde_json::json!({
+        "type": "error", "code": code, "message": message, "usage": process_usage(0.0, 0),
+    }));
+}
+
+pub(super) fn process_usage(wall_ms: impl Serialize, sampled_peak: u64) -> serde_json::Value {
+    #[cfg(not(target_os = "wasi"))]
+    let cpu_ms = cpu_time::ProcessTime::try_now()
+        .ok()
+        .map(|time| time.as_duration().as_millis() as u64);
+    #[cfg(target_os = "wasi")]
+    let cpu_ms: Option<u64> = None;
+    let rss = memory_stats::memory_stats().map_or(0, |memory| memory.physical_mem as u64);
+    serde_json::json!({
+        "wallMs": wall_ms, "peakRssMb": rss.max(sampled_peak).div_ceil(1024 * 1024),
+        "cpuMs": cpu_ms,
+    })
 }
 
 /// The candidate and its SQLite side files.
@@ -213,6 +230,48 @@ pub fn load(path: &Path, mode: &str) -> Result<Request, JobError> {
 /// deletes the candidate and exits the process.
 pub fn run(request: Request) -> Result<(), JobError> {
     let started = Instant::now();
+    // WASI Preview 1 has no threads. Its Node host owns the barrier and guard.
+    let guard = (!cfg!(target_os = "wasi"))
+        .then(|| start_guard(&request))
+        .transpose()?;
+
+    let timing_file = if cfg!(target_os = "wasi") {
+        None
+    } else {
+        timing_file(&request.root)
+    };
+    if timing_file.is_some() {
+        timing::enable();
+    }
+    let counts = timing::measure("job", || run_started(&request));
+    if let (Some(path), Some(totals)) = (timing_file, timing::take()) {
+        append_timings(&path, &request.mode, totals);
+    }
+    let usage = process_usage(
+        started.elapsed().as_millis() as u64,
+        guard.as_ref().map_or(0, |guard| guard.peak_bytes()),
+    );
+    let counts = counts.inspect_err(|_| {
+        remove_candidate(request.output.as_deref());
+        let _ = emit(&serde_json::json!({"type": "usage", "usage": usage}));
+    })?;
+    let result = emit(&serde_json::json!({
+        "type": "result",
+        "files": counts.files,
+        "nodes": counts.nodes,
+        "edges": counts.edges,
+        "coverageGaps": counts.coverage_gaps,
+        "filesReextracted": counts.reextracted,
+        "shadowedFiles": counts.shadowed,
+        "usage": usage,
+    }));
+    if request.output.is_none() {
+        result?;
+    }
+    Ok(())
+}
+
+fn start_guard(request: &Request) -> Result<Arc<Guard>, JobError> {
     let output = request.output.clone();
     let guard = Arc::new(Guard::start(
         Limits {
@@ -227,8 +286,7 @@ pub fn run(request: Request) -> Result<(), JobError> {
                 remove_candidate(output.as_deref());
                 report();
             } else {
-                // A large staged line can fill stdout's pipe. The guard must
-                // still exit if the parent stops draining it.
+                // The parent's pipe can be full. Bound the time to report a breach.
                 let (reported, completion) = mpsc::channel();
                 let _ = std::thread::Builder::new().spawn(move || {
                     report();
@@ -239,11 +297,8 @@ pub fn run(request: Request) -> Result<(), JobError> {
             std::process::exit(breach.exit_code());
         },
     ));
-
-    // The start barrier: nothing touches the repository before Node says so.
     let mut line = String::new();
-    let stdin = std::io::stdin();
-    if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 || line.trim() != "start" {
+    if std::io::stdin().lock().read_line(&mut line).unwrap_or(0) == 0 || line.trim() != "start" {
         remove_candidate(request.output.as_deref());
         return Err(JobError {
             code: "graph_parent_gone",
@@ -251,44 +306,15 @@ pub fn run(request: Request) -> Result<(), JobError> {
             message: "stdin closed before start".into(),
         });
     }
-    // After the barrier, stdin closing means the parent is gone.
-    {
-        let guard = Arc::clone(&guard);
-        std::thread::spawn(move || {
-            let mut sink = String::new();
-            while std::io::stdin().lock().read_line(&mut sink).unwrap_or(0) > 0 {
-                sink.clear();
-            }
-            guard.parent_gone();
-        });
-    }
-
-    let timing_file = timing_file(&request.root);
-    if timing_file.is_some() {
-        timing::enable();
-    }
-    let counts = timing::measure("job", || run_started(&request));
-    if let (Some(path), Some(totals)) = (timing_file, timing::take()) {
-        append_timings(&path, &request.mode, totals);
-    }
-    let counts = counts.inspect_err(|_| remove_candidate(request.output.as_deref()))?;
-    let result = emit(&serde_json::json!({
-        "type": "result",
-        "files": counts.files,
-        "nodes": counts.nodes,
-        "edges": counts.edges,
-        "coverageGaps": counts.coverage_gaps,
-        "filesReextracted": counts.reextracted,
-        "shadowedFiles": counts.shadowed,
-        "usage": {
-            "wallMs": started.elapsed().as_millis() as u64,
-            "peakRssMb": guard.peak_bytes() / (1024 * 1024),
-        },
-    }));
-    if request.output.is_none() {
-        result?;
-    }
-    Ok(())
+    let watcher = Arc::clone(&guard);
+    std::thread::spawn(move || {
+        let mut sink = String::new();
+        while std::io::stdin().lock().read_line(&mut sink).unwrap_or(0) > 0 {
+            sink.clear();
+        }
+        watcher.parent_gone();
+    });
+    Ok(guard)
 }
 
 pub(super) fn repository_path(path: &str) -> bool {
@@ -350,6 +376,7 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
     let cache = request
         .facts_cache
         .as_deref()
+        .filter(|_| !cfg!(target_os = "wasi"))
         .and_then(|directory| FactsCache::open(directory, request.files.len()));
     let configs = read_configs(&root, &request.configs);
     if request.mode == "refresh" {
@@ -374,7 +401,7 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
         Some(output) => stage::build::write(output, extracted, &root, request, &configs, &enabled),
         None => stage::write(
             &extracted,
-            &root,
+            request.module_root(&root),
             &configs,
             request.frameworks.then_some(&enabled),
         ),
@@ -512,7 +539,7 @@ pub(super) fn extract_files<'a>(
     let _timer = Timer::start("extract");
     let capture_frameworks =
         request.frameworks || request.output.is_some() || request.mode == "serve";
-    let inputs: Vec<_> = files
+    let inputs: Vec<ExtractInput<'_>> = files
         .iter()
         .map(
             |&file| match request_adapter(&file.path, &request.languages) {
@@ -526,7 +553,9 @@ pub(super) fn extract_files<'a>(
         .collect();
 
     let count = inputs.iter().filter(|input| input.is_ok()).count();
-    if count != 0 {
+    if cfg!(target_os = "wasi") {
+        extraction_worker(root, request, capture_frameworks)(&inputs, None);
+    } else if count != 0 {
         let next = AtomicUsize::new(0);
         // Nearby paths often repeat the same strings and fingerprint tokens.
         // Claim short runs of them when packing facts into compression blocks.
@@ -570,7 +599,7 @@ pub(super) fn extract_files<'a>(
                     if measure {
                         timing::enable();
                     }
-                    let mut extractors = Extractors::default();
+                    let mut process = extraction_worker(root, request, capture_frameworks);
                     let mut cache = cache
                         .zip(sender)
                         .and_then(|(cache, sender)| cache.worker(sender));
@@ -580,39 +609,7 @@ pub(super) fn extract_files<'a>(
                             break;
                         }
                         let end = (start + claim).min(inputs.len());
-                        for (file, adapter, result) in inputs[start..end].iter().flatten() {
-                            result.get_or_init(|| {
-                                let key = cache.as_ref().map(|_| {
-                                    adapter.facts_key(if capture_frameworks {
-                                        FRAMEWORK_CAPTURE_VERSION
-                                    } else {
-                                        0
-                                    })
-                                });
-                                extract(
-                                    request,
-                                    root,
-                                    file,
-                                    key.as_ref(),
-                                    cache.as_mut(),
-                                    |path, text, hash| {
-                                        let mut facts =
-                                            extractors.extract(adapter, path, text, hash);
-                                        if capture_frameworks
-                                            && !matches!(
-                                                adapter.implementation,
-                                                Implementation::Basic(_)
-                                            )
-                                        {
-                                            timing::measure("worker.frameworks.capture", || {
-                                                frameworks::capture(&mut facts, text)
-                                            });
-                                        }
-                                        facts
-                                    },
-                                )
-                            });
-                        }
+                        process(&inputs[start..end], cache.as_mut());
                     }
                     if let Some(mut cache) = cache {
                         cache.flush();
@@ -706,6 +703,54 @@ pub(super) fn extract_files<'a>(
     }
 }
 
+type ExtractInput<'a> = Result<
+    (
+        &'a RequestFile,
+        &'static Adapter,
+        OnceLock<Result<Extracted, &'static str>>,
+    ),
+    &'static str,
+>;
+
+fn extraction_worker<'a>(
+    root: &'a Path,
+    request: &'a Request,
+    capture_frameworks: bool,
+) -> impl FnMut(&[ExtractInput<'_>], Option<&mut CacheWorker>) + 'a {
+    let mut extractors = Extractors::default();
+    move |inputs: &[ExtractInput<'_>], mut cache: Option<&mut CacheWorker>| {
+        for (file, adapter, result) in inputs.iter().flatten() {
+            result.get_or_init(|| {
+                let key = cache.as_ref().map(|_| {
+                    adapter.facts_key(if capture_frameworks {
+                        FRAMEWORK_CAPTURE_VERSION
+                    } else {
+                        0
+                    })
+                });
+                extract(
+                    request,
+                    root,
+                    file,
+                    key.as_ref(),
+                    cache.as_deref_mut(),
+                    |path, text, hash| {
+                        let mut facts = extractors.extract(adapter, path, text, hash);
+                        if capture_frameworks
+                            && !matches!(adapter.implementation, Implementation::Basic(_))
+                        {
+                            timing::measure("worker.frameworks.capture", || {
+                                frameworks::capture(&mut facts, text)
+                            });
+                        }
+                        facts
+                    },
+                )
+            });
+        }
+    }
+}
+
 fn extract(
     request: &Request,
     root: &Path,
@@ -768,6 +813,14 @@ pub(super) fn decode_hash(text: &str) -> Option<[u8; 32]> {
 }
 
 impl Request {
+    pub(super) fn module_root<'a>(&'a self, source_root: &'a Path) -> &'a Path {
+        if cfg!(target_os = "wasi") {
+            self.module_root.as_deref().unwrap_or(source_root)
+        } else {
+            source_root
+        }
+    }
+
     pub(super) fn captured_hashes(&self) -> bool {
         self.source_directory.is_some()
             && self

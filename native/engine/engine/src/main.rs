@@ -68,6 +68,10 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
+            if cfg!(target_os = "wasi") && mode == "serve" {
+                job::emit_error("graph_serve_unavailable", "WASI uses one-shot graph jobs");
+                return ExitCode::from(2);
+            }
             let run = if mode == "serve" {
                 serve::run
             } else {

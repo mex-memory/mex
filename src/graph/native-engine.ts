@@ -7,15 +7,18 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { GraphCoverageHistogram } from "./corpus-policy.js";
 import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
+import { graphPlatformPackage } from "./engine-platform.js";
 import { phaseTimingsWorkerEnv } from "./phase-timing.js";
 import type { BASIC_RESOLUTION, GraphEdge, GraphNode, Language } from "./types.js";
+import { addEngineUsage } from "./process-stats.js";
 
 /** The contract version this module speaks; the engine must report the same. */
 export const GRAPH_ENGINE_CONTRACT = 3;
@@ -23,6 +26,17 @@ export const GRAPH_ENGINE_IDENTITY = `mex-graph-contract-${GRAPH_ENGINE_CONTRACT
 /** Points at a specific engine binary, for development and tests. */
 export const GRAPH_ENGINE_ENV = "MEX_GRAPH_ENGINE";
 export { GRAPH_ENGINE_LANGUAGES_ENV, graphEngineLanguages } from "./engine-languages.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const HOST_PACKAGE = createRequire(import.meta.url);
+export const NO_NATIVE_ENGINE = "no mex-graph binary was found";
+const WASI_RUNNER = join(HERE, "wasi-engine.mjs");
+// uvwasi can allocate during a filesystem call. Disable the V8 fast-call
+// path, which has crashed during the resulting GC on Node 22.
+const WASI_ARGS = ["--no-turbo-fast-api-calls", WASI_RUNNER];
+
+export type GraphEngineRunner = { kind: "native" | "wasi"; path: string; nativeUnavailable?: string };
+export interface GraphEngineUsage { wallMs: number; peakRssMb: number; cpuMs?: number }
 
 export interface GraphEngineBuildMetadata {
   indexedAt: number;
@@ -59,6 +73,8 @@ export type EngineRequestConfig = string | { path: string; source: string };
 export interface EngineRequest {
   mode: "build" | "refresh" | "stage";
   root: string;
+  /** Original path for absolute module references when WASI remaps root. */
+  moduleRoot?: string;
   files: EngineRequestFile[];
   sourceDirectory?: string;
   observationRoot?: string;
@@ -101,12 +117,13 @@ export interface EngineStagedFile {
 }
 
 export type EngineEvent =
-  | { type: "progress"; phase: string; done: number; total: number }
+  | { type: "progress"; phase: string; done: number; total: number; usage?: GraphEngineUsage }
   | { type: "file"; path: string; status: string; reason?: string }
   | EngineStagedFile
   | { type: "result"; files: number; nodes: number; edges: number; coverageGaps?: number;
-    filesReextracted?: number; shadowedFiles?: number | null; usage: { wallMs: number; peakRssMb: number; cpuMs?: number } }
-  | { type: "error"; code: string; message: string };
+    filesReextracted?: number; shadowedFiles?: number | null; usage: GraphEngineUsage }
+  | { type: "usage"; usage: GraphEngineUsage }
+  | { type: "error"; code: string; message: string; usage?: GraphEngineUsage };
 
 export interface EngineRun {
   /** The process's exit code, or null when a signal killed it. */
@@ -114,17 +131,39 @@ export interface EngineRun {
   signal: NodeJS.Signals | null;
   result?: Extract<EngineEvent, { type: "result" }>;
   error?: Extract<EngineEvent, { type: "error" }>;
+  usage?: GraphEngineUsage;
 }
 
-/**
- * The engine binary: `MEX_GRAPH_ENGINE`, else a development build in this
- * checkout (`native/engine/target/{release,debug}`). Platform packages are M6.
- */
+/** Retry a launch that failed after the native version probe. */
+export async function runResolvedGraphEngine(
+  runner: GraphEngineRunner,
+  request: EngineRequest,
+  options?: Parameters<typeof runGraphEngine>[2],
+): Promise<EngineRun & { runner: GraphEngineRunner }> {
+  let run = await runGraphEngine(runner, request, options);
+  if (runner.kind === "native" && !options?.signal?.aborted && run.error?.code === "graph_engine_unavailable") {
+    const wasi = resolveWasiGraphEngine("the mex-graph binary could not be executed");
+    if (!("problem" in wasi)) {
+      runner = wasi;
+      run = await runGraphEngine(runner, request, options);
+    }
+  }
+  return { ...run, runner };
+}
+
+/** Native executable selected by override, platform package, or checkout build. */
 export function graphEngineBinary(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const fromEnv = env[GRAPH_ENGINE_ENV]?.trim();
-  if (fromEnv) return existsSync(fromEnv) ? resolve(fromEnv) : undefined;
+  if (fromEnv) return !fromEnv.endsWith(".wasm") && existsSync(fromEnv) ? resolve(fromEnv) : undefined;
   const exe = process.platform === "win32" ? "mex-graph.exe" : "mex-graph";
-  let dir = dirname(fileURLToPath(import.meta.url));
+  const pkg = graphPlatformPackage();
+  if (pkg) {
+    try {
+      const binary = join(dirname(HOST_PACKAGE.resolve(`${pkg}/package.json`)), "bin", exe);
+      if (existsSync(binary)) return binary;
+    } catch { /* Optional dependency absent. */ }
+  }
+  let dir = HERE;
   for (let i = 0; i < 6; i++) {
     for (const profile of ["release", "debug"]) {
       const candidate = join(dir, "native", "engine", "target", profile, exe);
@@ -135,9 +174,46 @@ export function graphEngineBinary(env: NodeJS.ProcessEnv = process.env): string 
   return undefined;
 }
 
+function graphEngineWasi(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const fromEnv = env[GRAPH_ENGINE_ENV]?.trim();
+  if (fromEnv?.endsWith(".wasm")) return existsSync(fromEnv) ? resolve(fromEnv) : undefined;
+  return [
+    join(HERE, "mex-graph.wasm"),
+    join(HERE, "../../dist/mex-graph.wasm"),
+    join(HERE, "../native/engine/target/wasm32-wasip1/release/mex-graph.wasm"),
+    join(HERE, "../../native/engine/target/wasm32-wasip1/release/mex-graph.wasm"),
+  ].find(path => existsSync(path));
+}
+
+export function hasGraphEngine(): boolean {
+  return !!(graphEngineBinary() || graphEngineWasi());
+}
+
+export function resolveWasiGraphEngine(nativeUnavailable?: string): GraphEngineRunner | { problem: string } {
+  const path = graphEngineWasi();
+  if (!path) return { problem: nativeUnavailable ?? NO_NATIVE_ENGINE };
+  const runner: GraphEngineRunner = { kind: "wasi", path, nativeUnavailable };
+  const version = graphEngineVersion(runner);
+  return "problem" in version ? { problem: "the WASI graph engine could not start" } : runner;
+}
+
+export function resolveGraphEngine(): GraphEngineRunner | { problem: string } {
+  const path = graphEngineBinary();
+  if (!path) return resolveWasiGraphEngine(process.env[GRAPH_ENGINE_ENV]?.trim().endsWith(".wasm") ? undefined : NO_NATIVE_ENGINE);
+  const version = graphEngineVersion(path);
+  return "problem" in version ? resolveWasiGraphEngine(version.problem) : { kind: "native", path };
+}
+
 /** The engine's version, or why it can't be used. */
-export function graphEngineVersion(binary: string): { version: string; contract: number } | { problem: string } {
-  const run = spawnSync(binary, ["version"], { encoding: "utf8", timeout: 10_000, windowsHide: true, env: engineEnv() });
+export function graphEngineVersion(binary: string | GraphEngineRunner): { version: string; contract: number } | { problem: string } {
+  const runner = typeof binary === "string" ? { kind: "native", path: binary } : binary;
+  const options = {
+    encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL", windowsHide: true, env: engineEnv(),
+  } as const;
+  const run = runner.kind === "wasi"
+    ? spawnSync(process.execPath, [...WASI_ARGS, runner.path, "version"], options)
+    : spawnSync(runner.path, ["version"], options);
+  if (run.error) return { problem: "the mex-graph binary could not be executed" };
   if (run.status !== 0) return { problem: `mex-graph version exited ${run.status ?? run.signal}` };
   try {
     const parsed = JSON.parse(run.stdout) as { version: string; contract: number };
@@ -184,6 +260,36 @@ export function spawnGraphEngine(binary: string, mode: EngineRequest["mode"] | "
   });
 }
 
+function spawnWasiGraphEngine(module: string, request: EngineRequest, requestPath: string) {
+  // WASI canonicalization needs mounts directly under /.
+  const root = realpathSync.native(request.root);
+  const job = dirname(requestPath);
+  const preopens: Record<string, string> = { "/checkout": root, "/job": job };
+  function inGuest(path: string | null | undefined): string | undefined {
+    if (!path) return undefined;
+    const directory = dirname(path);
+    if (directory === job) return `/job/${basename(path)}`;
+    const mount = `/db-${Object.keys(preopens).length}`;
+    preopens[mount] = directory;
+    return `${mount}/${basename(path)}`;
+  }
+  if (request.sourceDirectory) preopens["/sources"] = request.sourceDirectory;
+  writeEngineRequest(requestPath, {
+    ...request, root: "/checkout", moduleRoot: root, output: inGuest(request.output), base: inGuest(request.base),
+    overlay: inGuest(request.overlay), factsCache: undefined,
+    sourceDirectory: request.sourceDirectory ? "/sources" : undefined,
+  });
+  const options = JSON.stringify({
+    request: `/job/${basename(requestPath)}`, hostRequest: requestPath, output: request.output,
+    preopens, ...request.limits,
+  });
+  return spawn(process.execPath, [...WASI_ARGS, module, request.mode, options], {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    env: engineEnv(),
+  });
+}
+
 function removeCandidate(output: string): void {
   for (const suffix of ["", "-journal", "-wal", "-shm"]) rmSync(output + suffix, { force: true });
 }
@@ -195,23 +301,40 @@ function removeCandidate(output: string): void {
  * clean exit, including a crash the engine couldn't clean up.
  */
 export function runGraphEngine(
-  binary: string,
+  binary: string | GraphEngineRunner,
   request: EngineRequest,
   options: { onEvent?: (event: EngineEvent) => void; signal?: AbortSignal; requestDir?: string } = {},
 ): Promise<EngineRun> {
   const requestPath = request.output
     ? `${request.output}.request.json`
     : join(options.requestDir ?? tmpdir(), `mex-graph-request-${process.pid}-${randomBytes(6).toString("hex")}.json`);
-  writeEngineRequest(requestPath, request);
+  const runner = typeof binary === "string" ? { kind: "native", path: binary } : binary;
+  let child;
+  if (runner.kind === "wasi") {
+    child = spawnWasiGraphEngine(runner.path, request, requestPath);
+  } else {
+    writeEngineRequest(requestPath, request);
+    child = spawnGraphEngine(runner.path, request.mode, requestPath);
+  }
   return new Promise((resolvePromise) => {
-    const child = spawnGraphEngine(binary, request.mode, requestPath);
     const run: EngineRun = { exitCode: null, signal: null };
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
       let event: EngineEvent;
       try { event = JSON.parse(line) as EngineEvent; } catch { return; }
+      if (!event || typeof event !== "object") return;
       if (event.type === "result") run.result = event;
       if (event.type === "error") run.error = event;
+      if ("usage" in event && event.usage && Number.isFinite(event.usage.wallMs) && Number.isFinite(event.usage.peakRssMb)) {
+        const sample = event.usage;
+        const cpuMs = typeof sample.cpuMs === "number" && Number.isFinite(sample.cpuMs) ? sample.cpuMs : undefined;
+        run.usage = {
+          wallMs: Math.max(run.usage?.wallMs ?? 0, sample.wallMs),
+          peakRssMb: Math.max(run.usage?.peakRssMb ?? 0, sample.peakRssMb),
+          ...(cpuMs !== undefined || run.usage?.cpuMs !== undefined
+            ? { cpuMs: Math.max(run.usage?.cpuMs ?? 0, cpuMs ?? 0) } : {}),
+        };
+      }
       try { options.onEvent?.(event); }
       catch (error) {
         run.error = { type: "error", code: "graph_engine_parent_error", message: String(error) };
@@ -231,7 +354,9 @@ export function runGraphEngine(
       run.exitCode = code;
       run.signal = signal;
       rmSync(requestPath, { force: true });
-      if (code !== 0 && request.output) removeCandidate(request.output);
+      if ((code !== 0 || !run.result) && request.output) removeCandidate(request.output);
+      if (run.result && run.usage) run.result.usage = run.usage;
+      if (run.usage) addEngineUsage(run.usage);
       resolvePromise(run);
     });
     child.on("error", (error) => {

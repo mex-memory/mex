@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::guard::{Guard, Limits, ProcessSampler};
 use crate::job::{
-    JobError, Request, RequestConfig, RequestFile, append_timings, emit, emit_error,
+    JobError, Request, RequestConfig, RequestFile, append_timings, emit, emit_error, process_usage,
     remove_candidate, repository_path, timing_file,
 };
 use crate::stage::serve::{Edit, Pending, Session};
@@ -144,7 +144,7 @@ pub(crate) fn run(request: Request) -> Result<(), JobError> {
     let mut session = Session::open(request)?;
     opening.store(false, Ordering::Release);
     record_timings(timing_path.as_deref(), "serve.open");
-    emit(&json!({"type": "ready"}))?;
+    emit(&json!({"type": "ready", "usage": process_usage(0, guard.peak_bytes())}))?;
 
     let mut candidate: Option<Candidate> = None;
     while let Some(line) = next_frame(&frames)? {
@@ -191,7 +191,7 @@ pub(crate) fn run(request: Request) -> Result<(), JobError> {
                     "files": counts.files, "nodes": counts.nodes, "edges": counts.edges,
                     "coverageGaps": counts.coverage_gaps, "filesReextracted": counts.reextracted,
                     "shadowedFiles": counts.shadowed,
-                    "usage": {"wallMs": started.elapsed().as_secs_f64() * 1000.0, "peakRssMb": guard.peak_bytes() / (1024 * 1024)},
+                    "usage": process_usage(started.elapsed().as_secs_f64() * 1000.0, guard.peak_bytes()),
                 }))?;
             }
             Command::Verify { id, stamps } => {
@@ -200,18 +200,23 @@ pub(crate) fn run(request: Request) -> Result<(), JobError> {
                 let verified = timing::measure("verify", || verify(&root, pending, &stamps));
                 record_timings(timing_path.as_deref(), "serve.verify");
                 emit(&json!({"type": "verified", "id": id, "matches": verified,
-                    "wallMs": started.elapsed().as_secs_f64() * 1000.0}))?;
+                    "wallMs": started.elapsed().as_secs_f64() * 1000.0,
+                    "usage": process_usage(0, guard.peak_bytes())}))?;
             }
             Command::Accept { id, overlay } => {
                 require(&candidate, id)?;
                 let published = candidate.take().expect("matching candidate");
                 session.accept(published.pending, overlay)?;
-                emit(&json!({"type": "accepted", "id": id}))?;
+                emit(
+                    &json!({"type": "accepted", "id": id, "usage": process_usage(0, guard.peak_bytes())}),
+                )?;
             }
             Command::Discard { id } => {
                 require(&candidate, id)?;
                 candidate = None;
-                emit(&json!({"type": "discarded", "id": id}))?;
+                emit(
+                    &json!({"type": "discarded", "id": id, "usage": process_usage(0, guard.peak_bytes())}),
+                )?;
             }
             Command::Close => return Ok(()),
         }

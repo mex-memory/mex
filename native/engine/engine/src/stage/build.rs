@@ -16,7 +16,8 @@ use super::{
 };
 use crate::frameworks::Enabled;
 use crate::job::{
-    ConfigSource, ExtractedFiles, JobCounts, JobError, Request, RequestFile, emit, read_source,
+    ConfigSource, ExtractedFiles, JobCounts, JobError, Request, RequestFile, emit, process_usage,
+    read_source,
 };
 
 pub(crate) fn write(
@@ -59,8 +60,10 @@ pub(crate) fn write(
     // declarations. Keep one producer so normalization does not clone
     // several large fact arenas at once.
     let signatures = std::thread::scope(|scope| {
-        let signatures = (request.files.len() >= 1024 && request.limits.threads != Some(1))
-            .then(|| scope.spawn(|| build_signatures(&extracted, request)));
+        let signatures = (!cfg!(target_os = "wasi")
+            && request.files.len() >= 1024
+            && request.limits.threads != Some(1))
+        .then(|| scope.spawn(|| build_signatures(&extracted, request)));
         for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
             if index != 0 && index.is_multiple_of(256) {
                 progress("parse", index, request.files.len())?;
@@ -139,7 +142,7 @@ pub(crate) fn write(
         deferred: Vec::new(),
     };
     Corpus {
-        root,
+        root: request.module_root(root),
         request,
         configs,
         sizes: &sizes,
@@ -329,10 +332,10 @@ pub(super) fn resolution_context(
 ) -> String {
     let mut hash = Sha256::new();
     let mut append = |input: &str| {
-        hash.update(input.len().to_le_bytes());
+        hash.update((input.len() as u64).to_le_bytes());
         hash.update(input.as_bytes());
     };
-    append(&root.to_string_lossy());
+    append(&request.module_root(root).to_string_lossy());
     for language in &request.languages {
         append(language);
     }
@@ -449,7 +452,10 @@ pub(super) fn index_source(
 }
 
 fn progress(phase: &str, done: usize, total: usize) -> Result<(), JobError> {
-    emit(&serde_json::json!({ "type": "progress", "phase": phase, "done": done, "total": total }))
+    emit(&serde_json::json!({
+        "type": "progress", "phase": phase, "done": done, "total": total,
+        "usage": process_usage(0, 0),
+    }))
 }
 
 fn write_node(
