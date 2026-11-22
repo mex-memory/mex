@@ -58,6 +58,7 @@ type spec struct {
 	level                                    string // team (default), personal, hint
 	source                                   string // source type, default person
 	ref                                      string
+	producer, label, fix                     string
 }
 
 func (f *fixture) entry(s spec) {
@@ -81,6 +82,15 @@ func (f *fixture) entry(s spec) {
 	fmt.Fprintf(&b, "---\nmex:\n  id: %s\n  kind: %s\n  scope:\n    - %q\n  source:\n    type: %s\n    ref: %q\n", s.id, s.kind, s.scope, s.source, s.ref)
 	if s.source == "person" {
 		fmt.Fprintf(&b, "    quote: %q\n", s.oneLine)
+	}
+	if s.producer != "" {
+		fmt.Fprintf(&b, "    producer: %q\n", s.producer)
+	}
+	if s.label != "" {
+		fmt.Fprintf(&b, "    label: %q\n", s.label)
+	}
+	if s.fix != "" {
+		fmt.Fprintf(&b, "  fix:\n    snippet: %q\n    path: src/example.ts\n    commit: '%s'\n    lines: '4-8'\n", s.fix, strings.Repeat("a", 40))
 	}
 	fmt.Fprintf(&b, "  evidence: %s\n  one_line: %q\n", s.evidence, s.oneLine)
 	if len(s.when) > 0 {

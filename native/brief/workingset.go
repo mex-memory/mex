@@ -195,7 +195,7 @@ func score(rel float64, e *entries.Entry, level, verdict string) float64 {
 // laneAllowed admits knowledge nobody has accepted yet: an observed hint the
 // hint gate still allows, or an entry proposed but not in force.
 func laneAllowed(e *entries.Entry, level, verdict string, hintAllowed func(string) bool) bool {
-	if verdict == check.Broken || !validLine(e.OneLine) {
+	if e.Learned() || verdict == check.Broken || !validLine(e.OneLine) {
 		return false
 	}
 	if e.Status == "proposed" {

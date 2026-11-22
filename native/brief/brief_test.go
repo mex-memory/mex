@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mex-memory/mex/native/check"
+	"github.com/mex-memory/mex/native/workset"
 )
 
 const project = "g-0123456789abcdef01234567"
@@ -418,5 +419,29 @@ func TestRootCommandReachesAnAgentWithNoRuleFileForIt(t *testing.T) {
 	put(t, opts.Checkout, "package.json", `{"scripts":{}}`)
 	if r := build(t, opts); len(r.Items) != 1 {
 		t.Fatalf("a command whose script is gone was sent: %+v", r.Items)
+	}
+}
+
+func TestLearnedEntriesStayOutOfStartAndWorkingSetBriefs(t *testing.T) {
+	opts := setup(t)
+	put(t, opts.Checkout, ".mex/learned/mx_deepteam.md", entry("mx_deepteam", "Learned team process.", "rule", "**", "[]"))
+	personal := entry("mx_review1", "Learned personal process.", "rule", "**", "[]")
+	personal = strings.Replace(personal, "type: docs,", "type: docs, producer: learn-deeper,", 1)
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_review1.md", personal)
+	note := entry("mx_note01", "Keep paths short.", "rule", "**", "[]")
+	note = strings.Replace(note, "type: docs, ref: README.md", "type: person, ref: typed note, quote: Keep paths short.", 1)
+	note = strings.Replace(note, "evidence: docs", "evidence: person", 1)
+	put(t, opts.MexHome, "projects/"+project+"/notes/mx_note01.md", note)
+	for _, ws := range []*workset.Set{nil, {Seeds: []string{"src/example.ts"}}} {
+		opts.WorkingSet = ws
+		result := build(t, opts)
+		if !strings.Contains(result.Text, "Keep paths short.") || strings.Contains(result.Text, "Learned") {
+			t.Fatal(result.Text)
+		}
+		for _, item := range append(result.Folder, result.Lane...) {
+			if item.ID == "mx_review1" || item.ID == "mx_deepteam" {
+				t.Fatalf("learned entry selected: %+v", item)
+			}
+		}
 	}
 }

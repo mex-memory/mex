@@ -19,6 +19,10 @@ export function isBroad(scope: string): boolean {
   return scope === "**" || (/^[^*?[\]{}]+\/\*\*$/u.test(scope));
 }
 
+export function isLearned({ mex }: KnowledgeEntry): boolean {
+  return mex.source.producer === "learn-deeper" || mex.id.startsWith("mx_deep");
+}
+
 export interface Selection { selected: Candidate[]; skipped: Array<{ id: string; reason: string }>; }
 
 export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<string, Verdict> = new Map()): Selection {
@@ -32,9 +36,11 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
     else if (m.source.type === "rule-file") skip(c, "already in a rule file");
     else if (!KINDS.has(m.kind)) skip(c, `a ${m.kind} isn't loaded every session`);
     else if (!STRONG.has(m.evidence)) skip(c, "evidence too weak");
+    else if (isLearned(c.entry) && m.when?.length) skip(c, "delivered at the matching edit");
+    else if (isLearned(c.entry) && m.scope.includes("**") && !m.scope.every(scope => scope === "**")) skip(c, "mixed repo and folder scopes");
     else if (!m.scope.every(isBroad)) skip(c, "scoped to files, not an area");
     else if (verdict === "broken" || verdict === "changed") skip(c, `verdict is ${verdict}`);
-    else if (m.checks.length && verdict !== "held") skip(c, "current checks have not held");
+    else if ((isLearned(c.entry) || m.checks.length) && verdict !== "held") skip(c, "current checks have not held");
     else if (c.entry.text.length > MAX_NATIVE_TEXT) skip(c, "too long for a rule file");
     else selected.push(c);
   }

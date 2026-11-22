@@ -182,6 +182,9 @@ func readCoverage(root, home *os.Root, opts Options, cache ruleCache) Coverage {
 			switch {
 			case path.Base(name) == "AGENTS.md":
 				f.Agents = nativeAgents(root, name, []string{"codex", "claude-code"})
+				if path.Dir(name) == "." {
+					f.Agents = append(f.Agents, "copilot")
+				}
 				area := path.Dir(name)
 				f.Scope = []string{"**"}
 				if area != "." {
@@ -199,6 +202,15 @@ func readCoverage(root, home *os.Root, opts Options, cache ruleCache) Coverage {
 					}
 					f.Scope = front.Paths
 				}
+			case strings.HasPrefix(name, ".github/instructions/") && strings.HasSuffix(name, ".instructions.md"):
+				head, _, ok := strings.Cut(strings.TrimPrefix(string(body), "---\n"), "\n---\n")
+				var front struct {
+					ApplyTo string `yaml:"applyTo"`
+				}
+				if !ok || yaml.Unmarshal([]byte(head), &front) != nil || front.ApplyTo == "" {
+					continue
+				}
+				f.Agents, f.Scope = []string{"copilot"}, []string{front.ApplyTo}
 			default:
 				continue
 			}

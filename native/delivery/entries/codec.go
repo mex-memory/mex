@@ -71,6 +71,7 @@ type Trigger struct {
 	Match   string `json:"match"`
 	Pattern string `json:"pattern"`
 }
+
 type Check struct {
 	Kind   string            `json:"kind"`
 	Role   string            `json:"role"`

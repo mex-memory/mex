@@ -111,7 +111,10 @@ func TestJudgeSkipsEmptyAndUnchangedStages(t *testing.T) {
 			t.Fatal("a resolved stage requested a judge")
 		}
 	}
-	for _, report := range []check.StageReport{{Unfinished: true}, {Counts: map[string]int{check.Changed: 1}}, {Counts: map[string]int{check.Broken: 1}}, {Results: []check.Result{{Checks: []check.CheckResult{{Role: check.Complete, FilesChanged: []string{"x"}}}}}}} {
+	// A held procedure whose symbol moved: only the judge job writes the new place back.
+	moved := check.StageReport{Counts: map[string]int{check.Held: 1}, Items: []check.StageItem{{Status: "active", Level: "personal", Kind: "procedure"}},
+		Results: []check.Result{{Checks: []check.CheckResult{{Role: check.Supporting, Status: check.Pass, Relink: &check.SymbolRelink{File: "src/b.ts", Symbol: "load"}}}}}}
+	for _, report := range []check.StageReport{{Unfinished: true}, {Counts: map[string]int{check.Changed: 1}}, {Counts: map[string]int{check.Broken: 1}}, {Results: []check.Result{{Checks: []check.CheckResult{{Role: check.Complete, FilesChanged: []string{"x"}}}}}}, moved} {
 		if !needsJudge(report) {
 			t.Fatal("unresolved or spare work did not request a judge")
 		}
