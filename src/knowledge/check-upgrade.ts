@@ -19,7 +19,8 @@ import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { openCurrentGraph } from "../graph/storage.js";
-import type { SqliteDatabase } from "../graph/db/sqlite.js";
+import { GraphStore } from "../graph/db/store.js";
+import type { NodeKind } from "../graph/types.js";
 import { CheckSchema, KNOWLEDGE_LIMITS, parseEntry, type EntryCheck, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile } from "./files.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
@@ -29,8 +30,8 @@ import { symbolsIn } from "./note-checks.js";
 import { entryProducer } from "./producers.js";
 
 /** The node kinds a symbol check can name: the graph reader's definitions. */
-const DEFINITIONS = ["class", "struct", "interface", "trait", "protocol", "function", "method",
-  "constant", "enum", "type_alias", "namespace", "component", "route", "variable"];
+const DEFINITIONS = new Set<NodeKind>(["class", "struct", "interface", "trait", "protocol", "function", "method",
+  "constant", "enum", "type_alias", "namespace", "component", "route", "variable"]);
 const MAX_SYMBOLS_PER_CHECK = 4;
 const MAX_ITEMS = 256;
 const MAX_CHECKS = 32;
@@ -43,37 +44,31 @@ export interface CheckUpgradeReport {
   checks: number;
   fingerprints: number;
   /** Why nothing ran, when nothing could. */
-  skipped?: "no-graph" | "no-binary" | "no-notes";
+  skipped?: "no-graph" | "no-binary" | "no-notes" | "graph-read-failed";
 }
 
 type Item = { kind: "symbol"; role: "complete" | "supporting"; target: { file: string; symbol: string } };
 type Plan = { id: string; content: string; entry: KnowledgeEntry; replace: Map<number, number[]> };
 
-function definitionsIn(db: SqliteDatabase, file: string): Map<string, number> {
+function definitionsIn(store: GraphStore, file: string): Map<string, number> {
   const counts = new Map<string, number>();
-  const rows = db.prepare(`SELECT name FROM nodes WHERE file_path=? AND kind IN (${DEFINITIONS.map(() => "?").join(",")})`)
-    .all(file, ...DEFINITIONS) as Array<{ name: string }>;
-  for (const row of rows) counts.set(row.name, (counts.get(row.name) ?? 0) + 1);
+  for (const node of store.getNodesByFile(file)) {
+    if (DEFINITIONS.has(node.kind)) counts.set(node.name, (counts.get(node.name) ?? 0) + 1);
+  }
   return counts;
 }
 
-function nodeById(db: SqliteDatabase, id: string): { name: string; file: string } | undefined {
-  const row = db.prepare(`SELECT name, file_path AS file FROM nodes WHERE id=? AND kind IN (${DEFINITIONS.map(() => "?").join(",")})`)
-    .get(id, ...DEFINITIONS) as { name: string; file: string } | undefined;
-  return row;
-}
-
 /** The symbol checks one stored check can become, from what the graph holds. */
-function targetsFor(db: SqliteDatabase, entry: KnowledgeEntry, check: EntryCheck): Array<{ file: string; symbol: string }> {
+function targetsFor(store: GraphStore, entry: KnowledgeEntry, check: EntryCheck): Array<{ file: string; symbol: string }> {
   if (check.kind === "legacy-grounding") {
-    const node = nodeById(db, check.target.node);
-    if (!node || (check.target.file && check.target.file !== node.file)) return [];
+    const node = store.getNodesByIds([check.target.node]).get(check.target.node);
+    if (!node || !DEFINITIONS.has(node.kind) || (check.target.file && check.target.file !== node.filePath)) return [];
     // Only a name the file defines once can be found again by name.
-    return definitionsIn(db, node.file).get(node.name) === 1 ? [{ file: node.file, symbol: node.name }] : [];
+    return definitionsIn(store, node.filePath).get(node.name) === 1 ? [{ file: node.filePath, symbol: node.name }] : [];
   }
   if (check.kind === "source" && "file" in check.target) {
     const file = check.target.file;
-    const defined = definitionsIn(db, file);
+    const defined = definitionsIn(store, file);
     if (defined.size === 0) return [];
     // The definitions the entry names, each defined once in the file.
     return symbolsIn(`${entry.mex.one_line}\n${entry.text}`)
@@ -132,10 +127,11 @@ function upgrade(options: KnowledgeOptions): CheckUpgradeReport {
   if (!directory) return { ...report, skipped: "no-notes" };
   const binary = nativeBinary(options.env);
   if (!binary) return { ...report, skipped: "no-binary" };
-  let db: SqliteDatabase | undefined;
-  try { db = openCurrentGraph(project.root); } catch { db = undefined; }
+  let db: ReturnType<typeof openCurrentGraph>;
+  try { db = openCurrentGraph(project.root); } catch { return { ...report, skipped: "graph-read-failed" }; }
   if (!db) return { ...report, skipped: "no-graph" };
 
+  const store = new GraphStore(db);
   const items: Item[] = [];
   const plans: Plan[] = [];
   try {
@@ -143,13 +139,15 @@ function upgrade(options: KnowledgeOptions): CheckUpgradeReport {
       const replace = new Map<number, number[]>();
       entry.mex.checks.forEach((check, index) => {
         if (items.length >= MAX_ITEMS) return;
-        const targets = targetsFor(db!, entry, check);
+        const targets = targetsFor(store, entry, check);
         if (!targets.length) return;
         const role = check.kind === "legacy-grounding" ? "supporting" : check.role;
         replace.set(index, targets.map(target => items.push({ kind: "symbol", role, target }) - 1));
       });
       if (replace.size) plans.push({ id, content, entry, replace });
     }
+  } catch {
+    return { ...report, skipped: "graph-read-failed" };
   } finally { db.close(); }
   if (!items.length) return report;
 
