@@ -205,7 +205,7 @@ SCIP accuracy is unchanged on Flask, FastAPI, Express and NestJS.
 
 ## Schema v5 storage
 
-With `MEX_GRAPH_STORAGE=v5` and every corpus language engine-owned, `mex graph rebuild` and `refresh` run the engine's `build`. The engine writes a complete v5 candidate. Node validates it under the existing lease and publishes it by pointer. Switching storage rebuilds once. Refresh is a full engine build for now, and warm edits fall back to refresh.
+The M4 measurements below use the engine's `build` for v5 rebuilds and refreshes. M5 stage 1 uses `refresh` over compatible v5 bases, with cached facts and a per-checkout overlay. Node keeps the maintenance lease and publishes the validated candidate by pointer. Switching storage rebuilds once. Warm edits fall back to refresh.
 
 The v5 schema has:
 - integer keys between rows;
@@ -240,7 +240,7 @@ Against `next2`'s compiler route, Hono rebuilds in 1.3 s instead of 9.0 s and Ne
 
 The LSH table (4.1 MB) and import bindings (1.0 MB) are gone. What remains is mostly fingerprints (4.1 MB) and the two full-text indexes (3.3 MB). About a tenth of each v5 file is SQLite free space, which a final `VACUUM` would recover.
 
-Still to do on v5: incremental refresh, per-worktree overlays and warm edits (M5), and graph-03's Go reader (`native/graph/store.go`, in the unmerged mex #398).
+Still to do on v5: warm edits (M5 stage 2) and graph-03's Go reader (`native/graph/store.go`, in the unmerged mex #398).
 
 ## Locked targets
 

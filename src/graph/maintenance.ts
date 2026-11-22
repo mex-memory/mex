@@ -37,11 +37,11 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, openGraphDatabase, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema } from "./db/v5.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows } from "./db/v5.js";
 import { GraphStore } from "./db/store.js";
 import { FingerprintStore, transferGroundingBaselines } from "./fingerprint-store.js";
-import { installGraphViews } from "./overlay.js";
-import { prepareNativeGraphBuild, type NativeGraphBuild } from "./native-build.js";
+import { installGraphViews, overlayBase } from "./overlay.js";
+import { prepareNativeGraphBuild, type NativeGraphBuild, type NativeGraphRefresh } from "./native-build.js";
 import { auditRecordProvenInProcess, recordAuditedDatabase } from "./audit-record.js";
 import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
 import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing, restoreGraphAliases } from "./engine-impl.js";
@@ -49,6 +49,7 @@ import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
   inspectGraphStatus,
+  type GraphMaintenanceInputs,
 } from "./status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
@@ -183,6 +184,8 @@ interface CandidatePublicationInput {
   retainRecovery: boolean;
   options: InternalMaintenanceOptions;
   assertStatus?: (status: GraphStatus) => void;
+  overlay?: { base: string; identity: DatabaseIdentity; counts: { nodes: number; edges: number }; files: number };
+  assertInputsUnchanged?: () => void;
 }
 
 interface CandidatePublicationResult {
@@ -387,36 +390,75 @@ async function refreshGraphWithLease(
     // reuses their band hashes instead of deriving them again.
     const bandHashMemo = new Map<string, readonly string[]>();
     const statBeforeInspect = liveDatabaseStat(paths.database);
+    const v5Pointer = process.env.MEX_GRAPH_STORAGE === "v5" && !options.__internal?.publishAsBase
+      ? readGraphPointer(paths.location) : undefined;
+    const v5Base = v5Pointer ? join(paths.location.directory, v5Pointer.base) : undefined;
+    const v5Identity = v5Base ? captureDatabaseIdentity(v5Base) : undefined;
+    native = await prepareNativeGraphBuild(paths.projectRoot, v5Base, paths.database);
     const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
-      inspect(options, paths.projectRoot, paths.database, bandHashMemo));
+      inspect(options, paths.projectRoot, paths.database, bandHashMemo, undefined, native?.observation));
     assertMaintenanceDirectoryUnchanged(paths);
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
     progress(options, "discover", "Inspecting the current graph snapshot and source corpus.");
-    native = await prepareNativeGraphBuild(paths.projectRoot);
     if (native || priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION) {
-      // Schema v5 refresh is a full standalone build. A format switch also
-      // starts empty and transfers continuity only, never layering schemas.
       const priorIdentity = captureDatabaseIdentity(paths.database);
       candidatePath = ownedPath(paths, "candidate", createToken(options));
-      const buildResult = await buildStandaloneCandidate(paths, candidatePath, options, native);
+      let patch: NativeGraphRefresh | undefined;
+      let chosenBase: { name: string; identity: DatabaseIdentity } | undefined;
+      if (native && priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION && v5Base && v5Identity) {
+        options.__internal?.beforeCandidateDatabaseOpen?.(candidatePath);
+        assertMaintenanceDirectoryUnchanged(paths);
+        revalidateLiveDatabase(v5Base, v5Identity);
+        patch = await native.refresh(candidatePath, options, v5Base);
+        if (patch) chosenBase = { name: basename(v5Base), identity: v5Identity };
+        if (patch && overlayTooLarge(patch.shadowedFiles, patch.result.filesIndexed)) {
+          cleanupOwnedDatabase(paths, candidatePath);
+          patch = undefined;
+          chosenBase = undefined;
+          // A checkout returning from a large branch can share its sibling's
+          // base again when that base admits a bounded overlay.
+          for (const name of siblingBases(paths.location, basename(v5Base))) {
+            assertNotAborted(options.signal);
+            const path = join(paths.location.directory, name);
+            const identity = captureDatabaseIdentity(path);
+            revalidateLiveDatabase(path, identity);
+            const attempt = await native.refresh(candidatePath, options, path);
+            if (!attempt) continue;
+            if (!overlayTooLarge(attempt.shadowedFiles, attempt.result.filesIndexed)) {
+              patch = attempt;
+              chosenBase = { name, identity };
+              break;
+            }
+            cleanupOwnedDatabase(paths, candidatePath);
+          }
+        }
+      }
+      // A format switch, a legacy v5 base, and an oversized patch all start
+      // from an empty candidate. The same captured inputs and facts cache apply.
+      const buildResult = patch?.result ?? await buildStandaloneCandidate(paths, candidatePath, options, native);
       assertMaintenanceDirectoryUnchanged(paths);
       revalidateLiveDatabase(paths.database, priorIdentity);
-      const filesChanged = restoreStandaloneContinuity(paths.database, candidatePath);
+      timeGraphPhase("native.continuity", () => restoreStandaloneContinuity(paths.database, candidatePath!, chosenBase?.name === v5Pointer?.base && !!patch));
       await options.__internal?.afterCandidateBuilt?.(candidatePath);
       progress(options, "validate", "Validating the refreshed graph candidate.");
-      const candidate = await validateCandidate(options, paths, candidatePath);
+      const candidate = await validateCandidate(options, paths, candidatePath, undefined, undefined, undefined, native?.observation);
       await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
-      native?.assertGitUnchanged();
       const published = await publishCandidate({
         paths, candidatePath, candidate, priorStatus, priorIdentity, retainRecovery: false, options,
+        ...(native ? { assertInputsUnchanged: native.assertInputsUnchanged } : {}),
+        ...(patch && chosenBase ? { overlay: {
+          base: chosenBase.name, identity: chosenBase.identity, files: patch.shadowedFiles,
+          counts: { nodes: buildResult.nodesCreated, edges: buildResult.edgesCreated },
+        } } : {}),
       });
       candidatePath = null;
       return maintenanceResult(started, currentDate(options), {
         ...buildResult,
         refresh: {
-          mode: "full", publication: "full", filesChanged,
-          filesReextracted: buildResult.filesIndexed, filesRewritten: buildResult.filesIndexed,
+          mode: patch ? "incremental" : "full", publication: patch ? "delta" : "full", filesChanged: priorStatus.changes.total,
+          filesReextracted: patch?.filesReextracted ?? native?.filesReextracted ?? buildResult.filesIndexed,
+          filesRewritten: patch?.shadowedFiles ?? buildResult.filesIndexed,
         },
       }, published);
     }
@@ -528,14 +570,14 @@ async function rebuildGraphWithLease(
   try {
     assertNotAborted(options.signal);
     progress(options, "discover", "Inspecting graph recovery prerequisites.");
+    native = await prepareNativeGraphBuild(paths.projectRoot);
     const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
-      inspect(options, paths.projectRoot, paths.database));
+      inspect(options, paths.projectRoot, paths.database, undefined, undefined, native?.observation));
     assertMaintenanceDirectoryUnchanged(paths);
     const databaseExists = existsSync(paths.database);
     if (databaseExists) assertClearSidecars(paths.database);
     const priorIdentity = databaseExists ? captureDatabaseIdentity(paths.database) : null;
 
-    native = await prepareNativeGraphBuild(paths.projectRoot);
     const cloneForContinuity = Boolean(!native && priorIdentity && shouldCloneForContinuity(priorStatus));
     let continuityFallback = false;
     candidatePath = ownedPath(paths, "candidate", createToken(options));
@@ -588,11 +630,11 @@ async function rebuildGraphWithLease(
     assertNotAborted(options.signal);
 
     progress(options, "validate", "Validating the isolated graph rebuild candidate.");
-    const candidate = await timeGraphPhaseAsync("envelope.validate", () => validateCandidate(options, paths, candidatePath!));
+    const candidate = await timeGraphPhaseAsync("envelope.validate", () =>
+      validateCandidate(options, paths, candidatePath!, undefined, undefined, undefined, native?.observation));
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
-    native?.assertGitUnchanged();
     const retainRecovery = priorStatus.status === "corrupt"
       || priorStatus.status === "rebuild_required";
     const publication = await timeGraphPhaseAsync("envelope.publish", () => publishCandidate({
@@ -603,6 +645,7 @@ async function rebuildGraphWithLease(
       priorIdentity,
       retainRecovery,
       options,
+      ...(native ? { assertInputsUnchanged: native.assertInputsUnchanged } : {}),
     }));
     const published = continuityFallback
       ? {
@@ -646,7 +689,7 @@ async function buildStandaloneCandidate(
   }
 }
 
-function restoreStandaloneContinuity(previous: string, candidate: string): number {
+function restoreStandaloneContinuity(previous: string, candidate: string, delta = false): void {
   assertRegularNonSymlink(candidate, "graph candidate");
   assertClearSidecars(candidate);
   const source = openGraphDatabase(previous, { readOnly: true, immutable: true });
@@ -655,21 +698,38 @@ function restoreStandaloneContinuity(previous: string, candidate: string): numbe
     try {
       const sourceFingerprints = new FingerprintStore(source);
       const destinationFingerprints = new FingerprintStore(destination);
+      const sourceStore = new GraphStore(source);
+      const destinationStore = new GraphStore(destination);
       destination.transaction(() => {
-        restoreGraphAliases(new GraphStore(source), new GraphStore(destination), sourceFingerprints, destinationFingerprints);
+        if (delta && overlayKeepsNodeIds(source, destination)) {
+          if (source.prepare("SELECT 1 FROM main.aliases LIMIT 1").get()) {
+            for (const alias of sourceStore.getAllAliases()) {
+              destinationStore.insertAlias(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
+            }
+          }
+        } else restoreGraphAliases(sourceStore, destinationStore, sourceFingerprints, destinationFingerprints);
         transferGroundingBaselines(source, destinationFingerprints);
       });
-      const hashes = (db: typeof source) => (db.prepare("SELECT path, content_hash FROM files").all() as
-        Array<{ path: string; content_hash: string }>);
-      const prior = new Map(hashes(source).map(row => [row.path, row.content_hash]));
-      let changed = 0;
-      for (const row of hashes(destination)) {
-        if (prior.get(row.path) !== row.content_hash) changed++;
-        prior.delete(row.path);
-      }
-      return changed + prior.size;
     } finally { destination.close(); }
   } finally { source.close(); }
+}
+
+function overlayKeepsNodeIds(source: ReturnType<typeof openSqlite>, destination: ReturnType<typeof openSqlite>): boolean {
+  const shadows = (db: typeof source) => overlayBase(db)
+    ? db.prepare("SELECT path FROM main.shadow_files").all().map(row => (row as { path: string }).path) : [];
+  const paths = [...new Set([...shadows(source), ...shadows(destination)])];
+  if (paths.length === 0) return true;
+  const prior = source.prepare(`SELECT hex(n.public_id) AS id FROM ${v5Rows(source, "files")} f
+    CROSS JOIN ${v5Rows(source, "nodes")} n ON n.file = f.id
+    WHERE f.path IN (SELECT value FROM json_each(?))`).all(JSON.stringify(paths)) as Array<{ id: string }>;
+  if (prior.length === 0) return true;
+  // A standalone prior can only lose identities on shadowed paths. Every
+  // surviving node on those paths is physically present in the new patch.
+  const retainedSide = overlayBase(source) ? v5Rows(destination, "nodes") : "main.nodes";
+  const { retained } = destination.prepare(`SELECT count(*) AS retained FROM ${retainedSide}
+    WHERE public_id IN (SELECT unhex(value) FROM json_each(?))`)
+    .get(JSON.stringify(prior.map(row => row.id))) as { retained: number };
+  return retained === prior.length;
 }
 
 async function refreshCandidate(
@@ -768,26 +828,42 @@ function maintenanceEngine(
 
 async function publishCandidate(input: CandidatePublicationInput): Promise<CandidatePublicationResult> {
   const { paths, options, candidate } = input;
+  const revalidateBase = () => {
+    if (input.overlay) revalidateLiveDatabase(join(paths.location.directory, input.overlay.base), input.overlay.identity);
+  };
   assertMaintenanceDirectoryUnchanged(paths);
   assertNotAborted(options.signal);
   await options.__internal?.beforeLiveRevalidation?.();
   revalidateLiveDatabase(paths.database, input.priorIdentity);
+  revalidateBase();
   if (currentGraphPath(paths.projectRoot) !== paths.database) throw new GraphMaintenanceError("GRAPH_MAINTENANCE_RACE", "The graph pointer changed during construction.");
   assertCandidateUnchanged(input.candidatePath, candidate);
   progress(options, "publish", "Publishing the validated graph pointer.");
   assertMaintenanceDirectoryUnchanged(paths);
   assertNotAborted(options.signal);
+  if (input.assertInputsUnchanged) timeGraphPhase("native.verifyInputs", input.assertInputsUnchanged);
   revalidateLiveDatabase(paths.database, input.priorIdentity);
+  revalidateBase();
   assertCandidateUnchanged(input.candidatePath, candidate);
-  const countsDb = openSqlite(input.candidatePath, { readOnly: true, immutable: true });
-  let counts: { nodes: number; edges: number };
-  try { counts = countsDb.prepare("SELECT (SELECT count(*) FROM nodes) nodes, (SELECT count(*) FROM edges) edges").get() as typeof counts; } finally { countsDb.close(); }
-  const database = publishGraph(paths.location, input.candidatePath, {
+  let counts = input.overlay?.counts;
+  if (!counts) {
+    const countsDb = openSqlite(input.candidatePath, { readOnly: true, immutable: true });
+    try { counts = countsDb.prepare("SELECT (SELECT count(*) FROM nodes) nodes, (SELECT count(*) FROM edges) edges").get() as typeof counts; }
+    finally { countsDb.close(); }
+  }
+  const data = {
     head: candidate.status.currentRepo.head, files: candidate.status.parseHealth.ok + candidate.status.parseHealth.partial + candidate.status.parseHealth.failed,
-    ...counts, build: { finishedAt: currentDate(options).toISOString() },
-  });
+    nodes: counts!.nodes, edges: counts!.edges,
+    build: { finishedAt: currentDate(options).toISOString(), ...(input.overlay ? { overlayFiles: input.overlay.files } : {}) },
+  };
+  const database = input.overlay
+    ? publishGraphOverlay(paths.location, input.candidatePath, input.overlay.base, data)
+    : publishGraph(paths.location, input.candidatePath, data);
   paths.database = database;
-  recordAuditedDatabase(realpathSync.native(database), candidate.identity.size, candidate.identity.digest);
+  recordAuditedDatabase(realpathSync.native(database), candidate.identity.size, candidate.identity.digest, input.overlay ? {
+    canonicalDbPath: join(paths.location.directory, input.overlay.base),
+    size: input.overlay.identity.size, digest: input.overlay.identity.digest,
+  } : undefined);
   collectGraphGarbage(paths.location);
   enforceIndexCap(paths.location);
   await options.__internal?.afterPublish?.(database);
@@ -813,7 +889,7 @@ async function publishOverlay(input: CandidatePublicationInput, base: string): P
   let chosen: { base: string; plan: OverlayPlan } | undefined;
   for (const option of [base, ...siblingBases(paths.location, base)]) {
     const plan = timeGraphPhase("overlay.plan", () => planOverlay(join(paths.location.directory, option), input.candidatePath));
-    if ("reason" in plan || overlayTooLarge(plan)) continue;
+    if ("reason" in plan || overlayTooLarge(plan.files.length, plan.total)) continue;
     if (!chosen || plan.files.length < chosen.plan.files.length) chosen = { base: option, plan };
   }
   if (!chosen) return undefined;
@@ -1014,12 +1090,13 @@ async function validateCandidate(
   assertStatus: (status: GraphStatus) => void = assertPublishableCandidate,
   bandHashMemo?: Map<string, readonly string[]>,
   fingerprintScope?: readonly string[],
+  maintenanceInputs?: GraphMaintenanceInputs,
 ): Promise<ValidatedCandidate> {
   assertMaintenanceDirectoryUnchanged(paths);
   finalizeGraph(candidatePath);
   assertClearSidecars(candidatePath);
   const identityBefore = captureDatabaseIdentity(candidatePath);
-  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo, fingerprintScope);
+  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo, fingerprintScope, maintenanceInputs);
   assertMaintenanceDirectoryUnchanged(paths);
   assertStatus(status);
   assertClearSidecars(candidatePath);
@@ -1259,12 +1336,14 @@ async function inspect(
   database: string,
   bandHashMemo?: Map<string, readonly string[]>,
   fingerprintScope?: readonly string[],
+  maintenanceInputs?: GraphMaintenanceInputs,
 ): Promise<GraphStatus> {
   return (options.__internal?.inspectStatus ?? inspectGraphStatus)({
     projectRoot,
     dbPath: database,
     ...(bandHashMemo ? { bandHashMemo } : {}),
     ...(fingerprintScope ? { fingerprintScope } : {}),
+    ...(maintenanceInputs ? { maintenanceInputs } : {}),
   });
 }
 

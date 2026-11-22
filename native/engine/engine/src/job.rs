@@ -56,6 +56,7 @@ pub struct Request {
     pub(super) build_metadata: Option<BuildMetadata>,
     source_directory: Option<PathBuf>,
     pub(super) observation_root: Option<String>,
+    pub(super) walk_observation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

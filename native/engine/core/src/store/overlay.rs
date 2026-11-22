@@ -201,9 +201,11 @@ impl Writer {
         self.conn.query_row(&format!(
             "SELECT (SELECT count(*) FROM base.files) + (SELECT count(*) FROM main.files) -
                        (SELECT count(*) FROM main.shadow_files s CROSS JOIN base.files f ON f.path = s.path),
-                    (SELECT count(*) FROM base.nodes) + (SELECT count(*) FROM main.nodes) -
+                    coalesce((SELECT CAST(value AS INTEGER) FROM base.meta WHERE key = 'node_count'),
+                             (SELECT count(*) FROM base.nodes)) + (SELECT count(*) FROM main.nodes) -
                        (SELECT count(*) FROM ({SHADOWED_BASE_NODES})),
-                    (SELECT count(*) FROM base.edges) + (SELECT count(*) FROM main.edges) -
+                    coalesce((SELECT CAST(value AS INTEGER) FROM base.meta WHERE key = 'edge_count'),
+                             (SELECT count(*) FROM base.edges)) + (SELECT count(*) FROM main.edges) -
                        (SELECT count(*) FROM base.edges WHERE source IN ({SHADOWED_BASE_NODES})),
                     (SELECT count(*) FROM main.shadow_files)"
         ), params![], |row| Ok([row.get::<_, u32>(0)? as usize, row.get::<_, u32>(1)? as usize, row.get::<_, u32>(2)? as usize, row.get::<_, u32>(3)? as usize]))

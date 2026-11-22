@@ -50,8 +50,12 @@ export interface EngineRequest {
     contentHash?: string;
     staged?: string;
     extractorVersion?: string;
+    sourceIdentity?: string;
+    utf8Size?: number;
   }>;
   sourceDirectory?: string;
+  observationRoot?: string;
+  walkObservation?: string;
   buildMetadata?: GraphEngineBuildMetadata;
   configs?: Array<string | { path: string; source: string }>;
   languages: string[];
@@ -91,7 +95,8 @@ export type EngineEvent =
   | { type: "progress"; phase: string; done: number; total: number }
   | { type: "file"; path: string; status: string; reason?: string }
   | EngineStagedFile
-  | { type: "result"; files: number; nodes: number; edges: number; coverageGaps?: number; usage: { wallMs: number; peakRssMb: number; cpuMs?: number } }
+  | { type: "result"; files: number; nodes: number; edges: number; coverageGaps?: number;
+    filesReextracted?: number; shadowedFiles?: number | null; usage: { wallMs: number; peakRssMb: number; cpuMs?: number } }
   | { type: "error"; code: string; message: string };
 
 export interface EngineRun {

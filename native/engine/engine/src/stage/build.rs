@@ -104,6 +104,12 @@ pub(crate) fn write(
     writer
         .set_meta("frameworks", &frameworks.names())
         .map_err(write)?;
+    writer
+        .set_meta("node_count", &counts.nodes.to_string())
+        .map_err(write)?;
+    writer
+        .set_meta("edge_count", &counts.edges.to_string())
+        .map_err(write)?;
     finish(writer, request, &mut counts)?;
     Ok(counts)
 }
@@ -116,6 +122,15 @@ pub(super) fn finish(
     let write = JobError::write;
     if let Some(root) = &request.observation_root {
         writer.set_meta("observation_root", root).map_err(write)?;
+        if let Some(walk) = request
+            .walk_observation
+            .as_deref()
+            .filter(|walk| walk.len() <= 1024 * 1024)
+        {
+            writer
+                .set_meta("walk_observation_v1", walk)
+                .map_err(write)?;
+        }
         for file in &request.files {
             if let (Some(identity), Some(size)) = (&file.source_identity, file.utf8_size) {
                 writer

@@ -1,6 +1,6 @@
 # Graph engine contract (version 3)
 
-How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts and resolves graph rows. In `build` it writes a schema v5 candidate. In `stage` it streams Python, TypeScript, JavaScript, Rust and C# rows for Node to write into its schema v4 store.
+How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts and resolves graph rows. `build` writes a complete schema v5 candidate, and `refresh` writes a v5 overlay. `stage` streams Python, TypeScript, JavaScript, Rust and C# rows for Node's schema v4 writer.
 
 `CONTRACT_VERSION` in `native/engine/core/src/lib.rs` and Node's `GRAPH_ENGINE_CONTRACT` in `src/graph/native-engine.ts` must both be 3. Incompatible changes bump both. Node refuses an engine whose version differs.
 
@@ -12,7 +12,7 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 | `mex-graph languages` | Prints the language registry: id, level, extensions, grammar version, adapter version | exits |
 | `mex-graph build --request <file>` | Builds a candidate graph from scratch | one job |
 | `mex-graph stage --request <file>` | Streams extracted and resolved rows for Node's schema v4 writer | one job |
-| `mex-graph refresh --request <file>` | Builds a candidate from a base graph plus changed files | one job |
+| `mex-graph refresh --request <file>` | Writes an overlay against a published base | one job |
 | `mex-graph serve --request <file>` | Keeps one checkout warm and takes edits on stdin | until stdin closes or the parent exits |
 | `mex-graph facts <file>` | Prints one file's facts as JSON, for people and tests | exits |
 
@@ -43,24 +43,60 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 - `files` gives the git-aware paths Node discovered, with sizes. `configs` accepts repository-relative paths or objects with a repository-relative `path` and captured `source` text. The engine reads named files and configs only under `root`. For ECMAScript staging, Node supplies the tsconfig, jsconfig and package.json texts from discovery so resolution uses that snapshot.
 - `languages` names the languages this engine run handles. During migration Node keeps every other language on today's path.
 - For `build`, `output` is the absolute path to a new candidate in an existing folder. Temporary files sit beside it. For `stage`, set `mode` to `"stage"`. The engine ignores a supplied `output` path or `null` and opens no database.
-- `base` and `changed` are set for `refresh`: the published base graph (opened read-only) and the repository-relative paths that changed.
+- `base` and `changed` are set for `refresh`. `base` is the absolute path of the published v5 base and is opened read-only. `changed` lists repository-relative paths, including deletions. `files` still lists the complete current corpus. The engine compares its complete input to the base, so omitted hints cannot hide a change.
+- `factsCache` optionally names an absolute directory for disposable file-local facts. The SQLite cache stores LZ4-compressed facts keyed by path, language adapter version, facts and framework-capture versions, and source SHA-256. Path participates because qualification and identity depend on it. Reads verify the payload checksum, format, path, language and source hash. Batched SQLite transactions bound payloads and evict older entries. Missing, corrupt, contended or oversized entries are ordinary misses.
 - `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, `jsx` for `.jsx`, `rust` for `.rs`, and `csharp` for `.cs`. Node's `MEX_GRAPH_ENGINE_LANGUAGES` flag accepts `python`, `typescript`, `javascript`, `rust` and `csharp` as comma-separated names. `typescript` also selects `tsx`, and `javascript` also selects `jsx`.
 - `build` includes framework rows. Stage requests opt in by sending `"frameworks": true`. A binary that handled the pass sets `frameworksResolved` on its staged events so Node can skip framework extraction for those files. If a file falls back because the native read differed from discovery, Node recomputes framework rows from the captured corpus.
 
 ### Published schema v5 candidates
 
 When all indexed languages are engine-owned and `MEX_GRAPH_STORAGE=v5`,
-Node uses `build` for both rebuild and refresh. It supplies `sourceDirectory`
-and per-file `staged` basenames, `contentHash`, `modifiedAt` and
-`extractorVersion` from the same contained discovery used for schema v4.
-The child verifies the captured content before extracting and indexing it.
+Node uses `build` for rebuild and `refresh` over a compatible v5 base. It
+supplies `sourceDirectory` and private `staged` basenames for captured source
+text, with `contentHash`, `modifiedAt` and `extractorVersion` from contained
+discovery. A refresh can omit the staged basename for files whose hashes it
+already proved. The child verifies the expected hash whenever it reads
+source for extraction or full-text indexing. A standalone request without
+captured hashes reads and hashes its sources before consulting the cache.
+The optional `observationRoot`, `sourceIdentity` and `utf8Size` carry Node's
+checkout-local stat observations. A later maintenance job can reuse a hash
+from the audited snapshot if the root and full-width file identity match.
+It can also reuse `walkObservation` after checking the recorded directory
+identities and applying the current ignore rules.
+Node rechecks the complete captured corpus, exact config and Git refs before
+publishing.
 The optional `buildMetadata` carries exact Git, manifest, corpus and coverage
 provenance for publication. The engine stores it relationally and adds the
 health counts from the files it wrote. It writes all declarations, including
-framework routes, before writing edges and unresolved references. A standalone
-engine benchmark may omit the publication fields. Node retains the lease and
-validates the finished database before advancing the pointer. A refresh builds
-a full base.
+framework routes, before writing edges and unresolved references in a base.
+A standalone engine benchmark may omit the publication fields. Node retains
+the lease and validates the finished candidate and its base before advancing
+the pointer. An incompatible base requires a one-time build. If more than
+`max(200, ceil(0.1 * files))` paths would be shadowed, Node tries the sibling
+bases and writes a new base if none admits a bounded overlay.
+
+#### Overlay rows
+
+The overlay owns the complete rows of every path in `shadow_files`, including
+the tombstones of deleted paths. Edges and unresolved references belong to
+their source file. Fingerprint neighbours belong to the fingerprint's file,
+so a changed call can also shadow a file on the other end. `file_resolution`
+records an outgoing projection digest in public-id space. The refresh runs
+the regular resolver over cached facts whenever any resolution input changes.
+When the corpus and resolver configuration agree with the base and modified
+facts differ only in their content hash and file-node end position, it can
+reuse the base's outgoing wiring.
+
+Files reuse the base key for the same repository path. Nodes reuse the base
+key for the same 16-byte public id. New keys start above `2^40`. Interned
+names use the same rule with the name as their identity. An edge, call
+candidate or fingerprint neighbour can therefore refer to a node on either
+side by integer key. An unshadowed base edge that targets a surviving shadowed
+node finds its replacement at the same key. Readers attach `overlay_info`'s
+base read-only and remove all base rows owned by a shadowed path before adding
+the overlay rows. The overlay carries complete checkout-level snapshot,
+coverage, alias and grounding metadata. Search matches both physical indexes
+and ranks against the live corpus's BM25 statistics.
 
 ## Events
 
@@ -71,7 +107,7 @@ a full base.
 ```
 
 - `build` can report `progress` while writing the candidate and records per-file coverage gaps there. `stage` reports each file as described below.
-- `result` is the last line of a successful job. `files` counts extracted files including failed parses. `nodes` and `edges` count the rows written or streamed. `coverageGaps` counts skipped files and failed parses. `usage` gives elapsed milliseconds (`wallMs`) and peak sampled resident memory in MiB (`peakRssMb`). Node owns validation, publication and usage logging.
+- `result` is the last line of a successful job. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files and failed parses. `usage` gives elapsed milliseconds (`wallMs`) and peak sampled resident memory in MiB (`peakRssMb`). Node owns validation, publication and usage logging.
 
 ### Stage events
 
@@ -113,7 +149,7 @@ Express, NestJS, Next.js, Flask and FastAPI preserve their existing route roles 
 | Code | Meaning | Node does |
 |---|---|---|
 | 0 | `result` written, job complete | validate output and continue publication |
-| 2 | Usage or request error (`graph_request_invalid`, `graph_contract_mismatch`) | report a bug; keep today's path |
+| 2 | Usage or request error (`graph_request_invalid`, `graph_contract_mismatch`) or a base without current refresh metadata (`graph_refresh_base_incompatible`) | keep the current publication on failure, or build a new base for an incompatible refresh base |
 | 3 | `graph_memory_limit`: over the memory cap | delete the candidate; Health says so, with the cap |
 | 4 | `graph_deadline`: past the deadline | delete the candidate; report |
 | 5 | `graph_parent_gone`: the parent exited | nothing; the engine cleaned up |
@@ -123,6 +159,6 @@ Express, NestJS, Next.js, Flask and FastAPI preserve their existing route roles 
 
 A failed database job deletes its candidate and temporary files. Node cleans them up if the engine was killed. A failed `stage` job leaves cleanup of any streamed rows to Node. The stage guard can exit before writing an `error` event if stdout is blocked.
 
-## Serve mode
+## Serve mode (M5 stage 2)
 
 stdin takes `{"type":"edit","paths":["src/app.py"]}` and `{"type":"close"}`. stdout answers each edit with `{"type":"edit","status":"published"|"unchanged"|"cold","reason":…,"ms":12.5}`. A published edit has written a new overlay and pointer through the same storage rules as a refresh. A cold edit tells Node to queue a normal refresh. The guard runs for the life of the process.

@@ -23,6 +23,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  type BigIntStats,
 } from "node:fs";
 import { lstat as lstatAsync, open as openAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -2385,12 +2386,135 @@ const DISCOVERY_READ_WINDOW = 512;
  * after another; status inspection already reads concurrently. Custom file
  * access (tests, hosts) keeps the sequential path.
  */
-/** The same bounded source capture used by v4's staging, before either engine runs. */
+export interface NativeSourceObservation {
+  contentHash: string;
+  identity: string;
+  utf8Size: number;
+}
+
+/** Capture one private source observation for a native maintenance run. */
 export function discoverGraphBuildSources(
   root: string,
-  stage: (path: string, source: string) => void,
-): Promise<DiscoveredCorpus> {
-  return discoverSourceFilesConcurrently(root, NODE_SOURCE_FILE_ACCESS, { stage });
+  stage: (path: string, source: string, contentHash: string) => void,
+  previous?: ReadonlyMap<string, NativeSourceObservation>,
+): { files: Array<DiscoveredFile & NativeSourceObservation>; skipped: GraphSkippedSourceFile[]; assertUnchanged(): void } {
+  const paths = () => discoverGraphReadPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
+    ...GRAPH_CORPUS_GLOB_OPTIONS, cwd: root, ignore: graphCorpusIgnoreGlobs(root),
+  }, GRAPH_CORPUS_LIMITS.maxSourceFiles).map(toPosix).filter(isSupportedSourceFile).sort();
+  const canonicalRoot = realpathSync.native(root);
+  const sourcePath = (path: string) => {
+    const absolute = resolve(root, path);
+    const canonical = realpathSync.native(absolute);
+    if (!isContainedPath(root, absolute) || !isContainedPath(canonicalRoot, canonical)) {
+      throw sourceContainmentError("Resolved source path escapes the repository root.");
+    }
+    return canonical;
+  };
+  const stat = (path: string, directories?: Map<string, string>) => {
+    let canonical: string;
+    if (directories) {
+      const absolute = resolve(root, path);
+      const dir = dirname(absolute);
+      let resolved = directories.get(dir);
+      if (!resolved) {
+        resolved = realpathSync.native(dir);
+        if (!isContainedPath(root, dir) || !isContainedPath(canonicalRoot, resolved)) {
+          throw sourceContainmentError("Resolved source directory escapes the repository root.");
+        }
+        directories.set(dir, resolved);
+      }
+      canonical = join(resolved, basename(absolute));
+    } else canonical = sourcePath(path);
+    let before = lstatSync(canonical, { bigint: true });
+    if (before.isSymbolicLink()) {
+      canonical = sourcePath(path);
+      before = lstatSync(canonical, { bigint: true });
+    }
+    if (!before.isFile()) throw sourceContainmentError("Resolved source path is not a stable regular file.");
+    if (before.size > GRAPH_CORPUS_LIMITS.maxSourceFileBytes) {
+      throw new GraphCorpusLimitError("maxSourceFileBytes", Number(before.size));
+    }
+    return { canonical, before, identity: preciseSourceIdentity(before) };
+  };
+  const read = (path: string, observed = stat(path)) => {
+    const { canonical, identity } = observed;
+    const fd = openSync(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      if (preciseSourceIdentity(fstatSync(fd, { bigint: true })) !== identity) throw sourceContainmentError("Source changed before it opened.");
+      const source = readFileSync(fd, "utf8");
+      const after = fstatSync(fd, { bigint: true });
+      if (preciseSourceIdentity(after) !== identity || !isSameResolvedPath(sourcePath(path), canonical)
+        || preciseSourceIdentity(lstatSync(canonical, { bigint: true })) !== identity) {
+        throw sourceContainmentError("Source changed while being read.");
+      }
+      assertTextSource(source);
+      return source;
+    } finally { closeSync(fd); }
+  };
+  let listed: string[];
+  try { listed = paths(); }
+  catch (error) { throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]); }
+  const files: Array<DiscoveredFile & NativeSourceObservation> = [];
+  const skipped: GraphSkippedSourceFile[] = [];
+  const proofs = new Map<string, { canonical: string; identity: string; hash: string; precise: boolean }>();
+  const directories = new Map<string, string>();
+  let sourceBytes = 0;
+  const skip = (path: string, error: unknown) => unavailableFileReason(error) ? unavailableSourceFile(path, error)
+    : isPerFileCorpusLimitError(error) ? skippedSourceFile(path, error) : undefined;
+  for (const path of listed) {
+    try {
+      const observed = stat(path, directories);
+      const { canonical, before, identity } = observed;
+      const old = previous?.get(path);
+      let observation: NativeSourceObservation;
+      const precise = before.ino !== 0n && before.ctimeNs % 1_000_000n !== 0n;
+      // Coarse timestamps cannot distinguish writes in the same tick. Keep
+      // exact-byte reads for those files and for all changed or unknown stamps.
+      if (old?.identity === identity && precise) {
+        observation = old;
+      } else {
+        const source = read(path, observed);
+        observation = { contentHash: sha256(source), identity, utf8Size: Buffer.byteLength(source, "utf8") };
+        stage(path, source, observation.contentHash);
+      }
+      sourceBytes = addGraphCorpusBytes(sourceBytes, observation.utf8Size, "source");
+      files.push({ relPath: path, ...observation, size: Number(before.size), modifiedAt: Number(before.mtimeNs) / 1e6 });
+      proofs.set(path, { canonical, identity, hash: observation.contentHash, precise });
+    } catch (error) {
+      const omitted = skip(path, error);
+      if (!omitted) throw new GraphSourceStagingError([sourceStagingFailure(path, "read", error)]);
+      skipped.push(omitted);
+    }
+  }
+  const skippedByPath = new Map(skipped.map(file => [file.filePath, file.reason]));
+  return {
+    files, skipped,
+    assertUnchanged() {
+      const current = paths();
+      if (current.length !== listed.length || current.some((path, index) => path !== listed[index])) {
+        throw new GraphSourceStagingError([{ filePath: ".", operation: "discover", message: "The source corpus changed during graph construction." }]);
+      }
+      const verifiedDirectories = new Map<string, string>();
+      for (const path of current) {
+        try {
+          const proof = proofs.get(path);
+          if (!proof) {
+            try { read(path); }
+            catch (error) { if (skip(path, error)?.reason === skippedByPath.get(path)) continue; }
+          } else {
+            const observed = stat(path, verifiedDirectories);
+            if (isSameResolvedPath(observed.canonical, proof.canonical) && observed.identity === proof.identity
+              && (proof.precise || sha256(read(path, observed)) === proof.hash)) continue;
+          }
+          throw new Error("Source identity changed during graph construction.");
+        } catch (error) { throw new GraphSourceStagingError([sourceStagingFailure(path, "read", error)]); }
+      }
+    },
+  };
+}
+
+function preciseSourceIdentity(stat: BigIntStats): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 }
 
 async function discoverSourceFilesConcurrently(

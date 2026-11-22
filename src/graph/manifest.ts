@@ -58,7 +58,10 @@ export interface GraphManifestInputs {
 }
 
 export function graphManifest(root: string, schemaVersion = DB_SCHEMA_VERSION): GraphManifest {
-  const configSources = discoverGraphConfigSources(root);
+  return graphManifestFromSources(root, discoverGraphConfigSources(root), schemaVersion);
+}
+
+export function graphManifestFromSources(root: string, configSources: ReadonlyMap<string, string>, schemaVersion = DB_SCHEMA_VERSION): GraphManifest {
   const configHash = configHashForSources(configSources);
   const grammarHash = grammarManifestHash();
   const inputs: GraphManifestInputs = {
