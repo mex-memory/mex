@@ -34,6 +34,7 @@ function repo(): string {
   writeFileSync(join(root, "pkg/alias_service.py"),
     "from . import exported as named_export\n\ndef alias_call():\n    return named_export()\n");
   writeFileSync(join(root, "pkg/broken.py"), "def broken(:\n");
+  writeFileSync(join(root, "pkg/receiver.py"), "def helper():\n    return 1\n\ndef use(obj):\n    return obj.helper()\n");
   writeFileSync(join(root, "app.ts"), "export function hello(): number { return 1; }\n");
   return root;
 }
@@ -73,7 +74,8 @@ function rows(root: string): Rows {
          JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
          WHERE e.kind = 'calls' ORDER BY 1, 2`,
       ).all() as Rows["calls"],
-      fingerprints: db.prepare(`SELECT node_id, minhash, neighbors, token_count FROM ${fingerprintTable} ORDER BY node_id`).all(),
+      // Sketches only: neighbours follow call edges, which the engine resolves differently.
+      fingerprints: db.prepare(`SELECT node_id, minhash, token_count FROM ${fingerprintTable} ORDER BY node_id`).all(),
       files: db.prepare("SELECT path, extractor_version, parse_status FROM files ORDER BY path").all() as Rows["files"],
     };
   } finally {
@@ -82,13 +84,13 @@ function rows(root: string): Rows {
 }
 
 describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's graph", () => {
-  it("writes the same nodes, containment and fingerprints as today, with the engine's calls", async () => {
+  it("writes the same nodes, containment and sketches as today, with the engine's calls", async () => {
     const today = repo();
     const engine = repo();
     const todayBuild = await build(today);
     const engineBuild = await build(engine, "python");
     expect(todayBuild.engine).toBeUndefined();
-    expect(engineBuild.engine).toMatchObject({ languages: ["python"], files: 5, fallbackFiles: 0 });
+    expect(engineBuild.engine).toMatchObject({ languages: ["python"], files: 6, fallbackFiles: 0 });
     expect(engineBuild.engine?.fellBack).toBeUndefined();
 
     const before = rows(today);
@@ -98,6 +100,8 @@ describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's 
     expect(after.fingerprints.length).toBeGreaterThan(0);
     expect(after.fingerprints).toEqual(before.fingerprints);
     expect(after.calls).toContainEqual({ source: "alias_call", target: "exported" });
+    // An untyped receiver stays unresolved: no name-matching guess after the engine.
+    expect(after.calls).not.toContainEqual({ source: "use", target: "helper" });
 
     const python = after.files.filter((file) => file.path.endsWith(".py"));
     expect(new Set(python.map((file) => file.extractor_version))).toEqual(new Set(["tree-sitter-v4+engine-python-v1"]));

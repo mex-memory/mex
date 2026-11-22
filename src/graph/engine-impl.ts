@@ -1505,7 +1505,10 @@ function stageFrameworkAndFallbackResolution(
   const refs = files.flatMap((file) => file.references).filter((ref) =>
     ref.status !== "resolved"
     && !ref.resolver?.startsWith("typescript-")
-    && ref.resolver !== "lexical-containment",
+    && ref.resolver !== "lexical-containment"
+    // The Rust engine already resolved its files; what it left unresolved it
+    // could not prove, and a name match here would only guess.
+    && !ref.resolver?.startsWith("engine-"),
   );
   const resolvedEdges = timeGraphPhase("resolve.references", () =>
     resolveReferences(nodes, refs, { resolvers, context }));
