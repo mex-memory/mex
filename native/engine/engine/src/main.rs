@@ -9,11 +9,12 @@ mod facts_cmd;
 mod frameworks;
 mod guard;
 mod job;
+mod serve;
 mod stage;
 mod syntax_language;
 
 const USAGE: &str = "usage: mex-graph version | languages | build --request <file> | \
-    refresh --request <file> | stage --request <file> | facts --root <dir> <path>...";
+    refresh --request <file> | serve --request <file> | stage --request <file> | facts --root <dir> <path>...";
 
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8] = b"0123456789abcdef";
@@ -52,7 +53,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Some(mode @ ("build" | "refresh" | "stage")) => {
+        Some(mode @ ("build" | "refresh" | "serve" | "stage")) => {
             let Some(request) = args
                 .iter()
                 .position(|a| a == "--request")
@@ -62,7 +63,12 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
-            match job::load(&request, mode).and_then(job::run) {
+            let run = if mode == "serve" {
+                serve::run
+            } else {
+                job::run
+            };
+            match job::load(&request, mode).and_then(run) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     job::emit_error(error.code, &error.message);

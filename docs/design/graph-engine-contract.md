@@ -1,6 +1,6 @@
 # Graph engine contract (version 3)
 
-How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts and resolves graph rows. `build` writes a complete schema v5 candidate, and `refresh` writes a v5 overlay. `stage` streams Python, TypeScript, JavaScript, Rust and C# rows for Node's schema v4 writer.
+How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts and resolves graph rows. `build` writes a complete schema v5 candidate. `refresh` and `serve` write v5 overlays. `stage` streams Python, TypeScript, JavaScript, Rust and C# rows for Node's schema v4 writer.
 
 `CONTRACT_VERSION` in `native/engine/core/src/lib.rs` and Node's `GRAPH_ENGINE_CONTRACT` in `src/graph/native-engine.ts` must both be 3. Incompatible changes bump both. Node refuses an engine whose version differs.
 
@@ -110,7 +110,7 @@ and ranks against the live corpus's BM25 statistics.
 - `result` is the last line of a successful job. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files and failed parses. `usage` gives elapsed milliseconds (`wallMs`) and peak sampled resident memory in MiB (`peakRssMb`). Node owns validation, publication and usage logging.
 
 `MEX_GRAPH_PHASE_TIMINGS` also enables the engine's JSONL timing records
-(`engine.build`, `engine.refresh`, or `engine.stage`). The engine appends to
+(`engine.build`, `engine.refresh`, `engine.stage`, and `engine.serve`). The engine appends to
 the same sink as Node without adding events to stdout. `worker.*` phases sum
 elapsed time across extraction threads and overlap the `extract` wall
 time. Fingerprint generation is included in `worker.parseExtract`.
@@ -171,4 +171,53 @@ A failed database job deletes its candidate and temporary files. Node cleans the
 
 ## Serve mode (M5 stage 2)
 
-stdin takes `{"type":"edit","paths":["src/app.py"]}` and `{"type":"close"}`. stdout answers each edit with `{"type":"edit","status":"published"|"unchanged"|"cold","reason":…,"ms":12.5}`. A published edit has written a new overlay and pointer through the same storage rules as a refresh. A cold edit tells Node to queue a normal refresh. The guard runs for the life of the process.
+The startup request uses `mode: "serve"`, an absolute published `base`,
+and an optional absolute `overlay` beside it. Its `files` list describes the
+complete published base and overlay union, with hashes, sizes, and extractor
+versions. `configs`, `languages`, `factsCache`, `observationRoot`, and `limits`
+have the same meanings as for refresh. The startup request has no candidate
+path. After the `start\n` barrier, stdout sends `{"type":"ready"}`.
+
+An edit is one JSONL frame with a caller-chosen integer `id` and a new
+absolute `output` path beside the base. `files` contains upserts with exact
+content hashes and the same optional stat and staging fields as refresh.
+`sourceDirectory` names a private source spool when upserts use `staged`.
+`deleted` contains tombstoned paths. A rename is a deletion and an upsert.
+Paths are unique and repository-relative. An omitted `configs` field keeps
+the previous exact configuration. `buildMetadata` and `walkObservation`
+describe the candidate checkout.
+
+```json
+{"type":"edit","id":1,"output":"/abs/index/graph-tmp-42-1.db","files":[],"deleted":["src/old.py"]}
+{"type":"result","id":1,"files":82,"nodes":2140,"edges":1800,"coverageGaps":0,"filesReextracted":0,"shadowedFiles":3,"usage":{"wallMs":12.5,"peakRssMb":32}}
+```
+
+The result identifies a finished candidate. Node holds the writer lease,
+checks the candidate, and proves the source observation before moving the
+pointer. On a known-file edit Node can send `{"type":"verify","id":1,"stamps":[...]}`.
+Each stamp has a repository-relative `path`, a boolean `directory`, and an
+`identity` of `device:inode:size:mtimeNs:ctimeNs`. A null identity proves
+absence. The reply is `{"type":"verified","id":1,"matches":true,"wallMs":1.2}`.
+This checks the file stamps from the pending edit and the supplied directory,
+configuration and ignore-rule stamps. If it cannot prove them, Node can
+discard the candidate and capture the complete source observation for a
+second edit.
+
+After publishing, Node sends
+`{"type":"accept","id":1,"overlay":"/abs/index/graph-o-checkout-token.db"}`.
+The engine acknowledges with `{"type":"accepted","id":1}` and adopts the
+published facts and resolution. To abandon a candidate, Node sends
+`{"type":"discard","id":1}` and waits for `{"type":"discarded","id":1}`.
+There is at most one pending edit. The engine never writes the pointer.
+
+The engine retains checked compressed fact blocks and the published
+resolution. It reuses wiring when the changed facts prove identical resolver
+inputs. Other edits run the same resolver and overlay writer as refresh.
+The session guard applies for the lifetime of the process. `{"type":"close"}`
+or stdin EOF ends the session and discards any unpublished candidate. An
+`error` event, crash, stale publication, or overlay that exceeds the limit
+sends Node through normal refresh recovery. Phase timings also include
+`engine.serve.open` and `engine.serve.verify`.
+
+The contract stays at version 3. Serve implements the reserved mode and adds
+its own frames. The existing build, refresh, and stage messages are unchanged.

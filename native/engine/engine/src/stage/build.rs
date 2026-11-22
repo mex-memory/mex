@@ -132,6 +132,15 @@ pub(super) fn finish(
     request: &Request,
     counts: &mut JobCounts,
 ) -> Result<(), JobError> {
+    finish_with_observations(writer, request, counts, &request.files)
+}
+
+pub(super) fn finish_with_observations<'a>(
+    writer: Writer,
+    request: &Request,
+    counts: &mut JobCounts,
+    observed: impl IntoIterator<Item = &'a RequestFile>,
+) -> Result<(), JobError> {
     let _timer = Timer::start("v5.finish");
     let write = JobError::write;
     if let Some(root) = &request.observation_root {
@@ -145,10 +154,14 @@ pub(super) fn finish(
                 .set_meta("walk_observation_v1", walk)
                 .map_err(write)?;
         }
-        for file in &request.files {
+        for file in observed {
             if let (Some(identity), Some(size)) = (&file.source_identity, file.utf8_size) {
                 writer
                     .add_source_observation(&file.path, identity, size)
+                    .map_err(write)?;
+            } else {
+                writer
+                    .remove_source_observation(&file.path)
                     .map_err(write)?;
             }
         }

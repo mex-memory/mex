@@ -101,7 +101,7 @@ pub(crate) fn capture(facts: &mut FileFacts, source: &str) {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Enabled(Vec<&'static Framework>);
 
 impl Enabled {

@@ -1,7 +1,10 @@
 //! A disposable, shared cache of file-local facts. Resolution never writes here.
 
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::Duration;
 
@@ -46,6 +49,99 @@ fn compressor() -> Option<zstd::bulk::Compressor<'static>> {
 
 fn codec() -> impl bincode::config::Config {
     bincode::config::standard().with_limit::<MAX_DECODED>()
+}
+
+struct PackedFacts {
+    size: usize,
+    packed: Box<[u8]>,
+}
+
+/// Pin the compressed disk-cache blocks once, and keep edited records in
+/// private blocks. The resolver only materializes records while using them.
+pub struct ResidentFacts {
+    block: Arc<PackedFacts>,
+    record: Option<DiskRecord>,
+}
+
+struct DiskRecord {
+    span: Range<usize>,
+    path: Box<str>,
+    language: &'static str,
+    version: Box<str>,
+    hash: [u8; 32],
+}
+
+impl ResidentFacts {
+    pub fn pack(facts: &FileFacts) -> Option<Self> {
+        let bytes = bincode::encode_to_vec(facts, codec()).ok()?;
+        Some(Self {
+            block: Arc::new(PackedFacts {
+                size: bytes.len(),
+                packed: zstd::bulk::compress(&bytes, 1).ok()?.into_boxed_slice(),
+            }),
+            record: None,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct ResidentDecoder {
+    block: Option<Arc<PackedFacts>>,
+    bytes: Vec<u8>,
+}
+
+impl ResidentDecoder {
+    pub fn unpack(&mut self, resident: &ResidentFacts) -> Option<FileFacts> {
+        let block = &resident.block;
+        if self
+            .block
+            .as_ref()
+            .is_none_or(|previous| !Arc::ptr_eq(previous, block))
+        {
+            self.block = None;
+            self.bytes.clear();
+            self.bytes.try_reserve_exact(block.size).ok()?;
+            if zstd::bulk::Decompressor::new()
+                .ok()?
+                .decompress_to_buffer(&block.packed, &mut self.bytes)
+                .ok()?
+                != block.size
+            {
+                return None;
+            }
+            self.block = Some(Arc::clone(block));
+        }
+        if let Some(record) = &resident.record {
+            decode_entry(
+                self.bytes.get(record.span.clone())?,
+                &record.path,
+                record.language,
+                &record.version,
+                &record.hash,
+            )
+        } else {
+            let (facts, len) = bincode::decode_from_slice(&self.bytes, codec()).ok()?;
+            (len == self.bytes.len()).then_some(facts)
+        }
+    }
+}
+
+fn decode_entry(
+    entry: &[u8],
+    path: &str,
+    language: &str,
+    version: &str,
+    hash: &[u8; 32],
+) -> Option<FileFacts> {
+    let ((stored_version, facts), bytes): ((&str, FileFacts), _) =
+        bincode::borrow_decode_from_slice(entry, codec()).ok()?;
+    (bytes == entry.len()
+        && stored_version == version
+        && facts.facts_version == FACTS_VERSION
+        && facts.content_hash == *hash
+        && facts.path == path
+        && facts.language == language)
+        .then_some(facts)
 }
 
 pub struct FactsCache(PathBuf);
@@ -136,6 +232,7 @@ impl FactsCache {
             decoder: zstd::bulk::Decompressor::new().ok()?,
             decoded: Vec::new(),
             block: None,
+            pinned: HashMap::new(),
         })
     }
 
@@ -194,6 +291,7 @@ pub struct CacheReader {
     decoder: zstd::bulk::Decompressor<'static>,
     decoded: Vec<u8>,
     block: Option<i64>,
+    pinned: HashMap<i64, Arc<PackedFacts>>,
 }
 
 impl CacheReader {
@@ -205,6 +303,42 @@ impl CacheReader {
         hash: &[u8; 32],
     ) -> Option<FileFacts> {
         let _timer = Timer::start("worker.cacheRead");
+        let (block, span) = self.locate(path, version, hash)?;
+        if self.block != Some(block) {
+            self.load_block(block)?;
+        }
+        decode_entry(self.decoded.get(span)?, path, language, version, hash)
+    }
+
+    pub fn pin(
+        &mut self,
+        path: &str,
+        language: &'static str,
+        version: String,
+        hash: [u8; 32],
+    ) -> Option<ResidentFacts> {
+        let (id, span) = self.locate(path, &version, &hash)?;
+        let block = match self.pinned.get(&id) {
+            Some(block) => Arc::clone(block),
+            None => {
+                let block = Arc::new(self.read_block(id)?);
+                self.pinned.insert(id, Arc::clone(&block));
+                block
+            }
+        };
+        (span.end <= block.size).then_some(ResidentFacts {
+            block,
+            record: Some(DiskRecord {
+                span,
+                language,
+                version: version.into_boxed_str(),
+                hash,
+                path: path.into(),
+            }),
+        })
+    }
+
+    fn locate(&self, path: &str, version: &str, hash: &[u8; 32]) -> Option<(i64, Range<usize>)> {
         let (block, offset, size): (i64, u32, u32) = self
             .conn
             .prepare_cached("SELECT block, offset, size FROM facts WHERE path = ?1 AND version = ?2 AND hash = ?3")
@@ -214,24 +348,10 @@ impl CacheReader {
             })
             .optional()
             .ok()??;
-        if self.block != Some(block) {
-            self.load_block(block)?;
-        }
-        let entry = self
-            .decoded
-            .get(offset as usize..offset.checked_add(size)? as usize)?;
-        let ((stored_version, facts), bytes): ((&str, FileFacts), _) =
-            bincode::borrow_decode_from_slice(entry, codec()).ok()?;
-        (bytes == entry.len()
-            && stored_version == version
-            && facts.facts_version == FACTS_VERSION
-            && facts.content_hash == *hash
-            && facts.path == path
-            && facts.language == language)
-            .then_some(facts)
+        Some((block, offset as usize..offset.checked_add(size)? as usize))
     }
 
-    fn load_block(&mut self, block: i64) -> Option<()> {
+    fn read_block(&self, block: i64) -> Option<PackedFacts> {
         let (checksum, payload): ([u8; 32], Vec<u8>) = self
             .conn
             .prepare_cached(
@@ -250,14 +370,22 @@ impl CacheReader {
         if size > MAX_ENCODED as u64 {
             return None;
         }
+        Some(PackedFacts {
+            size: size as usize,
+            packed: payload.into_boxed_slice(),
+        })
+    }
+
+    fn load_block(&mut self, block: i64) -> Option<()> {
+        let packed = self.read_block(block)?;
         self.block = None;
         self.decoded.clear();
-        self.decoded.try_reserve_exact(size as usize).ok()?;
+        self.decoded.try_reserve_exact(packed.size).ok()?;
         if self
             .decoder
-            .decompress_to_buffer(&payload, &mut self.decoded)
+            .decompress_to_buffer(&packed.packed, &mut self.decoded)
             .ok()?
-            != size as usize
+            != packed.size
         {
             return None;
         }

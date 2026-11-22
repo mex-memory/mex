@@ -19,6 +19,7 @@ pub(super) mod build;
 mod ecmascript;
 mod framework;
 pub(super) mod refresh;
+pub(super) mod serve;
 mod syntax;
 
 pub(super) fn write(

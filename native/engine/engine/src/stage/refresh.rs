@@ -22,13 +22,7 @@ pub(crate) fn write(
     cache: Option<&FactsCache>,
 ) -> Result<JobCounts, JobError> {
     let base_path = request.base.as_deref().expect("validated refresh base");
-    let base = RefreshBase::open(base_path, &refresh_format())
-        .map_err(JobError::write)?
-        .ok_or_else(|| JobError {
-            code: "graph_refresh_base_incompatible",
-            exit: 2,
-            message: "A base built by the current engine is required for refresh".into(),
-        })?;
+    let base = open_base(base_path)?;
     let prior = base.files().map_err(JobError::write)?;
     let mut reextracted = HashSet::new();
     let quick = reuse_resolution(
@@ -42,12 +36,11 @@ pub(crate) fn write(
     )?;
     let mut writer =
         Writer::overlay(request.candidate_path(), base_path).map_err(JobError::write)?;
-    if let Some((inputs, mut extracted)) = quick {
+    let enabled = if let Some((inputs, mut extracted)) = quick {
         // All captured facts that affect resolution match the base. Existing
         // edges already use the keys that this overlay will publish.
-        extracted.activate(&Enabled::from_names(
-            &base.frameworks().map_err(JobError::write)?,
-        ));
+        let enabled = Enabled::from_names(&base.frameworks().map_err(JobError::write)?);
+        extracted.activate(&enabled);
         let ids = extracted
             .files
             .iter()
@@ -70,29 +63,76 @@ pub(crate) fn write(
             )?;
             writer.copy_outgoing(old.key).map_err(JobError::write)?;
         }
+        enabled
     } else {
-        reextracted.extend(resolve_and_shadow(
+        let inputs: Vec<_> = request.files.iter().collect();
+        let mut extracted = extract_files(root, request, &inputs, cache);
+        let enabled = detect_frameworks(&extracted, configs);
+        extracted.activate(&enabled);
+        resolve_and_shadow(
             &mut writer,
             root,
             request,
             configs,
-            cache,
+            &extracted,
+            &enabled,
             &base,
             &prior,
-        )?);
-    }
+        )?;
+        reextracted.extend(extracted.reextracted);
+        enabled
+    };
+    writer
+        .set_meta("frameworks", &enabled.names())
+        .map_err(JobError::write)?;
+    writer
+        .set_meta(
+            "resolution_context",
+            &build::resolution_context(root, request, configs),
+        )
+        .map_err(JobError::write)?;
+
+    finish(writer, request, reextracted.len())
+}
+
+pub(crate) fn open_base(base: &Path) -> Result<RefreshBase, JobError> {
+    RefreshBase::open(base, &refresh_format())
+        .map_err(JobError::write)?
+        .ok_or_else(|| JobError {
+            code: "graph_refresh_base_incompatible",
+            exit: 2,
+            message: "A base built by the current engine is required for refresh".into(),
+        })
+}
+
+pub(super) fn finish(
+    writer: Writer,
+    request: &Request,
+    reextracted: usize,
+) -> Result<JobCounts, JobError> {
+    finish_with_observations(writer, request, reextracted, &request.files)
+}
+
+pub(super) fn finish_with_observations<'a>(
+    writer: Writer,
+    request: &Request,
+    reextracted: usize,
+    observed: impl IntoIterator<Item = &'a RequestFile>,
+) -> Result<JobCounts, JobError> {
+    use mex_graph_core::timing;
 
     writer.carry_parse_gaps().map_err(JobError::write)?;
-    let [files, nodes, edges, shadowed] = writer.overlay_counts().map_err(JobError::write)?;
+    let [files, nodes, edges, shadowed] =
+        timing::measure("v5.overlayCounts", || writer.overlay_counts()).map_err(JobError::write)?;
     let mut counts = JobCounts {
         files,
         nodes,
         edges,
-        reextracted: reextracted.len(),
+        reextracted,
         shadowed: Some(shadowed),
         coverage_gaps: writer.failed_files().map_err(JobError::write)?,
     };
-    build::finish(writer, request, &mut counts)?;
+    build::finish_with_observations(writer, request, &mut counts, observed)?;
     Ok(counts)
 }
 
@@ -146,29 +186,42 @@ fn reuse_resolution<'a>(
         else {
             return Ok(None);
         };
-        old.content_hash = facts.content_hash;
-        for (before, after) in old.defs.iter_mut().zip(&facts.defs) {
-            if before.kind == Kind::File && after.kind == Kind::File {
-                before.range.end_byte = after.range.end_byte;
-                before.range.end_line = after.range.end_line;
-                before.range.end_col = after.range.end_col;
-                before.name_range.end_byte = after.name_range.end_byte;
-                before.name_range.end_line = after.name_range.end_line;
-                before.name_range.end_col = after.name_range.end_col;
-            }
-        }
-        if old != *facts {
+        if !same_resolution_inputs(&mut old, facts) {
             return Ok(None);
         }
     }
     Ok(Some((changed, extracted)))
 }
 
+/// The body hash, sketch and documentation are written from the new facts.
+/// They do not participate in wiring. File-node end positions likewise do
+/// not affect resolution or containment. Route declarations remain exact
+/// because they contribute to the resolution digest itself.
+pub(super) fn same_resolution_inputs(old: &mut FileFacts, facts: &FileFacts) -> bool {
+    old.content_hash = facts.content_hash;
+    for (before, after) in old.defs.iter_mut().zip(&facts.defs) {
+        if before.kind != Kind::Route && after.kind != Kind::Route {
+            before.body_hash = after.body_hash;
+            before.sketch.clone_from(&after.sketch);
+            before.docstring.clone_from(&after.docstring);
+        }
+        if before.kind == Kind::File && after.kind == Kind::File {
+            before.range.end_byte = after.range.end_byte;
+            before.range.end_line = after.range.end_line;
+            before.range.end_col = after.range.end_col;
+            before.name_range.end_byte = after.name_range.end_byte;
+            before.name_range.end_line = after.name_range.end_line;
+            before.name_range.end_col = after.name_range.end_col;
+        }
+    }
+    *old == *facts
+}
+
 #[derive(Clone, Copy)]
-struct FileInput<'a> {
-    input: &'a RequestFile,
-    facts: &'a FileFacts,
-    size: u64,
+pub(super) struct FileInput<'a> {
+    pub(super) input: &'a RequestFile,
+    pub(super) facts: &'a FileFacts,
+    pub(super) size: u64,
 }
 
 impl FileInput<'_> {
@@ -190,29 +243,44 @@ impl FileInput<'_> {
     }
 }
 
-fn resolve_and_shadow<'a>(
-    writer: &mut Writer,
-    root: &Path,
-    request: &'a Request,
+pub(super) fn detect_frameworks(
+    extracted: &ExtractedFiles<'_>,
     configs: &[ConfigSource<'_>],
-    cache: Option<&FactsCache>,
-    base: &RefreshBase,
-    prior: &HashMap<String, BaseFile>,
-) -> Result<Vec<&'a str>, JobError> {
-    let inputs: Vec<_> = request.files.iter().collect();
-    let mut extracted = extract_files(root, request, &inputs, cache);
-    let package = configs
+) -> Enabled {
+    Enabled::detect(
+        &extracted.facts,
+        &extracted.ecmascript,
+        package_config(configs),
+    )
+}
+
+pub(super) fn package_config<'a>(configs: &'a [ConfigSource<'_>]) -> Option<&'a str> {
+    configs
         .iter()
         .find(|(path, _)| *path == "package.json")
-        .map(|(_, text)| text.as_ref());
-    let enabled = Enabled::detect(&extracted.facts, &extracted.ecmascript, package);
-    extracted.activate(&enabled);
-    let projection = Projection::new(&extracted, root, configs, Some(&enabled));
+        .map(|(_, text)| text.as_ref())
+}
 
-    let mut files = HashMap::with_capacity(inputs.len());
-    let mut by_path = HashMap::with_capacity(inputs.len());
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared overlay projection from extracted facts"
+)]
+pub(super) fn resolve_and_shadow(
+    writer: &mut Writer,
+    root: &Path,
+    request: &Request,
+    configs: &[ConfigSource<'_>],
+    extracted: &ExtractedFiles<'_>,
+    enabled: &Enabled,
+    base: &RefreshBase,
+    prior: &HashMap<String, BaseFile>,
+) -> Result<(), JobError> {
+    let projection = Projection::new(extracted, root, configs, Some(enabled));
+
+    let mut files = HashMap::with_capacity(request.files.len());
+    let mut by_path = HashMap::with_capacity(request.files.len());
     let mut nodes = HashMap::new();
-    for (index, (input, entry)) in inputs.into_iter().zip(&extracted.files).enumerate() {
+    for (index, (input, entry)) in request.files.iter().zip(&extracted.files).enumerate() {
         let (facts, size) = match extracted.file(entry) {
             Ok(file) => file,
             Err(error) if request.build_metadata.is_some() => return Err(bad_source(error)),
@@ -277,10 +345,10 @@ fn resolve_and_shadow<'a>(
         )?;
         writer.copy_outgoing(old.key).map_err(JobError::write)?;
     }
-    Ok(extracted.reextracted)
+    Ok(())
 }
 
-fn write_shadow(
+pub(super) fn write_shadow(
     writer: &mut Writer,
     key: i64,
     digest: &[u8; 32],
@@ -306,6 +374,6 @@ fn write_shadow(
         .map_err(JobError::write)
 }
 
-fn bad_source((path, reason): (&str, &str)) -> JobError {
+pub(super) fn bad_source((path, reason): (&str, &str)) -> JobError {
     JobError::request(format!("Unable to refresh input {path}: {reason}"))
 }

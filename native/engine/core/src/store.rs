@@ -238,8 +238,8 @@ impl Writer {
         let existing = if self.overlay {
             self.conn
                 .prepare_cached(&format!(
-                    "SELECT id FROM base.{} WHERE name = ?1",
-                    code.table()
+                    "SELECT id FROM base.{0} WHERE name = ?1 UNION ALL SELECT id FROM main.{0} WHERE name = ?1",
+                    code.table(),
                 ))?
                 .query_row([name], |row| row.get(0))
                 .optional()?
@@ -302,8 +302,15 @@ impl Writer {
         utf8_size: u32,
     ) -> rusqlite::Result<()> {
         self.conn
-            .prepare_cached("INSERT INTO source_observations VALUES (?1, ?2, ?3)")?
+            .prepare_cached("INSERT OR REPLACE INTO source_observations VALUES (?1, ?2, ?3)")?
             .execute(params![path, identity, utf8_size])?;
+        Ok(())
+    }
+
+    pub fn remove_source_observation(&self, path: &str) -> rusqlite::Result<()> {
+        self.conn
+            .prepare_cached("DELETE FROM source_observations WHERE path = ?1")?
+            .execute([path])?;
         Ok(())
     }
 

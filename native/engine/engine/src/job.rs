@@ -44,30 +44,31 @@ pub struct Request {
     #[serde(default)]
     pub languages: Vec<String>,
     #[serde(default)]
-    frameworks: bool,
+    pub(super) frameworks: bool,
     // A database job writes here. Stage ignores the output field.
-    output: Option<PathBuf>,
+    pub(super) output: Option<PathBuf>,
     #[serde(default)]
     pub base: Option<PathBuf>,
+    pub(super) overlay: Option<PathBuf>,
     #[serde(default)]
     pub changed: Vec<String>,
     #[serde(default)]
     pub facts_cache: Option<PathBuf>,
     pub limits: RequestLimits,
     pub(super) build_metadata: Option<BuildMetadata>,
-    source_directory: Option<PathBuf>,
+    pub(super) source_directory: Option<PathBuf>,
     pub(super) observation_root: Option<String>,
     pub(super) walk_observation: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub(super) enum RequestConfig {
     Path(String),
     Source { path: String, source: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestFile {
     pub path: String,
@@ -75,17 +76,17 @@ pub struct RequestFile {
     pub size: u64,
     pub(super) modified_at: Option<f64>,
     pub(super) extractor_version: Option<String>,
-    staged: Option<String>,
+    pub(super) staged: Option<String>,
     pub(super) content_hash: Option<String>,
     pub(super) source_identity: Option<String>,
     pub(super) utf8_size: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestLimits {
-    pub memory_mb: u64,
-    pub deadline_ms: u64,
+    pub(super) memory_mb: u64,
+    pub(super) deadline_ms: u64,
     #[serde(default)]
     pub threads: Option<usize>,
 }
@@ -99,6 +100,10 @@ pub struct JobError {
 }
 
 impl JobError {
+    pub(super) fn request_io(error: std::io::Error) -> JobError {
+        Self::request(error.to_string())
+    }
+
     pub(super) fn request(message: impl Into<String>) -> JobError {
         JobError {
             code: "graph_request_invalid",
@@ -128,7 +133,7 @@ pub fn emit_error(code: &str, message: &str) {
 }
 
 /// The candidate and its SQLite side files.
-fn remove_candidate(output: Option<&Path>) {
+pub(super) fn remove_candidate(output: Option<&Path>) {
     let Some(output) = output else { return };
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let mut path = output.as_os_str().to_owned();
@@ -164,7 +169,7 @@ pub fn load(path: &Path, mode: &str) -> Result<Request, JobError> {
             "root must be an existing absolute folder",
         ));
     }
-    if mode == "stage" {
+    if matches!(mode, "stage" | "serve") {
         request.output = None;
     } else {
         let output = request
@@ -180,11 +185,11 @@ pub fn load(path: &Path, mode: &str) -> Result<Request, JobError> {
             return Err(JobError::request("output's folder must exist"));
         }
     }
-    if mode == "refresh" {
+    if matches!(mode, "refresh" | "serve") {
         let base = request
             .base
             .as_deref()
-            .ok_or_else(|| JobError::request("base is required for refresh"))?;
+            .ok_or_else(|| JobError::request("base is required for refresh and serve"))?;
         if !base.is_absolute()
             || !std::fs::symlink_metadata(base).is_ok_and(|entry| entry.is_file())
         {
@@ -196,17 +201,10 @@ pub fn load(path: &Path, mode: &str) -> Result<Request, JobError> {
             .changed
             .iter()
             .chain(request.files.iter().map(|file| &file.path))
-            .any(|path| {
-                path.is_empty()
-                    || path.contains('\\')
-                    || path
-                        .split('/')
-                        .any(|part| part.is_empty() || matches!(part, "." | ".."))
-                    || Path::new(path).is_absolute()
-            })
+            .any(|path| !repository_path(path))
         {
             return Err(JobError::request(
-                "refresh paths must be repository-relative and normalized",
+                "source paths must be repository-relative and normalized",
             ));
         }
     }
@@ -295,7 +293,19 @@ pub fn run(request: Request) -> Result<(), JobError> {
     Ok(())
 }
 
-fn timing_file(root: &Path) -> Option<PathBuf> {
+pub(super) fn repository_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains(['\\', '\0'])
+        && !path
+            .split('/')
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+        && Path::new(path)
+            .components()
+            .next()
+            .is_some_and(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+pub(super) fn timing_file(root: &Path) -> Option<PathBuf> {
     let raw = std::env::var_os("MEX_GRAPH_PHASE_TIMINGS")?;
     match raw.to_string_lossy().trim().to_ascii_lowercase().as_str() {
         "" | "0" | "false" | "no" | "off" => None,
@@ -308,7 +318,7 @@ fn timing_file(root: &Path) -> Option<PathBuf> {
     }
 }
 
-fn append_timings(path: &Path, mode: &str, totals: timing::Totals) {
+pub(super) fn append_timings(path: &Path, mode: &str, totals: timing::Totals) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -402,6 +412,7 @@ pub(super) enum ExtractedFile<'a> {
     },
 }
 
+#[derive(Default)]
 pub(super) struct ExtractedFiles<'a> {
     /// Dense Python facts, including failed parses, indexed by its resolver.
     pub(super) facts: Vec<FileFacts>,
@@ -447,6 +458,37 @@ impl ExtractedFiles<'_> {
     }
 }
 
+impl<'a> ExtractedFiles<'a> {
+    pub(super) fn push(&mut self, facts: FileFacts, size: u64) {
+        let entry = if facts.language == LANGUAGE {
+            let index = self.facts.len();
+            self.facts.push(facts);
+            ExtractedFile::Python { index, size }
+        } else if let Some(language) = SyntaxLanguage::for_path(&facts.path) {
+            let files = &mut self.syntax[language as usize];
+            let index = files.len();
+            files.push(facts);
+            ExtractedFile::Syntax {
+                language,
+                index,
+                size,
+            }
+        } else {
+            let index = self.ecmascript.len();
+            self.ecmascript.push(facts);
+            ExtractedFile::EcmaScript { index, size }
+        };
+        self.files.push(entry);
+    }
+
+    pub(super) fn into_facts(self) -> impl Iterator<Item = FileFacts> {
+        self.facts
+            .into_iter()
+            .chain(self.ecmascript)
+            .chain(self.syntax.into_iter().flatten())
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Adapter {
     Python,
@@ -468,6 +510,23 @@ pub(super) fn refresh_format() -> String {
 }
 
 impl Adapter {
+    fn for_file(path: &str, languages: &[String]) -> Option<Self> {
+        let enabled = |language: &str| languages.iter().any(|name| name == language);
+        if enabled(LANGUAGE)
+            && path
+                .rsplit_once('.')
+                .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("py"))
+        {
+            Some(Self::Python)
+        } else if language_for_path(path).is_some_and(enabled) {
+            Some(Self::EcmaScript)
+        } else {
+            SyntaxLanguage::for_path(path)
+                .filter(|language| enabled(language.name()))
+                .map(Self::Syntax)
+        }
+    }
+
     fn version(self, path: &str, frameworks: bool) -> (&'static str, String) {
         // The capture version covers framework extraction before activation.
         let (language, adapter) = match self {
@@ -498,6 +557,13 @@ impl Adapter {
     }
 }
 
+pub(super) fn request_facts_key(
+    path: &str,
+    languages: &[String],
+) -> Option<(&'static str, String)> {
+    Some(Adapter::for_file(path, languages)?.version(path, true))
+}
+
 pub(super) fn captured_facts_key(language: &str, path: &str) -> (&'static str, String) {
     let adapter = match language {
         LANGUAGE => Adapter::Python,
@@ -516,34 +582,19 @@ pub(super) fn extract_files<'a>(
     cache: Option<&FactsCache>,
 ) -> ExtractedFiles<'a> {
     let _timer = Timer::start("extract");
-    let enabled = |language: &str| request.languages.iter().any(|name| name == language);
-    let python_enabled = enabled(LANGUAGE);
-    let capture_frameworks = request.frameworks || request.output.is_some();
+    let capture_frameworks =
+        request.frameworks || request.output.is_some() || request.mode == "serve";
     let inputs: Vec<_> = files
         .iter()
-        .map(|&file| {
-            let adapter = if python_enabled
-                && file
-                    .path
-                    .rsplit_once('.')
-                    .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("py"))
-            {
-                Some(Adapter::Python)
-            } else if language_for_path(&file.path).is_some_and(enabled) {
-                Some(Adapter::EcmaScript)
-            } else {
-                SyntaxLanguage::for_path(&file.path)
-                    .filter(|language| enabled(language.name()))
-                    .map(Adapter::Syntax)
-            };
-            match adapter {
+        .map(
+            |&file| match Adapter::for_file(&file.path, &request.languages) {
                 Some(adapter) => Ok((file, adapter, OnceLock::new())),
                 None => {
                     request.source_path(root, file)?;
                     Err("no adapter yet")
                 }
-            }
-        })
+            },
+        )
         .collect();
 
     let count = inputs.iter().filter(|input| input.is_ok()).count();
@@ -864,7 +915,7 @@ pub(super) fn read_source(
 
 pub(super) type ConfigSource<'a> = (&'a str, Cow<'a, str>);
 
-fn read_configs<'a>(root: &Path, configs: &'a [RequestConfig]) -> Vec<ConfigSource<'a>> {
+pub(super) fn read_configs<'a>(root: &Path, configs: &'a [RequestConfig]) -> Vec<ConfigSource<'a>> {
     configs
         .iter()
         .filter_map(|config| match config {

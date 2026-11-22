@@ -18,6 +18,32 @@ pub struct BaseFile {
 pub struct RefreshBase(Connection);
 
 impl RefreshBase {
+    pub fn open_overlay(path: &Path, base: &Path) -> rusqlite::Result<Self> {
+        let conn = Connection::open_with_flags(
+            immutable_uri(path)?,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
+        let version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let name: String = conn.query_row(
+            "SELECT value FROM overlay_info WHERE key = 'base'",
+            [],
+            |row| row.get(0),
+        )?;
+        if version != SCHEMA_VERSION
+            || base.file_name().and_then(|name| name.to_str()) != Some(&name)
+        {
+            return Err(Error::InvalidQuery);
+        }
+        Ok(Self(conn))
+    }
+
+    pub fn shadows(&self) -> rusqlite::Result<Vec<String>> {
+        self.0
+            .prepare("SELECT path FROM shadow_files ORDER BY path")?
+            .query_map([], |row| row.get(0))?
+            .collect()
+    }
+
     pub fn open(path: &Path, refresh_format: &str) -> rusqlite::Result<Option<Self>> {
         let conn = Connection::open_with_flags(
             immutable_uri(path)?,
@@ -134,6 +160,51 @@ const CALL_KIND: &str = "coalesce((SELECT id FROM base.edge_kinds WHERE name = '
                                     (SELECT id FROM main.edge_kinds WHERE name = 'calls'))";
 
 impl Writer {
+    /// Unchanged paths retain the checkout's previously proven stat stamps.
+    pub fn copy_source_observations(&self, previous: bool, root: &str) -> rusqlite::Result<bool> {
+        let from = if previous { "previous" } else { "base" };
+        let same_root: bool = self.conn.query_row(&format!(
+            "SELECT EXISTS (SELECT 1 FROM {from}.meta WHERE key = 'observation_root' AND value = ?1)"
+        ), [root], |row| row.get(0))?;
+        if same_root {
+            self.conn.execute(
+                &format!(
+                    "INSERT INTO main.source_observations SELECT * FROM {from}.source_observations"
+                ),
+                [],
+            )?;
+        }
+        Ok(same_root)
+    }
+
+    /// The previous overlay owns some of the unchanged wiring. Keep its
+    /// integer dictionary keys so copied edges and unresolved names still join.
+    pub fn attach_previous_overlay(&mut self, previous: &Path) -> rusqlite::Result<()> {
+        self.conn
+            .execute("ATTACH DATABASE ?1 AS previous", [immutable_uri(previous)?])?;
+        for code in [
+            super::Code::Language,
+            super::Code::NodeKind,
+            super::Code::EdgeKind,
+            super::Code::Provenance,
+            super::Code::Method,
+            super::Code::Reason,
+            super::Code::Name,
+        ] {
+            let table = code.table();
+            self.conn.execute(
+                &format!("INSERT INTO main.{table} SELECT * FROM previous.{table}"),
+                [],
+            )?;
+            self.next_code = self.next_code.max(self.conn.query_row(
+                &format!("SELECT coalesce(max(id), 0) FROM main.{table}"),
+                [],
+                |row| row.get(0),
+            )?);
+        }
+        Ok(())
+    }
+
     pub fn shadow(&self, path: &str) -> rusqlite::Result<()> {
         self.conn
             .prepare_cached("INSERT INTO shadow_files VALUES (?1)")?
@@ -142,6 +213,11 @@ impl Writer {
     }
 
     pub fn copy_outgoing(&self, key: i64) -> rusqlite::Result<()> {
+        self.copy_outgoing_from(key, false)
+    }
+
+    pub fn copy_outgoing_from(&self, key: i64, previous: bool) -> rusqlite::Result<()> {
+        let from = if previous { "previous" } else { "base" };
         for (table, owner) in [
             ("edges", "source"),
             ("unresolved_calls", "source"),
@@ -149,8 +225,8 @@ impl Writer {
         ] {
             self.conn
                 .prepare_cached(&format!(
-                    "INSERT INTO main.{table} SELECT * FROM base.{table} WHERE {owner} IN
-                 (SELECT id FROM base.nodes WHERE file = ?1)"
+                    "INSERT INTO main.{table} SELECT * FROM {from}.{table} WHERE {owner} IN
+                 (SELECT id FROM {from}.nodes WHERE file = ?1)"
                 ))?
                 .execute([key])?;
         }
@@ -213,7 +289,8 @@ impl Writer {
 
     pub fn carry_parse_gaps(&self) -> rusqlite::Result<()> {
         self.conn.execute_batch(
-            "INSERT INTO main.coverage SELECT f.path, 'parse failed' FROM base.files f
+            "INSERT INTO main.coverage SELECT f.path, 'parse failed' FROM base.coverage c
+             CROSS JOIN base.files f ON f.path = c.path
              WHERE f.parse_status = 2 AND f.path NOT IN (SELECT path FROM main.shadow_files);",
         )
     }
