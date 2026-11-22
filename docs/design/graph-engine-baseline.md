@@ -594,6 +594,37 @@ failure was the existing `storage.test.ts` network-home assertion. The
 candidate-process test used a checkout-local fixture cache to preserve the
 shared dependency directory.
 
+### Independent re-check
+
+A second set of runs on the same machine, after cherry-picking stage 2c onto
+the PR branch, used the `8f91b9cc` engine and a CLI built at `8f91b9cc`.
+
+| novu | `8f91b9cc` | Stage 2c |
+|---|---:|---:|
+| Cold build, three alternating pairs, median [min–max] | 12.84 s [12.81–13.36] | 14.05 s [13.07–14.86] |
+| Engine `job`, two pairs, mean | 8.62 s | 9.07 s (+5.1%) |
+| Peak tree RSS, median | 951 MiB | 973 MiB (1,020 MB) |
+| Graph base | 199.6 MB | 214.9 MB |
+
+Stage 2c's arm was slower in every wall-clock pair, by 0.2–1.5 s. The engine
+phases put the steady difference at about 0.44 s. The new private state
+costs `resolve.incremental` 2.05 s and `v5.writeOutgoing` 0.84 s. Against
+that, the old `project`, `resolve` and `v5.resolutionDigest` phases, 2.4 s
+together, are gone, and `v5.relationships` is 0.39 s faster. Part of
+resolution now overlaps with extraction, which slows `extract` by about
+0.2 s. Novu stays under the 15 s target. Peak RSS is under 1 GiB but over
+the decimal 1 GB, and `8f91b9cc` was already at 997 MB.
+
+Warm p50 on the same five files was 26–39 ms for append and prepend
+and 28–47 ms for inserted calls, with novu holding at most 205 MiB.
+Novu's app-module prepend refresh was 804–859 ms when the file was written
+in place. **When the editor saves by writing a temporary file and renaming
+it over the original** (vim's backup copy, JetBrains' safe write), the same
+edit took 1.11–1.38 s. The engine `job` stayed at about 32 ms. Node recaptured
+coverage instead of reusing the walk observation (282 ms), and the engine
+call's wall time rose from 60 to 334 ms. This is not a stage 2c regression,
+but a save by rename still misses the 1 s target on novu.
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.
