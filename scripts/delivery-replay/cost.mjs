@@ -14,44 +14,72 @@ const codexRates = Object.fromEntries(Object.entries(prices.codex.models)
 const costClasses = ['input', 'cache_write', 'cache_read', 'output'];
 const validCount = (count) => Number.isSafeInteger(count) && count >= 0;
 
-export function priceSession(records, agent) {
+function callDollars(agent, model, counts, longWrite) {
+    const [input, write, read, output] = counts;
+    if (![...counts, longWrite, write - longWrite].every(validCount)) throw new Error('Invalid token usage');
+    if (agent === 'codex' && Object.hasOwn(codexRates, model)) {
+        const rates = codexRates[model][Number(input + write + read > prices.codex.longAbove)];
+        return counts.map((count, index) => count * rates[index] / 1e6);
+    }
+    if (agent === 'claude-code' && Object.hasOwn(prices.models, model)) {
+        const rate = prices.models[model];
+        return [input * rate.input, (write - longWrite) * rate.write5m + longWrite * rate.write1h,
+            read * rate.read, output * rate.output].map(value => value / 1e6);
+    }
+    return null;
+}
+
+// Local-record rows already split the input classes. They do not carry cache TTL
+// or individual request sizes, so apply the aggregate context and 5-minute rates.
+export function priceModelCall({ agent, model, input, cacheWrite, cacheRead, output }) {
+    const dollars = callDollars(agent === 'claude' ? 'claude-code' : agent, model, [input, cacheWrite, cacheRead, output], 0);
+    return dollars && sum(dollars);
+}
+
+export function priceSession(records, agent, { allowUnpriced = false, fallbackModel } = {}) {
     const usage = [0, 0, 0, 0], dollars = [0, 0, 0, 0];
-    const add = (counts, rates) => {
-        if (!counts.every(validCount)) throw new Error('Invalid token usage');
+    const unpriced = new Set();
+    let reasoning = 0;
+    const add = (counts, model = 'unknown', longWrite = 0) => {
+        const cost = callDollars(agent, model, counts, longWrite);
+        if (!counts.some(Boolean)) return;
+        if (!cost) {
+            if (!allowUnpriced) throw new Error(`Unknown ${agent === 'codex' ? 'Codex' : 'Claude Code'} price for ${model}`);
+            unpriced.add(model);
+        }
         for (const [index, count] of counts.entries()) {
             usage[index] += count;
-            dollars[index] += count * rates[index] / 1e6;
+            dollars[index] += cost?.[index] ?? 0;
         }
     };
     if (agent === 'claude-code') {
-        for (const { model, synthetic, tokens } of parseSession(records).calls) {
-            if (synthetic) continue;
-            if (!Object.hasOwn(prices.models, model)) throw new Error('Unknown Claude Code price');
-            const rate = prices.models[model];
-            add([tokens.input, tokens.write1h, tokens.read, tokens.output], [rate.input, rate.write1h, rate.read, rate.output]);
-            add([0, tokens.write5m, 0, 0], [0, rate.write5m, 0, 0]);
+        for (const { model, synthetic, tokens } of parseSession(records, { validateUsage: true }).calls) {
+            if (!synthetic) add([tokens.input, tokens.write1h + tokens.write5m, tokens.read, tokens.output], model, tokens.write1h);
         }
     } else if (agent === 'codex') {
-        let model, previous = [0, 0, 0, 0];
-        for (const { type, payload } of records) {
+        let model = fallbackModel, previous = [0, 0, 0, 0, 0];
+        for (const { type, payload } of records.filter(Boolean)) {
             if (type === 'turn_context' && payload?.model) model = payload.model;
             const snapshot = type === 'event_msg' && payload?.type === 'token_count' && payload.info?.total_token_usage;
             if (!snapshot) continue;
-            const total = [snapshot.input_tokens, snapshot.cache_write_input_tokens ?? 0, snapshot.cached_input_tokens, snapshot.output_tokens];
+            const total = [snapshot.input_tokens, snapshot.cache_write_input_tokens ?? 0, snapshot.cached_input_tokens,
+                snapshot.output_tokens, snapshot.reasoning_output_tokens ?? 0];
             if (!total.every(validCount)) throw new Error('Invalid Codex usage snapshot');
             const delta = total.map((count, index) => count - previous[index]);
             if (!delta.every(validCount)) throw new Error('Codex usage went backwards');
             previous = total;
-            if (delta.every((count) => count === 0)) continue;
-            if (!Object.hasOwn(codexRates, model)) throw new Error('Unknown Codex price');
-            const [input, write, read, output] = delta;
-            add([input - write - read, write, read, output], codexRates[model][Number(input > prices.codex.longAbove)]);
+            const [input, write, read, output, thought] = delta;
+            if (thought > output) throw new Error('Codex reasoning exceeds output');
+            reasoning += thought;
+            add([input - write - read, write, read, output], model);
         }
     } else {
         throw new Error('Unsupported replay agent');
     }
     if (!usage.every(validCount) || !usage.some(Boolean) || !dollars.every(Number.isFinite)) throw new Error('Missing priced usage');
-    return Object.fromEntries(costClasses.map((name, index) => [name, { tokens: usage[index], dollars: dollars[index] }]));
+    const classes = Object.fromEntries(costClasses.map((name, index) => [name,
+        { tokens: usage[index], dollars: unpriced.size ? null : dollars[index] }]));
+    return allowUnpriced ? { classes, reasoning, unpricedModels: [...unpriced].sort() } : classes;
 }
 const weights = prices.unknown;
 export const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] : null;
@@ -101,10 +129,25 @@ export function shellKind(command) {
     }
     return 'other';
 }
-export function parseSession(records) {
+function claudeTokens(usage, validate) {
+    const cc = usage.cache_creation ?? {};
+    const write1h = cc.ephemeral_1h_input_tokens ?? 0;
+    const write5m = cc.ephemeral_5m_input_tokens ?? ((usage.cache_creation_input_tokens ?? write1h) - write1h);
+    const tokens = { input: usage.input_tokens ?? 0, write1h, write5m,
+        read: usage.cache_read_input_tokens ?? 0, output: usage.output_tokens ?? 0 };
+    if (validate && (!validCount(usage.input_tokens) || !validCount(usage.output_tokens)
+        || !Object.values(tokens).every(validCount)
+        || (usage.cache_creation_input_tokens != null && usage.cache_creation_input_tokens !== write1h + write5m))) {
+        throw new Error('Invalid Claude usage snapshot');
+    }
+    return tokens;
+}
+
+export function parseSession(records, { validateUsage = false } = {}) {
     const calls = [], ids = new Map(), uses = new Map(), events = [], prompts = [];
     let epoch = 0;
     for (const r of records) {
+        if (!r) continue;
         if (r.type === 'system' && r.subtype === 'compact_boundary') {
             epoch++;
             continue;
@@ -113,23 +156,29 @@ export function parseSession(records) {
             continue;
         const m = r.message;
         if (r.type === 'assistant' && m) {
-            const id = m.id || r.uuid;
-            if (!ids.has(id)) {
-                const u = m.usage || {}, cc = u.cache_creation || {};
-                const tokens = { input: u.input_tokens || 0, write1h: cc.ephemeral_1h_input_tokens || 0,
-                    write5m: cc.ephemeral_1h_input_tokens != null ? cc.ephemeral_5m_input_tokens || 0 : u.cache_creation_input_tokens || 0,
-                    read: u.cache_read_input_tokens || 0, output: u.output_tokens || 0 };
-                const price = prices.models[m.model] || prices.unknown;
-                ids.set(id, calls.length);
-                calls.push({ epoch, model: m.model, synthetic: m.model === '<synthetic>', tokens,
-                    weighted: sum(Object.keys(weights).map(k => tokens[k] * weights[k])),
-                    priceWeighted: prices.models[m.model] ? sum(Object.keys(weights).map(k => tokens[k] * price[k])) / prices.referenceInputUSDPerMillion : null,
-                    dollars: prices.models[m.model] ? sum(Object.keys(weights).map(k => tokens[k] * price[k])) / 1e6 : null,
-                    context: tokens.input + tokens.write5m + tokens.write1h + tokens.read });
+            const synthetic = m.model === '<synthetic>' || r.isApiErrorMessage === true;
+            if (validateUsage && (synthetic || !m.usage)) continue;
+            if (validateUsage && (typeof m.id !== 'string' || !m.id)) throw new Error('Claude usage has no message ID');
+            const request = r.requestId ?? r.request_id ?? m.request_id ?? '';
+            const id = JSON.stringify([m.id || r.uuid, request]);
+            if (!ids.has(id)) ids.set(id, calls.length);
+            const index = ids.get(id), prior = calls[index];
+            if (!prior || m.usage) {
+                const tokens = claudeTokens(m.usage ?? {}, validateUsage);
+                // Repeated content blocks carry cumulative usage for one response.
+                // Prefer the complete snapshot if a lower-output copy appears later.
+                if (!prior || tokens.output >= prior.tokens.output) {
+                    const price = Object.hasOwn(prices.models, m.model) ? prices.models[m.model] : null;
+                    const dollars = price ? sum(Object.keys(weights).map(k => tokens[k] * price[k])) / 1e6 : null;
+                    calls[index] = { epoch: prior?.epoch ?? epoch, model: m.model, synthetic, tokens,
+                        weighted: sum(Object.keys(weights).map(k => tokens[k] * weights[k])),
+                        priceWeighted: dollars === null ? null : dollars * 1e6 / prices.referenceInputUSDPerMillion,
+                        dollars, context: tokens.input + tokens.write5m + tokens.write1h + tokens.read };
+                }
             }
             for (const b of m.content || [])
                 if (b.type === 'tool_use' && !uses.has(b.id))
-                    uses.set(b.id, { name: b.name, input: b.input || {}, call: ids.get(id), epoch });
+                    uses.set(b.id, { name: b.name, input: b.input || {}, call: index, epoch });
         }
         else if (r.type === 'user' && m) {
             const content = m.content;

@@ -1,5 +1,7 @@
 {
   "profile": "saved-session-reference-2026-11-16",
+  "date": "2026-11-16",
+  "source": "MEX saved-session reference rates from the delivery replay table. Codex uses the budget reference dated 2026-11-14.",
   "referenceInputUSDPerMillion": 1,
   "units": "dollars per million tokens; offline reference, not a bill",
   "models": {
