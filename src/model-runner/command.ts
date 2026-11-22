@@ -3,10 +3,17 @@ import { selectModel, type ModelAgent, type ModelSelection } from "./models.js";
 
 export const MODEL_SYSTEM_PROMPT = "Perform the supplied MEX task only. Keep the result concise, use the supplied evidence, and do not start unrelated work.";
 export interface ModelCommandOptions extends ModelSelection {
-  access?: "text" | "workspace";
+  /** text: no tools (the default for MEX's own work); read: look, never change; workspace: edits allowed. */
+  access?: "text" | "read" | "workspace";
   allowNonGit?: boolean;
   allowedTools?: readonly string[];
+  /** Read access only: the most agent turns one call may take. */
+  maxTurns?: number;
 }
+
+/** The only tools a read-only call gets: it can look through the checkout and change nothing. */
+export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"] as const;
+export const READ_ONLY_TURNS = 8;
 
 /** Per-run flags only: never edits user config or replaces subscription credentials. */
 export function buildModelCommand(agent: ModelAgent, instruction: string, options: ModelCommandOptions = {}): AgentCommand {
@@ -16,7 +23,10 @@ export function buildModelCommand(agent: ModelAgent, instruction: string, option
     command: agent,
     args: ["-p", ...(instruction ? [instruction] : []), "--safe-mode", "--no-session-persistence", "--model", model,
       "--system-prompt", MODEL_SYSTEM_PROMPT,
-      ...(workspace ? ["--permission-mode", "acceptEdits", "--allowedTools", (options.allowedTools ?? []).join(",")] : ["--tools", ""]),
+      ...(workspace ? ["--permission-mode", "acceptEdits", "--allowedTools", (options.allowedTools ?? []).join(",")]
+        : options.access === "read" ? ["--tools", READ_ONLY_TOOLS.join(","), "--allowedTools", READ_ONLY_TOOLS.join(","),
+          "--max-turns", String(Math.max(1, Math.min(options.maxTurns ?? READ_ONLY_TURNS, 20)))]
+          : ["--tools", ""]),
       "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
     env: { MEX_BACKGROUND: "1" },
   };

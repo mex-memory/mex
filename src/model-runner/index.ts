@@ -26,6 +26,11 @@ export interface ModelRequest extends ModelSelection {
   /** Total wall-clock budget, in addition to the shared inactivity deadline. */
   timeoutMs?: number;
   allowNonGit?: boolean;
+  /**
+   * Opt-in: let the agent read the checkout (Claude Code: Read, Grep, Glob only; Codex: its read-only sandbox),
+   * with a turn cap. Every other MEX call runs with no tools in a private empty directory.
+   */
+  readOnlyTools?: { maxTurns?: number };
   /** Automatic work reserves allowance; explicit commands omit this and remain uncapped. */
   automatic?: AutomaticModelBatch;
   /** A background run consented to for this job, within its durable token ceiling. */
@@ -63,7 +68,7 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
     text = next; hasResult = true;
   }, () => { outputError = "protocol"; controller.abort(); }, MAX_MODEL_STREAM_BYTES);
   try {
-    const invocation = buildModelCommand(request.agent, request.agent === "claude" ? "" : "-", { ...request, access: "text" });
+    const invocation = buildModelCommand(request.agent, request.agent === "claude" ? "" : "-", { ...request, access: request.readOnlyTools ? "read" : "text", maxTurns: request.readOnlyTools?.maxTurns });
     const timeout = request.timeoutMs ?? 5 * 60_000;
     const result = await runModelProcess(request.agent, invocation, resolve(request.projectRoot), {
       prompt: request.prompt, input: request.prompt, purpose: request.purpose,

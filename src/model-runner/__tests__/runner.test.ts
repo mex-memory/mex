@@ -46,6 +46,19 @@ describe("model selection", () => {
     expect(codex.args).not.toContain("mcp_servers={}");
     expect(codex.env).toEqual({MEX_BACKGROUND:"1"});
   });
+  it("gives a read-only call exactly the look-only tools and a turn cap, and nothing that edits", () => {
+    const claude = buildModelCommand("claude","",{role:"cheap",access:"read",maxTurns:4});
+    const tools = claude.args[claude.args.indexOf("--tools")+1];
+    expect(tools).toBe("Read,Grep,Glob");
+    expect(claude.args[claude.args.indexOf("--allowedTools")+1]).toBe("Read,Grep,Glob");
+    expect(claude.args[claude.args.indexOf("--max-turns")+1]).toBe("4");
+    expect(claude.args).not.toContain("acceptEdits");
+    expect(buildModelCommand("claude","",{role:"cheap",access:"read",maxTurns:500}).args).toContain("20");
+    const codex = buildModelCommand("codex","-",{role:"cheap",access:"read"});
+    expect(codex.args[codex.args.indexOf("--sandbox")+1]).toBe("read-only");
+    // The default stays tool-less.
+    expect(buildModelCommand("claude","",{role:"cheap"}).args[buildModelCommand("claude","",{role:"cheap"}).args.indexOf("--tools")+1]).toBe("");
+  });
 });
 
 describe("one-shot model runner with fake agents", () => {
