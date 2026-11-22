@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bumped on any change to these types; part of the facts cache key.
+/// Bumped on incompatible changes to these types; part of the facts cache key.
 pub const FACTS_VERSION: u32 = 1;
 
 /// "No index": the module scope, or the file as a definition's parent.
@@ -169,6 +169,12 @@ pub struct Def {
     /// Modifiers that change call semantics: `static`, `async`, `abstract`,
     /// Python decorators such as `staticmethod`.
     pub flags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decorators: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_parameters: Vec<String>,
     /// Base classes and implemented interfaces, as written.
     pub heritage: Vec<Heritage>,
     pub return_type: Option<String>,
@@ -366,6 +372,23 @@ impl Def {
     /// The public text id under the signature profile.
     pub fn signature_id(&self, path: &str) -> String {
         crate::id::node_id(self.kind.as_str(), &self.signature_identity(path))
+    }
+
+    /// This definition's identity under the compiler route's ordinal profile.
+    pub fn ordinal_identity(&self, path: &str) -> String {
+        let kind = self.kind.as_str();
+        crate::id::ordinal_identity(
+            path,
+            kind,
+            &self.qualified_name,
+            self.declaration_role.as_deref().unwrap_or(kind),
+            self.ordinal,
+        )
+    }
+
+    /// The public text id under the ordinal profile.
+    pub fn ordinal_id(&self, path: &str) -> String {
+        crate::id::node_id(self.kind.as_str(), &self.ordinal_identity(path))
     }
 }
 
