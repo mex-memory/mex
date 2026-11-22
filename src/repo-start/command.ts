@@ -466,8 +466,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
         if (!queueNativeRebuild(checkout.path)) throw new Error("rebuild was not queued");
         notes.push("A session is running here. Your agents get the commands after it ends.");
       }
-    } catch {
-      notes.push("Rule files could not be rebuilt. Run mex again to retry.");
+    } catch (error) {
+      notes.push(`Rule files could not be rebuilt: ${message(error).replace(/\.$/u, "")}. Run mex again to retry.`);
     }
   }
   for (const line of rich ? rich.notes(notes) : renderNotes(notes, mode)) write(line);

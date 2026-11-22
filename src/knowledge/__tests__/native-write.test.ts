@@ -26,6 +26,15 @@ const read = (root: string, path: string) => readFileSync(join(root, path), "utf
 const status = (root: string) => execFileSync("git", ["-C", root, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
 
 describe("writing native files", () => {
+  it("writes Copilot's path-scoped instructions alongside Claude Code's rules", () => {
+    const { root, project } = setup();
+    const result = writeNative(planNative(root, ["claude-code", "copilot"], [team("mx_root01"), team("mx_api001", "apps/api/**"), mine("mx_note01")]), { root, projectDirectory: project });
+    expect(result.written).toEqual(expect.arrayContaining([".github/instructions/mex.instructions.md"]));
+    expect(read(root, ".github/instructions/mex.instructions.md")).toContain("Rule mx_root01.");
+    // A rebuild reads its own manifest back, Copilot's paths included.
+    expect(() => writeNative(planNative(root, ["claude-code", "copilot"], [team("mx_root01")]), { root, projectDirectory: project })).not.toThrow();
+  });
+
   it("refuses a manifest path outside the checkout without removing its target", () => {
     const { root, project } = setup();
     const outside = join(root, "..", "AGENTS.md"), text = "<!-- mex:generated -->\nOutside rule.\n";
