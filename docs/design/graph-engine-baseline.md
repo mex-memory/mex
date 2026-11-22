@@ -169,7 +169,7 @@ Two more checks were added to the TypeScript gate for graph-03 (#398). Both use 
 | TypeScript compiler | 0.911 / 0.950 / 0.930 | 0.913 / 0.950 / 0.931 |
 | mex | 0.961 / 0.996 / 0.978 | **1.000** / 0.996 / **0.998** |
 
-The engine's recall is 95% of the compiler's overall and at least 96% on every repository. The run on the TypeScript compiler first found 0.845 recall. It came from a barrel bug: one `export *` of a generated, uncommitted module (`diagnosticInformationMap.generated.ts`) hid every name of the barrel. That is fixed: an unreadable star now contributes no names, as in TypeScript.
+The engine's recall is 99% of the compiler's overall (about 1,396 of 1,411 call sites the compiler graph finds) and at least 96% on every repository. The run on the TypeScript compiler first found 0.845 recall. It came from a barrel bug: one `export *` of a generated, uncommitted module (`diagnosticInformationMap.generated.ts`) hid every name of the barrel. That is fixed: an unreadable star now contributes no names, as in TypeScript.
 
 **Knowledge bench `eight-kinds-v1`** (74 claims, 444 claim checks across five checkpoints, graph-03's evaluator and delivery). Three graphs were scored: graph-03's own compiler build, this branch with the flag off, and this branch with the flag on. All three give identical results: 0 stale claims served, 85.1% fresh retention, 87.6% accuracy, and a passing grade. Only 3 of the 74 claims are `calls` relations, so this is a light check of the graph itself.
 
