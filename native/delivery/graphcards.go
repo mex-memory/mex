@@ -245,6 +245,9 @@ func headerChanges(view graph.View, rel, added string) []headerHit {
 	}
 	at := 0
 	for i := range lines {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue // else a block after a blank line matches twice
+		}
 		j, k := i, 0
 		for ; j < len(lines) && k < len(want); j++ {
 			t := strings.TrimSpace(lines[j])

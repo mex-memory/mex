@@ -142,4 +142,14 @@ func TestHeaderChangesFindsMultiLineSignatures(t *testing.T) {
 	if got := headerChanges(view, "a.ts", "}"); len(got) != 0 {
 		t.Fatalf("ambiguous: %v", got)
 	}
+	// A patch hunk carries its context: here the declaration, right after a
+	// blank line. Matching from the blank line too made it look ambiguous
+	// (a live Codex apply_patch got no note).
+	spaced := graph.View{
+		Files: outlineFiles{[]shift.Symbol{{Name: "resolveDomainName", Kind: "function", Start: 2, End: 13}}},
+		Src:   func(string) []string { return append([]string{""}, text...) },
+	}
+	if hits := headerChanges(spaced, "a.ts", strings.Join(text[:8], "\n")+"\n"); len(hits) != 1 || hits[0].def.Name != "resolveDomainName" {
+		t.Fatalf("hunk with its declaration after a blank line: %v", hits)
+	}
 }
