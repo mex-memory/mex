@@ -4,6 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { latestBuildUsage } from "../../record/build-usage.js";
+import { openRecordReadOnly } from "../../record/index.js";
 import { runGraphStatus } from "../cli-status.js";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
 import { GRAPH_ENGINE_ENV, graphEngineBinary } from "../native-engine.js";
@@ -64,12 +66,23 @@ it.skipIf(!existsSync(wasi) || process.platform === "win32")("uses WASI after a 
   expect(result.status.diagnostics).toContainEqual(expect.objectContaining({
     code: "GRAPH_ENGINE_WASI", message: expect.stringContaining("could not be executed"),
   }));
-  expect(result.engine).toMatchObject({ cpuMs: expect.any(Number), peakRssMb: expect.any(Number) });
   await expect(openWarmCheckout(root)).rejects.toThrow();
   writeFileSync(join(root, "code.py"), "def helper():\n    return 7\n");
   const refreshed = await refreshGraph(root);
   expect(refreshed.status).toMatchObject({ schemaVersion: 5, engineRuntime: "wasi" });
   expect(refreshed.refresh).toMatchObject({ publication: "delta", filesReextracted: 1 });
+  const log = openRecordReadOnly()!;
+  try {
+    const location = graphLocation(root);
+    const usage = latestBuildUsage(log, location.projectId, location.root);
+    for (const [row, engine] of [[usage.build, result.engine], [usage.refresh, refreshed.engine]] as const) {
+      expect(engine?.cpuMs).toBeGreaterThan(0);
+      expect(engine?.peakRssMb).toBeGreaterThan(0);
+      expect(row?.cpu_ms).toBeGreaterThanOrEqual(engine!.cpuMs!);
+      expect(row?.server_rss_mb).toBe(engine!.peakRssMb);
+      expect(row?.peak_rss_mb).toBeGreaterThan(engine!.peakRssMb!);
+    }
+  } finally { log.close(); }
 });
 
 it.skipIf(process.platform === "win32").each(["engine", "parent", "both processes"])("recovers an interrupted candidate after SIGKILL of the %s", async (target) => {
