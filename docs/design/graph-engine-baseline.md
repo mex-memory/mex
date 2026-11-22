@@ -256,7 +256,7 @@ Through `mex graph` with every language on the engine and v5 storage. Medians of
 | ripgrep | 0.48 | 161 | — → 0.19 | 442 KB | 1.0 |
 | novu | 13.1 | 944 | — → 0.81 | 2.7 MB | 49.4 |
 
-Against `next2`, novu rebuilds in 13.1 s instead of 77 s at 944 MB instead of 2.6 GB, and refreshes one file in 0.81 s instead of 23 s. Hono refreshes in 0.23 s instead of 3.3 s and NestJS in 0.35 s instead of 9.0 s.
+Against `next2`, novu rebuilds in 13.1 s instead of 77 s at 944 MB instead of 2.6 GB, and refreshes one file in 0.81 s instead of 23 s. Hono refreshes in 0.23 s instead of 3.3 s and NestJS in 0.35 s instead of 9.0 s. Like the `next2` baseline, these refreshes append a comment, which moves no declaration. An edit that does move declarations still resolves the whole corpus: 3.1 s on novu (see stage 2).
 
 novu's rebuild spends about 9.8 s in the engine:
 - 3.7 s extracting;
@@ -299,6 +299,28 @@ overlay rows, flushes the candidate, and publishes the pointer. The warm
 checkout adds an estimated 66.3 MiB to Node, for 160.3 MiB with the resident
 engine. All zod and NestJS samples published warm. Extraction on zod's
 `schemas.ts` accounts for about 74 ms of its median engine time.
+
+**Edits that move declarations aren't incremental yet.** An appended comment leaves every declaration and call in place, so `serve` reuses the published resolution. Most real edits insert or remove lines above some declarations. Those edits fail the resolver-input check, and the engine resolves and projects the whole corpus again. `MEX_WARM_EDIT=prepend` in `warm-latency.ts` adds the comment line at the top of the file instead:
+
+| Repository | MEX p50, append → prepend (ms) | Engine p50, prepend (ms) | Engine RSS after, prepend (MiB) |
+|---|---:|---:|---:|
+| Hono | 34 → 325 | 307 | 80 |
+| Flask | — → 58 | 40 | 20 |
+| ripgrep | — → 81 | 64 | 24 |
+| NestJS | — → 457 | 440 | 193 |
+| novu | 53 → 2,693 | 2,669 | 781 |
+
+A normal refresh has the same limit. novu's prepend refresh takes 3.1 s through `mex graph` (0.81 s for an appended comment). The engine's 1.95 s job breaks down as:
+- 2.6 s of CPU (0.53 s elapsed) decoding every file's cached facts;
+- 0.42 s resolving the corpus;
+- 0.76 s projecting every file to find the changed rows.
+
+Hono's prepend refresh takes 0.46 s (0.24 s for an append).
+
+Next is incremental resolution:
+- an edit that only moves positions re-projects that file;
+- a changed call re-resolves that file;
+- a changed export also re-resolves its dependents.
 
 `scripts/graph-engine-bench/refresh-replay.ts --arm=both` compares the
 warm and refresh arms independently against fresh cold builds. Both arms
