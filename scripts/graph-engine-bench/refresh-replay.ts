@@ -155,7 +155,31 @@ function rawRows(db: ReturnType<typeof openGraphDatabase>) {
   const chunks = `${fts("main")}${overlay ? " UNION ALL " + fts("base") : ""} ORDER BY 1, 2`;
   const result = Object.fromEntries(Object.entries(tables).map(([table, sql]) => [table, digest(db.prepare(sql).iterate())]));
   return { ...result, sourceTokens: digest(db.prepare(chunks).iterate()) };
+}
 
+/** Retain the public projection SQL while indexing its repeated joins for full scans. */
+function indexBulkReadJoins(db: ReturnType<typeof openGraphDatabase>) {
+  if (v5Rows(db, "nodes") === "main.nodes") return;
+  const views = db.prepare(`SELECT name, sql FROM temp.sqlite_schema WHERE type = 'view'
+    AND name IN ('nodes', 'edges', 'unresolved_refs')`).all() as Array<{ name: string; sql: string }>;
+  const joinKeys: Record<string, string> = {
+    files: "id", nodes: "id", node_attributes: "node, kind, position", node_kinds: "id", languages: "id",
+    edge_kinds: "id", provenances: "id", resolution_methods: "id", unresolved_names: "id", unresolved_reasons: "id",
+  };
+  db.pragma("query_only = OFF");
+  try {
+    for (const [table, keys] of Object.entries(joinKeys)) {
+      const copy = `replay_bulk_${table}`;
+      db.exec(`CREATE TEMP TABLE ${copy} AS SELECT * FROM ${v5Rows(db, table)};
+        CREATE INDEX temp.${copy}_key ON ${copy} (${keys});`);
+    }
+    for (const { name, sql } of views) {
+      const view = sql.replace(/^CREATE VIEW/i, "CREATE TEMP VIEW")
+        .replace(/\btemp\.v5_(\w+)\b/g, (match, table: string) =>
+          Object.hasOwn(joinKeys, table) ? `temp.replay_bulk_${table}` : match);
+      db.exec(`DROP VIEW temp.${name}; ${view}`);
+    }
+  } finally { db.pragma("query_only = ON"); }
 }
 
 function answers(root: string, home: string, queries: readonly string[], selected?: readonly string[]) {
@@ -164,20 +188,26 @@ function answers(root: string, home: string, queries: readonly string[], selecte
     try {
       const store = new GraphStore(db);
       const sortedDigest = (rows: unknown[]) => digest(rows.map(row => JSON.stringify(row)).sort());
-      const nodes = store.getAllNodes().map(({ updatedAt: _clock, ...node }) => node);
-      const stable = nodes.filter(node => node.bodyHash).map(node => node.id).sort();
+      const coldNodes = selected ? undefined : store.getAllNodes();
+      const stable = coldNodes?.filter(node => node.bodyHash).map(node => node.id).sort() ?? [];
       // Point readers exercise integer references separately from raw full scans.
       const ids = selected ?? stable.filter((_, index) => index % Math.max(1, Math.floor(stable.length / 24)) === 0).slice(0, 24);
       const fingerprints = new FingerprintStore(db);
+      const raw = rawRows(db);
+      const points = ids.map(id => ({ id, fingerprint: fingerprints.get(id), incoming: sortedDigest(store.getIncomingEdges(id)),
+        outgoing: sortedDigest(store.getOutgoingEdges(id)) }));
+      const search = queries.map(query => ({ query, symbols: store.search(query, { limit: 30 }).map(node => node.id),
+        source: store.searchSourceChunks(query, 20).map(({ id: _key, ...hit }) => hit) }));
+      // Leave point and search probes on the actual publication views. SQLite
+      // otherwise expands every related UNION inside the bulk projection joins.
+      indexBulkReadJoins(db);
+      const nodes = (coldNodes ?? store.getAllNodes()).map(({ updatedAt: _clock, ...node }) => node);
       return {
         ids,
-        raw: rawRows(db),
+        raw,
         read: {
           nodes: sortedDigest(nodes), edges: sortedDigest(store.getAllEdges()), unresolved: sortedDigest(store.getAllUnresolvedRefs()),
-          points: ids.map(id => ({ id, fingerprint: fingerprints.get(id), incoming: sortedDigest(store.getIncomingEdges(id)),
-            outgoing: sortedDigest(store.getOutgoingEdges(id)) })),
-          search: queries.map(query => ({ query, symbols: store.search(query, { limit: 30 }).map(node => node.id),
-            source: store.searchSourceChunks(query, 20).map(({ id: _key, ...hit }) => hit) })),
+          points, search,
         },
       };
     } finally { db.close(); }
