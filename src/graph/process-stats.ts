@@ -33,7 +33,7 @@ export function ownUsage(): ProcessUsage {
 
 /** The compiler servers among this process's children (tsrs, tsgo). */
 export const COMPILER_SERVER = /^(tsrs|tsgo|typescript-go|tsc)(\.exe)?$/iu;
-export const WARM_GRAPH_SERVER = /^(tsrs|tsgo|typescript-go|tsc|mex-graph)(\.exe)?$/iu;
+export const WARM_GRAPH_SERVER = /^mex-graph(\.exe)?$/iu;
 
 /**
  * Children of `parentPid` whose executable name matches `name`. Resolves to an

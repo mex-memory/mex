@@ -2,20 +2,27 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
+import { FingerprintStore } from "../fingerprint-store.js";
 import { openGraphRead } from "../overlay-open.js";
 import { graphLocation, readGraphPointer } from "../storage.js";
-import { WarmCheckout } from "../warm.js";
+import { graphEngineBinary } from "../native-engine.js";
+import { openWarmCheckout } from "../warm.js";
 
 /**
  * Every language's extractor writes to the new storage: a build puts each
  * language's nodes in the base, an edit to each language's file lands in the
  * checkout's overlay, and base plus overlay equals a fresh build row for row.
- * Edits the warm path does not take (the tree-sitter languages) go cold.
  */
 
+const binary = graphEngineBinary();
 const roots: string[] = [];
+beforeAll(() => {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v5");
+  vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "typescript,javascript,python,rust,csharp");
+});
+afterAll(() => vi.unstubAllEnvs());
 afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 const FILES: Record<string, [string, string]> = {
@@ -32,24 +39,31 @@ const TABLES: Record<string, string> = {
   nodes: "SELECT id, kind, name, qualified_name, file_path, language, start_line, end_line, signature, body_hash FROM nodes",
   edges: "SELECT source, target, kind, line, col, provenance, confidence, resolution_method FROM edges",
   files: "SELECT path, content_hash, language, parse_status, node_count FROM files",
-  file_row_digests: "SELECT * FROM file_row_digests",
-  node_fingerprints: "SELECT node_id, hex(minhash), neighbors, token_count FROM node_fingerprints",
 };
 
 function images(root: string): Record<string, string[]> {
   const db = openGraphRead(root)!;
   try {
-    return Object.fromEntries(Object.entries(TABLES).map(([table, sql]) =>
+    const rows = Object.fromEntries(Object.entries(TABLES).map(([table, sql]) =>
       [table, (db.prepare(sql).all() as unknown[]).map((row) => JSON.stringify(Object.values(row as object))).sort()]));
+    const fingerprints = new FingerprintStore(db);
+    rows.fingerprints = (db.prepare("SELECT node_id FROM node_fingerprints ORDER BY node_id").all() as Array<{ node_id: string }>)
+      .map(({ node_id }) => JSON.stringify([node_id, fingerprints.get(node_id)]));
+    return rows;
   } finally { db.close(); }
 }
 
 async function inHome<T>(home: string, work: () => Promise<T> | T): Promise<T> {
-  vi.stubEnv("MEX_HOME", home);
-  try { return await work(); } finally { vi.unstubAllEnvs(); }
+  const previous = process.env.MEX_HOME;
+  process.env.MEX_HOME = home;
+  try { return await work(); }
+  finally {
+    if (previous === undefined) delete process.env.MEX_HOME;
+    else process.env.MEX_HOME = previous;
+  }
 }
 
-describe("every language on the new storage", () => {
+describe.skipIf(!binary)("every language on the new storage", () => {
   it("builds, overlays and matches a fresh build in every language", async () => {
     const root = mkdtempSync(join(tmpdir(), "mex-languages-"));
     const home = mkdtempSync(join(tmpdir(), "mex-languages-home-"));
@@ -61,7 +75,7 @@ describe("every language on the new storage", () => {
       mkdirSync(join(root, path, ".."), { recursive: true });
       writeFileSync(join(root, path), text);
     }
-    await inHome(home, () => rebuildGraph(root));
+    expect((await inHome(home, () => rebuildGraph(root))).status.schemaVersion).toBe(5);
     const languages = await inHome(home, () => {
       const db = openGraphRead(root)!;
       try { return (db.prepare("SELECT DISTINCT language FROM nodes ORDER BY language").all() as Array<{ language: string }>).map((row) => row.language); }
@@ -82,14 +96,13 @@ describe("every language on the new storage", () => {
     await inHome(fresh, () => rebuildGraph(root));
     const overlaid = await inHome(home, () => images(root));
     const built = await inHome(fresh, () => images(root));
-    for (const table of Object.keys(TABLES)) expect(overlaid[table], table).toEqual(built[table]);
+    for (const table of Object.keys(built)) expect(overlaid[table], table).toEqual(built[table]);
 
-    // The warm path takes the compiler languages and leaves the others to a cold refresh.
-    const warm = await inHome(home, () => WarmCheckout.open(root));
+    // Python also uses the resident engine when opted in on v5.
+    const warm = await inHome(home, () => openWarmCheckout(root));
     try {
       writeFileSync(join(root, "py/e.py"), `${FILES["py/e.py"]![1]}\n# edited\n`);
-      const result = await inHome(home, () => warm.edit(["py/e.py"]));
-      expect(result).toMatchObject({ status: "cold", reason: "py/e.py is not TypeScript or JavaScript" });
+      expect(await inHome(home, () => warm.edit(["py/e.py"]))).toMatchObject({ status: "published" });
     } finally { warm.close(); }
   }, 180_000);
 });

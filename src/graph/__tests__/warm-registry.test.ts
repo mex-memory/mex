@@ -2,14 +2,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openSqlite } from "../db/sqlite.js";
 import { rebuildGraph } from "../maintenance.js";
 import { graphLocation, readGraphPointer } from "../storage.js";
 import { readGraphState } from "../jobs.js";
 import { verifyGraph } from "../verify.js";
 import { WarmRegistry, type WarmHost } from "../warm-registry.js";
-import type { WarmCheckout, WarmEditResult } from "../warm.js";
+import type { WarmEditResult } from "../warm.js";
 
 // The warm registry in the background process: cooling queues the cold
 // refresh, an edit the warm path cannot take waits for quiet and then queues
@@ -39,7 +39,7 @@ function host(clock: { now: number }, status: WarmEditResult["status"] = "publis
     open: () => {
       const checkout = new FakeCheckout(() => clock.now, status);
       opened.push(checkout);
-      return checkout as unknown as WarmCheckout;
+      return checkout;
     },
   };
   return { value, refreshes, opened };
@@ -54,6 +54,22 @@ function emptyRoot(): string {
 const settings = { capMb: 1024, coolMs: 15 * 60_000, quietMs: 2 * 60_000, probeMs: 60 * 60_000 };
 
 describe("warm registry", () => {
+  beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v5"));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("queues a normal refresh for v4 edits", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    const clock = { now: 1_000_000 };
+    const { value, refreshes, opened } = host(clock);
+    const registry = new WarmRegistry(value, settings);
+    const root = emptyRoot();
+    registry.note("p", root, ["a.ts"]);
+    await registry.run();
+    expect(opened).toEqual([]);
+    clock.now += settings.quietMs;
+    await registry.run();
+    expect(refreshes).toEqual([["p", root]]);
+  });
   it("cools a checkout after 15 minutes without an edit and queues its cold refresh after quiet", async () => {
     const clock = { now: 1_000_000 };
     const { value, refreshes, opened } = host(clock);
@@ -109,6 +125,7 @@ describe("warm registry", () => {
   });
 
   it("turns the warm path off when a full rebuild differs, and keeps the repository cold", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
     const root = emptyRoot();
     execFileSync("git", ["init", "-q", "."], { cwd: root });
     mkdirSync(join(root, "src"));

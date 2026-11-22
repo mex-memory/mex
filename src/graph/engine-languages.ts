@@ -32,12 +32,3 @@ export function graphEngineHandlesEcmaScript(languages: readonly string[]): bool
 export function engineExtractorSuffix(languages: readonly string[]): string {
   return languages.length > 0 ? `+engine-${languages.join("-")}-${ENGINE_EXTRACTOR_VERSION}` : "";
 }
-
-/** Warm edits use compiler captures, so a checkout must use the compiler throughout its TS/JS corpus. */
-export function engineWarmDecline(extractorVersion?: string): string | undefined {
-  const storedLanguages = extractorVersion?.split("+engine-")[1]?.split("-") ?? [];
-  if (graphEngineHandlesEcmaScript(graphEngineLanguages()) || graphEngineHandlesEcmaScript(storedLanguages)) {
-    return "TypeScript or JavaScript is configured for the Rust graph engine. Edits use a normal graph refresh.";
-  }
-  return undefined;
-}

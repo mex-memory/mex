@@ -10,7 +10,7 @@ import { corpusExtractorVersion, CORPUS_EXTRACTOR_VERSION, discoverGraphConfigSo
 import { GRAPH_ENGINE_ENV, GRAPH_ENGINE_LANGUAGES_ENV, graphEngineBinary } from "../native-engine.js";
 import { currentGraphPath } from "../storage.js";
 import { WARM_DEFAULTS, WarmRegistry } from "../warm-registry.js";
-import { WarmCheckout } from "../warm.js";
+import { openWarmCheckout } from "../warm.js";
 
 const languages = "typescript,javascript";
 const service = `/** Runs the supplied callback. */
@@ -198,11 +198,11 @@ describe.skipIf(!graphEngineBinary())("TypeScript and JavaScript from the Rust e
     }
   });
 
-  it("declines warm edits and queues a cold refresh without opening a compiler", async () => {
+  it("queues a normal refresh for v4 edits", async () => {
     const root = repo();
     await build(root, languages);
-    const reason = "TypeScript or JavaScript is configured for the Rust graph engine";
-    expect(() => WarmCheckout.open(root)).toThrow(reason);
+    const reason = "Schema v4 edits use a normal graph refresh.";
+    await expect(openWarmCheckout(root)).rejects.toThrow(reason);
     const open = vi.fn();
     const queueRefresh = vi.fn();
     const log = vi.fn();
@@ -212,9 +212,6 @@ describe.skipIf(!graphEngineBinary())("TypeScript and JavaScript from the Rust e
     expect(open).not.toHaveBeenCalled();
     expect(queueRefresh).toHaveBeenCalledWith("project", root);
     expect(log).toHaveBeenCalledWith(expect.stringContaining(reason));
-    vi.stubEnv(GRAPH_ENGINE_LANGUAGES_ENV, "");
-    // A caller without the flag can still encounter a graph already built with it.
-    expect(() => WarmCheckout.open(root)).toThrow(reason);
   });
 });
 

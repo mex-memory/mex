@@ -4,7 +4,7 @@
 // index: a line shift per edited file and the `index-pending` marker. The
 // registry reads which files changed from those shifts, keeps a checkout warm
 // once an edit arrives for it, and publishes each edit as an overlay. It
-// enforces the warm memory cap (the compiler servers plus the Node memory the
+// enforces the warm memory cap (the engine processes plus the Node memory the
 // warm checkouts hold) by closing the least recently used checkout, closes a
 // checkout after 15 minutes without an edit, and queues a cold `graph-refresh`
 // once a checkout's edits have been quiet for 2 minutes after the warm path
@@ -12,10 +12,9 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { childProcessUsage, enableCompilerServerProbes, WARM_GRAPH_SERVER } from "./process-stats.js";
+import { childProcessUsage, WARM_GRAPH_SERVER } from "./process-stats.js";
 import { GRAPH_SERVER_CAP_MB } from "./sizing.js";
 import { readGraphState, type GraphState } from "./jobs.js";
-import { engineWarmDecline } from "./engine-languages.js";
 import type { GraphLocation } from "./storage.js";
 import type { WarmGraphCheckout, WarmEditResult } from "./warm.js";
 
@@ -59,9 +58,7 @@ export class WarmRegistry {
   private probing = false;
   private readonly baselineRssMb = process.memoryUsage().rss / 1024 ** 2;
 
-  constructor(private readonly host: WarmHost, private readonly settings: WarmRegistrySettings = WARM_DEFAULTS) {
-    enableCompilerServerProbes();
-  }
+  constructor(private readonly host: WarmHost, private readonly settings: WarmRegistrySettings = WARM_DEFAULTS) {}
 
   private now(): number {
     return this.host.clock?.() ?? Date.now();
@@ -145,10 +142,9 @@ export class WarmRegistry {
 
   private async apply(root: string, projectId: string, paths: string[]): Promise<void> {
     const now = this.now();
-    const compilerDecline = process.env.MEX_GRAPH_STORAGE !== "v5" ? engineWarmDecline() : undefined;
-    if (compilerDecline) {
+    if (process.env.MEX_GRAPH_STORAGE !== "v5") {
       this.close(root, "cold");
-      this.host.log?.(`warm: ${root} stays cold: ${compilerDecline}`);
+      this.host.log?.(`warm: ${root} stays cold: Schema v4 edits use a normal graph refresh.`);
       this.wait(root, projectId, now);
       return;
     }
@@ -223,7 +219,6 @@ export class WarmRegistry {
 }
 
 async function checkDisabled(location: GraphLocation, state: GraphState): Promise<boolean> {
-  if (process.env.MEX_GRAPH_STORAGE !== "v5") return state.schemaVersion !== 5;
   const { openGraphRead } = await import("./overlay-open.js");
   const { readsV5Graph } = await import("./db/v5.js");
   const db = openGraphRead(location.root);
