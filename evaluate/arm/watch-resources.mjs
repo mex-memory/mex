@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Samples available RAM, free disk and the memory of every process whose command line matches
 // one of the given words, into a CSV, until stopped with Ctrl+C. For runs done by hand
 // The harness samples its own runs separately.

@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { constants, copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
