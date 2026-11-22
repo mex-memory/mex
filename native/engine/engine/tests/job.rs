@@ -436,3 +436,126 @@ fn a_failed_python_parse_writes_coverage_and_no_nodes() {
         .unwrap();
     assert_eq!(nodes, 0);
 }
+
+#[test]
+fn builds_ecmascript_with_config_and_preserves_callback_sites_across_thread_counts() {
+    let fixture = Fixture::new("ecmascript-threads");
+    let root = fixture.dir.join("repo");
+    let files = [
+        (
+            "src/lib.ts",
+            "export function invoke(cb: () => void) { cb(); }",
+        ),
+        (
+            "src/app.tsx",
+            "import {invoke} from '@lib';\nfunction handler() { return <div />; }\ninvoke(handler);\nunknown();",
+        ),
+        ("src/helpers.js", "function run() {} exports.run = run;"),
+        (
+            "src/view.jsx",
+            "const { run } = require('./helpers.js');\nexport default () => <div>{run()}</div>;",
+        ),
+    ];
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"paths":{"@lib":["./src/lib.ts"]}}}"#,
+    )
+    .unwrap();
+    let build = |path: &Path, threads: usize| {
+        let request = fixture.request(|r| {
+            r["languages"] = json!(["python", "typescript", "tsx", "javascript", "jsx"]);
+            r["files"] = files
+                .iter()
+                .map(|(path, _)| *path)
+                .chain(["src/app.py"])
+                .map(|path| json!({"path": path}))
+                .collect::<Vec<_>>()
+                .into();
+            r["configs"] = json!(["tsconfig.json"]);
+            r["output"] = json!(path);
+            r["limits"]["threads"] = threads.into();
+        });
+        let out = run(&request, "start\n");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(last_event(&out)["files"], 5);
+    };
+    let one = fixture.output();
+    let four = one.with_file_name("graph-four.db");
+    build(&one, 1);
+    build(&four, 4);
+    assert!(
+        std::fs::read(&one).unwrap() == std::fs::read(&four).unwrap(),
+        "the schema v5 candidates differ"
+    );
+    let db = Connection::open(one).unwrap();
+    let calls = db
+        .prepare(
+            "SELECT s.name, t.name, f.path, e.line, e.col, p.name
+         FROM edges e JOIN edge_kinds k ON k.id = e.kind
+         JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+         JOIN files f ON f.id = COALESCE(NULLIF(e.site_file, 0), s.file)
+         JOIN provenances p ON p.id = e.provenance
+         WHERE k.name = 'calls' ORDER BY f.path, e.line, e.col, p.name",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, u32>(3)?,
+                r.get::<_, u32>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let calls: Vec<_> = calls
+        .iter()
+        .map(|(s, t, file, line, col, prov)| {
+            (
+                s.as_str(),
+                t.as_str(),
+                file.as_str(),
+                *line,
+                *col,
+                prov.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("app.tsx", "invoke", "src/app.tsx", 3, 0, "tree-sitter"),
+            (
+                "invoke",
+                "handler",
+                "src/app.tsx",
+                3,
+                7,
+                "callback-synthesis"
+            ),
+            (
+                "<callback:ExportAssignment>",
+                "run",
+                "src/view.jsx",
+                2,
+                27,
+                "tree-sitter"
+            ),
+        ]
+    );
+    let reason: String = db
+        .query_row(
+            "SELECT r.name FROM unresolved u JOIN files f ON f.id = u.file
+         JOIN unresolved_reasons r ON r.id = u.reason WHERE f.path = 'src/app.tsx'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "unknown_binding");
+}

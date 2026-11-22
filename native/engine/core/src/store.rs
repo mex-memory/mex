@@ -77,6 +77,7 @@ pub struct EdgeRow<'a> {
     pub target: i64,
     pub line: u32,
     pub col: u32,
+    pub site_file: Option<i64>,
     pub provenance: &'a str,
     pub confidence: f64,
 }
@@ -176,8 +177,8 @@ impl Writer {
         let provenance = self.code(Code::Provenance, edge.provenance)?;
         self.conn
             .prepare_cached(
-                "INSERT OR IGNORE INTO edges(source, kind, target, line, col, provenance, confidence)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT OR IGNORE INTO edges(source, kind, target, line, col, site_file, provenance, confidence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?
             .execute(params![
                 edge.source,
@@ -185,6 +186,7 @@ impl Writer {
                 edge.target,
                 edge.line,
                 edge.col,
+                edge.site_file.unwrap_or(0),
                 provenance,
                 edge.confidence
             ])?;
@@ -296,6 +298,7 @@ mod tests {
             target: ids[1],
             line: 2,
             col: 4,
+            site_file: None,
             provenance: "tree-sitter",
             confidence: 1.0,
         };
@@ -389,6 +392,7 @@ mod tests {
                     target: nodes[(i + step) % nodes.len()],
                     line: 10,
                     col: 8,
+                    site_file: None,
                     provenance: "tree-sitter",
                     confidence: 1.0,
                 })

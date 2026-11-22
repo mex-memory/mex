@@ -60,9 +60,10 @@ CREATE TABLE edges (
     target     INTEGER NOT NULL,
     line       INTEGER NOT NULL DEFAULT 0,    -- 1-based call-site line; 0 when none
     col        INTEGER NOT NULL DEFAULT 0,    -- 0-based column of the called name
+    site_file  INTEGER NOT NULL DEFAULT 0,    -- 0 when the location is in the source node's file
     provenance INTEGER NOT NULL,
     confidence REAL    NOT NULL DEFAULT 1,
-    PRIMARY KEY (source, kind, target, line, col)
+    PRIMARY KEY (source, kind, target, line, col, site_file)
 ) WITHOUT ROWID;
 
 CREATE TABLE unresolved (

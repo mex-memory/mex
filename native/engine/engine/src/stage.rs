@@ -24,6 +24,7 @@ pub(super) fn write(extracted: &ExtractedFiles<'_>) -> Result<JobCounts, JobErro
     for entry in &extracted.files {
         let (index, size) = match *entry {
             ExtractedFile::Python { index, size } => (index, size),
+            ExtractedFile::EcmaScript { .. } => unreachable!("stage only extracts Python"),
             ExtractedFile::Skipped { path, reason } => {
                 emit(&serde_json::json!({
                     "type": "file", "path": path, "status": "skipped", "reason": reason,
