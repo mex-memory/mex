@@ -329,6 +329,47 @@ export function layerRules(edges: Map<string, Map<string, number>>): LayerRule[]
   return out.sort((x, y) => y.imports - x.imports || x.from.localeCompare(y.from) || x.to.localeCompare(y.to)).slice(0, HISTORY_LIMITS.layerRules);
 }
 
+export interface LayerException extends LayerRule {
+  /** Imports that go against the rule today, and up to three files that make them. */
+  back: number;
+  files: string[];
+}
+/** At most this many imports against a rule, and at most this share of its support, make an exception rather than no rule. */
+export const LAYER_EXCEPTION = Object.freeze({ maxBack: 2, maxShare: 0.2, limit: 20 });
+
+/**
+ * Near-rules: Y imports X at least `layerSupport` times and X imports Y only once or twice.
+ * The miner can't say "X never imports Y" (the code breaks it today), and can't say nothing
+ * either: only a person knows whether the few imports are allowed. Setup asks.
+ */
+export function layerExceptions(edges: Map<string, Map<string, number>>, backFiles?: Map<string, string[]>): LayerException[] {
+  const out: LayerException[] = [];
+  for (const [from, targets] of edges) {
+    for (const [to, imports] of targets) {
+      if (from === to || imports < HISTORY_LIMITS.layerSupport) continue;
+      const back = edges.get(to)?.get(from) ?? 0;
+      if (back < 1 || back > LAYER_EXCEPTION.maxBack || back > imports * LAYER_EXCEPTION.maxShare) continue;
+      out.push({ from: to, to: from, imports, back, files: (backFiles?.get(`${to}\0${from}`) ?? []).slice(0, 3) });
+    }
+  }
+  return out.sort((x, y) => y.imports - x.imports || x.from.localeCompare(y.from) || x.to.localeCompare(y.to)).slice(0, LAYER_EXCEPTION.limit);
+}
+
+/** Generated files changed alone in at least this many commits look edited by hand. */
+export const HAND_EDIT_COMMITS = 2;
+/** Generated files (by marker or .gitattributes) that commits changed on their own: a sign of edits by hand. */
+export function handEdited(commits: readonly Commit[], generated: ReadonlyMap<string, string>): Array<{ path: string; commits: number }> {
+  const counts = new Map<string, number>();
+  for (const commit of commits) {
+    if (commit.files.length !== 1) continue;
+    const path = commit.files[0]!;
+    const signal = generated.get(path);
+    if (signal === "marker" || signal === "gitattributes") counts.set(path, (counts.get(path) ?? 0) + 1);
+  }
+  return [...counts].filter(([, n]) => n >= HAND_EDIT_COMMITS).map(([path, n]) => ({ path, commits: n }))
+    .sort((a, b) => b.commits - a.commits || a.path.localeCompare(b.path)).slice(0, 20);
+}
+
 /** The unit (package folder, else top-level folder) a path belongs to. */
 export function unitOf(path: string, packages: string[]): string | undefined {
   let best: string | undefined;

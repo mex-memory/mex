@@ -116,18 +116,57 @@ export class Rich {
     return { ...(file ? { file } : {}), lines };
   }
 
-  next(options: { learning?: string }): string[] {
+  /** A section of the run: a pill, then a quiet line saying what it is. */
+  section(title: string, note?: string): string[] {
+    return ["", `${this.pill(title, "paper")}${note ? `  ${this.dim(note)}` : ""}`, ""];
+  }
+
+  /** Plain text lines on the step margin, wrapped; quiet when `dim`. */
+  text(lines: readonly string[], dim = false): string[] {
+    const width = Math.max(30, this.width - MARGIN.length - 1);
+    return lines.flatMap(line => wrapText(line, width).map(part => `${MARGIN}${dim ? this.dim(part) : part}`));
+  }
+
+  /** The keys a choice takes, on one line: "[Enter] start  [s] skip". */
+  keys(keys: ReadonlyArray<readonly [key: string, label: string]>): string {
+    return `${MARGIN}${keys.map(([key, label]) => `${this.paint("orange", `[${key}]`)} ${label}`).join("  ")}`;
+  }
+
+  /** One setup question: number, text, then its choices and keys. */
+  question(input: { index: number; total: number; text: string; choices: ReadonlyArray<{ key: string; label: string }>; suggested?: string }): string[] {
+    const width = Math.max(30, this.width - MARGIN.length - 5);
+    const [first, ...rest] = wrapText(input.text, width);
+    const keys: Array<[string, string]> = input.choices.map(choice => [choice.key, choice.label]);
+    const enter = input.choices.find(choice => choice.key === input.suggested);
+    return [
+      `${MARGIN}${this.paint("orange", `${input.index + 1}/${input.total}`)} ${first}`,
+      ...rest.map(line => `${MARGIN}    ${line}`),
+      `${this.keys(keys)}  ${this.dim(`· Enter ${enter ? enter.key : "skips"} · s skip · S skip all`)}`,
+    ];
+  }
+
+  /** The result under a question, on the step margin. */
+  answered(state: "ok" | "attention" | "skipped", text: string): string {
+    const mark = state === "ok" ? this.paint("ok", "✓") : state === "attention" ? this.paint("warn", "!") : this.dim("–");
+    return `${MARGIN}${mark} ${state === "skipped" ? this.dim(text) : text}`;
+  }
+
+  next(options: { learning?: string; agents?: readonly string[]; hooksOff?: boolean }): string[] {
     const learning = options.learning === "on"
       ? `${this.dim("Learning from what you type is on: your agent's smallest model, at most 3% of your usage · off: ")}${this.cmd("mex config set learning.statements off")}`
       : `${this.dim("Learning from what you type is off · ")}${this.cmd("mex config set learning.statements on")}`;
+    const agents = options.agents?.length ? options.agents : ["Claude Code", "Codex"];
     return [
       "", this.pill("FROM NOW ON", "green"), "",
-      `${MARGIN}Notes you save reach every new Claude Code and Codex session.`,
+      // Without the native hook nothing reaches an agent, so this may not promise it.
+      options.hooksOff
+        ? `${MARGIN}${this.paint("warn", "Nothing reaches your agents yet:")} MEX's native hook is missing. Reinstall MEX, then run ${this.cmd("mex install")}.`
+        : `${MARGIN}Notes you save reach every new ${listNames(agents)} session.`,
       `${MARGIN}A note the code has made false is held back, never sent.`,
       `${MARGIN}${learning}`,
       "", this.pill("TRY IT", "paper"), "",
       `${MARGIN}${this.paint("orange", "1")}  ${this.cmd(NOTE_EXAMPLE)}`,
-      `${MARGIN}${this.paint("orange", "2")}  Open Claude Code or Codex and ask about it`,
+      `${MARGIN}${this.paint("orange", "2")}  Open ${listNames(agents, "or")} and ask about it`,
     ];
   }
 
@@ -145,12 +184,15 @@ export class Rich {
   }
 
   /** What the mascot says: the time and cost, what the agents get, what needs a look. */
-  summary(input: { name: string; ms: number; commandsSaved: boolean; findings: readonly Finding[] }): string[] {
+  summary(input: { name: string; ms: number; commandsSaved: boolean; findings: readonly Finding[]; answers?: number; learning?: "queued" | "running" | "waiting"; hooksOff?: boolean }): string[] {
     if (input.findings.some(f => /^MEX is off everywhere/u.test(f.text))) {
       return [this.bold("MEX is off everywhere, so I read nothing."), `${this.cmd("mex on --all")} turns it back on.`];
     }
     const lines = [this.bold(`Read ${input.name} in ${formatSeconds(input.ms)}, for $0.`)];
-    lines.push(input.commandsSaved ? "Your agents now get its test and build commands." : "Notes you save reach your agents from the next session.");
+    if (input.hooksOff) lines.push(`${this.paint("warn", "Your agents get nothing yet:")} MEX's native hook is missing.`);
+    else lines.push(input.commandsSaved ? "Your agents now get its test and build commands." : "Notes you save reach your agents from the next session.");
+    if (input.answers && !input.hooksOff) lines.push(`Your ${input.answers === 1 ? "answer reaches" : `${input.answers} answers reach`} them as "you said".`);
+    if (input.learning) lines.push(`Learn deeper ${input.learning === "running" ? "is running" : "will run"} in the background · ${this.cmd("mex jobs")}`);
     const stale = input.findings.map(f => /^(\d+) lines? in your rule files (?:is|are) out of date/u.exec(f.text)).find(Boolean);
     const attention = input.findings.filter(f => f.state === "attention").length;
     if (stale) lines.push(`${this.paint("warn", `${stale[1]} ${stale[1] === "1" ? "line" : "lines"}`)} in your rule files ${stale[1] === "1" ? "is" : "are"} out of date.`);
@@ -210,17 +252,27 @@ export function labelled(text: string): { label: string; text: string } {
   if ((m = /^Git history \((.+?)\):/u.exec(text))) return { label: "Git history", text: `${m[1]} read` };
   if ((m = /^Git history: (.+)$/u.exec(text))) return { label: "Git history", text: m[1]! };
   if ((m = /^Hooks: (.+?), in your user settings\.$/u.exec(text))) return { label: "Hooks", text: m[1]! };
+  if ((m = /^Hooks: (.+?), in your user settings, but (.+)$/u.exec(text))) return { label: "Hooks", text: `${m[1]} · ${m[2]}` };
   if (/^No test or build commands found/u.test(text)) return { label: "Commands", text: "none found in package files" };
   if ((m = /^(?:Git history and the file index|The file index): in the background \(`mex jobs`\)(.*)$/u.exec(text))) {
     return { label: "Your code", text: `indexing in the background · mex jobs${m[1] ? ` ·${m[1].replace(/^;/u, "")}` : ""}` };
   }
   if (/^The rest finishes in the background/u.test(text)) return { label: "Your code", text: "the rest finishes in the background · mex jobs" };
-  if ((m = /^(.+?) didn't finish(.*)$/u.exec(text))) return { label: /history/iu.test(m[1]!) ? "Git history" : "Your code", text: `didn't finish${m[2]}` };
+  if ((m = /^Learn deeper(?: later)?:? (.+)$/u.exec(text))) return { label: "Learn deeper", text: m[1]! };
+  if ((m = /^Code map (?:built|refreshed): (.+)$/u.exec(text))) return { label: "Code map", text: m[1]!.replace(/; /gu, " · ") };
+  if ((m = /^The code map was already current(.*)$/u.exec(text))) return { label: "Code map", text: `already current${m[1]!.replace(/; /gu, " · ")}` };
+  if (/^Code map: building in the background/u.test(text)) return { label: "Code map", text: "building in the background · mex jobs" };
+  if ((m = /^(.+?) didn't finish(.*)$/u.exec(text))) return { label: /history/iu.test(m[1]!) ? "Git history" : /code map/iu.test(m[1]!) ? "Code map" : "Your code", text: `didn't finish${m[2]}` };
   if (/^MEX is off everywhere/u.test(text)) return { label: "MEX", text: "off everywhere, so nothing was read · mex on --all turns it back on" };
   if (/^Couldn't hide \.mex/u.test(text)) return { label: "Git", text: text.replace(/^Couldn't hide \.mex\/ in git's exclude file: /u, "couldn't hide .mex/: ") };
   if (/commands could not be saved|could not be saved for your agents/iu.test(text)) return { label: "Commands", text };
   if (/test commands for|CI step/iu.test(text)) return { label: "Commands", text };
   return { label: "Note", text };
+}
+
+/** "Claude Code, Codex and Gemini CLI". */
+export function listNames(names: readonly string[], last = "and"): string {
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} ${last} ${names.at(-1)}`;
 }
 
 function wrapText(text: string, width: number): string[] {

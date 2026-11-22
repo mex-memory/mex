@@ -152,7 +152,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     if (!options.interactive) { write(`To approve learning from reviews and docs, run \`${LEARN_COMMAND}\` in a terminal.`); return; }
     const agent = chooseAgent(projectId);
     if (!agent || !nativeBinary()) {
-      write(`Learn deeper later: ${agent ? "the MEX check evaluator is unavailable" : "Claude Code or Codex is needed on PATH"}. Run \`${LEARN_COMMAND}\` to try again.`);
+      write(`Learn deeper later: ${agent ? "MEX's native checker isn't installed, so learned rules can't be checked. Reinstall MEX, then run" : "Claude Code or Codex is needed on PATH. Then run"} \`${LEARN_COMMAND}\`.`);
       return;
     }
     const head = await revision(root);

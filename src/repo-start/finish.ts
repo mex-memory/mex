@@ -10,7 +10,22 @@ import type { JobRow } from "../record/jobs.js";
 import { LiveLine, type Finding, type ScreenMode } from "./screen.js";
 import type { CodeFactsFile } from "./history/job.js";
 
-export interface FinishJob { id: string; kind: "file-index" | "code-facts"; }
+export interface FinishJob {
+  id: string;
+  kind: "file-index" | "code-facts" | "graph-build";
+  /** Run here only when the file index found at most SMALL_MAP_FILES files; otherwise the background process builds it. */
+  smallOnly?: true;
+}
+/**
+ * The code map finishes on screen up to this many indexed files; a bigger repo keeps building
+ * in the background (novu takes about 450 s) and never holds the screen.
+ */
+export const SMALL_MAP_FILES = 3_000;
+/** Test-only: a lower bound, so a fixture counts as big. */
+function smallMapFiles(): number {
+  const value = Number(process.env.MEX_TEST_SMALL_MAP_FILES);
+  return process.env.MEX_TEST_SMALL_MAP_FILES !== undefined && Number.isInteger(value) && value >= 0 ? value : SMALL_MAP_FILES;
+}
 export interface FinishOptions {
   writer: RecordWriter;
   projectId: string;
@@ -33,18 +48,25 @@ export interface FinishResult {
   interrupted: boolean;
 }
 
-const STEP: Record<FinishJob["kind"], string> = { "file-index": "Indexing files", "code-facts": "Reading git history" };
+const STEP: Record<FinishJob["kind"], string> = { "file-index": "Indexing files", "code-facts": "Reading git history", "graph-build": "Building the code map" };
+const WHAT: Record<FinishJob["kind"], string> = { "file-index": "The file index", "code-facts": "Git history", "graph-build": "The code map" };
 const TERMINAL = new Set(["done", "done with gaps", "failed", "cancelled"]);
 const POLL_MS = 200;
 const count = (n: number) => n.toLocaleString("en-US");
 
 /** The result lines for finished jobs, in the order they ran. */
-export function resultFindings(rows: readonly JobRow[], facts: CodeFactsFile | undefined): Finding[] {
+export function resultFindings(rows: readonly JobRow[], facts: CodeFactsFile | undefined, summaries: ReadonlyMap<string, string> = new Map()): Finding[] {
   const findings: Finding[] = [];
   for (const row of rows) {
     if (row.state === "failed" || row.state === "cancelled") {
-      const what = row.kind === "file-index" ? "The file index" : "Git history";
+      const what = WHAT[row.kind as FinishJob["kind"]] ?? "Git history";
       findings.push({ state: "attention", text: `${what} didn't finish${row.reason ? `: ${row.reason}` : ""} (\`mex jobs\`)` });
+      continue;
+    }
+    if (row.kind === "graph-build") {
+      // The job's own summary: "Code map built: 640 files, 4,210 definitions; 12 notes now checked by code fingerprint".
+      const summary = summaries.get(row.id);
+      findings.push({ state: row.state === "done with gaps" ? "attention" : "ok", text: summary && /^(?:The )?[Cc]ode map/u.test(summary) ? summary : `Code map built${summary ? `: ${summary}` : ""}` });
       continue;
     }
     if (row.kind === "file-index") {
@@ -71,6 +93,13 @@ export async function finishWork(options: FinishOptions): Promise<FinishResult> 
   // A run killed while it waited left its jobs running under a dead process: queue them again.
   recoverInterruptedJobs(writer, self);
   const only = new Set(options.jobs.map(job => job.id));
+  /** Jobs this run leaves to the background process (a big repo's code map). */
+  const background = new Set<string>();
+  const indexed = () => {
+    const index = options.jobs.find(job => job.kind === "file-index");
+    const found = index && row(index.id);
+    return found && TERMINAL.has(found.state) ? found.results : undefined;
+  };
   const row = (id: string) => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(id) as unknown as JobRow | undefined;
   const live = options.live ? new LiveLine(options.mode) : undefined;
   let stopped = false, interrupted = false;
@@ -85,8 +114,13 @@ export async function finishWork(options: FinishOptions): Promise<FinishResult> 
   try {
     for (;;) {
       if (stopped) break;
-      const pending = options.jobs.filter(job => !TERMINAL.has(row(job.id)?.state ?? "done"));
+      const pending = options.jobs.filter(job => !TERMINAL.has(row(job.id)?.state ?? "done") && !background.has(job.id));
       if (!pending.length) break;
+      // The code map waits for the index, which says how big the repo is: a big one goes to the background.
+      if (pending[0]!.smallOnly && (indexed() ?? Infinity) > smallMapFiles()) {
+        background.add(pending[0]!.id); only.delete(pending[0]!.id);
+        continue;
+      }
       const next = pending[0]!;
       show(next);
       const ran = runOneBatch(writer, self, {
@@ -109,7 +143,18 @@ export async function finishWork(options: FinishOptions): Promise<FinishResult> 
     }
   } finally { live?.stop(); }
 
-  const rows = options.jobs.map(job => row(job.id)).filter((item): item is JobRow => !!item);
+  const summaries = new Map<string, string>();
+  for (const job of options.jobs) {
+    const found = writer.db.prepare("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1").get(job.id) as { summary: string } | undefined;
+    if (found) summaries.set(job.id, found.summary);
+  }
+  const later: Finding[] = [];
+  if (background.size) {
+    const { ensureBackground } = await import("../record/background.js");
+    try { ensureBackground(); } catch { /* the next command starts it */ }
+    later.push({ state: "background", text: "Code map: building in the background (`mex jobs`)" });
+  }
+  const rows = options.jobs.filter(job => !background.has(job.id)).map(job => row(job.id)).filter((item): item is JobRow => !!item);
   if (rows.some(item => !TERMINAL.has(item.state))) {
     releaseJobs(writer, self);
     const { ensureBackground } = await import("../record/background.js");
@@ -118,13 +163,13 @@ export async function finishWork(options: FinishOptions): Promise<FinishResult> 
     const facts = await readFacts(options);
     return {
       findings: [
-        ...resultFindings(done, facts),
+        ...resultFindings(done, facts, summaries), ...later,
         { state: "background", text: "The rest finishes in the background (`mex jobs` shows it)" },
       ],
       handedOff: true, interrupted,
     };
   }
-  return { findings: resultFindings(rows, await readFacts(options)), handedOff: false, interrupted: false };
+  return { findings: [...resultFindings(rows, await readFacts(options), summaries), ...later], handedOff: false, interrupted: false };
 }
 
 async function readFacts(options: FinishOptions): Promise<CodeFactsFile | undefined> {
