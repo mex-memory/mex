@@ -16,6 +16,11 @@ import (
 // Outside the canonical mx_ namespace, so a real entry cannot collide with it.
 const startMarker = "mex:start-brief"
 
+func ruleFileReceipt(id, kind, level string) record.DeliveryCandidate {
+	return record.DeliveryCandidate{EntryID: id, Moment: "rule-file", Form: "one-line", Action: "given",
+		Kind: kind, Level: level, Mode: "on", Exempt: true}
+}
+
 // startBlock fills the lifecycle's start slot using the same CheckAndMark
 // transaction as moment delivery. Its marker and entry receipts debit one
 // ledger, so resumes and parallel starts cannot send a different brief.
@@ -62,6 +67,9 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 	req.OnceEntry = startMarker
 	req.Candidates = []record.DeliveryCandidate{{EntryID: startMarker, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: brief.TokenBound(brief.Priority) + 32, ContentHash: contentHash(brief.Priority)}}
+	for _, item := range result.LearnedNative {
+		req.Candidates = append(req.Candidates, ruleFileReceipt(item.ID, "", item.Level))
+	}
 	candidate := func(item brief.Item, surface string) record.DeliveryCandidate {
 		// The person's own notes reach the brief only when no rule file this
 		// agent loads carries them, and the brief already bounds them

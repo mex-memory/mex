@@ -108,7 +108,7 @@ func (k *known) verdict(id string) string {
 // a pointer or a re-derived recipe, or nothing when the verdict withholds it.
 func (k *known) oneLine(id, moment string) (shaped, bool) {
 	it := k.byID[id]
-	if it == nil {
+	if it == nil || it.Entry.Learned() {
 		return shaped{}, false
 	}
 	s := shape(candidate{item: it, moment: moment, tier: tierFile, exempt: true}, k.verdict(id), k.senv)
@@ -170,6 +170,9 @@ func recovery(h *record.Hooks, ev contract.Event, env Environment, previous, bud
 	for i := len(given) - 1; i >= 0; i-- { // newest first
 		g := given[i]
 		it := k.byID[g.EntryID]
+		if it != nil && it.Entry.Learned() {
+			continue
+		}
 		if it == nil || !coversAny(it, files) {
 			if it != nil && k.verdict(g.EntryID) != broken {
 				rest = append(rest, g.EntryID)

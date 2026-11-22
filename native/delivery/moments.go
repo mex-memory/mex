@@ -34,6 +34,7 @@ const (
 	momentRejected = "rejected"
 	momentCreate   = "create"
 	momentPrompt   = "prompt"
+	momentAnchor   = "anchor-touch"
 )
 
 // toolView is one tool call reduced to what moments need, with the repo
@@ -347,6 +348,15 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 		add := func(moment string, tier int, exempt, reserve bool) {
 			out = append(out, candidate{item: it, moment: moment, tier: tier, exempt: exempt, reserve: reserve, rel: v.rel})
 		}
+		if e.Learned() {
+			if learnedProse(e) && v.rel != "" && ((v.name == contract.ToolRead && !v.failed) || isEdit(v)) && inScope(it, v.rel) {
+				out = append(out, candidate{item: it, moment: momentAnchor, tier: scopeTier(it, v.rel), rel: v.rel,
+					exempt: true, anchorRelease: true, anchorPaths: []string{v.rel}})
+			}
+			if e.Kind != "decision" || !isEdit(v) {
+				continue
+			}
+		}
 		switch v.name {
 		case contract.ToolRead:
 			if v.checkout == "" || !inScope(it, v.rel) {
@@ -417,6 +427,24 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 
 // promptMoments: a typed prompt that names a rejected option brings its
 // decision; one that asks to test or build brings the matching recipe.
+func learnedProse(e *entries.Entry) bool {
+	if e.Status != "active" || len(e.When) != 0 {
+		return false
+	}
+	switch e.Kind {
+	case "rule", "decision", "pitfall", "procedure":
+	default:
+		return false
+	}
+	for _, scope := range e.Scope {
+		switch scope {
+		case "**", "**/*", "*", "./**":
+			return false
+		}
+	}
+	return len(e.Scope) > 0
+}
+
 func promptMoments(text string, snap *entries.Snapshot) []candidate {
 	var out []candidate
 	if len(text) > 32*1024 {
@@ -428,7 +456,7 @@ func promptMoments(text string, snap *entries.Snapshot) []candidate {
 	}
 	for i := range snap.Items {
 		it := &snap.Items[i]
-		if it.NeedsHintGate {
+		if it.NeedsHintGate || it.Entry.Learned() {
 			continue
 		}
 		switch it.Entry.Kind {

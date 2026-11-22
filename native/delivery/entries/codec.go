@@ -71,6 +71,13 @@ type Trigger struct {
 	Match   string `json:"match"`
 	Pattern string `json:"pattern"`
 }
+type Fix struct {
+	Snippet string `json:"snippet"`
+	Path    string `json:"path"`
+	Commit  string `json:"commit"`
+	Lines   string `json:"lines"`
+}
+
 type Check struct {
 	Kind   string            `json:"kind"`
 	Role   string            `json:"role"`
@@ -94,12 +101,14 @@ type Retirement struct {
 	At     string `json:"at"`
 }
 type Entry struct {
-	ID         string    `json:"id"`
-	Kind       string    `json:"kind"`
-	Scope      []string  `json:"scope"`
-	Source     Source    `json:"source"`
-	Evidence   string    `json:"evidence"`
-	OneLine    string    `json:"one_line"`
+	ID       string   `json:"id"`
+	Kind     string   `json:"kind"`
+	Scope    []string `json:"scope"`
+	Source   Source   `json:"source"`
+	Evidence string   `json:"evidence"`
+	OneLine  string   `json:"one_line"`
+	// Fix is the team's fixed form for a learned rule: a verbatim slice of the merged code.
+	Fix        *Fix      `json:"fix,omitempty"`
 	When       []Trigger `json:"when,omitempty"`
 	Checks     []Check   `json:"checks"`
 	Companions []string  `json:"companions,omitempty"`
@@ -553,6 +562,25 @@ func metadata(v any) bool {
 				return object(v, map[string]rule{"type": choice("anti", "required", "rejected", "creates"), "match": choice("literal", "structural"), "pattern": line}, nil)
 			})
 		},
+		"fix": func(v any) bool {
+			return object(v, map[string]rule{
+				"snippet": func(v any) bool {
+					s, ok := v.(string)
+					return ok && str(v, 800) && strings.TrimSpace(s) != "" && !strings.ContainsRune(s, 0) &&
+						strings.Count(strings.TrimSuffix(s, "\n"), "\n") < 10
+				},
+				"path":   file,
+				"commit": func(v any) bool { s, ok := v.(string); return ok && shaRE().MatchString(s) },
+				"lines": func(v any) bool {
+					s, ok := v.(string)
+					start, end, split := strings.Cut(s, "-")
+					a, aErr := strconv.Atoi(start)
+					b, bErr := strconv.Atoi(end)
+					return ok && split && aErr == nil && bErr == nil && a > 0 && b >= a &&
+						strconv.Itoa(a) == start && strconv.Itoa(b) == end
+				},
+			}, nil)
+		},
 		"companions": func(v any) bool { return list(v, 0, 32, ident) },
 		"aliases":    func(v any) bool { return phrases(v, 8, 40) },
 		"asks":       func(v any) bool { return phrases(v, 5, 120) },
@@ -567,6 +595,9 @@ func metadata(v any) bool {
 		return false
 	}
 	m := v.(map[string]any)
+	if _, ok := m["fix"]; ok && !choice("rule", "decision", "pitfall")(m["kind"]) {
+		return false
+	}
 	source := m["source"].(map[string]any)
 	producer, _ := source["producer"].(string)
 	if q, ok := source["quote"].(string); ok && source["type"] != "person" &&

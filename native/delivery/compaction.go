@@ -91,8 +91,17 @@ func mustKeep(h *record.Hooks, ev contract.Event, env Environment, session recor
 		}
 		given, _, err := h.EpochGiven(ev.SessionID, ev.AgentID, ev.ProjectID, ev.Checkout, epoch-1)
 		partial = partial || err != nil || len(given) == 2000
+		learned := map[string]bool{}
+		if len(given) > 0 {
+			snap, err := entries.LoadLight(env.RecordDirectory, env.Home, ev.ProjectID, ev.Checkout)
+			partial = partial || err != nil
+			for _, it := range snap.Items {
+				learned[it.Entry.ID] = it.Entry.Learned()
+			}
+		}
 		for _, row := range given {
-			if strings.HasPrefix(row.EntryID, "mx_") {
+			if strings.HasPrefix(row.EntryID, "mx_") && !entries.LearnedID(row.EntryID) && !learned[row.EntryID] &&
+				row.Moment != "bump" && row.Moment != "rule-file" && row.Moment != "recall" {
 				items = append(items, keepItem{"Delivered entry ID", row.EntryID, true})
 			}
 		}
