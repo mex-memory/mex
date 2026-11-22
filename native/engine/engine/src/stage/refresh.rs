@@ -175,7 +175,7 @@ pub(super) fn finish_with_observations<'a>(
     reextracted: usize,
     observed: impl IntoIterator<Item = &'a RequestFile>,
 ) -> Result<JobCounts, JobError> {
-    writer.carry_parse_gaps().map_err(JobError::write)?;
+    writer.carry_coverage_gaps().map_err(JobError::write)?;
     let [files, nodes, edges, shadowed] =
         timing::measure("v5.overlayCounts", || writer.overlay_counts()).map_err(JobError::write)?;
     let mut counts = JobCounts {
@@ -184,7 +184,7 @@ pub(super) fn finish_with_observations<'a>(
         edges,
         reextracted,
         shadowed: Some(shadowed),
-        coverage_gaps: writer.failed_files().map_err(JobError::write)?,
+        coverage_gaps: writer.coverage_gaps().map_err(JobError::write)?,
     };
     build::finish_with_observations(writer, request, &mut counts, observed)?;
     Ok(counts)

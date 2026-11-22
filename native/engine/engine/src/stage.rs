@@ -12,6 +12,8 @@ use mex_graph_python::{EXCLUDED, LANGUAGE};
 use serde::Serialize;
 use serde_json::{Number, Value, json};
 
+use crate::adapters::{BASIC, registry};
+use crate::basic;
 use crate::frameworks::{self, Enabled, Link};
 use crate::job::{ConfigSource, ExtractedFile, ExtractedFiles, JobCounts, JobError, emit};
 use crate::syntax_language::SyntaxLanguage;
@@ -26,6 +28,8 @@ pub(super) mod refresh;
 mod relations;
 pub(super) mod serve;
 mod syntax;
+#[cfg(test)]
+mod tests;
 
 pub(super) fn write(
     extracted: &ExtractedFiles<'_>,
@@ -60,6 +64,7 @@ struct Projection<'a> {
     python_frameworks: Option<Vec<Vec<Link<'a>>>>,
     ecmascript: Option<ecmascript::Stage<'a>>,
     syntax: [syntax::Stage<'a>; 2],
+    basic: syntax::Stage<'a>,
 }
 
 impl<'a> Projection<'a> {
@@ -86,6 +91,10 @@ impl<'a> Projection<'a> {
             ecmascript,
             syntax: SyntaxLanguage::ALL
                 .map(|language| syntax::Stage::new(&extracted.syntax[language as usize], language)),
+            basic: {
+                let facts = Files::Dense(&extracted.basic);
+                syntax::Stage::resolved(Identities::new(facts), BASIC, basic::resolve(facts))
+            },
         }
     }
 
@@ -103,6 +112,7 @@ impl<'a> Projection<'a> {
             python_frameworks,
             ecmascript,
             syntax,
+            basic,
         } = self;
         let Resolution {
             edges,
@@ -131,6 +141,10 @@ impl<'a> Projection<'a> {
                     size,
                 } => {
                     file_ready(syntax[language as usize].file(index, size, include_nodes))?;
+                    continue;
+                }
+                ExtractedFile::Basic { index, size } => {
+                    file_ready(basic.file(index, size, include_nodes))?;
                     continue;
                 }
                 ExtractedFile::Skipped { path, reason } => {
@@ -315,6 +329,8 @@ struct StagedFile<'a> {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     frameworks_resolved: bool,
     parse_status: ParseStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coverage: Option<&'static str>,
     health: StagedHealth<'a>,
     nodes: Vec<StagedNode<'a>>,
     edges: Vec<StagedEdge<'a>>,
@@ -338,6 +354,7 @@ impl<'a> StagedFile<'a> {
             language: &facts.language,
             frameworks_resolved: false,
             parse_status: facts.health.status,
+            coverage: coverage_reason(facts).filter(|reason| *reason == BASIC),
             health: StagedHealth::from(&facts.health),
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -398,8 +415,19 @@ impl<'a> StagedFile<'a> {
         counts.files += 1;
         counts.nodes += self.nodes.len();
         counts.edges += self.edges.len();
-        counts.coverage_gaps += usize::from(self.parse_status == ParseStatus::Failed);
+        counts.coverage_gaps +=
+            usize::from(self.coverage.is_some() || self.parse_status == ParseStatus::Failed);
         emit(&self)
+    }
+}
+
+fn coverage_reason(facts: &FileFacts) -> Option<&'static str> {
+    if facts.health.status == ParseStatus::Failed {
+        Some("parse failed")
+    } else if registry().is_basic(&facts.language) {
+        Some(BASIC)
+    } else {
+        None
     }
 }
 

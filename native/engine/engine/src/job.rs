@@ -15,15 +15,13 @@ use mex_graph_core::CONTRACT_VERSION;
 use mex_graph_core::facts::{FACTS_VERSION, FileFacts};
 use mex_graph_core::store::BuildMetadata;
 use mex_graph_core::timing::{self, Timer};
-use mex_graph_csharp::CSharp;
 use mex_graph_ecmascript::modules::ModuleResolver;
-use mex_graph_ecmascript::{EcmaScript, language_for_path};
 use mex_graph_python::resolve::{Resolution, resolve};
-use mex_graph_python::{LANGUAGE, Python};
-use mex_graph_rust::Rust;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::adapters::{Adapter, Implementation, registry};
+use crate::basic::Extractors;
 use crate::facts_cache::{CacheWorker, FactsCache};
 use crate::frameworks::{self, Enabled};
 use crate::guard::{Breach, Guard, Limits, ProcessSampler};
@@ -405,6 +403,10 @@ pub(super) enum ExtractedFile<'a> {
         index: usize,
         size: u64,
     },
+    Basic {
+        index: usize,
+        size: u64,
+    },
     Skipped {
         path: &'a str,
         reason: &'static str,
@@ -417,6 +419,7 @@ pub(super) struct ExtractedFiles<'a> {
     pub(super) facts: Vec<FileFacts>,
     pub(super) ecmascript: Vec<FileFacts>,
     pub(super) syntax: [Vec<FileFacts>; 2],
+    pub(super) basic: Vec<FileFacts>,
     /// One entry per requested path, including skips, in request order.
     pub(super) files: Vec<ExtractedFile<'a>>,
     pub(super) reextracted: Vec<&'a str>,
@@ -435,6 +438,7 @@ impl ExtractedFiles<'_> {
                 index,
                 size,
             } => Ok((&self.syntax[language as usize][index], size)),
+            ExtractedFile::Basic { index, size } => Ok((&self.basic[index], size)),
             ExtractedFile::Skipped { path, reason } => Err((path, reason)),
         }
     }
@@ -463,90 +467,39 @@ impl ExtractedFiles<'_> {
             .into_iter()
             .chain(self.ecmascript)
             .chain(self.syntax.into_iter().flatten())
+            .chain(self.basic)
     }
-}
-
-#[derive(Clone, Copy)]
-enum Adapter {
-    Python,
-    EcmaScript,
-    Syntax(SyntaxLanguage),
 }
 
 const FRAMEWORK_CAPTURE_VERSION: u32 = 1;
 
 /// Bump the prefix when persisted projection, dependency or digest semantics change.
 pub(super) fn refresh_format() -> String {
-    format!(
+    let mut format = format!(
         "7:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
         mex_graph_python::ADAPTER_VERSION,
         mex_graph_ecmascript::ADAPTER_VERSION,
         mex_graph_rust::ADAPTER_VERSION,
         mex_graph_csharp::ADAPTER_VERSION
-    )
+    );
+    if let Some(fingerprint) = registry().basic_fingerprint() {
+        format.push(':');
+        format.push_str(&fingerprint);
+    }
+    format
 }
 
-impl Adapter {
-    fn for_file(path: &str, languages: &[String]) -> Option<Self> {
-        let enabled = |language: &str| languages.iter().any(|name| name == language);
-        if enabled(LANGUAGE)
-            && path
-                .rsplit_once('.')
-                .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("py"))
-        {
-            Some(Self::Python)
-        } else if language_for_path(path).is_some_and(enabled) {
-            Some(Self::EcmaScript)
-        } else {
-            SyntaxLanguage::for_path(path)
-                .filter(|language| enabled(language.name()))
-                .map(Self::Syntax)
-        }
-    }
-
-    fn version(self, path: &str, frameworks: bool) -> (&'static str, String) {
-        // The capture version covers framework extraction before activation.
-        let (language, adapter) = match self {
-            Self::Python => (LANGUAGE, mex_graph_python::ADAPTER_VERSION),
-            Self::EcmaScript => (
-                language_for_path(path).unwrap(),
-                mex_graph_ecmascript::ADAPTER_VERSION,
-            ),
-            Self::Syntax(SyntaxLanguage::Rust) => {
-                (mex_graph_rust::LANGUAGE, mex_graph_rust::ADAPTER_VERSION)
-            }
-            Self::Syntax(SyntaxLanguage::CSharp) => (
-                mex_graph_csharp::LANGUAGE,
-                mex_graph_csharp::ADAPTER_VERSION,
-            ),
-        };
-        (
-            language,
-            format!(
-                "{language}:{FACTS_VERSION}:{adapter}:{}",
-                if frameworks {
-                    FRAMEWORK_CAPTURE_VERSION
-                } else {
-                    0
-                }
-            ),
-        )
-    }
-}
-
-pub(super) fn request_language(path: &str, languages: &[String]) -> Option<&'static str> {
-    match Adapter::for_file(path, languages)? {
-        Adapter::Python => Some(LANGUAGE),
-        Adapter::Syntax(language) => Some(language.name()),
-        Adapter::EcmaScript => language_for_path(path),
-    }
+pub(super) fn request_adapter(path: &str, languages: &[String]) -> Option<&'static Adapter> {
+    registry()
+        .for_path(path)
+        .filter(|adapter| languages.iter().any(|name| name == adapter.id()))
 }
 
 pub(super) fn request_facts_key(
     path: &str,
     languages: &[String],
 ) -> Option<(&'static str, String)> {
-    Some(Adapter::for_file(path, languages)?.version(path, true))
+    Some(request_adapter(path, languages)?.facts_key(FRAMEWORK_CAPTURE_VERSION))
 }
 
 /// Resolve inputs in request order and retain one extraction result per input.
@@ -562,7 +515,7 @@ pub(super) fn extract_files<'a>(
     let inputs: Vec<_> = files
         .iter()
         .map(
-            |&file| match Adapter::for_file(&file.path, &request.languages) {
+            |&file| match request_adapter(&file.path, &request.languages) {
                 Some(adapter) => Ok((file, adapter, OnceLock::new())),
                 None => {
                     request.source_path(root, file)?;
@@ -617,10 +570,7 @@ pub(super) fn extract_files<'a>(
                     if measure {
                         timing::enable();
                     }
-                    let mut python = None;
-                    let mut ecmascript = None;
-                    let mut rust = None;
-                    let mut csharp = None;
+                    let mut extractors = Extractors::default();
                     let mut cache = cache
                         .zip(sender)
                         .and_then(|(cache, sender)| cache.worker(sender));
@@ -632,9 +582,13 @@ pub(super) fn extract_files<'a>(
                         let end = (start + claim).min(inputs.len());
                         for (file, adapter, result) in inputs[start..end].iter().flatten() {
                             result.get_or_init(|| {
-                                let key = cache
-                                    .as_ref()
-                                    .map(|_| adapter.version(&file.path, capture_frameworks));
+                                let key = cache.as_ref().map(|_| {
+                                    adapter.facts_key(if capture_frameworks {
+                                        FRAMEWORK_CAPTURE_VERSION
+                                    } else {
+                                        0
+                                    })
+                                });
                                 extract(
                                     request,
                                     root,
@@ -642,21 +596,14 @@ pub(super) fn extract_files<'a>(
                                     key.as_ref(),
                                     cache.as_mut(),
                                     |path, text, hash| {
-                                        let mut facts = match adapter {
-                                            Adapter::Python => python
-                                                .get_or_insert_with(Python::new)
-                                                .extract(path, text, hash),
-                                            Adapter::EcmaScript => ecmascript
-                                                .get_or_insert_with(EcmaScript::new)
-                                                .extract(path, text, hash),
-                                            Adapter::Syntax(SyntaxLanguage::Rust) => rust
-                                                .get_or_insert_with(Rust::new)
-                                                .extract(path, text, hash),
-                                            Adapter::Syntax(SyntaxLanguage::CSharp) => csharp
-                                                .get_or_insert_with(CSharp::new)
-                                                .extract(path, text, hash),
-                                        };
-                                        if capture_frameworks {
+                                        let mut facts =
+                                            extractors.extract(adapter, path, text, hash);
+                                        if capture_frameworks
+                                            && !matches!(
+                                                adapter.implementation,
+                                                Implementation::Basic(_)
+                                            )
+                                        {
                                             timing::measure("worker.frameworks.capture", || {
                                                 frameworks::capture(&mut facts, text)
                                             });
@@ -690,6 +637,7 @@ pub(super) fn extract_files<'a>(
     let mut facts = Vec::new();
     let mut ecmascript = Vec::new();
     let mut syntax = [Vec::new(), Vec::new()];
+    let mut basic = Vec::new();
     let mut reextracted = Vec::new();
     let files = inputs
         .into_iter()
@@ -703,11 +651,11 @@ pub(super) fn extract_files<'a>(
                         if extracted.reextracted {
                             reextracted.push(file.path.as_str());
                         }
-                        (adapter, extracted)
+                        (&adapter.implementation, extracted)
                     })
             });
             match result {
-                Ok((Adapter::Python, extracted)) => {
+                Ok((Implementation::Python, extracted)) => {
                     let index = facts.len();
                     facts.push(extracted.facts);
                     ExtractedFile::Python {
@@ -715,7 +663,7 @@ pub(super) fn extract_files<'a>(
                         size: extracted.size,
                     }
                 }
-                Ok((Adapter::EcmaScript, extracted)) => {
+                Ok((Implementation::EcmaScript, extracted)) => {
                     let index = ecmascript.len();
                     ecmascript.push(extracted.facts);
                     ExtractedFile::EcmaScript {
@@ -723,12 +671,20 @@ pub(super) fn extract_files<'a>(
                         size: extracted.size,
                     }
                 }
-                Ok((Adapter::Syntax(language), extracted)) => {
+                Ok((&Implementation::Syntax(language), extracted)) => {
                     let facts = &mut syntax[language as usize];
                     let index = facts.len();
                     facts.push(extracted.facts);
                     ExtractedFile::Syntax {
                         language,
+                        index,
+                        size: extracted.size,
+                    }
+                }
+                Ok((Implementation::Basic(_), extracted)) => {
+                    let index = basic.len();
+                    basic.push(extracted.facts);
+                    ExtractedFile::Basic {
                         index,
                         size: extracted.size,
                     }
@@ -744,6 +700,7 @@ pub(super) fn extract_files<'a>(
         facts,
         ecmascript,
         syntax,
+        basic,
         files,
         reextracted,
     }

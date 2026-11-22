@@ -344,15 +344,16 @@ impl Writer {
         ), params![], |row| Ok([row.get::<_, u32>(0)? as usize, row.get::<_, u32>(1)? as usize, row.get::<_, u32>(2)? as usize, row.get::<_, u32>(3)? as usize]))
     }
 
-    pub fn carry_parse_gaps(&self) -> rusqlite::Result<()> {
+    pub fn carry_coverage_gaps(&self) -> rusqlite::Result<()> {
         self.conn.execute_batch(
-            "INSERT INTO main.coverage SELECT f.path, 'parse failed' FROM base.coverage c
+            "INSERT INTO main.coverage SELECT f.path, c.reason FROM base.coverage c
              CROSS JOIN base.files f ON f.path = c.path
-             WHERE f.parse_status = 2 AND f.path NOT IN (SELECT path FROM main.shadow_files);",
+             WHERE (f.parse_status = 2 OR c.reason = 'basic')
+               AND f.path NOT IN (SELECT path FROM main.shadow_files);",
         )
     }
 
-    pub fn failed_files(&self) -> rusqlite::Result<usize> {
+    pub fn coverage_gaps(&self) -> rusqlite::Result<usize> {
         self.conn
             .query_row("SELECT count(*) FROM main.coverage", [], |row| {
                 Ok(row.get::<_, u32>(0)? as usize)

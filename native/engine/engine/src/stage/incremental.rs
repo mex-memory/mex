@@ -15,9 +15,13 @@ use mex_graph_ecmascript::modules::{ModuleResolver, Syntax};
 use mex_graph_ecmascript::resolve::DefRef;
 
 use super::{Identities, build, ecmascript, edit_facts, node_ids, python_file, relations, syntax};
-use crate::frameworks::{DETECTION, Enabled};
-use crate::job::{ConfigSource, JobError, Request, RequestFile, request_language};
+use crate::adapters::{BASIC, Implementation};
+use crate::job::{ConfigSource, JobError, Request, RequestFile, request_adapter};
 use crate::syntax_language::SyntaxLanguage;
+use crate::{
+    basic,
+    frameworks::{DETECTION, Enabled},
+};
 
 pub(super) struct PublishedOverlay {
     pub(super) path: PathBuf,
@@ -95,18 +99,26 @@ enum Language {
     Ecma,
     Rust,
     CSharp,
+    Basic,
 }
 
 impl Language {
-    const ALL: [Self; 4] = [Self::Python, Self::Ecma, Self::Rust, Self::CSharp];
+    const ALL: [Self; 5] = [
+        Self::Python,
+        Self::Ecma,
+        Self::Rust,
+        Self::CSharp,
+        Self::Basic,
+    ];
 
     fn get(path: &str, languages: &[String]) -> Option<Self> {
-        match request_language(path, languages)? {
-            "python" => Some(Self::Python),
-            "rust" => Some(Self::Rust),
-            "csharp" => Some(Self::CSharp),
-            _ => Some(Self::Ecma),
-        }
+        Some(match request_adapter(path, languages)?.implementation {
+            Implementation::Python => Self::Python,
+            Implementation::EcmaScript => Self::Ecma,
+            Implementation::Syntax(SyntaxLanguage::Rust) => Self::Rust,
+            Implementation::Syntax(SyntaxLanguage::CSharp) => Self::CSharp,
+            Implementation::Basic(_) => Self::Basic,
+        })
     }
 }
 
@@ -575,8 +587,19 @@ impl Corpus<'_> {
                         SyntaxLanguage::CSharp
                     };
                     recorder.stop();
-                    let stage = syntax::Stage::resolved(ids, adapter, results);
+                    let stage = syntax::Stage::resolved(ids, adapter.resolver(), results);
                     recorder.write(writer, &origins, &keys, load)?;
+                    for &index in &origins {
+                        project(
+                            writer,
+                            index,
+                            stage.file(index, self.sizes[paths[index]], false),
+                            false,
+                        )?;
+                    }
+                }
+                Language::Basic => {
+                    let stage = syntax::Stage::resolved(ids, BASIC, basic::resolve(facts));
                     for &index in &origins {
                         project(
                             writer,
@@ -630,6 +653,8 @@ impl<'a> Plan<'a> {
             .filter(|path| !current.contains_key(path))
             .collect();
         let mut edited = HashSet::new();
+        let is_basic =
+            |path: &str| Language::get(path, &corpus.request.languages) == Some(Language::Basic);
         let mut surfaces = Vec::new();
         let mut reusable = HashMap::new();
         for file in edits {
@@ -652,7 +677,7 @@ impl<'a> Plan<'a> {
                 || old.size != corpus.sizes[path]
             {
                 edited.insert(path);
-                if complete {
+                if complete || is_basic(path) {
                     continue;
                 }
                 let Some(blob) = writer.prior_projection(old.key).map_err(JobError::write)? else {
@@ -674,6 +699,11 @@ impl<'a> Plan<'a> {
         if complete {
             resolve = current.keys().copied().collect();
         } else {
+            // Basic resolution depends on the whole name index for its adapter,
+            // including declarations which are newly ambiguous or unique.
+            if edited.iter().chain(&removed).any(|path| is_basic(path)) {
+                resolve.extend(current.keys().copied().filter(|path| is_basic(path)));
+            }
             let topology =
                 !removed.is_empty() || edited.iter().any(|path| prior.file(path).is_none());
             if !topology {

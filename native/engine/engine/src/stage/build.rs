@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use mex_graph_core::facts::{FileFacts, ParseStatus};
+use mex_graph_core::facts::FileFacts;
 use mex_graph_core::fingerprint::K;
 use mex_graph_core::id::decode_node_id;
 use mex_graph_core::store::{FileRow, NodeRow, Writer};
@@ -11,7 +11,8 @@ use mex_graph_core::timing::{self, Timer};
 use sha2::{Digest, Sha256};
 
 use super::{
-    StagedNode, declared_nodes, edit_facts::Signature, incremental::Corpus, node_ids, relations,
+    StagedNode, coverage_reason, declared_nodes, edit_facts::Signature, incremental::Corpus,
+    node_ids, relations,
 };
 use crate::frameworks::Enabled;
 use crate::job::{
@@ -94,7 +95,7 @@ pub(crate) fn write(
             identities.insert(input.path.as_str(), ids.as_slice());
             sizes.insert(input.path.as_str(), size);
             counts.files += 1;
-            counts.coverage_gaps += usize::from(facts.health.status == ParseStatus::Failed);
+            counts.coverage_gaps += usize::from(coverage_reason(facts).is_some());
         }
         match signatures {
             Some(worker) => worker.join().expect("signature worker"),
@@ -111,6 +112,7 @@ pub(crate) fn write(
         .iter_mut()
         .chain(&mut extracted.ecmascript)
         .chain(extracted.syntax.iter_mut().flatten())
+        .chain(&mut extracted.basic)
     {
         for def in &mut facts.defs {
             if def.kind != mex_graph_core::facts::Kind::Route {
@@ -403,10 +405,8 @@ pub(super) fn write_file(
         )
         .map_err(write)?;
     }
-    if health.status == ParseStatus::Failed {
-        writer
-            .add_coverage(&facts.path, "parse failed")
-            .map_err(write)?;
+    if let Some(reason) = coverage_reason(facts) {
+        writer.add_coverage(&facts.path, reason).map_err(write)?;
     }
     for (index, diagnostic) in health.diagnostics.iter().enumerate() {
         writer

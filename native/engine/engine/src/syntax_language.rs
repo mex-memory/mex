@@ -12,21 +12,10 @@ pub(crate) enum SyntaxLanguage {
 impl SyntaxLanguage {
     pub(crate) const ALL: [Self; 2] = [Self::Rust, Self::CSharp];
 
-    pub(crate) fn for_path(path: &str) -> Option<Self> {
-        let (_, ext) = path.rsplit_once('.')?;
-        if ext.eq_ignore_ascii_case("rs") {
-            Some(Self::Rust)
-        } else if ext.eq_ignore_ascii_case("cs") {
-            Some(Self::CSharp)
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) fn resolver(self) -> &'static str {
         match self {
-            Self::Rust => mex_graph_rust::LANGUAGE,
-            Self::CSharp => mex_graph_csharp::LANGUAGE,
+            Self::Rust => "engine-rust",
+            Self::CSharp => "engine-csharp",
         }
     }
 

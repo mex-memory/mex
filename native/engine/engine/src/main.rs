@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod adapters;
+mod basic;
 mod facts_cache;
 mod facts_cmd;
 mod frameworks;
@@ -41,9 +43,12 @@ fn main() -> ExitCode {
             );
             ExitCode::SUCCESS
         }
-        // Adapters register here from M2.
         Some("languages") => {
-            println!("[]");
+            println!(
+                "{}",
+                serde_json::to_string(&adapters::registry().languages())
+                    .expect("serializable language registry")
+            );
             ExitCode::SUCCESS
         }
         Some("facts") => match facts_cmd::run(&args[1..]) {

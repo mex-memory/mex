@@ -20,6 +20,28 @@ enum Grammar {
     JavaScript,
 }
 
+impl Grammar {
+    fn language(self) -> Language {
+        match self {
+            Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+        }
+    }
+}
+
+pub fn linked_grammar(id: &str) -> Option<Language> {
+    Some(
+        match id {
+            "typescript" => Grammar::TypeScript,
+            "tsx" => Grammar::Tsx,
+            "javascript" | "jsx" => Grammar::JavaScript,
+            _ => return None,
+        }
+        .language(),
+    )
+}
+
 fn extension(path: &str) -> &str {
     path.rsplit(['/', '\\'])
         .next()
@@ -67,11 +89,8 @@ impl EcmaScript {
     pub fn new() -> Self {
         Self {
             parser: Parser::new(),
-            grammars: [
-                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-                tree_sitter_typescript::LANGUAGE_TSX.into(),
-                tree_sitter_javascript::LANGUAGE.into(),
-            ],
+            grammars: [Grammar::TypeScript, Grammar::Tsx, Grammar::JavaScript]
+                .map(Grammar::language),
             active: None,
             sketches: SketchBuilder::default(),
         }

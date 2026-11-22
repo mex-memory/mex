@@ -13,6 +13,10 @@ pub mod resolve;
 pub const LANGUAGE: &str = "rust";
 pub const ADAPTER_VERSION: u32 = 1;
 
+pub fn grammar() -> tree_sitter::Language {
+    grammar::LANGUAGE.into()
+}
+
 pub struct Rust(Extractor);
 
 impl Default for Rust {
@@ -23,7 +27,7 @@ impl Default for Rust {
 
 impl Rust {
     pub fn new() -> Self {
-        Self(Extractor::new(LANGUAGE, "::", grammar::LANGUAGE.into()))
+        Self(Extractor::new(LANGUAGE, "::", grammar()))
     }
 
     pub fn extract(&mut self, path: &str, source: &str, hash: [u8; 32]) -> FileFacts {

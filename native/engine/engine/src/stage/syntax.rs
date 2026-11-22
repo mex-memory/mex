@@ -7,6 +7,7 @@ use mex_graph_syntax::resolve::{DefRef, FileResolution, ImportTarget, Site};
 use serde_json::json;
 
 use super::{Identities, StagedEdge, StagedEvidence, StagedFile, StagedImport, StagedRef};
+use crate::adapters::BASIC;
 use crate::hex;
 use crate::syntax_language::SyntaxLanguage;
 
@@ -21,24 +22,21 @@ impl<'a> Stage<'a> {
     pub(super) fn new(facts: &'a [FileFacts], language: SyntaxLanguage) -> Self {
         Self::resolved(
             Identities::new(Files::Dense(facts)),
-            language,
+            language.resolver(),
             language.resolve(facts),
         )
     }
 
     pub(super) fn resolved(
         ids: Identities<'a>,
-        language: SyntaxLanguage,
+        resolver: &'static str,
         resolution: Vec<FileResolution<'a>>,
     ) -> Self {
         Self {
             facts: ids.facts,
             ids,
             resolution,
-            resolver: match language {
-                SyntaxLanguage::Rust => "engine-rust",
-                SyntaxLanguage::CSharp => "engine-csharp",
-            },
+            resolver,
         }
     }
 
@@ -61,7 +59,7 @@ impl<'a> Stage<'a> {
                     line: range.start_line + 1,
                     column: Some(range.start_col),
                     provenance: "lexical",
-                    confidence: 1.into(),
+                    confidence: u8::from(edge.method != BASIC).into(),
                     resolution_method: edge.method,
                     metadata: None,
                     evidence: match edge.site {

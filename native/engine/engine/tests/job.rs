@@ -105,6 +105,33 @@ fn run(request: &Path, stdin_text: &str) -> Output {
 }
 
 #[test]
+fn lists_only_the_shipped_adapters() {
+    let output = Command::new(ENGINE).arg("languages").output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let entries: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let expected = [
+        ("python", "0.21.0", &[".py"][..]),
+        ("rust", "0.20.4", &[".rs"][..]),
+        ("csharp", "0.23.5", &[".cs"][..]),
+        ("javascript", "0.25.0", &[".js", ".mjs", ".cjs"][..]),
+        ("jsx", "0.25.0", &[".jsx"][..]),
+        ("typescript", "0.23.2", &[".ts", ".mts", ".cts"][..]),
+        ("tsx", "0.23.2", &[".tsx"][..]),
+    ];
+    assert_eq!(entries.len(), expected.len());
+    for (entry, (id, version, extensions)) in entries.iter().zip(expected) {
+        assert_eq!(
+            entry,
+            &json!({
+                "id": id, "level": "full", "extensions": extensions,
+                "grammarVersion": version, "adapterVersion": 1,
+            })
+        );
+    }
+}
+
+#[test]
 fn builds_a_schema_v5_candidate_after_start() {
     let f = Fixture::new("ok");
     let out = run(&f.request(|_| {}), "start\n");

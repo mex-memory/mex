@@ -34,6 +34,10 @@ pub mod resolve;
 pub const ADAPTER_VERSION: u32 = 1;
 pub const LANGUAGE: &str = "python";
 
+pub fn grammar() -> tree_sitter::Language {
+    tree_sitter_python::language()
+}
+
 /// A reusable extractor: one per thread, since parsers aren't shared.
 pub struct Python {
     parser: Parser,
@@ -50,7 +54,7 @@ impl Python {
     pub fn new() -> Python {
         let mut parser = Parser::new();
         parser
-            .set_language(&tree_sitter_python::language())
+            .set_language(&grammar())
             .expect("the pinned Python grammar loads");
         Python {
             parser,

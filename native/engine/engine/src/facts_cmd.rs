@@ -10,13 +10,11 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use mex_graph_core::facts::{FileFacts, ReferenceKind};
-use mex_graph_csharp::CSharp;
-use mex_graph_ecmascript::{EcmaScript, language_for_path};
-use mex_graph_python::{EXCLUDED, Python};
-use mex_graph_rust::Rust;
+use mex_graph_python::EXCLUDED;
 use sha2::{Digest, Sha256};
 
-use crate::syntax_language::SyntaxLanguage;
+use crate::adapters::registry;
+use crate::basic::Extractors;
 use crate::{hex, is_compiler_language};
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -42,33 +40,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
         i += 1;
     }
     let root = root.ok_or("--root is required")?;
-    let mut python = Python::new();
-    let mut ecmascript = EcmaScript::new();
-    let mut rust = None;
-    let mut csharp = None;
+    let mut extractors = Extractors::default();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     for path in &paths {
-        let is_python = path
-            .rsplit_once('.')
-            .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("py"));
-        let syntax = SyntaxLanguage::for_path(path);
-        if !is_python && syntax.is_none() && language_for_path(path).is_none() {
+        let Some(adapter) = registry().for_path(path) else {
             continue;
-        }
+        };
         let bytes = std::fs::read(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
         let text = String::from_utf8_lossy(&bytes);
         let hash: [u8; 32] = Sha256::digest(&bytes).into();
-        let facts = match syntax {
-            Some(SyntaxLanguage::Rust) => rust
-                .get_or_insert_with(Rust::new)
-                .extract(path, &text, hash),
-            Some(SyntaxLanguage::CSharp) => csharp
-                .get_or_insert_with(CSharp::new)
-                .extract(path, &text, hash),
-            None if is_python => python.extract(path, &text, hash),
-            None => ecmascript.extract(path, &text, hash),
-        };
+        let facts = extractors.extract(adapter, path, &text, hash);
         print_facts(&mut out, &facts, full).map_err(|e| e.to_string())?;
     }
     Ok(())
