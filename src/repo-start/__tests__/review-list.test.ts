@@ -9,6 +9,8 @@ import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob } from "../../record/jobs.js";
 import { reviewRowsKey, type ReviewRow } from "../../learn-deeper/pipeline.js";
 import { parseEdits } from "../../learn-deeper/would-fire.js";
+import { parseVerify } from "../../learn-deeper/verify.js";
+import { ZERO } from "../../record/usage.js";
 import { reviewLearned } from "../review-list.js";
 
 let suite: string, binary: string, base: string, root: string, home: string, project: string, writer: RecordWriter;
@@ -99,4 +101,29 @@ it("leaves everything as it is when the person decides later", async () => {
   await finishedRun([{ id: a.entryId, claim: "Use the pooled client in src.", status: "proposed" }]);
   expect(await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "q" })).toBeUndefined();
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
+});
+
+it("checks a waiting rule with the person's agent, read-only, only after they approve the estimate", async () => {
+  const [a] = await propose([learned("e", "Use the pooled client in src.", "new Client(", "proposed")], options());
+  if (a?.status !== "accepted") throw new Error(JSON.stringify(a));
+  await finishedRun([{ id: a.entryId, claim: "Use the pooled client in src.", status: "proposed" }]);
+  vi.spyOn(await import("../../learn-deeper/offer.js"), "chooseAgent").mockReturnValue("claude");
+  const model = vi.fn(async (request: { readOnlyTools?: unknown; executionDirectory?: string }) => {
+    expect(request.readOnlyTools).toEqual({ maxTurns: 8 });
+    expect(request.executionDirectory).toBe(root);
+    return { text: JSON.stringify({ verdict: "keep", evidence: ["src/api.ts:1"] }), selectedModel: "fixture", usage: { ...ZERO, model: "fixture", estimated: false } };
+  });
+  const keys = ["v", "1", "enter", "enter"], lines: string[] = [];
+  const result = await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { color: false, ascii: true } as never,
+    interactive: true, env: process.env, home, keys: async () => keys.shift()!, model: model as never });
+  expect(lines.join(" ")).toMatch(/About 40,000 tokens of your plan, estimated/u);
+  expect(model).toHaveBeenCalledTimes(1);
+  expect(result).toEqual({ kept: 1, waiting: 0, dropped: 0 });
+  expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("active");
+});
+
+it("ignores a verify answer that cites no real place in the code", () => {
+  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src/missing.ts:3"] }), root)).toBeUndefined();
+  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["package.json:1"] }), root)).toMatchObject({ verdict: "drop", evidence: ["package.json:1"] });
+  expect(parseVerify("not json", root)).toBeUndefined();
 });
