@@ -144,7 +144,7 @@ pub fn decode_node_id(id: &str) -> Option<[u8; 16]> {
         }
     }
     let mut bytes = [0; 16];
-    for (byte, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+    for (byte, pair) in bytes.iter_mut().zip(hex.as_bytes().as_chunks::<2>().0) {
         *byte = digit(pair[0])? << 4 | digit(pair[1])?;
     }
     Some(bytes)

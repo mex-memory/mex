@@ -6,7 +6,7 @@ use mex_graph_core::resolve::Files;
 use mex_graph_syntax::resolve::{DefRef, FileResolution, ImportTarget, Site};
 use serde_json::json;
 
-use super::{Identities, StagedEdge, StagedFile, StagedImport, StagedRef};
+use super::{Identities, StagedEdge, StagedEvidence, StagedFile, StagedImport, StagedRef};
 use crate::hex;
 use crate::syntax_language::SyntaxLanguage;
 
@@ -65,9 +65,9 @@ impl<'a> Stage<'a> {
                     resolution_method: edge.method,
                     metadata: None,
                     evidence: match edge.site {
-                        Site::Import(import) => {
-                            Some([json!({ "moduleSpecifier": import.specifier })])
-                        }
+                        Site::Import(import) => Some([StagedEvidence::SyntaxImport {
+                            module_specifier: &import.specifier,
+                        }]),
                         Site::Symbol(_) => None,
                     },
                 })
@@ -106,12 +106,14 @@ impl<'a> Stage<'a> {
                     qualifier: receiver,
                 })
             }));
-        file.imports.extend(
-            resolution
-                .imports
-                .iter()
-                .filter_map(|import| self.import(index, import)),
-        );
+        if include_nodes {
+            file.imports.extend(
+                resolution
+                    .imports
+                    .iter()
+                    .filter_map(|import| self.import(index, import)),
+            );
+        }
         file
     }
 

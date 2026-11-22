@@ -3,7 +3,7 @@
 use mex_graph_ecmascript::resolve::DefRef;
 use serde_json::{Number, json};
 
-use super::{StagedEdge, StagedFile, StagedRef};
+use super::{StagedEdge, StagedEvidence, StagedFile, StagedRef, WiringSite};
 use crate::frameworks::{CONFIDENCE, Link};
 
 pub(super) fn contains<'a>(
@@ -24,7 +24,15 @@ pub(super) fn contains<'a>(
         confidence: Number::from_f64(CONFIDENCE).unwrap(),
         resolution_method: resolver,
         metadata: None,
-        evidence: Some([json!({ "wiringSite": { "filePath": path, "line": line } })]),
+        evidence: Some([StagedEvidence::Framework {
+            resolver: None,
+            wiring_site: WiringSite {
+                file_path: path,
+                line,
+                column: None,
+            },
+            import_binding: None,
+        }]),
     }
 }
 
@@ -38,7 +46,11 @@ pub(super) fn add_links<'a>(
         let Some(source) = id((index, link.from)) else {
             continue;
         };
-        let site = json!({ "filePath": file.path, "line": link.line, "column": 0 });
+        let site = WiringSite {
+            file_path: file.path,
+            line: link.line,
+            column: Some(0),
+        };
         let target = link.target.and_then(|(target, resolver, imported)| {
             id(target)
                 .map(|target| (target, resolver, imported))
@@ -46,10 +58,6 @@ pub(super) fn add_links<'a>(
         });
         match target {
             Ok((target, resolver, imported)) => {
-                let mut evidence = json!({ "resolver": resolver, "wiringSite": site });
-                if imported {
-                    evidence["importBinding"] = json!(link.name);
-                }
                 file.edges.push(StagedEdge {
         owner: None,
                     source,
@@ -61,7 +69,11 @@ pub(super) fn add_links<'a>(
                     confidence: Number::from_f64(CONFIDENCE).unwrap(),
                     resolution_method: resolver,
                     metadata: None,
-                    evidence: Some([evidence]),
+                    evidence: Some([StagedEvidence::Framework {
+                        resolver: Some(resolver),
+                        wiring_site: site,
+                        import_binding: imported.then_some(link.name),
+                    }]),
                 });
             }
             Err(reason) => file.unresolved.push(StagedRef {

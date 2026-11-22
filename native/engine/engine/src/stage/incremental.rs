@@ -277,11 +277,8 @@ impl Recorder {
         let memos = self.memos.take();
         let mut imports = HashMap::new();
         let mut packed = Vec::new();
-        for (origin, reads) in self.reads.iter().enumerate() {
-            if origins.binary_search(&origin).is_err() {
-                continue;
-            }
-            let reads = reads.take();
+        for &origin in origins {
+            let reads = self.reads[origin].take();
             let memo_reads = reads
                 .memos
                 .into_iter()
@@ -357,9 +354,18 @@ impl Corpus<'_> {
         mut node_key: impl FnMut(&str) -> Result<i64, JobError>,
     ) -> Result<(), JobError> {
         let _timer = Timer::start("resolve.incremental");
-        let mut encoder = relations::Encoder::new()?;
         let overlay = build.is_none();
-        for language in Language::ALL {
+        let mut encoder = relations::Encoder::new(!overlay)?;
+        let mut active = [false; Language::ALL.len()];
+        for path in selected {
+            if let Some(language) = Language::get(path, &self.request.languages) {
+                active[language as usize] = true;
+            }
+        }
+        for language in Language::ALL
+            .into_iter()
+            .filter(|&language| active[language as usize])
+        {
             let paths: Vec<_> = self
                 .request
                 .files
@@ -575,7 +581,7 @@ impl Corpus<'_> {
                 }
             }
         }
-        Ok(())
+        encoder.finish(writer)
     }
 }
 
@@ -646,7 +652,7 @@ impl<'a> Plan<'a> {
                     surfaces.push(path);
                     continue;
                 };
-                let rows: relations::Projection = relations::decode(&blob)?;
+                let rows: relations::Projection = relations::decode_projection(blob)?;
                 let signature = edit_facts::Signature::new((corpus.load)(path))?;
                 if let Some(sites) = rows.signature.positions(&signature) {
                     reusable.insert(path, (rows, signature, sites));
@@ -760,7 +766,7 @@ impl<'a> Plan<'a> {
                     }
                 }
             }
-            let mut encoder = relations::Encoder::new()?;
+            let mut encoder = relations::Encoder::new(false)?;
             for (path, (mut rows, signature, positions)) in reusable {
                 if affected.contains(path) {
                     continue;
@@ -896,7 +902,8 @@ impl<'a> Plan<'a> {
                     |blob| Ok(Some(blob)),
                 )?
                 .ok_or_else(|| JobError::request(format!("Missing resolution for {path}")))?;
-            let rows = relations::Outgoing::load(writer, key, path, relations::decode(&blob)?)?;
+            let rows =
+                relations::Outgoing::load(writer, key, path, relations::decode_projection(blob)?)?;
             let digest = rows.digest(|key| keys.identity(key))?;
             if !self.edited.contains(path) {
                 let (file, previous) = prior.file(path).expect("new paths are edited");

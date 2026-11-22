@@ -13,13 +13,16 @@ const SCHEMA: &str = include_str!("schema_v5.sql");
 mod incremental;
 pub use incremental::ReadId;
 mod overlay;
+mod projections;
 pub use overlay::{BaseFile, RefreshBase};
+pub use projections::StoredProjection;
 pub const OVERLAY_KEY_START: i64 = 1 << 40;
+const DEFAULT_PAGE_SIZE: u32 = 4096;
+const SMALL_BASE_NODE_COUNT: usize = 4096;
 
 const INDEXES: &str = "
 CREATE INDEX nodes_file_line ON nodes(file, start_line);
 CREATE INDEX nodes_name ON nodes(name);
-CREATE INDEX nodes_body_hash ON nodes(body_hash) WHERE body_hash IS NOT NULL;
 CREATE INDEX nodes_lower_name ON nodes(lower(name));
 CREATE INDEX nodes_parent ON nodes(parent) WHERE parent IS NOT NULL;
 CREATE INDEX edges_target ON edges(target, kind);
@@ -181,6 +184,8 @@ pub struct Writer {
     conn: Connection,
     codes: HashMap<Code, HashMap<String, i64>>,
     dependencies: incremental::Dependencies,
+    projection_blocks: std::cell::RefCell<projections::Blocks>,
+    page_size: u32,
     edge_sequence: i64,
     previous_overlay: bool,
     sparse_observations: bool,
@@ -193,15 +198,24 @@ pub struct Writer {
 impl Writer {
     /// Atomically reserve a new candidate path. The parent validates and syncs
     /// completed candidates; a stopped build is discarded with its sidecars.
-    pub fn create(path: &Path) -> rusqlite::Result<Writer> {
-        Self::create_candidate(path, None)
+    pub fn create(path: &Path, nodes: usize) -> rusqlite::Result<Writer> {
+        let page_size = if nodes < SMALL_BASE_NODE_COUNT {
+            2048
+        } else {
+            DEFAULT_PAGE_SIZE
+        };
+        Self::create_candidate(path, None, page_size)
     }
 
     pub fn overlay(path: &Path, base: &Path) -> rusqlite::Result<Writer> {
-        Self::create_candidate(path, Some(base))
+        Self::create_candidate(path, Some(base), DEFAULT_PAGE_SIZE)
     }
 
-    fn create_candidate(path: &Path, base: Option<&Path>) -> rusqlite::Result<Writer> {
+    fn create_candidate(
+        path: &Path,
+        base: Option<&Path>,
+        page_size: u32,
+    ) -> rusqlite::Result<Writer> {
         let mut file = std::fs::OpenOptions::new();
         file.write(true).create_new(true);
         #[cfg(unix)]
@@ -213,24 +227,42 @@ impl Writer {
             .map_err(|_| Error::InvalidPath(path.to_path_buf()))?;
         let conn = Connection::open(path)?;
         conn.set_prepared_statement_cache_capacity(64);
+        conn.pragma_update(None, "page_size", page_size)?;
         conn.execute_batch(
             "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = OFF;
-             PRAGMA page_size = 4096;
              PRAGMA cache_size = -8192;",
         )?;
         conn.pragma_update(None, "foreign_keys", base.is_none())?;
+        if base.is_none() {
+            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        }
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(incremental::SCHEMA)?;
         if let Some(base) = base {
+            conn.execute_batch(incremental::OVERLAY_SCHEMA)?;
             overlay::attach_base(&conn, base)?;
         }
         conn.execute_batch("BEGIN; PRAGMA defer_foreign_keys = ON;")?;
+        if page_size < DEFAULT_PAGE_SIZE {
+            // Keep FTS leaf records inline on the smaller SQLite pages.
+            let fts_page = page_size - 64;
+            conn.execute(
+                "INSERT INTO nodes_fts(nodes_fts, rank) VALUES ('pgsz', ?1)",
+                [fts_page],
+            )?;
+            conn.execute(
+                "INSERT INTO source_chunks_fts(source_chunks_fts, rank) VALUES ('pgsz', ?1)",
+                [fts_page],
+            )?;
+        }
         let offset = if base.is_some() { OVERLAY_KEY_START } else { 0 };
         Ok(Writer {
             conn,
             codes: HashMap::new(),
             dependencies: incremental::Dependencies::default(),
+            projection_blocks: Default::default(),
+            page_size,
             edge_sequence: offset,
             previous_overlay: false,
             sparse_observations: false,
@@ -459,15 +491,17 @@ impl Writer {
 
     /// Derive the stored neighborhood from exactly the published call edges.
     pub fn finish_fingerprints(&self) -> rusqlite::Result<()> {
-        // The call pairs can repeat at different sites. Deduplicate directly
-        // into the primary key instead of sorting a separate UNION table.
+        // Read target-owned pairs from the covering index and insert both
+        // directions in primary-key order. Colliding sites share one pair.
         self.conn.execute_batch(
             "INSERT INTO fingerprint_neighbours
              SELECT e.source, e.target FROM edges e CROSS JOIN fingerprints fp ON fp.node = e.source
              WHERE e.kind = (SELECT id FROM edge_kinds WHERE name = 'calls')
              UNION ALL
-             SELECT e.target, e.source FROM edges e CROSS JOIN fingerprints fp ON fp.node = e.target
+             SELECT e.target, e.source FROM edges e INDEXED BY edges_target
+             CROSS JOIN fingerprints fp ON fp.node = e.target
              WHERE e.kind = (SELECT id FROM edge_kinds WHERE name = 'calls')
+             ORDER BY 1, 2
              ON CONFLICT(node, neighbour) DO NOTHING;",
         )
     }
@@ -583,10 +617,23 @@ impl Writer {
     }
 
     pub fn finish(self) -> rusqlite::Result<()> {
+        self.flush_projection_blocks()?;
         self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
         crate::timing::measure("v5.indexes", || {
             self.conn.execute_batch(INDEXES)?;
-            self.conn.execute_batch(incremental::INDEXES)
+            self.conn.execute_batch(incremental::INDEXES)?;
+            let nodes: i64 = self
+                .conn
+                .query_row("SELECT count(*) FROM nodes", [], |row| row.get(0))?;
+            // A scan is cheap on small stores. Larger ones use the prefix
+            // index to narrow continuity probes before comparing the full hash.
+            if nodes >= 4096 {
+                self.conn.execute_batch(
+                    "CREATE INDEX nodes_body_hash ON nodes(substr(body_hash, 1, 8))
+                     WHERE body_hash IS NOT NULL",
+                )?;
+            }
+            Ok::<_, Error>(())
         })?;
         crate::timing::measure("v5.fingerprintNeighbours", || {
             if self.overlay {
@@ -601,6 +648,14 @@ impl Writer {
                  INSERT INTO source_chunks_fts(source_chunks_fts) VALUES ('optimize');",
             )
         })?;
+        if !self.overlay {
+            crate::timing::measure("v5.reclaimPages", || {
+                let mut stmt = self.conn.prepare("PRAGMA incremental_vacuum")?;
+                let mut pages = stmt.query([])?;
+                while pages.next()?.is_some() {}
+                Ok::<_, Error>(())
+            })?;
+        }
         self.conn.execute_batch("COMMIT;")?;
         self.conn.close().map_err(|(_, error)| error)
     }

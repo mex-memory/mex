@@ -375,8 +375,9 @@ impl<'a> StagedFile<'a> {
                         target_name: &def.name,
                         target_qualified_name: &def.qualified_name,
                     }),
-                    evidence: compiler
-                        .then(|| [json!({ "declarationRole": def.declaration_role })]),
+                    evidence: compiler.then_some([StagedEvidence::Declaration {
+                        declaration_role: def.declaration_role.as_deref(),
+                    }]),
                 });
             }
             if include_nodes {
@@ -560,7 +561,48 @@ struct StagedEdge<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<StagedEdgeMetadata<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    evidence: Option<[Value; 1]>,
+    evidence: Option<[StagedEvidence<'a>; 1]>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+enum StagedEvidence<'a> {
+    Declaration {
+        declaration_role: Option<&'a str>,
+    },
+    Import {
+        resolved_file_path: &'a str,
+    },
+    Heritage {
+        heritage: &'static str,
+    },
+    Expression {
+        expression: &'a str,
+    },
+    Callback {
+        argument_index: u32,
+        wiring_site: WiringSite<'a>,
+        callee: &'a str,
+    },
+    Framework {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resolver: Option<&'static str>,
+        wiring_site: WiringSite<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        import_binding: Option<&'a str>,
+    },
+    SyntaxImport {
+        module_specifier: &'a str,
+    },
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WiringSite<'a> {
+    file_path: &'a str,
+    line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<u32>,
 }
 
 #[derive(Serialize)]

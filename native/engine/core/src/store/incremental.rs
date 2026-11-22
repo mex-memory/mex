@@ -1,7 +1,7 @@
 //! Private resolver state. Its ownership is by written site, including
 //! callbacks whose publicly visible edge has a different source file.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 
 use rusqlite::{OptionalExtension, params};
@@ -12,30 +12,32 @@ use crate::resolve::LookupKind;
 pub(super) const SCHEMA: &str = "
 CREATE TABLE resolution_inputs (
     origin INTEGER PRIMARY KEY,
-    projection BLOB
+    projection BLOB,
+    frame_start INTEGER,
+    frame_size INTEGER,
+    entry_start INTEGER,
+    entry_size INTEGER
+) STRICT;
+CREATE TABLE resolution_blocks (
+    id INTEGER PRIMARY KEY,
+    data BLOB NOT NULL
 ) STRICT;
 CREATE TABLE resolution_reads (
     origin INTEGER PRIMARY KEY,
     reads BLOB NOT NULL
 ) STRICT;
 
--- Base paths use files.id. The overlay retains IDs for its new paths,
--- including deleted origins that still own tombstones or lookup keys.
-CREATE TABLE resolution_paths (
-    id INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE
-) STRICT;
 CREATE TABLE resolution_names (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE
 ) STRICT;
 CREATE TABLE resolution_keys (
-    id INTEGER PRIMARY KEY,
     kind INTEGER NOT NULL,
     file INTEGER NOT NULL,
     name INTEGER NOT NULL,
-    UNIQUE (kind, file, name)
-) STRICT;
+    id INTEGER NOT NULL,
+    PRIMARY KEY (kind, file, name)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE resolution_callbacks (
     owner INTEGER NOT NULL,
@@ -71,6 +73,15 @@ CREATE INDEX resolution_heritage_origin ON resolution_heritage(origin);
 CREATE INDEX resolution_types_origin ON resolution_types(origin);
 ";
 
+// Base paths use files.id. An overlay retains its extra IDs, including
+// deleted origins that still own tombstones or lookup keys.
+pub(super) const OVERLAY_SCHEMA: &str = "
+CREATE TABLE resolution_paths (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE
+) STRICT;
+";
+
 /// The low bit distinguishes a lookup from a file; the remaining bits are
 /// the immutable row ID in its respective table.
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -91,6 +102,7 @@ pub(super) struct Dependencies {
     names: RefCell<HashMap<String, i64>>,
     lookups: RefCell<HashMap<(LookupKind, i64, i64), ReadId>>,
     readers: OnceCell<HashMap<ReadId, Vec<i64>>>,
+    last_lookup: Cell<i64>,
 }
 
 impl Writer {
@@ -99,7 +111,13 @@ impl Writer {
             "INSERT INTO main.resolution_paths SELECT * FROM previous.resolution_paths;
              INSERT INTO main.resolution_names SELECT * FROM previous.resolution_names;
              INSERT INTO main.resolution_keys SELECT * FROM previous.resolution_keys;",
-        )
+        )?;
+        self.dependencies.last_lookup.set(self.conn.query_row(
+            "SELECT coalesce(max(id), 0) FROM main.resolution_keys",
+            [],
+            |row| row.get(0),
+        )?);
+        Ok(())
     }
 
     pub fn allocate_path(&self, path: &str) -> rusqlite::Result<i64> {
@@ -236,43 +254,27 @@ impl Writer {
         if let Some(&id) = self.dependencies.lookups.borrow().get(&(kind, file, name)) {
             return Ok(id);
         }
-        let id = if self.overlay {
-            match self.lookup_key(kind, file, name)? {
-                Some(id) => id,
-                None => ReadId::lookup(
-                    self.conn
-                        .prepare_cached(
-                            "INSERT INTO main.resolution_keys
-                     SELECT max(coalesce(max(id), 0), ?4) + 1, ?1, ?2, ?3 FROM main.resolution_keys
-                     RETURNING id",
-                        )?
-                        .query_row(params![kind as u8, file, name, OVERLAY_KEY_START], |row| {
-                            row.get(0)
-                        })?,
-                ),
-            }
+        let existing = if self.overlay {
+            self.lookup_key(kind, file, name)?
         } else {
-            ReadId::lookup(
-                self.conn
-                    .prepare_cached(
-                        "INSERT INTO main.resolution_keys (kind, file, name) VALUES (?1, ?2, ?3)",
-                    )?
-                    .insert(params![kind as u8, file, name])?,
-            )
+            None
+        };
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            let lower = if self.overlay { OVERLAY_KEY_START } else { 0 };
+            let id = self.dependencies.last_lookup.get().max(lower) + 1;
+            self.conn
+                .prepare_cached("INSERT INTO main.resolution_keys VALUES (?1, ?2, ?3, ?4)")?
+                .execute(params![kind as u8, file, name, id])?;
+            self.dependencies.last_lookup.set(id);
+            ReadId::lookup(id)
         };
         self.dependencies
             .lookups
             .borrow_mut()
             .insert((kind, file, name), id);
         Ok(id)
-    }
-
-    /// A null projection masks all base inputs of a deleted file.
-    pub fn put_projection(&self, origin: i64, blob: Option<&[u8]>) -> rusqlite::Result<()> {
-        self.conn
-            .prepare_cached("INSERT INTO main.resolution_inputs VALUES (?1, ?2)")?
-            .execute(params![origin, blob])?;
-        Ok(())
     }
 
     pub fn put_reads(&self, origin: i64, reads: &mut Vec<ReadId>) -> rusqlite::Result<()> {
@@ -348,27 +350,9 @@ impl Writer {
             .collect()
     }
 
-    pub fn prior_projection(&self, file: i64) -> rusqlite::Result<Option<Vec<u8>>> {
-        Ok(self
-            .conn
-            .prepare_cached(&self.prior_sql("resolution_inputs", "projection", "origin = ?1"))?
-            .query_row([file], |row| row.get(0))
-            .optional()?
-            .flatten())
-    }
-
-    pub fn projection(&self, file: i64) -> rusqlite::Result<Option<Vec<u8>>> {
-        Ok(self
-            .conn
-            .prepare_cached("SELECT projection FROM main.resolution_inputs WHERE origin = ?1")?
-            .query_row([file], |row| row.get(0))
-            .optional()?
-            .flatten())
-    }
-
     // Retained inputs are masked by their origin even when a different file
     // owns the derived public row or there is no public shadow for the edit.
-    fn prior_sql(&self, table: &str, columns: &str, filter: &str) -> String {
+    pub(super) fn prior_sql(&self, table: &str, columns: &str, filter: &str) -> String {
         let mut sql = format!("SELECT {columns} FROM base.{table} r WHERE {filter}");
         if self.previous_overlay {
             sql.push_str(&format!(" AND NOT EXISTS (SELECT 1 FROM previous.resolution_inputs i WHERE i.origin = r.origin)

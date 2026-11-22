@@ -10,7 +10,8 @@ use mex_graph_ecmascript::resolve::{
 use serde_json::{Number, Value, json};
 
 use super::{
-    Identities, StagedEdge, StagedEdgeMetadata, StagedFile, StagedImport, StagedRef, framework,
+    Identities, StagedEdge, StagedEdgeMetadata, StagedEvidence, StagedFile, StagedImport,
+    StagedRef, WiringSite, framework,
 };
 use crate::frameworks::Enabled;
 use crate::hex;
@@ -67,6 +68,8 @@ impl<'a> Stage<'a> {
                     .any(|marker| marker.def >= 0);
             imports[file] = resolver.resolve_import_bindings(file, need_targets);
         }
+        // The grouped results retain facts and ordinals independently.
+        drop(resolver);
         Self::group(ids, frameworks, resolution, imports, by_site)
     }
 
@@ -128,18 +131,22 @@ impl<'a> Stage<'a> {
         file.edges
             .extend(self.edges[index].iter().filter_map(|edge| self.edge(edge)));
         for resolution in &self.imports[index] {
-            let binding = self.import(index, resolution);
+            let binding = include_nodes.then(|| self.import(index, resolution));
             if let Err(reason) = resolution.module {
+                let specifier = &facts.imports[resolution.site.import].specifier;
                 file.unresolved.extend(self.unresolved(
                     (index, 0),
                     "imports",
-                    binding.module_specifier,
+                    specifier,
                     resolution.site.range,
                     None,
-                    json!({ "reason": reason, "importBindingId": binding.binding_key }),
+                    binding.as_ref().map_or_else(
+                        || json!({ "reason": reason }),
+                        |binding| json!({ "reason": reason, "importBindingId": binding.binding_key }),
+                    ),
                 ));
             }
-            file.imports.push(binding);
+            file.imports.extend(binding);
         }
         for base in &self.heritage[index] {
             let base_fact = &facts.defs[base.from.1].heritage[base.heritage];
@@ -197,25 +204,38 @@ impl<'a> Stage<'a> {
         let (name, evidence) = match edge.site {
             EdgeSite::Import(index) => (
                 facts.imports[index].specifier.as_str(),
-                json!({ "resolvedFilePath": self.facts.get(edge.to.0).path }),
+                StagedEvidence::Import {
+                    resolved_file_path: self.facts.path(edge.to.0),
+                },
             ),
             EdgeSite::Heritage(index) => (
                 self.facts.get(edge.from.0).defs[edge.from.1].heritage[index]
                     .name
                     .as_str(),
-                json!({ "heritage": edge.kind }),
+                StagedEvidence::Heritage {
+                    heritage: edge.kind,
+                },
             ),
             EdgeSite::Call(index) => {
                 let call = &facts.calls[index];
-                (call_name(call), json!({ "expression": call.text }))
+                (
+                    call_name(call),
+                    StagedEvidence::Expression {
+                        expression: &call.text,
+                    },
+                )
             }
             EdgeSite::Callback { argument } => (
                 target_def.name.as_str(),
-                json!({
-                    "argumentIndex": argument,
-                    "wiringSite": { "filePath": facts.path, "line": edge.line, "column": edge.col },
-                    "callee": self.facts.get(edge.from.0).defs[edge.from.1].qualified_name,
-                }),
+                StagedEvidence::Callback {
+                    argument_index: argument,
+                    wiring_site: WiringSite {
+                        file_path: &facts.path,
+                        line: edge.line,
+                        column: Some(edge.col),
+                    },
+                    callee: &self.facts.get(edge.from.0).defs[edge.from.1].qualified_name,
+                },
             ),
             EdgeSite::Identifier(index) => {
                 let expressions = &facts
@@ -227,7 +247,10 @@ impl<'a> Stage<'a> {
                     Expression::Name { name } | Expression::Member { name, .. } => name,
                     _ => &target_def.name,
                 };
-                (name.as_str(), json!({ "expression": name }))
+                (
+                    name.as_str(),
+                    StagedEvidence::Expression { expression: name },
+                )
             }
         };
         let callback = edge.is_callback();
@@ -371,7 +394,14 @@ mod tests {
             observe: &observe,
         };
         let modules = ModuleResolver::new(paths, []);
-        Stage::resolve(facts, &modules, None, &[0, 1], |_| Vec::new(), true);
+        Stage::resolve(
+            Identities::new(facts),
+            &modules,
+            None,
+            &[0, 1],
+            |_| Vec::new(),
+            true,
+        );
         assert!(foreign_reads.into_inner().is_empty());
     }
 }

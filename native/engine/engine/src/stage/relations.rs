@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use bincode::{Decode, Encode};
 use mex_graph_core::facts::{FileFacts, Kind};
-use mex_graph_core::store::{EdgeEvidence, EdgeRow, UnresolvedRow, Writer};
+use mex_graph_core::store::{EdgeEvidence, EdgeRow, StoredProjection, UnresolvedRow, Writer};
 use sha2::{Digest, Sha256};
 
-use super::{StagedFile, build, edit_facts};
+use super::{StagedEvidence, StagedFile, edit_facts};
 use crate::job::JobError;
 
 const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
@@ -68,16 +68,22 @@ impl Evidence<'_> {
     }
 }
 
-impl<'a> From<EdgeEvidence<'a>> for Evidence<'a> {
-    fn from(evidence: EdgeEvidence<'a>) -> Self {
-        match evidence {
-            EdgeEvidence::Declaration(role) => Self::Declaration(role.map(Cow::Borrowed)),
-            EdgeEvidence::Import => Self::Import,
-            EdgeEvidence::Heritage => Self::Heritage,
-            EdgeEvidence::Expression(text) => Self::Expression(text.into()),
-            EdgeEvidence::Callback(argument) => Self::Callback(argument),
-            EdgeEvidence::Framework(binding) => Self::Framework(binding.map(Cow::Borrowed)),
-            EdgeEvidence::SyntaxImport(specifier) => Self::SyntaxImport(specifier.into()),
+impl<'a> From<&StagedEvidence<'a>> for Evidence<'a> {
+    fn from(evidence: &StagedEvidence<'a>) -> Self {
+        match *evidence {
+            StagedEvidence::Declaration { declaration_role } => {
+                Self::Declaration(declaration_role.map(Cow::Borrowed))
+            }
+            StagedEvidence::Import { .. } => Self::Import,
+            StagedEvidence::Heritage { .. } => Self::Heritage,
+            StagedEvidence::Expression { expression } => Self::Expression(expression.into()),
+            StagedEvidence::Callback { argument_index, .. } => Self::Callback(argument_index),
+            StagedEvidence::Framework { import_binding, .. } => {
+                Self::Framework(import_binding.map(Cow::Borrowed))
+            }
+            StagedEvidence::SyntaxImport { module_specifier } => {
+                Self::SyntaxImport(module_specifier.into())
+            }
         }
     }
 }
@@ -110,7 +116,6 @@ impl<'a> Projection<'a> {
         let mut edges = Vec::with_capacity(file.edges.len());
         let mut remote: BTreeMap<i64, Vec<Edge<'a>>> = BTreeMap::new();
         for edge in &file.edges {
-            let (_, evidence) = build::edge_evidence(edge);
             let row = Edge {
                 source: node_key(edge.source)?,
                 target: node_key(edge.target)?,
@@ -121,7 +126,10 @@ impl<'a> Projection<'a> {
                     confidence: edge.confidence.as_f64().expect("finite edge confidence"),
                     method: edge.resolution_method.into(),
                     target_name: edge.metadata.as_ref().map(|meta| meta.target_name.into()),
-                    evidence: evidence.map(Evidence::from),
+                    evidence: edge
+                        .evidence
+                        .as_ref()
+                        .map(|[evidence]| Evidence::from(evidence)),
                 },
             };
             if let Some(owner) = edge.owner {
@@ -200,9 +208,7 @@ impl<'a> Projection<'a> {
         encoder: &mut Encoder,
     ) -> Result<(), JobError> {
         let _timer = mex_graph_core::timing::Timer::start("v5.resolutionInputs");
-        writer
-            .put_projection(origin, Some(&encoder.encode(self)?))
-            .map_err(JobError::write)?;
+        encoder.install(writer, origin, self)?;
         for (&owner, edges) in &self.remote {
             writer
                 .put_callback(owner, origin, &encoder.encode(edges)?)
@@ -379,38 +385,141 @@ fn routes(facts: &FileFacts) -> Result<[u8; 32], JobError> {
     Ok(sha.finalize().into())
 }
 
+// Batch small base records for cross-file compression while keeping point
+// reads small. An individual large origin gets its own frame.
+const BASE_FRAME_BYTES: usize = 64 * 1024;
+
 pub(super) struct Encoder {
     payload: Vec<u8>,
     compressor: zstd::bulk::Compressor<'static>,
+    batch: Option<ProjectionBatch>,
+}
+
+#[derive(Default)]
+struct ProjectionBatch {
+    bytes: Vec<u8>,
+    entries: Vec<(i64, usize, usize)>,
+}
+
+impl ProjectionBatch {
+    fn flush(
+        &mut self,
+        writer: &Writer,
+        compressor: &mut zstd::bulk::Compressor<'_>,
+    ) -> Result<(), JobError> {
+        if !self.entries.is_empty() {
+            let compressed = compressor.compress(&self.bytes).map_err(JobError::write)?;
+            writer
+                .put_projection_frame(&compressed, &self.entries)
+                .map_err(JobError::write)?;
+            self.entries.clear();
+            self.bytes.clear();
+        }
+        Ok(())
+    }
 }
 
 impl Encoder {
-    pub(super) fn new() -> Result<Self, JobError> {
+    pub(super) fn new(base: bool) -> Result<Self, JobError> {
         Ok(Self {
             payload: Vec::new(),
-            compressor: zstd::bulk::Compressor::new(1).map_err(JobError::write)?,
+            compressor: zstd::bulk::Compressor::new(if base { 3 } else { 1 })
+                .map_err(JobError::write)?,
+            batch: base.then(ProjectionBatch::default),
         })
     }
 
-    fn encode(&mut self, value: impl Encode) -> Result<Vec<u8>, JobError> {
+    fn serialize(&mut self, value: impl Encode) -> Result<(), JobError> {
         self.payload.clear();
         bincode::encode_into_std_write(value, &mut self.payload, bincode::config::standard())
             .map_err(JobError::write)?;
+        Ok(())
+    }
+
+    fn encode(&mut self, value: impl Encode) -> Result<Vec<u8>, JobError> {
+        self.serialize(value)?;
         self.compressor
             .compress(&self.payload)
             .map_err(JobError::write)
     }
+
+    fn install(
+        &mut self,
+        writer: &Writer,
+        origin: i64,
+        value: &Projection<'_>,
+    ) -> Result<(), JobError> {
+        self.serialize(value)?;
+        let Some(batch) = &mut self.batch else {
+            let blob = self
+                .compressor
+                .compress(&self.payload)
+                .map_err(JobError::write)?;
+            return writer
+                .put_projection(origin, Some(&blob))
+                .map_err(JobError::write);
+        };
+        let size = self.payload.len();
+        if batch.bytes.len() + size > BASE_FRAME_BYTES {
+            batch.flush(writer, &mut self.compressor)?;
+        }
+        if size >= BASE_FRAME_BYTES {
+            let blob = self
+                .compressor
+                .compress(&self.payload)
+                .map_err(JobError::write)?;
+            writer
+                .put_projection_frame(&blob, &[(origin, 0, size)])
+                .map_err(JobError::write)
+        } else {
+            batch.entries.push((origin, batch.bytes.len(), size));
+            batch.bytes.extend_from_slice(&self.payload);
+            Ok(())
+        }
+    }
+
+    pub(super) fn finish(&mut self, writer: &Writer) -> Result<(), JobError> {
+        if let Some(batch) = &mut self.batch {
+            batch.flush(writer, &mut self.compressor)?;
+            writer.flush_projection_blocks().map_err(JobError::write)?;
+        }
+        Ok(())
+    }
 }
 
-pub(super) fn decode<T: Decode<()>>(blob: &[u8]) -> Result<T, JobError> {
+pub(super) fn decode_projection(input: StoredProjection) -> Result<Projection<'static>, JobError> {
+    match input {
+        StoredProjection::Origin(blob) => decode(&blob),
+        StoredProjection::Frame {
+            compressed,
+            start,
+            size,
+        } => {
+            let payload =
+                zstd::bulk::decompress(&compressed, MAX_RECORD_BYTES).map_err(JobError::write)?;
+            let end = start.checked_add(size).ok_or_else(invalid_projection)?;
+            decode_payload(payload.get(start..end).ok_or_else(invalid_projection)?)
+        }
+    }
+}
+
+fn decode<T: Decode<()>>(blob: &[u8]) -> Result<T, JobError> {
     let payload = zstd::bulk::decompress(blob, MAX_RECORD_BYTES).map_err(JobError::write)?;
+    decode_payload(&payload)
+}
+
+fn decode_payload<T: Decode<()>>(payload: &[u8]) -> Result<T, JobError> {
     let (data, read) = bincode::decode_from_slice(
-        &payload,
+        payload,
         bincode::config::standard().with_limit::<MAX_RECORD_BYTES>(),
     )
     .map_err(JobError::write)?;
     if read != payload.len() {
-        return Err(JobError::request("Invalid projected resolution record"));
+        return Err(invalid_projection());
     }
     Ok(data)
+}
+
+fn invalid_projection() -> JobError {
+    JobError::request("Invalid projected resolution record")
 }
