@@ -2,29 +2,29 @@
 
 use mex_graph_core::facts::{Call, CallForm, FileFacts, Range, ecmascript::Expression};
 use mex_graph_core::id::id_bytes;
+use mex_graph_core::resolve::Files;
 use mex_graph_ecmascript::modules::ModuleResolver;
 use mex_graph_ecmascript::resolve::{
-    DefRef, Edge, EdgeSite, ImportResolution, UnresolvedHeritage, resolve_for_stage,
+    DefRef, Edge, EdgeSite, ImportResolution, Resolution, Resolver, UnresolvedHeritage,
 };
 use serde_json::{Number, Value, json};
 
 use super::{
-    StagedEdge, StagedEdgeMetadata, StagedFile, StagedImport, StagedRef, framework, node_id,
-    node_ids,
+    Identities, StagedEdge, StagedEdgeMetadata, StagedFile, StagedImport, StagedRef, framework,
 };
-use crate::frameworks::{Enabled, Link};
+use crate::frameworks::Enabled;
 use crate::hex;
 
 const RESOLVER: &str = "engine-ecmascript";
 
 pub(super) struct Stage<'a> {
-    facts: &'a [FileFacts],
-    ids: Vec<Vec<Option<String>>>,
+    facts: Files<'a>,
+    ids: Identities<'a>,
     edges: Vec<Vec<Edge>>,
     calls: Vec<Vec<(usize, &'static str, Option<DefRef>)>>,
     heritage: Vec<Vec<UnresolvedHeritage>>,
     imports: Vec<Vec<ImportResolution>>,
-    frameworks: Option<Vec<Vec<Link<'a>>>>,
+    frameworks: Option<Enabled>,
 }
 
 impl<'a> Stage<'a> {
@@ -33,12 +33,49 @@ impl<'a> Stage<'a> {
         modules: &ModuleResolver,
         frameworks: Option<&Enabled>,
     ) -> Self {
-        let (resolution, imports) = resolve_for_stage(facts, modules);
-        // The resolver visits sites in file order. A callback's edge belongs
-        // to the callee's file even when the argument is in a different file.
+        Self::resolve(
+            Files::Dense(facts),
+            modules,
+            frameworks,
+            &(0..facts.len()).collect::<Vec<_>>(),
+            |_| Vec::new(),
+            false,
+        )
+        .0
+    }
+
+    pub(super) fn resolve(
+        facts: Files<'a>,
+        modules: &ModuleResolver,
+        frameworks: Option<&Enabled>,
+        origins: &[usize],
+        descendants: impl Fn(DefRef) -> Vec<DefRef>,
+        by_site: bool,
+    ) -> (Self, Vec<(DefRef, DefRef)>) {
+        let mut resolver = Resolver::new(facts, modules);
+        let resolution = resolver.resolve(origins.iter().copied(), descendants);
+        let mut imports = (0..facts.len()).map(|_| Vec::new()).collect::<Vec<_>>();
+        for &file in origins {
+            imports[file] = resolver.resolve_import_bindings(file);
+        }
+        Self::group(facts, frameworks, resolution, imports, by_site)
+    }
+
+    fn group(
+        facts: Files<'a>,
+        frameworks: Option<&Enabled>,
+        resolution: Resolution,
+        imports: Vec<Vec<ImportResolution>>,
+        by_site: bool,
+    ) -> (Self, Vec<(DefRef, DefRef)>) {
         let mut edges = vec![Vec::new(); facts.len()];
+        let mut inheritance = Vec::new();
         for edge in resolution.edges {
-            edges[edge.from.0].push(edge);
+            if by_site && matches!(edge.kind, "extends" | "implements") {
+                inheritance.push((edge.from, edge.to));
+            }
+            let owner = if by_site { edge.site_file } else { edge.from.0 };
+            edges[owner].push(edge);
         }
         let mut calls = vec![Vec::new(); facts.len()];
         for (file, index, reason) in resolution.unresolved_calls {
@@ -52,20 +89,23 @@ impl<'a> Stage<'a> {
         for base in resolution.unresolved_heritage {
             heritage[base.from.0].push(base);
         }
-        Self {
-            facts,
-            ids: facts.iter().map(node_ids).collect(),
-            edges,
-            calls,
-            heritage,
-            frameworks: frameworks.map(|registry| registry.links(facts, Some(&imports))),
-            imports,
-        }
+        (
+            Self {
+                facts,
+                ids: Identities::new(facts),
+                edges,
+                calls,
+                heritage,
+                frameworks: frameworks.cloned(),
+                imports,
+            },
+            inheritance,
+        )
     }
 
     pub(super) fn file(&self, index: usize, size: u64, include_nodes: bool) -> StagedFile<'_> {
-        let facts = &self.facts[index];
-        let mut file = StagedFile::new(facts, size, &self.ids[index], include_nodes);
+        let facts = self.facts.get(index);
+        let mut file = StagedFile::new(facts, size, self.ids.file(index), include_nodes);
         file.edges
             .extend(self.edges[index].iter().filter_map(|edge| self.edge(edge)));
         for resolution in &self.imports[index] {
@@ -119,32 +159,29 @@ impl<'a> Stage<'a> {
             }
             file.unresolved.extend(reference);
         }
-        if let Some(links) = &self.frameworks {
-            framework::add_links(&mut file, &links[index], index, |id| self.id(id));
+        if let Some(registry) = &self.frameworks {
+            let links = registry.file_links(index, facts, &self.imports[index]);
+            framework::add_links(&mut file, &links, index, |id| self.id(id));
         }
         file
     }
 
-    pub(super) fn ids(&self, index: usize) -> &[Option<String>] {
-        &self.ids[index]
-    }
-
-    fn id(&self, (file, index): DefRef) -> Option<&str> {
-        node_id(&self.ids[file], index)
+    fn id(&self, id: DefRef) -> Option<&str> {
+        self.ids.id(id)
     }
 
     fn edge(&self, edge: &Edge) -> Option<StagedEdge<'_>> {
         let source = self.id(edge.from)?;
         let target = self.id(edge.to)?;
-        let target_def = &self.facts[edge.to.0].defs[edge.to.1];
-        let facts = &self.facts[edge.site_file];
+        let target_def = &self.facts.get(edge.to.0).defs[edge.to.1];
+        let facts = self.facts.get(edge.site_file);
         let (name, evidence) = match edge.site {
             EdgeSite::Import(index) => (
                 facts.imports[index].specifier.as_str(),
-                json!({ "resolvedFilePath": self.facts[edge.to.0].path }),
+                json!({ "resolvedFilePath": self.facts.get(edge.to.0).path }),
             ),
             EdgeSite::Heritage(index) => (
-                self.facts[edge.from.0].defs[edge.from.1].heritage[index]
+                self.facts.get(edge.from.0).defs[edge.from.1].heritage[index]
                     .name
                     .as_str(),
                 json!({ "heritage": edge.kind }),
@@ -158,7 +195,7 @@ impl<'a> Stage<'a> {
                 json!({
                     "argumentIndex": argument,
                     "wiringSite": { "filePath": facts.path, "line": edge.line, "column": edge.col },
-                    "callee": self.facts[edge.from.0].defs[edge.from.1].qualified_name,
+                    "callee": self.facts.get(edge.from.0).defs[edge.from.1].qualified_name,
                 }),
             ),
             EdgeSite::Identifier(index) => {
@@ -176,6 +213,7 @@ impl<'a> Stage<'a> {
         };
         let callback = edge.is_callback();
         Some(StagedEdge {
+            owner: (edge.site_file != edge.from.0).then(|| self.facts.path(edge.from.0)),
             source,
             target,
             kind: edge.kind,
@@ -209,7 +247,7 @@ impl<'a> Stage<'a> {
         receiver: Option<&'b str>,
         metadata: Value,
     ) -> Option<StagedRef<'b>> {
-        let facts = &self.facts[source.0];
+        let facts = self.facts.get(source.0);
         Some(StagedRef {
             from_node_id: self.id(source)?,
             reference_name: name,
@@ -231,7 +269,7 @@ impl<'a> Stage<'a> {
     }
 
     fn import(&self, file: usize, resolved: &ImportResolution) -> StagedImport<'_> {
-        let facts = &self.facts[file];
+        let facts = self.facts.get(file);
         let import = &facts.imports[resolved.site.import];
         let binding = &import.bindings[resolved.site.binding];
         let local = binding
@@ -254,7 +292,7 @@ impl<'a> Stage<'a> {
             resolved_file_path: resolved
                 .module
                 .ok()
-                .map(|target| self.facts[target].path.as_str()),
+                .map(|target| self.facts.get(target).path.as_str()),
             target_id: resolved.target.and_then(|target| self.id(target)),
             is_type_only: binding.type_only,
             metadata: json!({

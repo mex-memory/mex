@@ -1,0 +1,919 @@
+//! Plan and write one v5 resolution delta. The source publication owns its
+//! facts. Resolution reads and callback inputs are owned by their site.
+
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+
+use mex_graph_core::facts::{FileFacts, ParseStatus};
+use mex_graph_core::resolve::{Access, Files};
+use mex_graph_core::store::{BaseFile, RefreshBase, Writer};
+use mex_graph_core::timing::Timer;
+use mex_graph_ecmascript::modules::{ModuleResolver, Syntax};
+use mex_graph_ecmascript::resolve::DefRef;
+
+use super::{Identities, build, ecmascript, edit_facts, node_ids, python_file, relations, syntax};
+use crate::frameworks::{DETECTION, Enabled};
+use crate::job::{ConfigSource, JobError, Request, RequestFile, request_facts_key};
+use crate::syntax_language::SyntaxLanguage;
+
+pub(super) struct PublishedOverlay {
+    pub(super) path: PathBuf,
+    pub(super) db: RefreshBase,
+    pub(super) files: HashMap<String, BaseFile>,
+    pub(super) shadows: Vec<String>,
+    shadowed: HashSet<String>,
+}
+
+impl PublishedOverlay {
+    pub(super) fn open(path: PathBuf, base: &Path) -> Result<Self, JobError> {
+        if !path.is_absolute()
+            || path.parent() != base.parent()
+            || !std::fs::symlink_metadata(&path).is_ok_and(|entry| entry.is_file())
+        {
+            return Err(JobError::request(
+                "The published overlay must be a regular sibling of the base",
+            ));
+        }
+        let db = RefreshBase::open_overlay(&path, base).map_err(JobError::write)?;
+        let files = db.files().map_err(JobError::write)?;
+        let shadows = db.shadows().map_err(JobError::write)?;
+        let shadowed = shadows.iter().cloned().collect();
+        Ok(Self {
+            path,
+            db,
+            files,
+            shadows,
+            shadowed,
+        })
+    }
+}
+
+pub(super) struct Publication<'a> {
+    pub(super) base: &'a RefreshBase,
+    pub(super) base_files: &'a HashMap<String, BaseFile>,
+    pub(super) overlay: Option<&'a PublishedOverlay>,
+}
+
+impl Publication<'_> {
+    pub(super) fn file(&self, path: &str) -> Option<(&BaseFile, bool)> {
+        if let Some(overlay) = self
+            .overlay
+            .filter(|overlay| overlay.shadowed.contains(path))
+        {
+            overlay.files.get(path).map(|file| (file, true))
+        } else {
+            self.base_files.get(path).map(|file| (file, false))
+        }
+    }
+
+    pub(super) fn paths(&self) -> impl Iterator<Item = &str> + Clone {
+        self.base_files
+            .keys()
+            .filter(|path| {
+                self.overlay
+                    .is_none_or(|overlay| !overlay.shadowed.contains(*path))
+            })
+            .chain(
+                self.overlay
+                    .into_iter()
+                    .flat_map(|overlay| overlay.files.keys()),
+            )
+            .map(String::as_str)
+    }
+
+    pub(super) fn current(&self) -> &RefreshBase {
+        self.overlay.map_or(self.base, |overlay| &overlay.db)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Language {
+    Python,
+    Ecma,
+    Rust,
+    CSharp,
+}
+
+impl Language {
+    const ALL: [Self; 4] = [Self::Python, Self::Ecma, Self::Rust, Self::CSharp];
+
+    fn get(path: &str, languages: &[String]) -> Option<Self> {
+        match request_facts_key(path, languages)?.0 {
+            "python" => Some(Self::Python),
+            "rust" => Some(Self::Rust),
+            "csharp" => Some(Self::CSharp),
+            _ => Some(Self::Ecma),
+        }
+    }
+}
+
+pub(super) fn modules<'a>(
+    root: &Path,
+    paths: impl IntoIterator<Item = &'a str>,
+    configs: &'a [ConfigSource<'a>],
+) -> ModuleResolver {
+    let configs = configs.iter().map(|(path, text)| (*path, text.as_ref()));
+    match root.to_str().filter(|path| path.starts_with('/')) {
+        Some(root) => ModuleResolver::with_repository_root(root, paths, configs),
+        None => ModuleResolver::new(paths, configs),
+    }
+}
+
+#[derive(Default)]
+struct Reads {
+    files: HashSet<usize>,
+    keys: HashMap<&'static str, HashSet<String>>,
+}
+
+struct Recorder<'a> {
+    paths: &'a [&'a str],
+    reads: Vec<RefCell<Reads>>,
+    origin: Cell<Option<usize>>,
+    nested: RefCell<Vec<usize>>,
+}
+
+impl<'a> Recorder<'a> {
+    fn new(paths: &'a [&'a str]) -> Self {
+        Self {
+            paths,
+            reads: (0..paths.len())
+                .map(|_| RefCell::new(Reads::default()))
+                .collect(),
+            origin: Cell::new(None),
+            nested: RefCell::default(),
+        }
+    }
+
+    fn observe(&self, access: Access<'_>) {
+        match access {
+            Access::Origin(origin) => self.origin.set(Some(origin)),
+            Access::Enter(origin) => self.nested.borrow_mut().push(origin),
+            Access::Leave => {
+                self.nested.borrow_mut().pop();
+            }
+            Access::File(_) | Access::Lookup(..) => {
+                let Some(origin) = self.origin.get() else {
+                    return;
+                };
+                let nested = self.nested.borrow();
+                let update = |origin| {
+                    let read: &RefCell<Reads> = &self.reads[origin];
+                    let mut read = read.borrow_mut();
+                    match access {
+                        Access::File(file) if file != origin => {
+                            read.files.insert(file);
+                        }
+                        Access::Lookup(kind, key) => {
+                            let keys = read.keys.entry(kind).or_default();
+                            if !keys.contains(key) {
+                                keys.insert(key.into());
+                            }
+                        }
+                        _ => {}
+                    }
+                };
+                update(origin);
+                for &file in nested.iter().filter(|&&file| file != origin) {
+                    update(file);
+                }
+            }
+        }
+    }
+
+    fn write(&self, writer: &Writer, file: usize) -> Result<(), JobError> {
+        let path = self.paths[file];
+        let reads = self.reads[file].borrow();
+        for &file in &reads.files {
+            writer
+                .put_read(path, "file", self.paths[file])
+                .map_err(JobError::write)?;
+        }
+        for (&kind, keys) in &reads.keys {
+            for key in keys {
+                writer.put_read(path, kind, key).map_err(JobError::write)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Inputs already match the complete source observation, in request order.
+/// When loading lazily, callers capture I/O errors and abandon the candidate.
+pub(super) struct Corpus<'a> {
+    pub(super) root: &'a Path,
+    pub(super) request: &'a Request,
+    pub(super) configs: &'a [ConfigSource<'a>],
+    pub(super) sizes: &'a HashMap<&'a str, u64>,
+    pub(super) load: &'a dyn Fn(&str) -> &'a FileFacts,
+}
+
+impl Corpus<'_> {
+    /// Installs per-origin results before emitting any public row. This keeps
+    /// cross-file callback ownership independent of traversal and write order.
+    pub(super) fn resolve(
+        &self,
+        writer: &Writer,
+        enabled: &Enabled,
+        selected: &HashSet<&str>,
+        removed: &HashSet<&str>,
+        overlay: bool,
+    ) -> Result<(), JobError> {
+        let _timer = Timer::start("resolve.incremental");
+        for language in Language::ALL {
+            let paths: Vec<_> = self
+                .request
+                .files
+                .iter()
+                .filter(|file| {
+                    self.sizes.contains_key(file.path.as_str())
+                        && Language::get(&file.path, &self.request.languages) == Some(language)
+                })
+                .map(|file| file.path.as_str())
+                .collect();
+            let origins: Vec<_> = paths
+                .iter()
+                .enumerate()
+                .filter_map(|(i, path)| selected.contains(path).then_some(i))
+                .collect();
+            if origins.is_empty() {
+                continue;
+            }
+            let recorder = Recorder::new(&paths);
+            let load = |file| (self.load)(paths[file]);
+            let observe = |access: Access<'_>| recorder.observe(access);
+            let facts = Files::Lazy {
+                paths: &paths,
+                load: &load,
+                observe: &observe,
+            };
+            let project = |index, file: super::StagedFile<'_>| -> Result<(), JobError> {
+                let facts = load(index);
+                relations::Projection::new(&file, facts)?.install(writer, &facts.path)?;
+                recorder.write(writer, index)?;
+                for marker in &facts.frameworks {
+                    if marker.kind == DETECTION {
+                        writer
+                            .put_read(&facts.path, DETECTION, &marker.name)
+                            .map_err(JobError::write)?;
+                    }
+                }
+                Ok(())
+            };
+            match language {
+                Language::Ecma => {
+                    let modules = modules(self.root, paths.iter().copied(), self.configs);
+                    let paths_by_index: HashMap<_, _> =
+                        paths.iter().enumerate().map(|(i, &p)| (p, i)).collect();
+                    let error = RefCell::new(None);
+                    let descendants = |(file, def)| {
+                        if !overlay {
+                            return Vec::new();
+                        }
+                        match writer.prior_descendants(paths[file], def) {
+                            Ok(rows) => rows
+                                .into_iter()
+                                .filter_map(|(path, from)| {
+                                    if selected.contains(path.as_str())
+                                        || removed.contains(path.as_str())
+                                    {
+                                        return None;
+                                    }
+                                    let &index = paths_by_index.get(path.as_str())?;
+                                    (load(index).defs.get(from).is_some()).then_some((index, from))
+                                })
+                                .collect(),
+                            Err(problem) => {
+                                *error.borrow_mut() = Some(problem);
+                                Vec::new()
+                            }
+                        }
+                    };
+                    let (stage, heritage) = ecmascript::Stage::resolve(
+                        facts,
+                        &modules,
+                        Some(enabled),
+                        &origins,
+                        descendants,
+                        true,
+                    );
+                    if let Some(error) = error.into_inner() {
+                        return Err(JobError::write(error));
+                    }
+                    recorder.origin.set(None);
+                    for ((origin, from), (target, def)) in heritage {
+                        writer
+                            .put_heritage(paths[target], def, paths[origin], from)
+                            .map_err(JobError::write)?;
+                    }
+                    for index in origins {
+                        project(index, stage.file(index, self.sizes[paths[index]], false))?;
+                    }
+                }
+                Language::Python => {
+                    let resolver = mex_graph_python::resolve::Resolver::with_files(facts);
+                    let ids = Identities::new(facts);
+                    for index in origins {
+                        let mut out = mex_graph_python::resolve::Resolution::default();
+                        resolver.resolve_file(index, &mut out);
+                        recorder.origin.set(None);
+                        let links = enabled.file_links(index, load(index), &[]);
+                        project(
+                            index,
+                            python_file(
+                                facts,
+                                &ids,
+                                index,
+                                self.sizes[paths[index]],
+                                false,
+                                &out.edges,
+                                &out.unresolved_calls,
+                                &out.call_candidates,
+                                Some(&links),
+                            ),
+                        )?;
+                    }
+                }
+                Language::Rust | Language::CSharp => {
+                    let mut results: Vec<_> =
+                        (0..paths.len()).map(|_| Default::default()).collect();
+                    let adapter = if language == Language::Rust {
+                        let resolver = mex_graph_rust::resolve::Resolver::new(facts);
+                        for &index in &origins {
+                            results[index] = resolver.resolve_file(index);
+                        }
+                        SyntaxLanguage::Rust
+                    } else {
+                        let mut changed_types: HashMap<&str, Vec<DefRef>> = HashMap::new();
+                        for &index in &origins {
+                            for (name, def) in types(load(index)) {
+                                changed_types.entry(name).or_default().push((index, def));
+                                writer
+                                    .put_type(name, paths[index], def)
+                                    .map_err(JobError::write)?;
+                            }
+                        }
+                        let by_path: HashMap<_, _> =
+                            paths.iter().enumerate().map(|(i, &p)| (p, i)).collect();
+                        let cache = RefCell::new(HashMap::<String, Vec<DefRef>>::new());
+                        let error = RefCell::new(None);
+                        let lookup = |name: &str| {
+                            let mut cache = cache.borrow_mut();
+                            if let Some(ids) = cache.get(name) {
+                                return ids.clone();
+                            }
+                            let mut ids = changed_types.get(name).cloned().unwrap_or_default();
+                            if overlay {
+                                match writer.prior_types(name) {
+                                    Ok(rows) => {
+                                        ids.extend(rows.into_iter().filter_map(|(path, def)| {
+                                            if selected.contains(path.as_str()) {
+                                                return None;
+                                            }
+                                            let &i = by_path.get(path.as_str())?;
+                                            load(i).defs.get(def).map(|_| (i, def))
+                                        }))
+                                    }
+                                    Err(problem) => {
+                                        *error.borrow_mut() = Some(problem);
+                                    }
+                                }
+                            }
+                            cache.insert(name.into(), ids.clone());
+                            ids
+                        };
+                        let resolver = mex_graph_csharp::resolve::Resolver::new(facts, &lookup);
+                        for &index in &origins {
+                            results[index] = resolver.resolve_file(index);
+                        }
+                        if let Some(error) = error.into_inner() {
+                            return Err(JobError::write(error));
+                        }
+                        SyntaxLanguage::CSharp
+                    };
+                    recorder.origin.set(None);
+                    let stage = syntax::Stage::resolved(facts, adapter, results);
+                    for index in origins {
+                        project(index, stage.file(index, self.sizes[paths[index]], false))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn types(facts: &FileFacts) -> impl Iterator<Item = (&str, usize)> {
+    facts.defs.iter().enumerate().filter_map(|(index, def)| {
+        (facts.health.status != ParseStatus::Failed
+            && mex_graph_csharp::resolve::is_type(def.kind)
+            && mex_graph_syntax::resolve::visible(def))
+        .then_some((def.name.as_str(), index))
+    })
+}
+
+pub(super) struct Plan<'a> {
+    pub(super) edited: HashSet<&'a str>,
+    removed: HashSet<&'a str>,
+    resolve: HashSet<&'a str>,
+    rewrite: HashSet<&'a str>,
+}
+
+impl<'a> Plan<'a> {
+    pub(super) fn new(
+        corpus: &Corpus<'a>,
+        prior: &'a Publication<'a>,
+        writer: &Writer,
+        complete: bool,
+    ) -> Result<Self, JobError> {
+        let _timer = Timer::start("incremental.plan");
+        let current: HashSet<&str> = corpus.sizes.keys().copied().collect();
+        let removed: HashSet<_> = prior
+            .paths()
+            .filter(|path| !current.contains(path))
+            .collect();
+        let mut edited = HashSet::new();
+        let mut surfaces = Vec::new();
+        let mut reusable = HashMap::new();
+        for file in &corpus.request.files {
+            let path = file.path.as_str();
+            if !current.contains(path) {
+                continue;
+            }
+            let Some((old, _)) = prior.file(path) else {
+                edited.insert(path);
+                surfaces.push(path);
+                continue;
+            };
+            let current_hash = file
+                .content_hash
+                .as_deref()
+                .and_then(crate::job::decode_hash);
+            if (current_hash != Some(old.hash)
+                && (current_hash.is_some() || (corpus.load)(path).content_hash != old.hash))
+                || old.extractor_version != file.extractor_version.as_deref().unwrap_or("mex-graph")
+                || old.size != corpus.sizes[path]
+            {
+                edited.insert(path);
+                if complete {
+                    continue;
+                }
+                let Some(blob) = writer.prior_projection(path).map_err(JobError::write)? else {
+                    surfaces.push(path);
+                    continue;
+                };
+                let rows: relations::Projection = relations::decode(&blob)?;
+                let signature = edit_facts::Signature::new((corpus.load)(path))?;
+                if let Some(sites) = rows.signature.positions(&signature) {
+                    reusable.insert(path, (rows, signature, sites));
+                } else if !rows.signature.same_surface(&signature) {
+                    surfaces.push(path);
+                }
+            }
+        }
+        let mut resolve = edited.clone();
+        let mut affected = HashSet::new();
+        if complete {
+            resolve = current.clone();
+        } else {
+            let mut frontier: VecDeque<_> = surfaces
+                .iter()
+                .copied()
+                .chain(removed.iter().copied())
+                .map(str::to_owned)
+                .collect();
+            let mut ts_dispatch = false;
+            let mut csharp_types = BTreeSet::new();
+            for path in surfaces.iter().copied().chain(removed.iter().copied()) {
+                match Language::get(path, &corpus.request.languages) {
+                    Some(Language::Ecma) => ts_dispatch = true,
+                    Some(Language::CSharp) => {
+                        csharp_types.extend(writer.prior_types_in(path).map_err(JobError::write)?);
+                        if current.contains(path) {
+                            csharp_types.extend(
+                                types((corpus.load)(path)).map(|(name, _)| name.to_owned()),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for name in csharp_types {
+                frontier.extend(
+                    writer
+                        .readers("csharp-type", &name)
+                        .map_err(JobError::write)?,
+                );
+            }
+            let topology =
+                !removed.is_empty() || edited.iter().any(|path| prior.file(path).is_none());
+            if topology {
+                for path in removed.iter().copied().chain(
+                    edited
+                        .iter()
+                        .copied()
+                        .filter(|path| prior.file(path).is_none()),
+                ) {
+                    frontier.extend(writer.readers("path", path).map_err(JobError::write)?);
+                    if let Some(crate_path) = path.strip_suffix("/src/lib.rs") {
+                        let name = crate_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(crate_path)
+                            .replace('-', "_");
+                        frontier.extend(
+                            writer
+                                .readers("rust-crate", &name)
+                                .map_err(JobError::write)?,
+                        );
+                    }
+                }
+                ts_dispatch |= topology_readers(corpus, prior, writer, &mut frontier)?;
+            }
+            if ts_dispatch {
+                frontier.extend(writer.readers("ts-dispatch", "").map_err(JobError::write)?);
+            }
+            let mut visited = HashSet::new();
+            while let Some(path) = frontier.pop_front() {
+                if !visited.insert(path.clone()) {
+                    continue;
+                }
+                if let Some(&path) = current.get(path.as_str()) {
+                    resolve.insert(path);
+                    affected.insert(path);
+                }
+                frontier.extend(writer.readers("file", &path).map_err(JobError::write)?);
+            }
+            for (path, (mut rows, signature, positions)) in reusable {
+                if affected.contains(path) {
+                    continue;
+                }
+                if rows.rebase((corpus.load)(path), &positions)? {
+                    rows.signature = signature;
+                    rows.install(writer, path)?;
+                    writer.carry_origin_index(path).map_err(JobError::write)?;
+                    resolve.remove(path);
+                }
+            }
+        }
+        let rewrite = edited.union(&resolve).copied().collect();
+        Ok(Self {
+            edited,
+            removed,
+            resolve,
+            rewrite,
+        })
+    }
+
+    pub(super) fn write(
+        self,
+        corpus: &Corpus<'_>,
+        writer: &mut Writer,
+        enabled: &Enabled,
+        prior: &Publication<'_>,
+    ) -> Result<(), JobError> {
+        for path in &self.removed {
+            writer.shadow(path).map_err(JobError::write)?;
+            writer.put_projection(path, None).map_err(JobError::write)?;
+        }
+        corpus.resolve(writer, enabled, &self.resolve, &self.removed, true)?;
+        let _timer = Timer::start("project.incremental");
+        let mut owners: HashSet<String> = self.rewrite.iter().map(|path| (*path).into()).collect();
+        for path in self.rewrite.iter().chain(&self.removed) {
+            owners.extend(
+                writer
+                    .prior_callback_owners(path)
+                    .map_err(JobError::write)?,
+            );
+            if let Some(blob) = writer.projection(path).map_err(JobError::write)? {
+                let rows: relations::Projection = relations::decode(&blob)?;
+                owners.extend(rows.callback_owners().map(str::to_owned));
+            }
+        }
+        let files = file_keys(corpus.request, prior);
+        let mut keys = NodeKeys::new(writer, prior)?;
+        let by_path: HashMap<_, _> = corpus
+            .request
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file))
+            .collect();
+        // Allocate changed declarations before writing any cross-file edge.
+        for &path in &self.edited {
+            let facts = (corpus.load)(path);
+            let ids = node_ids(facts);
+            keys.register(&ids)?;
+            writer.shadow(path).map_err(JobError::write)?;
+            build::write_file(
+                writer,
+                corpus.root,
+                corpus.request,
+                by_path[path],
+                facts,
+                corpus.sizes[path],
+                &ids,
+                &keys.borrowed(&ids),
+                Some(files[path]),
+            )?;
+        }
+        let mut written: HashSet<String> = self
+            .edited
+            .iter()
+            .chain(&self.removed)
+            .map(|&path| path.to_owned())
+            .collect();
+        for path in owners {
+            let path = path.as_str();
+            let Some(&key) = files.get(path) else {
+                continue;
+            };
+            let blob = writer
+                .projection(path)
+                .map_err(JobError::write)?
+                .map_or_else(
+                    || writer.prior_projection(path).map_err(JobError::write),
+                    |blob| Ok(Some(blob)),
+                )?
+                .ok_or_else(|| JobError::request(format!("Missing resolution for {path}")))?;
+            let rows = relations::Outgoing::load(writer, path, relations::decode(&blob)?)?;
+            let digest = rows.digest()?;
+            if !self.edited.contains(path) {
+                let (file, previous) = prior.file(path).expect("new paths are edited");
+                if file.resolution == digest {
+                    continue;
+                }
+                writer.shadow(path).map_err(JobError::write)?;
+                writer
+                    .copy_declarations(key, previous)
+                    .map_err(JobError::write)?;
+                written.insert(path.into());
+            }
+            rows.write(writer, |site| files[site], |id| keys.existing(id))?;
+            writer
+                .set_file_resolution(key, &digest)
+                .map_err(JobError::write)?;
+        }
+        // The next overlay is still relative to the canonical base. Carry the
+        // prior public shadows before checking the combined call-pair delta.
+        if let Some(overlay) = prior.overlay {
+            for path in overlay
+                .shadows
+                .iter()
+                .filter(|path| !written.contains(*path))
+            {
+                writer.shadow(path).map_err(JobError::write)?;
+                if let Some(file) = overlay.files.get(path) {
+                    carry_file(writer, file, true)?;
+                }
+            }
+        }
+        for path in writer.neighbouring_files().map_err(JobError::write)? {
+            let (file, previous) = prior
+                .file(&path)
+                .expect("a retained neighbour has a publication");
+            writer.shadow(&path).map_err(JobError::write)?;
+            carry_file(writer, file, previous)?;
+        }
+        writer.carry_resolution_inputs().map_err(JobError::write)
+    }
+}
+
+fn carry_file(writer: &Writer, file: &BaseFile, previous: bool) -> Result<(), JobError> {
+    writer
+        .copy_declarations(file.key, previous)
+        .map_err(JobError::write)?;
+    writer
+        .copy_outgoing_from(file.key, previous)
+        .map_err(JobError::write)?;
+    writer
+        .set_file_resolution(file.key, &file.resolution)
+        .map_err(JobError::write)
+}
+
+fn topology_readers(
+    corpus: &Corpus<'_>,
+    prior: &Publication<'_>,
+    writer: &Writer,
+    frontier: &mut VecDeque<String>,
+) -> Result<bool, JobError> {
+    use mex_graph_python::resolve::module_index;
+    let paths = |language| {
+        let mut before: Vec<_> = prior
+            .paths()
+            .filter(|path| Language::get(path, &corpus.request.languages) == Some(language))
+            .collect();
+        let mut after: Vec<_> = corpus
+            .sizes
+            .keys()
+            .copied()
+            .filter(|path| Language::get(path, &corpus.request.languages) == Some(language))
+            .collect();
+        before.sort_unstable();
+        after.sort_unstable();
+        (before, after)
+    };
+    let (before, after) = paths(Language::Python);
+    if before != after {
+        let left = module_index(before.iter().copied());
+        let right = module_index(after.iter().copied());
+        for key in left
+            .keys()
+            .chain(right.keys().filter(|key| !left.contains_key(*key)))
+        {
+            if left.get(key).map(|&i| before[i]) != right.get(key).map(|&i| after[i]) {
+                frontier.extend(
+                    writer
+                        .readers("python-module", key)
+                        .map_err(JobError::write)?,
+                );
+            }
+        }
+    }
+    let (before, after) = paths(Language::Ecma);
+    if before == after {
+        return Ok(false);
+    }
+    let old = modules(corpus.root, before, corpus.configs);
+    let new = modules(corpus.root, after, corpus.configs);
+    let mut changed = false;
+    for (kind, syntax) in [
+        ("ts-import", Syntax::Import),
+        ("ts-require", Syntax::Require),
+    ] {
+        for key in writer.read_keys(kind).map_err(JobError::write)? {
+            let (path, specifier) = key
+                .split_once('\0')
+                .ok_or_else(|| JobError::request("Invalid module dependency"))?;
+            if old.resolve(path, specifier, syntax) != new.resolve(path, specifier, syntax) {
+                frontier.extend(writer.readers(kind, &key).map_err(JobError::write)?);
+                changed = true;
+            }
+        }
+    }
+    Ok(changed)
+}
+
+fn file_keys<'a>(request: &'a Request, prior: &Publication<'_>) -> HashMap<&'a str, i64> {
+    let mut next = prior
+        .overlay
+        .into_iter()
+        .flat_map(|overlay| overlay.files.values().map(|file| file.key))
+        .max()
+        .unwrap_or_default()
+        .max(mex_graph_core::store::OVERLAY_KEY_START);
+    request
+        .files
+        .iter()
+        .map(|file| {
+            let path = file.path.as_str();
+            let key = prior
+                .file(path)
+                .map(|(file, _)| file.key)
+                .or_else(|| prior.base_files.get(path).map(|file| file.key))
+                .unwrap_or_else(|| {
+                    next += 1;
+                    next
+                });
+            (path, key)
+        })
+        .collect()
+}
+
+struct NodeKeys<'a> {
+    prior: &'a Publication<'a>,
+    keys: HashMap<String, i64>,
+    next: i64,
+}
+
+impl<'a> NodeKeys<'a> {
+    fn new(writer: &Writer, prior: &'a Publication<'a>) -> Result<Self, JobError> {
+        Ok(Self {
+            prior,
+            keys: HashMap::new(),
+            next: writer
+                .previous_node_upper_bound()
+                .map_err(JobError::write)?,
+        })
+    }
+
+    fn key(&mut self, id: &str, allocate: bool) -> Result<i64, JobError> {
+        if let Some(&key) = self.keys.get(id) {
+            return Ok(key);
+        }
+        let mut key = self.prior.base.node_key(id).map_err(JobError::write)?;
+        if key.is_none()
+            && let Some(overlay) = self.prior.overlay
+        {
+            key = overlay.db.node_key(id).map_err(JobError::write)?;
+        }
+        let key = if let Some(key) = key {
+            key
+        } else if allocate {
+            self.next += 1;
+            self.next
+        } else {
+            return Err(JobError::request(format!("Missing projected node {id}")));
+        };
+        self.keys.insert(id.into(), key);
+        Ok(key)
+    }
+
+    fn register(&mut self, ids: &[Option<String>]) -> Result<(), JobError> {
+        for id in ids.iter().flatten() {
+            self.key(id, true)?;
+        }
+        Ok(())
+    }
+
+    fn existing(&mut self, id: &str) -> Result<i64, JobError> {
+        self.key(id, false)
+    }
+
+    fn borrowed<'b>(&self, ids: &'b [Option<String>]) -> HashMap<&'b str, i64> {
+        ids.iter()
+            .flatten()
+            .map(|id| (id.as_str(), self.keys[id]))
+            .collect()
+    }
+}
+
+pub(super) struct FactLoader<'a> {
+    enabled: &'a Enabled,
+    load: &'a dyn Fn(&RequestFile) -> Result<FileFacts, JobError>,
+    slots: HashMap<&'a str, (&'a RequestFile, std::cell::OnceCell<FileFacts>)>,
+    problem: RefCell<Option<JobError>>,
+}
+
+impl<'a> FactLoader<'a> {
+    pub(super) fn new(
+        request: &'a Request,
+        enabled: &'a Enabled,
+        load: &'a dyn Fn(&RequestFile) -> Result<FileFacts, JobError>,
+    ) -> Self {
+        Self {
+            enabled,
+            load,
+            slots: request
+                .files
+                .iter()
+                .map(|file| (file.path.as_str(), (file, std::cell::OnceCell::new())))
+                .collect(),
+            problem: RefCell::new(None),
+        }
+    }
+
+    pub(super) fn get(&self, path: &str) -> &FileFacts {
+        let (file, slot) = &self.slots[path];
+        slot.get_or_init(|| match (self.load)(file) {
+            Ok(mut facts) => {
+                self.enabled.activate(std::slice::from_mut(&mut facts));
+                facts
+            }
+            Err(error) => {
+                *self.problem.borrow_mut() = Some(error);
+                FileFacts {
+                    path: path.into(),
+                    health: mex_graph_core::facts::Health {
+                        status: ParseStatus::Failed,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            }
+        })
+    }
+
+    pub(super) fn finish(self) -> Result<(), JobError> {
+        self.problem.into_inner().map_or(Ok(()), Err)
+    }
+}
+
+pub(super) fn framework_set(
+    writer: &Writer,
+    configs: &[ConfigSource<'_>],
+    changed: &HashMap<String, FileFacts>,
+    removed: &HashSet<&str>,
+) -> Result<Enabled, JobError> {
+    let mut names = HashSet::new();
+    for key in writer.read_keys(DETECTION).map_err(JobError::write)? {
+        if writer
+            .readers(DETECTION, &key)
+            .map_err(JobError::write)?
+            .iter()
+            .any(|path| !changed.contains_key(path) && !removed.contains(path.as_str()))
+        {
+            names.insert(key);
+        }
+    }
+    names.extend(
+        changed
+            .values()
+            .flat_map(|file| &file.frameworks)
+            .filter(|marker| marker.kind == DETECTION)
+            .map(|marker| marker.name.clone()),
+    );
+    Ok(Enabled::with_detections(
+        super::refresh::package_config(configs),
+        &names,
+    ))
+}

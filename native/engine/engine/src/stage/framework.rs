@@ -14,6 +14,7 @@ pub(super) fn contains<'a>(
     resolver: &'static str,
 ) -> StagedEdge<'a> {
     StagedEdge {
+        owner: None,
         source,
         target,
         kind: "contains",
@@ -50,6 +51,7 @@ pub(super) fn add_links<'a>(
                     evidence["importBinding"] = json!(link.name);
                 }
                 file.edges.push(StagedEdge {
+        owner: None,
                     source,
                     target,
                     kind: "references",

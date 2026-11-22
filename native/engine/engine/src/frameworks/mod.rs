@@ -17,7 +17,7 @@ mod python;
 mod source;
 
 const ECMASCRIPT: &[&str] = &["typescript", "javascript", "tsx", "jsx"];
-const DETECTION: &str = "framework_detected";
+pub(crate) const DETECTION: &str = "framework_detected";
 pub(crate) const CONFIDENCE: f64 = 0.8;
 
 pub(crate) struct Framework {
@@ -113,32 +113,33 @@ impl Enabled {
             .join(",")
     }
 
-    pub(crate) fn from_names(names: &str) -> Self {
-        Self(
-            FRAMEWORKS
-                .iter()
-                .filter(|framework| names.split(',').any(|name| name == framework.name))
-                .collect(),
-        )
-    }
-
     pub(crate) fn detect(
         python: &[FileFacts],
         ecmascript: &[FileFacts],
         package: Option<&str>,
     ) -> Self {
+        let detections = python
+            .iter()
+            .chain(ecmascript)
+            .flat_map(|file| &file.frameworks)
+            .filter(|marker| marker.kind == DETECTION)
+            .map(|marker| marker.name.clone())
+            .collect();
+        Self::with_detections(package, &detections)
+    }
+
+    pub(crate) fn with_detections(
+        package: Option<&str>,
+        names: &std::collections::HashSet<String>,
+    ) -> Self {
         Self(
             FRAMEWORKS
                 .iter()
                 .filter(|framework| {
-                    framework
-                        .detect_package
-                        .is_some_and(|detect| package.is_some_and(detect))
-                        || python.iter().chain(ecmascript).any(|file| {
-                            file.frameworks.iter().any(|marker| {
-                                marker.kind == DETECTION && marker.name == framework.name
-                            })
-                        })
+                    names.contains(framework.name)
+                        || framework
+                            .detect_package
+                            .is_some_and(|detect| package.is_some_and(detect))
                 })
                 .collect(),
         )
@@ -186,56 +187,64 @@ impl Enabled {
             .iter()
             .enumerate()
             .map(|(file, facts)| {
-                let mut handlers: HashMap<&str, Vec<usize>> = HashMap::new();
-                if facts.frameworks.iter().any(|marker| marker.def != NONE) {
-                    for (index, node) in facts.defs.iter().enumerate().filter(|(_, def)| {
-                        visible(def) && matches!(def.kind, Kind::Function | Kind::Method)
-                    }) {
-                        handlers.entry(&node.name).or_default().push(index);
-                    }
-                }
-                let mut imported: HashMap<&str, Vec<DefRef>> = HashMap::new();
-                if !handlers.is_empty() || facts.frameworks.iter().any(|marker| marker.def != NONE)
-                {
-                    for resolution in imports.into_iter().flat_map(|imports| &imports[file]) {
-                        if let Some(target) = resolution.target {
-                            let binding = &facts.imports[resolution.site.import].bindings
-                                [resolution.site.binding];
-                            if let Some(local) = binding.local.as_deref() {
-                                let targets = imported.entry(local).or_default();
-                                if !targets.contains(&target) {
-                                    targets.push(target);
-                                }
-                            }
+                self.file_links(file, facts, imports.map_or(&[], |imports| &imports[file]))
+            })
+            .collect()
+    }
+
+    pub(crate) fn file_links<'a>(
+        &self,
+        file: usize,
+        facts: &'a FileFacts,
+        imports: &[ImportResolution],
+    ) -> Vec<Link<'a>> {
+        let mut handlers: HashMap<&str, Vec<usize>> = HashMap::new();
+        if facts.frameworks.iter().any(|marker| marker.def != NONE) {
+            for (index, node) in facts.defs.iter().enumerate().filter(|(_, def)| {
+                visible(def) && matches!(def.kind, Kind::Function | Kind::Method)
+            }) {
+                handlers.entry(&node.name).or_default().push(index);
+            }
+        }
+        let mut imported: HashMap<&str, Vec<DefRef>> = HashMap::new();
+        if !handlers.is_empty() || facts.frameworks.iter().any(|marker| marker.def != NONE) {
+            for resolution in imports {
+                if let Some(target) = resolution.target {
+                    let binding =
+                        &facts.imports[resolution.site.import].bindings[resolution.site.binding];
+                    if let Some(local) = binding.local.as_deref() {
+                        let targets = imported.entry(local).or_default();
+                        if !targets.contains(&target) {
+                            targets.push(target);
                         }
                     }
                 }
+            }
+        }
 
-                facts
-                    .frameworks
-                    .iter()
-                    .filter_map(|marker| {
-                        let from = usize::try_from(marker.def).ok()?;
-                        let framework = self.0.iter().copied().find(|f| f.name == marker.kind)?;
-                        let name = marker.arguments[0].as_str();
-                        let target = match imported.get(name).map(Vec::as_slice) {
-                            Some(&[target]) => Ok((target, framework.imported_method, true)),
-                            _ => self.local_handler(
-                                file,
-                                facts,
-                                marker,
-                                handlers.get(name).map_or(&[], Vec::as_slice),
-                            ),
-                        };
-                        Some(Link {
-                            from,
-                            name,
-                            line: marker.range.start_line + 1,
-                            framework: framework.name,
-                            target,
-                        })
-                    })
-                    .collect()
+        facts
+            .frameworks
+            .iter()
+            .filter_map(|marker| {
+                let from = usize::try_from(marker.def).ok()?;
+                let framework = self.0.iter().copied().find(|f| f.name == marker.kind)?;
+                let name = marker.arguments[0].as_str();
+                let target = match imported.get(name).map(Vec::as_slice) {
+                    Some(&[target]) => Ok((target, framework.imported_method, true)),
+                    _ => self.local_handler(
+                        file,
+                        facts,
+                        marker,
+                        handlers.get(name).map_or(&[], Vec::as_slice),
+                    ),
+                };
+                Some(Link {
+                    from,
+                    name,
+                    line: marker.range.start_line + 1,
+                    framework: framework.name,
+                    target,
+                })
             })
             .collect()
     }

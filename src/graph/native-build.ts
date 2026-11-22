@@ -152,7 +152,7 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
         sourceDirectory: spool.directory, ...(walkObservation ? { walkObservation } : {}),
       };
     };
-    const runCandidate = async (candidate: string, options: GraphMaintenanceOptions, refresh?: { base: string; changed: string[] }) => {
+    const runCandidate = async (candidate: string, options: GraphMaintenanceOptions, refresh?: { base: string; overlay?: string; changed: string[] }) => {
       const started = Date.now();
       if (!binary) throw new Error("The resident capture has no one-shot engine.");
       const mode = refresh ? "refresh" : "build";
@@ -211,7 +211,10 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
         if (!baseline) return undefined;
         const changed = [...files.filter(file => baseline.get(file.path) !== file.contentHash).map(file => file.path),
           ...[...baseline.keys()].filter(path => !currentPaths.has(path))];
-        return runCandidate(candidate, options, { base: against, changed });
+        return runCandidate(candidate, options, {
+          base: against, changed,
+          ...(against === base && previous && previous !== base ? { overlay: previous } : {}),
+        });
       },
       observation: {
         repo, manifest,

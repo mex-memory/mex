@@ -1,9 +1,11 @@
 //! Project language facts and resolution for both graph writers.
 
+use std::cell::OnceCell;
 use std::path::Path;
 
 use mex_graph_core::facts::{Def, FileFacts, Health, Kind, ParseStatus};
 use mex_graph_core::id::node_id as public_id;
+use mex_graph_core::resolve::Files;
 use mex_graph_core::timing::Timer;
 use mex_graph_python::resolve::{Resolution, call_source};
 use mex_graph_python::{EXCLUDED, LANGUAGE};
@@ -17,8 +19,11 @@ use crate::{hex, is_compiler_language};
 
 pub(super) mod build;
 mod ecmascript;
+mod edit_facts;
 mod framework;
+mod incremental;
 pub(super) mod refresh;
+mod relations;
 pub(super) mod serve;
 mod syntax;
 
@@ -51,7 +56,7 @@ pub(super) fn write(
 struct Projection<'a> {
     extracted: &'a ExtractedFiles<'a>,
     resolution: Resolution,
-    python_ids: Vec<Vec<Option<String>>>,
+    python_ids: Identities<'a>,
     python_frameworks: Option<Vec<Vec<Link<'a>>>>,
     ecmascript: Option<ecmascript::Stage<'a>>,
     syntax: [syntax::Stage<'a>; 2],
@@ -76,26 +81,11 @@ impl<'a> Projection<'a> {
         Self {
             extracted,
             resolution,
-            python_ids: extracted.facts.iter().map(node_ids).collect(),
+            python_ids: Identities::new(Files::Dense(&extracted.facts)),
             python_frameworks: frameworks.map(|registry| registry.links(&extracted.facts, None)),
             ecmascript,
             syntax: SyntaxLanguage::ALL
                 .map(|language| syntax::Stage::new(&extracted.syntax[language as usize], language)),
-        }
-    }
-
-    fn ids(&self, entry: &ExtractedFile<'_>) -> &[Option<String>] {
-        match *entry {
-            ExtractedFile::Python { index, .. } => &self.python_ids[index],
-            ExtractedFile::EcmaScript { index, .. } => self
-                .ecmascript
-                .as_ref()
-                .expect("ECMAScript stage")
-                .ids(index),
-            ExtractedFile::Syntax {
-                language, index, ..
-            } => self.syntax[language as usize].ids(index),
-            ExtractedFile::Skipped { .. } => &[],
         }
     }
 
@@ -121,7 +111,7 @@ impl<'a> Projection<'a> {
             ..
         } = resolution;
         let mut edges = edges.iter().peekable();
-        let mut unresolved = unresolved_calls.iter().copied().peekable();
+        let mut unresolved = unresolved_calls.iter().peekable();
         // Cross-file edge targets can appear later in the stream. Keep their
         // ids, and assemble only one file's projected rows at a time.
         for entry in &extracted.files {
@@ -148,61 +138,115 @@ impl<'a> Projection<'a> {
                     continue;
                 }
             };
-            let facts = &extracted.facts[index];
-            let mut file = StagedFile::new(facts, size, &ids[index], include_nodes);
-            while let Some(edge) = edges.next_if(|edge| edge.from.0 == index) {
-                let source = node_id(&ids[index], edge.from.1);
-                let target = node_id(&ids[edge.to.0], edge.to.1);
-                if let (Some(source), Some(target)) = (source, target) {
-                    file.edges.push(StagedEdge {
-                        source,
-                        target,
-                        kind: edge.kind,
-                        line: edge.line,
-                        column: Some(edge.col),
-                        provenance: "tree-sitter",
-                        confidence: 1.into(),
-                        resolution_method: "engine-python",
-                        metadata: None,
-                        evidence: None,
-                    });
-                }
-            }
-            while let Some((_, call_index, reason)) = unresolved.next_if(|call| call.0 == index) {
-                let call = &facts.calls[call_index];
-                let source = call_source(facts, call.caller);
-                if let Some(id) = node_id(&ids[index], source) {
-                    file.unresolved.push(StagedRef {
-                        from_node_id: id,
-                        reference_name: &call.name,
-                        called_name: Some(&call.name),
-                        reference_kind: "calls",
-                        file_path: &facts.path,
-                        language: LANGUAGE,
-                        line: call.name_range.start_line + 1,
-                        column: call.name_range.start_col,
-                        status: "unresolved",
-                        resolver: "engine-python",
-                        metadata: json!({ "reason": reason }),
-                        confidence: None,
-                        candidates: None,
-                        candidate_id: call_candidates
-                            .get(&(index, call_index))
-                            .and_then(|&(file, def)| node_id(&ids[file], def)),
-                        receiver: None,
-                        qualifier: None,
-                    });
-                }
-            }
-            if let Some(links) = python_frameworks {
-                framework::add_links(&mut file, &links[index], index, |(f, d)| {
-                    node_id(&ids[f], d)
-                });
-            }
+            let file = python_file(
+                Files::Dense(&extracted.facts),
+                ids,
+                index,
+                size,
+                include_nodes,
+                std::iter::from_fn(|| edges.next_if(|edge| edge.from.0 == index)),
+                std::iter::from_fn(|| unresolved.next_if(|call| call.0 == index)),
+                call_candidates,
+                python_frameworks
+                    .as_ref()
+                    .map(|links| links[index].as_slice()),
+            );
             file_ready(file)?;
         }
         debug_assert!(edges.next().is_none() && unresolved.next().is_none());
         Ok(())
+    }
+}
+
+type PythonCandidateMap = std::collections::HashMap<(usize, usize), (usize, usize)>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared Python resolution projection"
+)]
+fn python_file<'a, 'facts: 'a>(
+    facts: Files<'facts>,
+    ids: &'a Identities<'facts>,
+    index: usize,
+    size: u64,
+    include_nodes: bool,
+    edges: impl IntoIterator<Item = &'a mex_graph_python::resolve::Edge>,
+    unresolved: impl IntoIterator<Item = &'a (usize, usize, &'static str)>,
+    call_candidates: &PythonCandidateMap,
+    links: Option<&[Link<'a>]>,
+) -> StagedFile<'a> {
+    let facts = facts.get(index);
+    let mut file = StagedFile::new(facts, size, ids.file(index), include_nodes);
+    for edge in edges {
+        let source = node_id(ids.file(index), edge.from.1);
+        let target = ids.id(edge.to);
+        if let (Some(source), Some(target)) = (source, target) {
+            file.edges.push(StagedEdge {
+                owner: None,
+                source,
+                target,
+                kind: edge.kind,
+                line: edge.line,
+                column: Some(edge.col),
+                provenance: "tree-sitter",
+                confidence: 1.into(),
+                resolution_method: "engine-python",
+                metadata: None,
+                evidence: None,
+            });
+        }
+    }
+    for &(_, call_index, reason) in unresolved {
+        let call = &facts.calls[call_index];
+        let source = call_source(facts, call.caller);
+        if let Some(id) = node_id(ids.file(index), source) {
+            file.unresolved.push(StagedRef {
+                from_node_id: id,
+                reference_name: &call.name,
+                called_name: Some(&call.name),
+                reference_kind: "calls",
+                file_path: &facts.path,
+                language: LANGUAGE,
+                line: call.name_range.start_line + 1,
+                column: call.name_range.start_col,
+                status: "unresolved",
+                resolver: "engine-python",
+                metadata: json!({ "reason": reason }),
+                confidence: None,
+                candidates: None,
+                candidate_id: call_candidates
+                    .get(&(index, call_index))
+                    .and_then(|&id| ids.id(id)),
+                receiver: None,
+                qualifier: None,
+            });
+        }
+    }
+    if let Some(links) = links {
+        framework::add_links(&mut file, links, index, |id| ids.id(id));
+    }
+    file
+}
+
+struct Identities<'a> {
+    facts: Files<'a>,
+    ids: Vec<OnceCell<Vec<Option<String>>>>,
+}
+
+impl<'a> Identities<'a> {
+    fn new(facts: Files<'a>) -> Self {
+        Self {
+            facts,
+            ids: (0..facts.len()).map(|_| OnceCell::new()).collect(),
+        }
+    }
+
+    fn file(&self, file: usize) -> &[Option<String>] {
+        self.ids[file].get_or_init(|| node_ids(self.facts.get(file)))
+    }
+
+    fn id(&self, (file, def): (usize, usize)) -> Option<&str> {
+        node_id(self.file(file), def)
     }
 }
 
@@ -299,6 +343,7 @@ impl<'a> StagedFile<'a> {
             } else if let Some(parent) = parent {
                 let compiler = compiler_language && framework.is_none();
                 file.edges.push(StagedEdge {
+                    owner: None,
                     source: parent,
                     target: id,
                     kind: "contains",
@@ -486,6 +531,8 @@ impl Serialize for StagedHash<'_> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StagedEdge<'a> {
+    #[serde(skip)]
+    owner: Option<&'a str>,
     source: &'a str,
     target: &'a str,
     kind: &'static str,

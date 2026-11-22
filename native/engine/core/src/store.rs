@@ -10,6 +10,7 @@ use serde::Deserialize;
 pub use rusqlite::Error;
 pub const SCHEMA_VERSION: u32 = 5;
 const SCHEMA: &str = include_str!("schema_v5.sql");
+mod incremental;
 mod overlay;
 pub use overlay::{BaseFile, RefreshBase};
 pub const OVERLAY_KEY_START: i64 = 1 << 40;
@@ -178,6 +179,7 @@ pub struct Writer {
     conn: Connection,
     codes: HashMap<Code, HashMap<String, i64>>,
     edge_sequence: i64,
+    previous_overlay: bool,
     overlay: bool,
     next_code: i64,
     next_chunk: i64,
@@ -214,6 +216,7 @@ impl Writer {
         )?;
         conn.pragma_update(None, "foreign_keys", base.is_none())?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(incremental::SCHEMA)?;
         if let Some(base) = base {
             overlay::attach_base(&conn, base)?;
         }
@@ -223,6 +226,7 @@ impl Writer {
             conn,
             codes: HashMap::new(),
             edge_sequence: offset,
+            previous_overlay: false,
             overlay: base.is_some(),
             next_code: offset,
             next_chunk: offset,

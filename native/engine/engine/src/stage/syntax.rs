@@ -2,26 +2,35 @@
 
 use mex_graph_core::facts::FileFacts;
 use mex_graph_core::id::id_bytes;
+use mex_graph_core::resolve::Files;
 use mex_graph_syntax::resolve::{DefRef, FileResolution, ImportTarget, Site};
 use serde_json::json;
 
-use super::{StagedEdge, StagedFile, StagedImport, StagedRef, node_id, node_ids};
+use super::{Identities, StagedEdge, StagedFile, StagedImport, StagedRef};
 use crate::hex;
 use crate::syntax_language::SyntaxLanguage;
 
 pub(super) struct Stage<'a> {
-    facts: &'a [FileFacts],
-    ids: Vec<Vec<Option<String>>>,
+    facts: Files<'a>,
+    ids: Identities<'a>,
     resolution: Vec<FileResolution<'a>>,
     resolver: &'static str,
 }
 
 impl<'a> Stage<'a> {
     pub(super) fn new(facts: &'a [FileFacts], language: SyntaxLanguage) -> Self {
+        Self::resolved(Files::Dense(facts), language, language.resolve(facts))
+    }
+
+    pub(super) fn resolved(
+        facts: Files<'a>,
+        language: SyntaxLanguage,
+        resolution: Vec<FileResolution<'a>>,
+    ) -> Self {
         Self {
             facts,
-            ids: facts.iter().map(node_ids).collect(),
-            resolution: language.resolve(facts),
+            ids: Identities::new(facts),
+            resolution,
             resolver: match language {
                 SyntaxLanguage::Rust => "engine-rust",
                 SyntaxLanguage::CSharp => "engine-csharp",
@@ -29,22 +38,19 @@ impl<'a> Stage<'a> {
         }
     }
 
-    fn id(&self, (file, def): DefRef) -> Option<&str> {
-        node_id(&self.ids[file], def)
-    }
-
-    pub(super) fn ids(&self, index: usize) -> &[Option<String>] {
-        &self.ids[index]
+    fn id(&self, id: DefRef) -> Option<&str> {
+        self.ids.id(id)
     }
 
     pub(super) fn file(&self, index: usize, size: u64, include_nodes: bool) -> StagedFile<'_> {
-        let facts = &self.facts[index];
-        let mut file = StagedFile::new(facts, size, &self.ids[index], include_nodes);
+        let facts = self.facts.get(index);
+        let mut file = StagedFile::new(facts, size, self.ids.file(index), include_nodes);
         let resolution = &self.resolution[index];
         file.edges
             .extend(resolution.edges.iter().filter_map(|edge| {
                 let range = edge.site.range();
                 Some(StagedEdge {
+                    owner: None,
                     source: self.id(edge.from)?,
                     target: self.id(edge.to)?,
                     kind: edge.site.kind(),
@@ -106,7 +112,7 @@ impl<'a> Stage<'a> {
     }
 
     fn import<'b>(&'b self, file: usize, target: &'b ImportTarget<'a>) -> Option<StagedImport<'b>> {
-        let facts = &self.facts[file];
+        let facts = self.facts.get(file);
         let import = target.import;
         let binding = import.bindings.first()?;
         let local_name = binding.local.as_deref()?;
@@ -123,7 +129,7 @@ impl<'a> Stage<'a> {
             local_name,
             imported_name: &binding.imported,
             module_specifier: &import.specifier,
-            resolved_file_path: target.module.map(|file| self.facts[file].path.as_str()),
+            resolved_file_path: target.module.map(|file| self.facts.path(file)),
             target_id: target.target.and_then(|id| self.id(id)),
             is_type_only: false,
             metadata: json!({

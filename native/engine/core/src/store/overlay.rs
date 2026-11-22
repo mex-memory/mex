@@ -7,6 +7,7 @@ use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, params};
 
 use super::{OVERLAY_KEY_START, SCHEMA_VERSION, Writer, decode_hex};
 
+#[derive(Clone)]
 pub struct BaseFile {
     pub key: i64,
     pub hash: [u8; 32],
@@ -182,6 +183,7 @@ impl Writer {
     pub fn attach_previous_overlay(&mut self, previous: &Path) -> rusqlite::Result<()> {
         self.conn
             .execute("ATTACH DATABASE ?1 AS previous", [immutable_uri(previous)?])?;
+        self.previous_overlay = true;
         for code in [
             super::Code::Language,
             super::Code::NodeKind,
@@ -202,6 +204,18 @@ impl Writer {
                 |row| row.get(0),
             )?);
         }
+        let maximum = |table| {
+            self.conn.query_row(
+                &format!("SELECT coalesce(max(id), 0) FROM previous.{table}"),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+        };
+        self.next_chunk = self.next_chunk.max(maximum("source_chunks")?);
+        self.next_unresolved = self
+            .next_unresolved
+            .max(maximum("unresolved_calls")?)
+            .max(maximum("unresolved_other")?);
         Ok(())
     }
 

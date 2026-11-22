@@ -1,18 +1,16 @@
 //! Persist the staged facts directly, without serializing the graph to Node.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use mex_graph_core::facts::{FileFacts, Kind, ParseStatus};
+use mex_graph_core::facts::{FileFacts, ParseStatus};
 use mex_graph_core::fingerprint::K;
-use mex_graph_core::store::{
-    EdgeEvidence, EdgeRow, FileRow, NodeRow, RefreshBase, UnresolvedRow, Writer,
-};
+use mex_graph_core::store::{EdgeEvidence, FileRow, NodeRow, RefreshBase, Writer};
 use mex_graph_core::timing::{self, Timer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{Projection, StagedEdge, StagedFile, StagedNode, declared_nodes};
+use super::{StagedEdge, StagedNode, declared_nodes, incremental::Corpus, node_ids, relations};
 use crate::frameworks::Enabled;
 use crate::job::{
     ConfigSource, ExtractedFiles, JobCounts, JobError, Request, RequestFile, emit, read_source,
@@ -26,10 +24,7 @@ pub(crate) fn write(
     configs: &[ConfigSource<'_>],
     frameworks: &Enabled,
 ) -> Result<JobCounts, JobError> {
-    // Resolve before allocating the SQLite writer and its caches. Keep the
-    // public ids for both the declaration pass and the relationship pass.
     progress("parse", 0, request.files.len())?;
-    let projection = Projection::new(&extracted, root, configs, Some(frameworks));
     let _timer = Timer::start("v5.write");
     let write = JobError::write;
     let mut writer = Writer::create(output).map_err(write)?;
@@ -37,7 +32,18 @@ pub(crate) fn write(
     let mut file_keys = HashMap::new();
     let mut node_keys = HashMap::new();
     let mut by_path = HashMap::new();
+    let mut sizes = HashMap::new();
     // Register every declaration before writing cross-file references.
+    let ids_by_file: Vec<_> = extracted
+        .files
+        .iter()
+        .map(|entry| {
+            extracted
+                .file(entry)
+                .map(|(facts, _)| node_ids(facts))
+                .unwrap_or_default()
+        })
+        .collect();
     let declarations = Timer::start("v5.declarations");
     for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
         if index != 0 && index.is_multiple_of(256) {
@@ -56,7 +62,7 @@ pub(crate) fn write(
                 continue;
             }
         };
-        let ids = projection.ids(entry);
+        let ids = &ids_by_file[index];
         register_nodes(ids, &mut node_keys, None)?;
         let file = write_file(
             &mut writer,
@@ -71,6 +77,7 @@ pub(crate) fn write(
         )?;
         file_keys.insert(facts.path.as_str(), file);
         by_path.insert(facts.path.as_str(), facts);
+        sizes.insert(facts.path.as_str(), size);
         counts.files += 1;
         counts.coverage_gaps += usize::from(facts.health.status == ParseStatus::Failed);
     }
@@ -78,32 +85,40 @@ pub(crate) fn write(
     drop(declarations);
 
     progress("resolve", 0, counts.files)?;
-    let mut written = 0_usize;
-    let mut digests = ResolutionDigests::default();
-    projection.write(
-        false,
-        |file| {
-            let _timer = Timer::start("v5.relationships");
-            let digest = timing::measure("v5.resolutionDigest", || {
-                digests.file(by_path[file.path], &file)
-            })?;
-            writer
-                .set_file_resolution(file_keys[file.path], &digest)
-                .map_err(write)?;
-            counts.edges +=
-                write_relationships(&mut writer, &file, &file_keys, &node_keys).map_err(write)?;
-            written += 1;
-            if written.is_multiple_of(256) || written == counts.files {
-                progress("resolve", written, counts.files)?;
-            }
-            Ok(())
-        },
-        |_, _| Ok(()),
-    )?;
-    // Final index creation and FTS compaction use their own working memory.
-    drop((file_keys, by_path, node_keys, digests));
-    drop(projection);
-    drop(extracted);
+    let load = |path: &str| by_path[path];
+    let selected: HashSet<_> = by_path.keys().copied().collect();
+    Corpus {
+        root,
+        request,
+        configs,
+        sizes: &sizes,
+        load: &load,
+    }
+    .resolve(&writer, frameworks, &selected, &HashSet::new(), false)?;
+    for (index, input) in request
+        .files
+        .iter()
+        .filter(|file| by_path.contains_key(file.path.as_str()))
+        .enumerate()
+    {
+        let _timer = Timer::start("v5.relationships");
+        let path = &input.path;
+        let blob = writer
+            .projection(path)
+            .map_err(write)?
+            .ok_or_else(|| JobError::request("Missing build projection"))?;
+        let outgoing = relations::Outgoing::load(&writer, path, relations::decode(&blob)?)?;
+        writer
+            .set_file_resolution(file_keys[path.as_str()], &outgoing.digest()?)
+            .map_err(write)?;
+        counts.edges +=
+            outgoing.write(&mut writer, |path| file_keys[path], |id| Ok(node_keys[id]))?;
+        if (index + 1).is_multiple_of(256) || index + 1 == counts.files {
+            progress("resolve", index + 1, counts.files)?;
+        }
+    }
+    drop((file_keys, by_path, node_keys));
+    drop((ids_by_file, extracted));
 
     writer
         .set_meta("refresh_format", &crate::job::refresh_format())
@@ -193,45 +208,11 @@ pub(super) fn resolution_context(
     for language in &request.languages {
         append(language);
     }
-    for file in &request.files {
-        append(&file.path);
-    }
     for (path, text) in configs {
         append(path);
         append(text);
     }
     crate::hex(&hash.finalize())
-}
-
-#[derive(Default)]
-pub(super) struct ResolutionDigests(Vec<u8>);
-
-impl ResolutionDigests {
-    pub(super) fn file(
-        &mut self,
-        facts: &FileFacts,
-        file: &StagedFile<'_>,
-    ) -> Result<[u8; 32], JobError> {
-        // Activation can add route declarations to a file whose source has
-        // not changed. The remaining declarations and health are file-local.
-        let routes: Vec<_> = facts
-            .defs
-            .iter()
-            .filter(|def| def.kind == Kind::Route)
-            .collect();
-        let unresolved_keys: Vec<_> = file
-            .unresolved
-            .iter()
-            .map(|row| (row.called_name, row.candidate_id))
-            .collect();
-        self.0.clear();
-        serde_json::to_writer(
-            &mut self.0,
-            &(routes, &file.edges, &file.unresolved, unresolved_keys),
-        )
-        .map_err(JobError::write)?;
-        Ok(Sha256::digest(&self.0).into())
-    }
 }
 
 pub(super) fn register_nodes<'a>(
@@ -390,75 +371,30 @@ fn write_node(
     Ok(())
 }
 
-pub(super) fn write_relationships(
-    writer: &mut Writer,
-    file: &StagedFile,
-    files: &HashMap<&str, i64>,
-    nodes: &HashMap<&str, i64>,
-) -> Result<usize, mex_graph_core::store::Error> {
-    let file_key = files[file.path];
-    let mut edges = 0;
-    for edge in &file.edges {
-        let (evidence, site_file) = edge_evidence(edge, files, file_key);
-        edges += usize::from(writer.add_edge(&EdgeRow {
-            source: nodes[edge.source],
-            target: nodes[edge.target],
-            kind: edge.kind,
-            line: Some(edge.line),
-            col: edge.column,
-            site_file,
-            provenance: edge.provenance,
-            confidence: edge.confidence.as_f64().expect("finite edge confidence"),
-            method: edge.resolution_method,
-            target_name: edge.metadata.as_ref().map(|metadata| metadata.target_name),
-            evidence,
-        })?);
-    }
-    for reference in &file.unresolved {
-        writer.add_unresolved(&UnresolvedRow {
-            source: nodes[reference.from_node_id],
-            name: reference.called_name.unwrap_or(reference.reference_name),
-            written_name: reference.called_name.map(|_| reference.reference_name),
-            kind: reference.reference_kind,
-            reason: reference.metadata["reason"].as_str().unwrap_or("unknown"),
-            line: reference.line,
-            col: reference.column,
-            candidate: reference.candidate_id.map(|id| nodes[id]),
-            receiver: reference.receiver,
-        })?;
-    }
-    Ok(edges)
-}
-
-fn edge_evidence<'a>(
+pub(super) fn edge_evidence<'a>(
     edge: &'a StagedEdge,
-    files: &HashMap<&str, i64>,
-    owning_file: i64,
-) -> (Option<EdgeEvidence<'a>>, Option<i64>) {
+) -> (Option<&'a str>, Option<EdgeEvidence<'a>>) {
     let Some([evidence]) = &edge.evidence else {
         return (None, None);
     };
     if let Some(role) = evidence.get("declarationRole") {
-        (Some(EdgeEvidence::Declaration(role.as_str())), None)
+        (None, Some(EdgeEvidence::Declaration(role.as_str())))
     } else if evidence.get("resolvedFilePath").is_some() {
-        (Some(EdgeEvidence::Import), None)
+        (None, Some(EdgeEvidence::Import))
     } else if evidence.get("heritage").is_some() {
-        (Some(EdgeEvidence::Heritage), None)
+        (None, Some(EdgeEvidence::Heritage))
     } else if let Some(expression) = evidence.get("expression").and_then(Value::as_str) {
-        (Some(EdgeEvidence::Expression(expression)), None)
+        (None, Some(EdgeEvidence::Expression(expression)))
     } else if let Some(index) = evidence.get("argumentIndex").and_then(Value::as_u64) {
-        let file = files[evidence["wiringSite"]["filePath"]
+        let path = evidence["wiringSite"]["filePath"]
             .as_str()
-            .expect("callback site path")];
-        (
-            Some(EdgeEvidence::Callback(index as u32)),
-            (file != owning_file).then_some(file),
-        )
+            .expect("callback site path");
+        (Some(path), Some(EdgeEvidence::Callback(index as u32)))
     } else if edge.provenance == "framework" {
         let binding = evidence.get("importBinding").and_then(Value::as_str);
-        (Some(EdgeEvidence::Framework(binding)), None)
+        (None, Some(EdgeEvidence::Framework(binding)))
     } else if let Some(specifier) = evidence.get("moduleSpecifier").and_then(Value::as_str) {
-        (Some(EdgeEvidence::SyntaxImport(specifier)), None)
+        (None, Some(EdgeEvidence::SyntaxImport(specifier)))
     } else {
         (None, None)
     }

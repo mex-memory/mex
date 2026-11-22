@@ -69,6 +69,7 @@ export interface EngineRequest {
   /** The candidate database; `stage` writes none. */
   output?: string;
   base?: string | null;
+  overlay?: string;
   changed?: string[];
   factsCache?: string;
   limits: { memoryMb: number; deadlineMs: number; threads?: number };

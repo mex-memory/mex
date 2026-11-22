@@ -366,8 +366,7 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
             .find(|(path, _)| *path == "package.json")
             .map(|(_, text)| text.as_ref());
         let enabled = Enabled::detect(&extracted.facts, &extracted.ecmascript, package);
-        enabled.activate(&mut extracted.facts);
-        enabled.activate(&mut extracted.ecmascript);
+        extracted.activate(&enabled);
         enabled
     } else {
         Enabled::default()
@@ -458,29 +457,7 @@ impl ExtractedFiles<'_> {
     }
 }
 
-impl<'a> ExtractedFiles<'a> {
-    pub(super) fn push(&mut self, facts: FileFacts, size: u64) {
-        let entry = if facts.language == LANGUAGE {
-            let index = self.facts.len();
-            self.facts.push(facts);
-            ExtractedFile::Python { index, size }
-        } else if let Some(language) = SyntaxLanguage::for_path(&facts.path) {
-            let files = &mut self.syntax[language as usize];
-            let index = files.len();
-            files.push(facts);
-            ExtractedFile::Syntax {
-                language,
-                index,
-                size,
-            }
-        } else {
-            let index = self.ecmascript.len();
-            self.ecmascript.push(facts);
-            ExtractedFile::EcmaScript { index, size }
-        };
-        self.files.push(entry);
-    }
-
+impl ExtractedFiles<'_> {
     pub(super) fn into_facts(self) -> impl Iterator<Item = FileFacts> {
         self.facts
             .into_iter()
@@ -501,7 +478,7 @@ const FRAMEWORK_CAPTURE_VERSION: u32 = 1;
 /// Bump the prefix when persisted projection or digest semantics change.
 pub(super) fn refresh_format() -> String {
     format!(
-        "1:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
+        "2:{FACTS_VERSION}:{}:{}:{}:{}:{FRAMEWORK_CAPTURE_VERSION}",
         mex_graph_python::ADAPTER_VERSION,
         mex_graph_ecmascript::ADAPTER_VERSION,
         mex_graph_rust::ADAPTER_VERSION,
@@ -562,16 +539,6 @@ pub(super) fn request_facts_key(
     languages: &[String],
 ) -> Option<(&'static str, String)> {
     Some(Adapter::for_file(path, languages)?.version(path, true))
-}
-
-pub(super) fn captured_facts_key(language: &str, path: &str) -> (&'static str, String) {
-    let adapter = match language {
-        LANGUAGE => Adapter::Python,
-        mex_graph_rust::LANGUAGE => Adapter::Syntax(SyntaxLanguage::Rust),
-        mex_graph_csharp::LANGUAGE => Adapter::Syntax(SyntaxLanguage::CSharp),
-        _ => Adapter::EcmaScript,
-    };
-    adapter.version(path, true)
 }
 
 /// Resolve inputs in request order and retain one extraction result per input.

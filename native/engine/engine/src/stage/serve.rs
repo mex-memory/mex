@@ -8,12 +8,15 @@ use mex_graph_core::facts::FileFacts;
 use mex_graph_core::store::{BaseFile, BuildMetadata, RefreshBase, Writer};
 use mex_graph_core::timing::{self, Timer};
 
-use super::{build, node_ids, refresh};
+use super::{
+    build,
+    incremental::{self, Corpus, FactLoader, Plan, Publication, PublishedOverlay},
+    refresh,
+};
 use crate::facts_cache::{FactsCache, ResidentDecoder, ResidentFacts};
-use crate::frameworks::Enabled;
 use crate::job::{
-    ExtractedFiles, JobCounts, JobError, Request, RequestConfig, RequestFile, decode_hash,
-    extract_files, read_configs, repository_path, request_facts_key,
+    JobCounts, JobError, Request, RequestConfig, RequestFile, decode_hash, extract_files,
+    read_configs, repository_path, request_facts_key,
 };
 
 pub(crate) struct Edit {
@@ -32,43 +35,12 @@ pub(crate) struct Session {
     base_files: HashMap<String, BaseFile>,
     overlay: Option<PublishedOverlay>,
     facts: HashMap<String, ResidentFacts>,
-    enabled: Option<Enabled>,
-}
-
-struct PublishedOverlay {
-    path: PathBuf,
-    db: RefreshBase,
-    files: HashMap<String, BaseFile>,
-    shadows: Vec<String>,
-}
-
-impl PublishedOverlay {
-    fn open(path: PathBuf, base: &Path) -> Result<Self, JobError> {
-        if !path.is_absolute()
-            || path.parent() != base.parent()
-            || !std::fs::symlink_metadata(&path).is_ok_and(|entry| entry.is_file())
-        {
-            return Err(JobError::request(
-                "The published overlay must be a regular sibling of the base",
-            ));
-        }
-        let db = RefreshBase::open_overlay(&path, base).map_err(JobError::write)?;
-        let files = db.files().map_err(JobError::write)?;
-        let shadows = db.shadows().map_err(JobError::write)?;
-        Ok(Self {
-            path,
-            db,
-            files,
-            shadows,
-        })
-    }
 }
 
 pub(crate) struct Pending {
     request: Request,
     facts: HashMap<String, ResidentFacts>,
     deleted: Vec<String>,
-    enabled: Enabled,
 }
 
 impl Pending {
@@ -141,19 +113,6 @@ impl Session {
                 facts.insert(path.clone(), packed);
             }
         }
-        // A cache miss on an old version can be legitimate when the first edit
-        // is already on disk. Full resolution fills misses from the new corpus.
-        let current = overlay.as_ref().map_or(&base, |overlay| &overlay.db);
-        let configs = read_configs(&request.root, &request.configs);
-        let enabled = (current.resolution_context().ok().as_deref()
-            == Some(&build::resolution_context(
-                &request.root,
-                &request,
-                &configs,
-            )))
-        .then(|| current.frameworks().ok())
-        .flatten()
-        .map(|names| Enabled::from_names(&names));
         sort_inputs(&mut request.files);
         Ok(Self {
             request,
@@ -161,7 +120,6 @@ impl Session {
             base_files,
             overlay,
             facts,
-            enabled,
         })
     }
 
@@ -205,7 +163,6 @@ impl Session {
             ));
         }
         let (files, edited, observed) = self.updated_files(edit.files, &edit.deleted);
-        let same_configs = edit.configs.is_none();
         let request = Request {
             root: self.request.root.clone(),
             mode: self.request.mode.clone(),
@@ -237,109 +194,104 @@ impl Session {
         for entry in &extracted.files {
             extracted.file(entry).map_err(refresh::bad_source)?;
         }
-        let mut changed: HashMap<_, _> = extracted
+        let changed: HashMap<_, _> = extracted
             .into_facts()
             .map(|facts| (facts.path.clone(), facts))
             .collect();
-        let mut parsed = changed.len();
-        let mut packed = HashMap::new();
-        for (path, facts) in &changed {
-            packed.insert(path.clone(), pack(facts)?);
-        }
+        let packed = changed
+            .iter()
+            .map(|(path, facts)| Ok((path.clone(), pack(facts)?)))
+            .collect::<Result<HashMap<_, _>, JobError>>()?;
         let configs = read_configs(&request.root, &request.configs);
         let mut writer =
             Writer::overlay(request.candidate_path(), self.base_path()).map_err(JobError::write)?;
-        let mut decoder = ResidentDecoder::default();
-        let quick = self.enabled.as_ref().filter(|_| {
-            same_configs
-                && edit.deleted.is_empty()
-                && changed.iter().all(|(path, new)| {
-                    self.facts
-                        .get(path)
-                        .and_then(|previous| decoder.unpack(previous))
-                        .is_some_and(|mut old| refresh::same_resolution_inputs(&mut old, new))
-                })
-                && self.overlay.as_ref().is_none_or(|overlay| {
-                    overlay
-                        .files
-                        .keys()
-                        .all(|path| self.facts.contains_key(path))
-                })
-        });
-        let (enabled, context, copied_observations) = if let Some(enabled) = quick {
-            timing::measure("resident.reuseResolution", || {
-                self.reuse_resolution(&mut writer, &request, enabled, changed, &mut decoder)
-            })?;
-            let copied = if let Some(root) = &request.observation_root {
-                timing::measure("v5.copyObservations", || {
-                    writer.copy_source_observations(self.overlay.is_some(), root)
-                })
+        if let Some(overlay) = &self.overlay {
+            writer
+                .attach_previous_overlay(&overlay.path)
+                .map_err(JobError::write)?;
+        }
+        let prior = Publication {
+            base: &self.base,
+            base_files: &self.base_files,
+            overlay: self.overlay.as_ref(),
+        };
+        let sizes: HashMap<_, _> = request
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.size))
+            .collect();
+        let removed = prior
+            .paths()
+            .filter(|path| !sizes.contains_key(path))
+            .collect::<HashSet<_>>();
+        let enabled = incremental::framework_set(&writer, &configs, &changed, &removed)?;
+        let context = build::resolution_context(&request.root, &request, &configs);
+        let complete = context
+            != prior
+                .current()
+                .resolution_context()
                 .map_err(JobError::write)?
-            } else {
-                false
+            || enabled.names() != prior.current().frameworks().map_err(JobError::write)?;
+        let decoder = std::cell::RefCell::new(ResidentDecoder::default());
+        let missing = std::cell::RefCell::new(HashMap::new());
+        let load = |file: &RequestFile| {
+            if let Some(facts) = changed.get(&file.path) {
+                return Ok(facts.clone());
+            }
+            if let Some(facts) = self.facts.get(&file.path).and_then(|entry| {
+                timing::measure("resident.unpack", || decoder.borrow_mut().unpack(entry))
+            }) {
+                return Ok(facts);
+            }
+            let extracted = extract_files(&request.root, &request, &[file], None);
+            for entry in &extracted.files {
+                extracted.file(entry).map_err(refresh::bad_source)?;
+            }
+            let facts = extracted
+                .into_facts()
+                .next()
+                .ok_or_else(|| JobError::request("Missing resolver facts"))?;
+            missing
+                .borrow_mut()
+                .insert(file.path.clone(), pack(&facts)?);
+            Ok(facts)
+        };
+        let loader = FactLoader::new(&request, &enabled, &load);
+        {
+            let load = |path: &str| loader.get(path);
+            let corpus = Corpus {
+                root: &request.root,
+                request: &request,
+                configs: &configs,
+                sizes: &sizes,
+                load: &load,
             };
-            let prior = self
-                .overlay
-                .as_ref()
-                .map_or(&self.base, |overlay| &overlay.db);
-            (
-                enabled.clone(),
-                prior.resolution_context().map_err(JobError::write)?,
-                copied,
-            )
-        } else {
-            let mut all = ExtractedFiles::default();
-            let missing = timing::measure("resident.unpack", || {
-                let mut missing = Vec::new();
-                for file in &request.files {
-                    if !changed.contains_key(&file.path) {
-                        if let Some(facts) = self
-                            .facts
-                            .get(&file.path)
-                            .and_then(|entry| decoder.unpack(entry))
-                        {
-                            changed.insert(file.path.clone(), facts);
-                        } else {
-                            missing.push(file);
-                        }
-                    }
-                }
-                missing
-            });
-            if !missing.is_empty() {
-                let extracted = extract_files(&request.root, &request, &missing, None);
-                for entry in &extracted.files {
-                    extracted.file(entry).map_err(refresh::bad_source)?;
-                }
-                parsed += missing.len();
-                for facts in extracted.into_facts() {
-                    packed.insert(facts.path.clone(), pack(&facts)?);
-                    changed.insert(facts.path.clone(), facts);
-                }
-            }
-            for file in &request.files {
-                let facts = changed
-                    .remove(&file.path)
-                    .expect("each input was decoded or extracted");
-                all.push(facts, file.size);
-            }
-            let enabled = refresh::detect_frameworks(&all, &configs);
-            all.activate(&enabled);
-            refresh::resolve_and_shadow(
+            Plan::new(&corpus, &prior, &writer, complete)?.write(
+                &corpus,
                 &mut writer,
-                &request.root,
-                &request,
-                &configs,
-                &all,
                 &enabled,
-                &self.base,
-                &self.base_files,
+                &prior,
             )?;
-            (
-                enabled,
-                build::resolution_context(&request.root, &request, &configs),
-                false,
-            )
+        }
+        loader.finish()?;
+        let mut packed = packed;
+        packed.extend(missing.into_inner());
+        let parsed = packed.len();
+        let copied_observations = if let Some(root) = &request.observation_root {
+            let copied = timing::measure("v5.copyObservations", || {
+                writer.copy_source_observations(self.overlay.is_some(), root)
+            })
+            .map_err(JobError::write)?;
+            if copied {
+                for path in &removed {
+                    writer
+                        .remove_source_observation(path)
+                        .map_err(JobError::write)?;
+                }
+            }
+            copied
+        } else {
+            false
         };
         writer
             .set_meta("frameworks", &enabled.names())
@@ -362,7 +314,6 @@ impl Session {
                 request,
                 facts: packed,
                 deleted: edit.deleted,
-                enabled,
             },
         ))
     }
@@ -401,79 +352,6 @@ impl Session {
         (files, edited, observed)
     }
 
-    fn reuse_resolution(
-        &self,
-        writer: &mut Writer,
-        request: &Request,
-        enabled: &Enabled,
-        mut changed: HashMap<String, FileFacts>,
-        decoder: &mut ResidentDecoder,
-    ) -> Result<(), JobError> {
-        let mut shadows: HashSet<String> = changed.keys().cloned().collect();
-        if let Some(previous) = &self.overlay {
-            writer
-                .attach_previous_overlay(&previous.path)
-                .map_err(JobError::write)?;
-            shadows.extend(previous.shadows.iter().cloned());
-            for path in previous
-                .shadows
-                .iter()
-                .filter(|path| !previous.files.contains_key(*path))
-            {
-                writer.shadow(path).map_err(JobError::write)?;
-            }
-        }
-        for file in request
-            .files
-            .iter()
-            .filter(|file| shadows.contains(file.path.as_str()))
-        {
-            let path = &file.path;
-            let previous = self
-                .overlay
-                .as_ref()
-                .and_then(|overlay| Some((&overlay.db, overlay.files.get(path)?)));
-            let (source, old) = previous
-                .or_else(|| Some((&self.base, self.base_files.get(path)?)))
-                .ok_or_else(|| {
-                    JobError::request("There is no prior resolution for an edited file")
-                })?;
-            let mut facts = changed
-                .remove(path)
-                .or_else(|| decoder.unpack(self.facts.get(path)?))
-                .ok_or_else(|| JobError::request("Missing resident facts for an overlay file"))?;
-            enabled.activate(std::slice::from_mut(&mut facts));
-            let ids = node_ids(&facts);
-            let mut nodes = HashMap::with_capacity(ids.len());
-            for id in ids.iter().filter_map(Option::as_deref) {
-                let key = source
-                    .node_key(id)
-                    .map_err(JobError::write)?
-                    .ok_or_else(|| {
-                        JobError::request("The published resolution is missing a node")
-                    })?;
-                nodes.insert(id, key);
-            }
-            refresh::write_shadow(
-                writer,
-                old.key,
-                &old.resolution,
-                refresh::FileInput {
-                    input: file,
-                    facts: &facts,
-                    size: file.size,
-                },
-                &request.root,
-                request,
-                &nodes,
-            )?;
-            writer
-                .copy_outgoing_from(old.key, previous.is_some())
-                .map_err(JobError::write)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn accept(
         &mut self,
         mut pending: Pending,
@@ -490,7 +368,6 @@ impl Session {
         pending.request.source_directory = None;
         pending.request.build_metadata = None;
         self.request = pending.request;
-        self.enabled = Some(pending.enabled);
         self.overlay = Some(overlay);
         Ok(())
     }
