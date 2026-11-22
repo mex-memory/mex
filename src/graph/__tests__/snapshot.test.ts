@@ -184,7 +184,7 @@ describe("graph snapshot provenance", () => {
     const root = temporaryRoot("mex-graph-import-aba-");
     // A native job that missed the target abstains. This case verifies that
     // the Node fallback resolves only against its captured source set.
-    vi.stubEnv("MEX_GRAPH_ENGINE", join(root, "missing-mex-graph"));
+    vi.stubEnv("MEX_GRAPH_ENGINE", join(root, "missing-mex-graph.wasm"));
     const sourceDir = join(root, "src");
     const targetPath = join(sourceDir, "target.ts");
     const savedTargetPath = join(sourceDir, "target.saved");

@@ -62,7 +62,7 @@ describe("tree-sitter fallback (#140 follow-up)", () => {
     writeFileSync(join(root, "src", "dupes.ts"),
       "export function duplicated(): number { return 1; }\n"
       + "export function duplicated(): number { return 2; }\n");
-    vi.stubEnv("MEX_GRAPH_ENGINE", join(root, "missing-mex-graph"));
+    vi.stubEnv("MEX_GRAPH_ENGINE", join(root, "missing-mex-graph.wasm"));
     const store = mkdtempSync(join(tmpdir(), "mex-140-isolation-store-"));
     roots.push(store);
     const dbPath = join(store, "graph.db");
