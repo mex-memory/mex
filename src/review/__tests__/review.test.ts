@@ -204,7 +204,9 @@ it("removes a learned proposal's source proof when its contradiction card is kep
   const words = "The adapter boundary uses this internal import.";
   const learned: Proposal = { producer: "learn-deeper", key: "pending", kind: "rule", text: words, evidenceClass: "docs",
     source: { type: "docs", ref: "README.md", quote: words, text: words }, model: { id: "fixture", version: "fixture-1" },
-    anchors: { scope: ["src/**"], when: [{ type: "required", match: "literal", pattern: "from Internal" }] } };
+    anchors: { scope: ["src/**"], when: [{ type: "required", match: "literal", pattern: "from Internal" }] },
+    // A learned entry always carries a check: one that never holds can't be withheld when it goes stale.
+    checks: [{ kind: "source", role: "supporting", target: { file: "package.json" } }] };
   const result = (await propose([learned], { ...options(), now: new Date(now) }))[0]!;
   if (result.status !== "review") throw new Error("Expected a conflict");
   const proof = `learning.deep.note.${producerEntryId("learn-deeper", "pending")}`, other = "learning.deep.note.mx_deepkept";
