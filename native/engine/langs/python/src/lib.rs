@@ -19,39 +19,20 @@
 use std::collections::HashMap;
 
 use mex_graph_core::facts::{
-    Binding, Call, CallForm, Def, Diagnostic, FACTS_VERSION, FileFacts, Health, Heritage, Import,
-    ImportBinding, ImportForm, Kind, NONE, ParseStatus, Range, Receiver, Scope, ScopeKind,
-    SketchFacts, TypeBasis, bounds,
+    Binding, Call, CallForm, Def, FACTS_VERSION, FileFacts, Heritage, Import, ImportBinding,
+    ImportForm, Kind, NONE, ParseStatus, Range, Receiver, Scope, ScopeKind, TypeBasis, bounds,
 };
-use mex_graph_core::fingerprint::{SketchBuilder, body_hash};
+use mex_graph_core::fingerprint::SketchBuilder;
 use mex_graph_core::id::signature_identity;
-use mex_graph_core::text::{js_slice, js_trim, utf16_column};
-use tree_sitter::{Node, Parser, Tree};
+use mex_graph_core::text::{js_slice, js_trim};
+use mex_graph_syntax::{Text, children, empty_def, hash_and_sketch, named_children, tree_health};
+use tree_sitter::{Node, Parser};
 
 pub mod resolve;
 
 /// Bumped whenever this adapter's output changes; part of the facts cache key.
 pub const ADAPTER_VERSION: u32 = 1;
 pub const LANGUAGE: &str = "python";
-
-/// Kinds that carry a body hash and a fingerprint (`BODY_KINDS` today).
-fn has_body(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::Function
-            | Kind::Method
-            | Kind::Class
-            | Kind::Interface
-            | Kind::Enum
-            | Kind::TypeAlias
-            | Kind::Struct
-            | Kind::Trait
-            | Kind::Protocol
-            | Kind::Constant
-            | Kind::Variable
-            | Kind::Component
-    )
-}
 
 /// A reusable extractor: one per thread, since parsers aren't shared.
 pub struct Python {
@@ -119,28 +100,7 @@ impl Python {
 
         // Body hashes and sketches come from the original lines and this
         // tree's leaves, as `stageTreeFile` and `normalizedAstTokens` do.
-        let raw_lines: Vec<&str> = raw.split('\n').collect();
-        let leaves = leaf_types(&tree);
-        for def in &mut defs {
-            if !has_body(def.kind) {
-                continue;
-            }
-            let (start, end) = (
-                def.range.start_line as usize + 1,
-                def.range.end_line as usize + 1,
-            );
-            def.body_hash = Some(body_hash(&raw_lines, start, end));
-            let tokens: Vec<&str> = leaves
-                .iter()
-                .filter(|(s, e, _)| *s + 1 >= start && *e < end)
-                .map(|(_, _, t)| *t)
-                .collect();
-            let sketch = self.sketches.sketch(&tokens);
-            def.sketch = Some(SketchFacts {
-                minhash: sketch.minhash.to_vec(),
-                token_count: sketch.token_count as u32,
-            });
-        }
+        hash_and_sketch(&mut defs, raw, &tree, &mut self.sketches);
 
         // Today drops every declaration whose lines meet one of the first 100
         // parse issues; its children stay, without their parent. The engine
@@ -181,169 +141,7 @@ impl Python {
     }
 }
 
-/// The flag on a definition that today's parse-health rule drops.
-pub const EXCLUDED: &str = "excluded";
-
-/// Lines of the normalized source, with UTF-16 conversions.
-struct Text<'a> {
-    source: &'a str,
-    lines: Vec<&'a str>,
-    /// UTF-16 offset at which each line starts.
-    line_starts: Vec<u32>,
-}
-
-impl<'a> Text<'a> {
-    fn new(source: &'a str) -> Text<'a> {
-        let lines: Vec<&str> = source.split('\n').collect();
-        let mut line_starts = Vec::with_capacity(lines.len());
-        let mut offset = 0u32;
-        for line in &lines {
-            line_starts.push(offset);
-            offset += line.encode_utf16().count() as u32 + 1;
-        }
-        Text {
-            source,
-            lines,
-            line_starts,
-        }
-    }
-
-    fn col(&self, row: usize, byte_col: usize) -> u32 {
-        self.lines
-            .get(row)
-            .map_or(byte_col as u32, |l| utf16_column(l, byte_col))
-    }
-
-    /// The UTF-16 index of a point: web-tree-sitter's `startIndex`.
-    fn index(&self, row: usize, byte_col: usize) -> u32 {
-        self.line_starts.get(row).copied().unwrap_or(0) + self.col(row, byte_col)
-    }
-
-    fn of(&self, node: Node) -> &'a str {
-        &self.source[node.byte_range()]
-    }
-
-    fn range(&self, node: Node) -> Range {
-        let (s, e) = (node.start_position(), node.end_position());
-        Range {
-            start_byte: node.start_byte() as u32,
-            end_byte: node.end_byte() as u32,
-            start_line: s.row as u32,
-            start_col: self.col(s.row, s.column),
-            end_line: e.row as u32,
-            end_col: self.col(e.row, e.column),
-        }
-    }
-}
-
-fn children(node: Node) -> Vec<Node> {
-    let mut cursor = node.walk();
-    node.children(&mut cursor).collect()
-}
-
-fn named_children(node: Node) -> Vec<Node> {
-    let mut cursor = node.walk();
-    node.named_children(&mut cursor).collect()
-}
-
-/// `treeHealth` in `extraction/index.ts`, including its unit quirk: covered
-/// length is in UTF-16 units, divided by the source's UTF-8 byte length.
-/// Returns the health and the 1-based line spans of the first 100 issues.
-fn tree_health(tree: &Tree, text: &Text) -> (Health, Vec<(u32, u32)>) {
-    let mut errors = Vec::new();
-    let mut missing = Vec::new();
-    let mut stack = vec![tree.root_node()];
-    // Pre-order, children left to right, like the recursive visit.
-    while let Some(node) = stack.pop() {
-        if node.kind() == "ERROR" || node.is_error() {
-            errors.push(node);
-        }
-        if node.is_missing() {
-            missing.push(node);
-        }
-        let mut kids = children(node);
-        kids.reverse();
-        stack.extend(kids);
-    }
-    let issues: Vec<Node> = errors.iter().chain(missing.iter()).copied().collect();
-    let mut ranges: Vec<(u32, u32)> = issues
-        .iter()
-        .map(|n| {
-            let (s, e) = (n.start_position(), n.end_position());
-            let start = text.index(s.row, s.column);
-            (start, text.index(e.row, e.column).max(start + 1))
-        })
-        .collect();
-    ranges.sort();
-    let mut merged: Vec<(u32, u32)> = Vec::new();
-    for (start, end) in ranges {
-        match merged.last_mut() {
-            Some(prior) if start <= prior.1 => prior.1 = prior.1.max(end),
-            _ => merged.push((start, end)),
-        }
-    }
-    let covered: u32 = merged.iter().map(|(s, e)| e.saturating_sub(*s)).sum();
-    let coverage = (covered as f64 / text.source.len().max(1) as f64).min(1.0);
-    let root = tree.root_node();
-    let failed = root.kind() == "ERROR" || root.is_error() || coverage > 0.25;
-    let status = if failed {
-        ParseStatus::Failed
-    } else if !errors.is_empty() || !missing.is_empty() {
-        ParseStatus::Partial
-    } else {
-        ParseStatus::Ok
-    };
-    let lines = issues
-        .iter()
-        .take(100)
-        .map(|n| {
-            (
-                n.start_position().row as u32 + 1,
-                n.end_position().row as u32 + 1,
-            )
-        })
-        .collect();
-    let health = Health {
-        status,
-        error_count: errors.len() as u32,
-        missing_count: missing.len() as u32,
-        error_coverage: coverage as f32,
-        diagnostics: issues
-            .iter()
-            .take(bounds::MAX_DIAGNOSTICS)
-            .map(|n| Diagnostic {
-                code: if n.is_missing() {
-                    format!("MISSING:{}", n.kind())
-                } else {
-                    n.kind().to_owned()
-                },
-                range: text.range(*n),
-            })
-            .collect(),
-    };
-    (health, lines)
-}
-
-/// Every leaf's (start row, end row, type), in document order: the tokens
-/// `normalizedAstTokens` sketches. Extras such as comments are leaves too.
-fn leaf_types(tree: &Tree) -> Vec<(usize, usize, &'static str)> {
-    let mut out = Vec::new();
-    let mut stack = vec![tree.root_node()];
-    while let Some(node) = stack.pop() {
-        if node.child_count() == 0 {
-            out.push((
-                node.start_position().row,
-                node.end_position().row,
-                node.kind(),
-            ));
-            continue;
-        }
-        let mut kids = children(node);
-        kids.reverse();
-        stack.extend(kids);
-    }
-    out
-}
+pub use mex_graph_syntax::EXCLUDED;
 
 fn base_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -574,32 +372,6 @@ impl<'a> Walker<'a> {
                 }
             }
         }
-    }
-}
-
-fn empty_def(name_range: Range) -> Def {
-    Def {
-        kind: Kind::Variable,
-        name: String::new(),
-        qualified_name: String::new(),
-        declaration_role: None,
-        signature: String::new(),
-        ordinal: None,
-        parent: NONE,
-        scope: NONE,
-        range: Range::default(),
-        name_range,
-        exported: false,
-        is_default_export: false,
-        flags: Vec::new(),
-        visibility: None,
-        decorators: Vec::new(),
-        type_parameters: Vec::new(),
-        heritage: Vec::new(),
-        return_type: None,
-        body_hash: None,
-        sketch: None,
-        docstring: None,
     }
 }
 

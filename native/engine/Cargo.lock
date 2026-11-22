@@ -184,8 +184,12 @@ version = "0.1.0"
 dependencies = [
  "memory-stats",
  "mex-graph-core",
+ "mex-graph-csharp",
  "mex-graph-ecmascript",
  "mex-graph-python",
+ "mex-graph-rust",
+ "mex-graph-syntax",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
@@ -200,6 +204,16 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "mex-graph-csharp"
+version = "0.1.0"
+dependencies = [
+ "mex-graph-core",
+ "mex-graph-syntax",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
 ]
 
 [[package]]
@@ -219,8 +233,28 @@ name = "mex-graph-python"
 version = "0.1.0"
 dependencies = [
  "mex-graph-core",
+ "mex-graph-syntax",
  "tree-sitter",
  "tree-sitter-python",
+]
+
+[[package]]
+name = "mex-graph-rust"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "mex-graph-core",
+ "mex-graph-syntax",
+ "tree-sitter",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "mex-graph-syntax"
+version = "0.1.0"
+dependencies = [
+ "mex-graph-core",
+ "tree-sitter",
 ]
 
 [[package]]
@@ -426,6 +460,16 @@ dependencies = [
  "regex-syntax",
  "serde_json",
  "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-c-sharp"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1aac67f1ad71de1d6d39708d34811081c26dfa495658de6c14c34200849357c"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

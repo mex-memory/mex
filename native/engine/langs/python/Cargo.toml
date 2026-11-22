@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 mex-graph-core = { path = "../../core" }
+mex-graph-syntax = { path = "../syntax" }
 tree-sitter = "0.26"
 tree-sitter-python = "=0.21.0"
 

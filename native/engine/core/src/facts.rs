@@ -124,6 +124,43 @@ pub struct FileFacts {
     pub health: Health,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ecmascript: Option<ecmascript::ReferenceFacts>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub syntax_references: Vec<SyntaxReference>,
+}
+
+/// A written symbol reference from an adapter with syntax-only resolution.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SyntaxReference {
+    pub from: usize,
+    pub kind: ReferenceKind,
+    pub name: String,
+    pub range: Range,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceKind {
+    Calls,
+    Decorates,
+    Extends,
+    Implements,
+    Instantiates,
+    Returns,
+    TypeOf,
+}
+
+impl ReferenceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Calls => "calls",
+            Self::Decorates => "decorates",
+            Self::Extends => "extends",
+            Self::Implements => "implements",
+            Self::Instantiates => "instantiates",
+            Self::Returns => "returns",
+            Self::TypeOf => "type_of",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
