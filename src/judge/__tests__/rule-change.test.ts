@@ -57,6 +57,20 @@ describe("free rule-change evidence",()=>{
   expect((await refresh()).snapshot.entries).toEqual([]);
   expect(writer.db.prepare("SELECT count(*) n FROM review").get()!.n).toBe(0);
  });
+ it("records a migration for a personal learned rule",async()=>{
+  const value=rule();
+  value.mex.id=`mx_deep${"a".repeat(32)}`;
+  value.mex.source={type:"docs",ref:"README.md",producer:"learn-deeper"};
+  value.mex.evidence="docs";
+  add(value);
+  const content=serializeEntry(value),path=join(writer.location.home,"projects",projectId,"notes",`${value.mex.id}.md`);
+  mkdirSync(join(path,".."),{recursive:true});writeFileSync(path,content);
+  Object.assign(report.items![0]!,{path,level:"personal"});
+  source("src/main.ts","moment(); datefns();\n");observe(1,1);
+  const signal=(await refresh()).snapshot.entries[0];
+  expect(signal?.id).toBe(value.mex.id);
+  expect(signal?.reasons).toContain("In scope, the anti-pattern count rose and the required-pattern count fell");
+ });
  it("advances beyond the first page while retaining earlier evidence",async()=>{
   for(let i=0;i<129;i++) {
    const value=rule();value.mex.id=`mx_page${String(i).padStart(4,"0")}`;

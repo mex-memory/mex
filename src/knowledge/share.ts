@@ -8,13 +8,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { MANIFEST_BYTES, MANIFEST_PATH, parseManifest, type SharedCoverage } from "../learn-deeper/coverage.js";
 import { absolutePath } from "../record/project.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
-import { serializeEntry } from "./entry.js";
+import { isLearnedEntry, serializeEntry } from "./entry.js";
 import { containedDirectory, readBoundedTextFile } from "./files.js";
-import { currentVerdicts } from "./check.js";
+import { currentVerdicts, registerLiterals } from "./check.js";
 import { rebuildNative } from "./native.js";
 import { scanRuleFiles } from "./rule-files.js";
 import { git, prepareShare, requireGitIdentity, type SharePlan } from "./share-plan.js";
@@ -89,19 +90,45 @@ const digest = (text: string | Buffer) => createHash("sha256").update(text).dige
 function writeShare(worktree: string, plan: SharePlan, originalOptions: KnowledgeOptions): Record<string, string | null> {
   const options = { ...originalOptions, projectPath: worktree };
   if (plan.entries.some(c => c.entry.mex.checks.length)) {
-    const verdicts = currentVerdicts(options, knowledgeProject(options));
-    if (plan.entries.some(c => c.entry.mex.checks.length && verdicts?.get(`personal/${c.entry.mex.id}`) !== "held")) {
+    const project = knowledgeProject(options);
+    const held = () => {
+      const verdicts = currentVerdicts(options, project);
+      return plan.entries.every(c => !c.entry.mex.checks.length || verdicts?.get(`personal/${c.entry.mex.id}`) === "held");
+    };
+    if (!held() && (!prepareShareIndex(worktree, plan, project) || !held())) {
       throw new KnowledgeError("SHARE_CHECKS", "A note's checks do not hold on the default branch; update the note or the default branch before sharing.");
     }
   }
   const paths = new Set([".mex/config.json", ".mex/sources.json"]);
   for (const c of plan.entries) {
-    const preview = prepareTeamWrite(c.entry, options, c.entry.mex.source.quote);
-    applyTeamWrite(preview, preview.revision, options, c.entry.mex.source.quote);
+    const { mex } = c.entry;
+    const { quote, ...source } = mex.source;
+    const learned = isLearnedEntry(mex);
+    const entry = learned ? { ...c.entry, mex: { ...mex, source } } : c.entry;
+    const preview = prepareTeamWrite(entry, options, learned ? undefined : quote);
+    applyTeamWrite(preview, preview.revision, options, learned ? undefined : quote);
     paths.add(preview.path);
   }
   for (const path of writeSharedKnowledgeFiles(options, plan.coverage)) paths.add(path);
   return Object.fromEntries([...paths].map(path => [path, existsSync(join(worktree, path)) ? digest(readFileSync(join(worktree, path))) : null]));
+}
+
+/** The temporary share worktree has a different index key from the editor checkout. */
+function prepareShareIndex(worktree: string, plan: SharePlan, project: ReturnType<typeof knowledgeProject>): boolean {
+  const checks = plan.entries.flatMap(c => isLearnedEntry(c.entry.mex) ? c.entry.mex.checks : []);
+  if (!checks.some(c => c.kind === "scope" || c.kind === "pattern" || c.kind === "symbol")) return false;
+  const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
+  if (!existsSync(cli)) return false;
+  try {
+    if (git(worktree, "rev-parse", "HEAD") !== plan.base || git(worktree, "status", "--porcelain", "--untracked-files=all")) return false;
+    const literals = checks.flatMap(c => c.kind === "pattern" && (c.target.match ?? "literal") === "literal" ? [c.target.pattern] : []);
+    if (literals.length) registerLiterals(project.location.directory, project.projectId, literals);
+    execFileSync(process.execPath, [cli, "index", "--json", "--workers", "0"], {
+      cwd: worktree, env: { ...process.env, MEX_HOME: dirname(project.location.home), MEX_BACKGROUND: "1" },
+      stdio: ["ignore", "pipe", "pipe"], timeout: 60_000, maxBuffer: 1024 * 1024, windowsHide: true,
+    });
+    return true;
+  } catch { return false; }
 }
 
 function commit(worktree: string, count: number, files: ShareState["files"]): string {

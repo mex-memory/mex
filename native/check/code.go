@@ -105,7 +105,7 @@ func (ev *Evaluator) symbolCheck(c Check) CheckResult {
 		return res
 	}
 	if where, found := ev.relink(file, symbol, want); found {
-		return CheckResult{Status: Pass, Reason: fmt.Sprintf("%s moved to %s", symbol, where), Now: want}
+		return CheckResult{Status: Pass, Reason: fmt.Sprintf("%s moved to %s:%s", symbol, where.File, where.Symbol), Now: want, Relink: &where}
 	}
 	return res
 }
@@ -205,7 +205,7 @@ func findSymbol(symbols []index.Symbol, path []string) int {
 // relink looks for the same code elsewhere: the same name in other files
 // (moved), then other symbols of the same kind in the same file (renamed).
 // Only these candidates are fingerprinted.
-func (ev *Evaluator) relink(file, symbol, want string) (string, bool) {
+func (ev *Evaluator) relink(file, symbol, want string) (SymbolRelink, bool) {
 	kind := fingerprintKind(want)
 	name := symbol[strings.LastIndex(symbol, ".")+1:]
 	tried := 0
@@ -220,18 +220,37 @@ func (ev *Evaluator) relink(file, symbol, want string) (string, bool) {
 	if hits, err := ev.index.SymbolsNamed(name); err == nil {
 		for _, h := range hits {
 			if h.Path != file && try(h.Path, h.Start, h.End, h.Kind, name) {
-				return h.Path + ":" + name, true
+				if outline, miss := ev.index.Outline(h.Path); miss == nil {
+					for i, s := range outline.Symbols {
+						if s.Start == h.Start && s.Name == name {
+							return SymbolRelink{File: h.Path, Symbol: qualifiedSymbol(outline.Symbols, i)}, true
+						}
+					}
+				}
+				return SymbolRelink{File: h.Path, Symbol: name}, true
 			}
 		}
 	}
 	if outline, miss := ev.index.Outline(file); miss == nil {
-		for _, s := range outline.Symbols {
+		for i, s := range outline.Symbols {
 			if s.Name != name && try(file, s.Start, s.End, s.Kind, s.Name) {
-				return file + ":" + s.Name, true
+				return SymbolRelink{File: file, Symbol: qualifiedSymbol(outline.Symbols, i)}, true
 			}
 		}
 	}
-	return "", false
+	return SymbolRelink{}, false
+}
+
+func qualifiedSymbol(symbols []index.Symbol, i int) string {
+	name := symbols[i].Name
+	for depth, parent := 0, symbols[i].Parent; parent != nil && depth < len(symbols); depth++ {
+		if *parent < 0 || *parent >= len(symbols) {
+			break
+		}
+		name = symbols[*parent].Name + "." + name
+		parent = symbols[*parent].Parent
+	}
+	return name
 }
 
 // fingerprintSpan hashes lines start..end as tokens. The symbol's own name
@@ -296,7 +315,19 @@ func (ev *Evaluator) patternCheck(c Check) CheckResult {
 		return res
 	}
 	want, _ := normalize(c.Saw["count"])
-	if want != float64(count) {
+	baseline, valid := want.(float64)
+	var fails bool
+	switch str(c.Target, "expect") {
+	case "", "exact":
+		fails = !valid || baseline != float64(count)
+	case "at-most":
+		fails = !valid || baseline < float64(count)
+	case "present":
+		fails = count == 0
+	default:
+		return CheckResult{Status: Floor, Reason: "unknown pattern expectation"}
+	}
+	if fails {
 		return CheckResult{Status: Fail, Reason: fmt.Sprintf("%q now occurs %d times in %s", str(c.Target, "pattern"), count, str(c.Target, "scope")), Now: count}
 	}
 	return CheckResult{Status: Pass, Now: count}

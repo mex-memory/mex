@@ -20,11 +20,14 @@ const MaxEntryBytes = 64 * 1024
 
 // Entry is the part of an entry file the evaluator needs.
 type Entry struct {
-	ID     string   `yaml:"id"`
-	Kind   string   `yaml:"kind"`
-	Scope  []string `yaml:"scope"`
-	Checks []Check  `yaml:"checks"`
-	Status string   `yaml:"status"`
+	ID     string            `yaml:"id"`
+	Kind   string            `yaml:"kind"`
+	Scope  []string          `yaml:"scope"`
+	Checks []Check           `yaml:"checks"`
+	Status string            `yaml:"status"`
+	When   []entries.Trigger `yaml:"when"`
+	Fix    *entries.Fix      `yaml:"fix"`
+	Source entries.Source    `yaml:"source"`
 }
 
 // Check is one stored check: {kind, role, target, saw, files}.
