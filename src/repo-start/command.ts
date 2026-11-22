@@ -489,6 +489,13 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     try { await watchLearnDeeper({ root: checkout.path, projectId, location: recordLocation(), write, rich, mode, interactive, env }, learnJob.jobId); }
     catch { /* the job runs on in the background either way */ }
   }
+  // A finished learning run's rules wait for the person's ticks: now, or at the next `mex` in a terminal.
+  if (!exitNow) {
+    try {
+      const { reviewLearned } = await import("./review-list.js");
+      await reviewLearned({ root: checkout.path, projectId, write, rich, mode, interactive, env });
+    } catch { /* the list waits for the next mex in a terminal */ }
+  }
 
   if (!offer) return { exitCode, place: place.kind, projectId, turnedOn: true, ...ended };
   const summary = { question: offer.question, estimate: offer.estimate, command: offer.command };
