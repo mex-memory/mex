@@ -120,6 +120,13 @@ function observedRuns(p: Proposal, passes: ReadonlyMap<number, string>): Readonl
 }
 const backticked = (text: string) => [...text.matchAll(/`([^`\n]+)`/gu)].map(match => match[1]!.trim());
 
+/** Producers other than learn deeper always write active entries; learn deeper may wait for a tick, never demote. */
+function proposedStatus(p: Proposal, old: KnowledgeEntry["mex"]["status"] | undefined): KnowledgeEntry["mex"]["status"] {
+  if (p.status !== undefined && p.producer !== "learn-deeper") invalid("Only learn deeper proposes entries that wait for a tick.");
+  if (old === "active" || old === "retired") return old;
+  return p.producer === "learn-deeper" && p.status ? p.status : old ?? "active";
+}
+
 function preflight(p: Proposal, tree: string, date: string, source: () => ReturnType<typeof references>,
   special?: { entry: KnowledgeEntry; mode: "note" | "judge" | "review" }, observed?: ReadonlySet<string>): Candidate | Dropped {
   let entry: KnowledgeEntry, checks: ProposedCheck[], evidence: Candidate["evidence"];
@@ -151,7 +158,7 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
         ...(p.model === "none" ? {} : { model: p.model }), ...(p.label === undefined ? {} : { label: p.label }) },
       evidence: p.evidenceClass ?? owner.evidence, one_line: p.oneLine ?? normalize(p.text),
       aliases: p.aliases, asks: p.asks, when: p.anchors?.when, checks: storedChecks, fix: p.fix,
-      status: old?.status ?? "active", created: old?.created ?? date,
+      status: proposedStatus(p, old?.status), created: old?.created ?? date,
       ...(old?.commit ? { commit: old.commit } : {}), ...(old?.supersedes ? { supersedes: old.supersedes } : {}),
       ...(old?.companions ? { companions: old.companions } : {}),
     } });
