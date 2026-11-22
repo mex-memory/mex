@@ -1,53 +1,66 @@
-// Warm-path edit latency and memory held between edits, for next2's compiler
-// route (OSS-73, M0). Bundled with esbuild against src/ and run with node:
-//
-//   node_modules/.bin/esbuild scripts/graph-engine-bench/warm-latency.ts --bundle \
-//     --platform=node --format=esm --packages=external --outfile=<out>.mjs
-//   MEX_HOME=<fresh> node <out>.mjs <repo copy> <file to edit> [edits=20]
-//
-// Builds the graph, opens a warm checkout, makes 2 warm-up edits and then the
-// timed edits, each appending one comment line to the same file (a body-only
-// change the warm path accepts). Prints one JSON line.
-import { appendFileSync } from "node:fs";
-import { join, extname } from "node:path";
-import { rebuildGraph } from "../../src/graph/maintenance.js";
-import { WarmCheckout } from "../../src/graph/warm.js";
-import { childProcessUsage } from "../../src/graph/process-stats.js";
+// OSS-73 warm edit latency and held RSS, in a disposable checkout.
+// Bundle like storage-parity.ts. Set MEX_GRAPH_ENGINE to the release binary,
+// MEX_HOME to an empty graph home and MEX_BENCH_CLI to the built dist/cli.js.
+//   node --expose-gc dist/graph-warm-latency.mjs <repo copy> <file> [edits=24]
+import { execFileSync } from "node:child_process";
+import { appendFileSync, statfsSync } from "node:fs";
+import { extname, join, resolve } from "node:path";
+import { openWarmCheckout, type WarmEditResult } from "../../src/graph/warm.js";
+import { childProcessUsage, WARM_GRAPH_SERVER } from "../../src/graph/process-stats.js";
 
-const [root, file, count = "20"] = process.argv.slice(2);
-const comment = extname(file) === ".py" ? "# warm edit\n" : "// warm edit\n";
-const percentile = (values: number[], p: number): number => {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
-};
-
-await rebuildGraph(root);
-const openStarted = performance.now();
-let warm = WarmCheckout.open(root);
-const openMs = Math.round(performance.now() - openStarted);
-const results = [];
-for (let i = 0; i < Number(count) + 2; i++) {
-  appendFileSync(join(root, file), comment);
-  const r = await warm.edit([file]);
-  if (i >= 2) results.push(r);
-  // A cold edit leaves the checkout to be opened again, as the background
-  // process does after the cold refresh it queues.
-  if (r.status === "cold") { warm.close(); await rebuildGraph(root); warm = WarmCheckout.open(root); }
+const [checkout, file, count = "24"] = process.argv.slice(2);
+if (!checkout || !file || !Number.isInteger(Number(count)) || Number(count) < 20 || !process.env.MEX_HOME) {
+  throw new Error("Pass a disposable repo, its edit path, at least 20 edits and an empty MEX_HOME.");
 }
-const nodeRssMb = Math.round(process.memoryUsage().rss / 1048576);
-const servers = await childProcessUsage();
-const serverRssMb = Math.round(servers.reduce((n, s) => n + (s.rssMb ?? s.peakRssMb ?? 0), 0));
-const ms = results.filter((r) => r.status === "published").map((r) => r.ms);
-const phaseNames = [...new Set(results.flatMap((r) => Object.keys(r.phases ?? {})))];
-console.log(JSON.stringify({
-  file, openMs,
-  edits: results.length,
-  statuses: Object.fromEntries([...new Set(results.map((r) => r.status))].map((s) => [s, results.filter((r) => r.status === s).length])),
-  reasons: [...new Set(results.map((r) => r.reason).filter(Boolean))].slice(0, 3),
-  p50: ms.length ? percentile(ms, 0.5) : null,
-  p90: ms.length ? percentile(ms, 0.9) : null,
-  phasesP50: Object.fromEntries(phaseNames.map((p) => [p, percentile(results.map((r) => r.phases?.[p] ?? 0), 0.5)])),
-  heldMb: { node: nodeRssMb, servers: serverRssMb, total: nodeRssMb + serverRssMb },
+const root = resolve(checkout);
+const cli = resolve(process.env.MEX_BENCH_CLI ?? "dist/cli.js");
+const minFree = 2.5 * 1024 ** 3;
+function checkDisk() {
+  const volume = process.platform === "darwin" ? "/System/Volumes/Data" : root;
+  const stat = statfsSync(volume);
+  if (stat.bavail * stat.bsize < minFree) throw new Error("The warm benchmark ran out of its disk budget.");
+}
+checkDisk();
+const comment = extname(file) === ".py" ? "# warm edit\n" : "// warm edit\n";
+const round = (n: number) => Math.round(n * 10) / 10;
+const summary = (values: number[]) => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const p50 = (sorted[Math.floor((sorted.length - 1) / 2)]! + sorted[Math.floor(sorted.length / 2)]!) / 2;
+  return { p50: round(p50), p95: round(sorted[Math.ceil(0.95 * sorted.length) - 1]!) };
+};
+const rebuild = JSON.parse(execFileSync(process.execPath, [cli, "graph", "rebuild", "--json"], {
+  cwd: root, env: { ...process.env, MEX_TELEMETRY: "0", MEX_OFFLINE: "1", DO_NOT_TRACK: "1" },
+  encoding: "utf8", timeout: 120_000, maxBuffer: 4 * 1024 ** 2,
 }));
-warm.close();
-process.exit(0);
+if (rebuild.status?.schemaVersion !== 5) throw new Error("The latency harness requires a v5 publication.");
+checkDisk();
+globalThis.gc?.();
+const initialNodeRss = process.memoryUsage().rss / 1024 ** 2;
+const openStarted = performance.now();
+const warm = await openWarmCheckout(root);
+const openMs = round(performance.now() - openStarted);
+const results: WarmEditResult[] = [];
+try {
+  for (let i = 0; i < Number(count) + 2; i++) {
+    appendFileSync(join(root, file), comment);
+    const result = await warm.edit([file]);
+    if (result.status !== "published") throw new Error(`Edit ${i + 1} returned ${result.status}: ${result.reason ?? ""}`);
+    if (i >= 2) results.push(result);
+    checkDisk();
+  }
+  globalThis.gc?.();
+  const node = process.memoryUsage().rss / 1024 ** 2;
+  const servers = await childProcessUsage(WARM_GRAPH_SERVER);
+  if (servers.length !== 1) throw new Error(`Expected one resident engine, found ${servers.length}.`);
+  const engine = servers[0]!.rssMb ?? servers[0]!.peakRssMb;
+  console.log(JSON.stringify({
+    file, openMs, edits: results.length, published: results.length,
+    mexMs: summary(results.map(result => result.ms)),
+    engineMs: summary(results.map(result => result.phases.engine!)),
+    heldMiB: {
+      node: round(node), nodeBeforeOpen: round(initialNodeRss), nodeDelta: round(Math.max(0, node - initialNodeRss)),
+      engine: round(engine), total: round(node + engine),
+    },
+  }));
+} finally { warm.close(); }

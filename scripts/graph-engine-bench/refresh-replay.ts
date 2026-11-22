@@ -1,9 +1,9 @@
 // Replay schema v5 overlays against independent cold rebuilds of the same checkout.
 // Bundle with the esbuild command in storage-parity.ts, replacing the entry and output names.
-// MEX_GRAPH_ENGINE=<absolute mex-graph> node dist/graph-refresh-replay.mjs <repos-dir> [hono flask]
+// MEX_GRAPH_ENGINE=<absolute mex-graph> node dist/graph-refresh-replay.mjs <repos-dir> [hono flask ripgrep] [--arm=both|warm|refresh]
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -12,15 +12,20 @@ import { GraphStore } from "../../src/graph/db/store.js";
 import { v5Rows } from "../../src/graph/db/v5.js";
 import { FingerprintStore } from "../../src/graph/fingerprint-store.js";
 import { collectGraphGarbage, currentGraphPath, graphLocation, readGraphPointer } from "../../src/graph/storage.js";
+import { openWarmCheckout } from "../../src/graph/warm.js";
 
 const cli = resolve(process.env.MEX_BENCH_CLI ?? "dist/cli.js");
-const [, , reposDirectory, ...requested] = process.argv;
+const [, , reposDirectory, ...args] = process.argv;
 if (!reposDirectory || !process.env.MEX_GRAPH_ENGINE) throw new Error("Pass the benchmark repos directory and set MEX_GRAPH_ENGINE.");
+const arm = args.find(arg => arg.startsWith("--arm="))?.slice("--arm=".length) ?? "both";
+if (!["both", "warm", "refresh"].includes(arm)) throw new Error(`Unknown replay arm ${arm}.`);
+const requested = args.filter(arg => !arg.startsWith("--arm="));
 
 const env = {
   ...process.env, MEX_GRAPH_ENGINE_LANGUAGES: "python,typescript,javascript,rust,csharp",
   MEX_GRAPH_STORAGE: "v5", MEX_TELEMETRY: "0", MEX_OFFLINE: "1", DO_NOT_TRACK: "1",
 };
+Object.assign(process.env, env);
 const MiB = 1024 ** 2;
 const free = () => {
   const stat = statfsSync(tmpdir(), { bigint: true });
@@ -53,6 +58,16 @@ function atHome<T>(home: string, read: () => T): T {
   const previous = process.env.MEX_HOME;
   process.env.MEX_HOME = home;
   try { return read(); }
+  finally {
+    if (previous === undefined) delete process.env.MEX_HOME;
+    else process.env.MEX_HOME = previous;
+  }
+}
+
+async function atHomeAsync<T>(home: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.env.MEX_HOME;
+  process.env.MEX_HOME = home;
+  try { return await run(); }
   finally {
     if (previous === undefined) delete process.env.MEX_HOME;
     else process.env.MEX_HOME = previous;
@@ -163,37 +178,58 @@ function history(root: string, input: string, name: string): string[] {
   return commits;
 }
 
-function flaskEdits(root: string): Array<{ label: string; apply(): void }> {
+interface ReplayEdit {
+  label: string;
+  paths: string[];
+  apply(): void;
+}
+
+function flaskEdits(root: string): ReplayEdit[] {
   const folder = join(root, "mex_replay");
   const write = (path: string, source: string) => writeFileSync(join(folder, path), source);
   const leaf = (func: string, method: string) => `class Parent:\n    def ${method}(self):\n        return 13\n\ndef ${func}(value):\n    return value * 29 + value ** 2 - 11\n`;
   const route = (path: string) => `from flask import Flask\nfrom . import Parent, handler\napp = Flask(__name__)\n\nclass Child(Parent):\n    def run(self):\n        return self.work() + handler(7)\n\n@app.get('${path}')\ndef mexReplayHandler():\n    return str(Child().run())\n`;
-  return [
-    { label: "add package and Flask route", apply() {
+  const edits = [
+    { label: "add package and Flask route", paths: ["leaf.py", "__init__.py", "routes.py"], apply() {
       mkdirSync(folder);
       write("leaf.py", leaf("handler", "work"));
       write("__init__.py", "from .leaf import Parent, handler\n");
       write("routes.py", route("/replay-before"));
     } },
-    { label: "rename and re-export a symbol", apply() {
+    { label: "rename and re-export a symbol", paths: ["leaf.py", "__init__.py"], apply() {
       write("leaf.py", leaf("renamed", "work"));
       write("__init__.py", "from .leaf import Parent, renamed as handler\n");
     } },
-    { label: "move the defining module", apply() {
+    { label: "move the defining module", paths: ["leaf.py", "moved.py", "__init__.py"], apply() {
       renameSync(join(folder, "leaf.py"), join(folder, "moved.py"));
       write("__init__.py", "from .moved import Parent, renamed as handler\n");
     } },
-    { label: "change inherited method and route", apply() {
+    { label: "change inherited method and route", paths: ["moved.py", "routes.py"], apply() {
       write("moved.py", leaf("renamed", "stop"));
       write("routes.py", route("/replay-after"));
     } },
-    { label: "delete the defining module", apply() { rmSync(join(folder, "moved.py")); } },
-    { label: "remove the added package", apply() { rmSync(folder, { recursive: true }); } },
+    { label: "delete the defining module", paths: ["moved.py"], apply() { rmSync(join(folder, "moved.py")); } },
+    { label: "remove the added package", paths: ["__init__.py", "routes.py"], apply() { rmSync(folder, { recursive: true }); } },
   ];
+  return edits.map(edit => ({ ...edit, paths: edit.paths.map(path => `mex_replay/${path}`) }));
 }
 
-for (const name of requested.length ? requested : ["hono", "flask"]) {
-  if (name !== "hono" && name !== "flask") throw new Error(`Unknown replay repository ${name}.`);
+function ripgrepEdits(root: string): ReplayEdit[] {
+  const file = "crates/grep/src/lib.rs";
+  return [{ label: "add a public Rust function and its caller", paths: [file], apply() {
+    appendFileSync(join(root, file), "\npub fn mex_replay_export() -> u32 { 73 }\npub fn mex_replay_call() -> u32 { mex_replay_export() }\n");
+  } }];
+}
+
+const probeQueries: Record<string, string[]> = {
+  hono: ["hono compose middleware", "router", "getCookie", "html", "body stream", "context req"],
+  flask: ["flask route view", "dispatch_request", "blueprint", "render_template", "mexReplayHandler", "renamed", "url_for"],
+  ripgrep: ["mex_replay_export", "mex_replay_call", "grep", "searcher", "matcher", "printer"],
+};
+
+for (const name of requested.length ? requested : ["hono", "flask", "ripgrep"]) {
+  const queries = probeQueries[name];
+  if (!queries) throw new Error(`Unknown replay repository ${name}.`);
   checkDisk();
   const scratch = mkdtempSync(join(tmpdir(), `mex-${name}-refresh-replay-`));
   try {
@@ -201,37 +237,51 @@ for (const name of requested.length ? requested : ["hono", "flask"]) {
     const input = resolve(name === "hono" && process.env.MEX_BENCH_HONO_HISTORY || join(reposDirectory, name));
     git(scratch, "-c", "core.autocrlf=false", "clone", "--quiet", "--shared", input, root);
     const commits = history(root, input, name);
-    const home = join(scratch, "refresh");
+    const refreshHome = join(scratch, "refresh");
+    const warmHome = join(scratch, "warm");
     const freshHome = join(scratch, "fresh");
-    const queries = name === "hono" ? ["hono compose middleware", "router", "getCookie", "html", "body stream", "context req"]
-      : ["flask route view", "dispatch_request", "blueprint", "render_template", "mexReplayHandler", "renamed", "url_for"];
     git(root, "checkout", "--quiet", "--detach", commits[0]!);
-    graphCommand(root, home, "rebuild");
-    const edits = commits.length > 1 ? commits.slice(1).map(label => ({ label, apply: () => { git(root, "checkout", "--quiet", "--detach", label); } }))
-      : flaskEdits(root);
-    let overlays = 0;
+    const edits = name === "hono" ? commits.slice(1).map((label, index) => ({
+      label,
+      paths: git(root, "diff", "--name-only", "-z", "--no-renames", commits[index]!, label).split("\0").filter(Boolean),
+      apply: () => { git(root, "checkout", "--quiet", "--detach", label); },
+    })) : name === "flask" ? flaskEdits(root) : ripgrepEdits(root);
+    if (arm !== "warm") graphCommand(root, refreshHome, "rebuild");
+    const warm = arm === "refresh" ? undefined : await atHomeAsync(warmHome, async () => {
+      graphCommand(root, warmHome, "rebuild");
+      return openWarmCheckout(root);
+    });
+    const overlays = { refresh: 0, warm: 0 };
     let compared = 0;
     let pointReads = 0;
-    for (const edit of edits) {
-      edit.apply();
-      const refresh = graphCommand(root, home, "refresh");
-      const location = atHome(home, () => graphLocation(root));
-      if (readGraphPointer(location)?.overlay) overlays++;
-      try {
-        graphCommand(root, freshHome, "rebuild");
-        const fresh = answers(root, freshHome, queries);
-        const live = answers(root, home, queries, fresh.ids);
-        const difference = firstDifference(live, fresh);
-        if (difference) throw new Error(`${name} ${edit.label}${difference}`);
-        compared++;
-        pointReads += fresh.ids.length;
-        console.log(JSON.stringify({ repo: name, step: compared, revision: edit.label, refresh, raw: fresh.raw }));
-      } finally { rmSync(freshHome, { recursive: true, force: true }); }
-      collectGraphGarbage(location, Date.now() + 120_000);
-      checkDisk();
-    }
-    console.log(JSON.stringify({ repo: name, base: commits[0], tip: commits.at(-1), compared, overlays, pointReads,
-      searches: 2 * compared * queries.length, differences: 0 }));
+    const locations = [
+      ...(arm === "warm" ? [] : [["refresh", refreshHome] as const]),
+      ...(warm ? [["warm", warmHome] as const] : []),
+    ].map(([kind, home]) => ({ kind, home, location: atHome(home, () => graphLocation(root)) }));
+    try {
+      for (const edit of edits) {
+        edit.apply();
+        const refresh = arm === "warm" ? undefined : graphCommand(root, refreshHome, "refresh");
+        const result = warm ? await atHomeAsync(warmHome, () => warm.edit(edit.paths)) : undefined;
+        if (result && result.status !== "published") throw new Error(`${name} ${edit.label} warm: ${result.status} (${result.reason ?? ""})`);
+        try {
+          graphCommand(root, freshHome, "rebuild");
+          const fresh = answers(root, freshHome, queries);
+          for (const { kind, home, location } of locations) {
+            if (readGraphPointer(location)?.overlay) overlays[kind]++;
+            const difference = firstDifference(answers(root, home, queries, fresh.ids), fresh);
+            if (difference) throw new Error(`${name} ${edit.label} ${kind}${difference}`);
+            collectGraphGarbage(location, Date.now() + 120_000);
+          }
+          compared++;
+          pointReads += fresh.ids.length;
+          console.log(JSON.stringify({ repo: name, step: compared, revision: edit.label, refresh, warm: result?.ms, raw: fresh.raw }));
+        } finally { rmSync(freshHome, { recursive: true, force: true }); }
+        checkDisk();
+      }
+      console.log(JSON.stringify({ repo: name, base: commits[0], tip: commits.at(-1), compared, overlays, pointReads,
+        searches: 2 * compared * queries.length, differences: 0 }));
+    } finally { warm?.close(); }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 console.log(JSON.stringify({ freeAtStartMiB: Math.floor(startingFree / MiB), minimumFreeMiB: Math.floor(minimumFree / MiB) }));
