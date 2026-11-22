@@ -237,13 +237,15 @@ impl Writer {
         if base.is_none() {
             conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
         }
+        // Build the schema and rows in the same disposable transaction.
+        // A warm edit otherwise writes every individual DDL change to disk.
+        conn.execute_batch("BEGIN; PRAGMA defer_foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(incremental::SCHEMA)?;
         if let Some(base) = base {
             conn.execute_batch(incremental::OVERLAY_SCHEMA)?;
             overlay::attach_base(&conn, base)?;
         }
-        conn.execute_batch("BEGIN; PRAGMA defer_foreign_keys = ON;")?;
         if page_size < DEFAULT_PAGE_SIZE {
             // Keep FTS leaf records inline on the smaller SQLite pages.
             let fts_page = page_size - 64;
