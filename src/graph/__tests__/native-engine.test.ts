@@ -92,7 +92,7 @@ MEX_STAGE
     vi.stubEnv("MEX_HOME", join(index, "home"));
     vi.stubEnv("MEX_GRAPH_ENGINE", stub);
     vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "python");
-    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     expect(await rebuildGraph(root)).toMatchObject({ status: { schemaVersion: 4 }, engine: { fallbackFiles: 0 } });
     const graph = createGraphEngine({ rootDir: root, readOnly: true });
     try {
