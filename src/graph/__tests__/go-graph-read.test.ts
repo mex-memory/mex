@@ -245,18 +245,21 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     expect(none.saw.count).toBe(0);
   });
 
-  it("reads through an overlay: the edited file's rows replace the base's", async () => {
+  it("reads through an overlay with an edited file and a deleted file", async () => {
     writeFileSync(join(checkout, "src", "use.ts"), `${USE}\nexport function again(): number {\n  return area(3);\n}\n`);
+    rmSync(join(checkout, "test", "shapes.test.ts"));
     try {
       await runGraphRefresh({ root: checkout, json: true });
       await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
       expect(readGraphPointer(graphLocation(checkout))?.overlay).toMatch(/^graph-o-/);
       const callers = ask("callers", "area").sites!.map((site) => site.in.name);
       expect(callers).toEqual(expect.arrayContaining(["again", "report", "unit"]));
+      expect(callers).not.toContain("checksArea");
       // Each caller once: base rows of the shadowed file are not read as well.
       expect(callers.filter((name) => name === "report")).toHaveLength(1);
     } finally {
       writeFileSync(join(checkout, "src", "use.ts"), USE);
+      writeFileSync(join(checkout, "test", "shapes.test.ts"), TEST);
       await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
     }
   }, 120_000);

@@ -1,6 +1,6 @@
 # Graph engine contract (version 3)
 
-How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts and resolves graph rows. `build` writes a complete schema v5 candidate. `refresh` and `serve` write v5 overlays. `stage` streams Python, TypeScript, JavaScript, Rust and C# rows for Node's schema v4 writer.
+How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs and the CLI. The engine parses, extracts and resolves graph rows. `build` writes a complete schema v5 candidate. `refresh` and `serve` write v5 overlays. `stage` streams Python, TypeScript, JavaScript, Rust and C# rows for Node's schema v4 writer.
 
 `CONTRACT_VERSION` in `native/engine/core/src/lib.rs` and Node's `GRAPH_ENGINE_CONTRACT` in `src/graph/native-engine.ts` must both be 3. Incompatible changes bump both. Node refuses an engine whose version differs.
 
@@ -104,6 +104,16 @@ base read-only and remove all base rows owned by a shadowed path before adding
 the overlay rows. The overlay carries complete checkout-level snapshot,
 coverage, alias and grounding metadata. Search matches both physical indexes
 and ranks against the live corpus's BM25 statistics.
+
+## Readers
+
+The TypeScript and Go graph readers both read published schema v4 and v5
+graphs. They inspect `PRAGMA main.user_version` on the database selected by
+the checkout pointer. For v5, the Go hook attaches at most one read-only
+base and applies the overlay's file ownership rules. Its queries use the
+integer keys and export symbol IDs as `kind:hex`. A row in
+`unresolved_calls` with one call candidate contributes a through-call to
+that symbol.
 
 ## Events
 
