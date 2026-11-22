@@ -18,7 +18,7 @@ import (
 // changed. It is a local cache next to hooks.db: never in git, safe to
 // delete, and rebuilt from the entry files whenever it is missing or stale.
 
-const entryCacheVersion = 1
+const entryCacheVersion = 2
 
 // racyWindow: a file modified this close to the cache's own write may change
 // again without its size or time changing, so it is never trusted.
@@ -86,6 +86,11 @@ func (c *entryCache) read(path, level string, info fs.FileInfo) Loaded {
 	}
 	l := readEntry(path, level)
 	entry := cachedEntry{Size: size, MTime: mtime, Hash: l.Hash, Entry: l.Entry}
+	if l.Entry != nil && l.Entry.Source.Quote != "" {
+		projected := *l.Entry
+		projected.Source.Quote = ""
+		entry.Entry = &projected
+	}
 	if l.Err != nil {
 		entry.Err = l.Err.Error()
 	}

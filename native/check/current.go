@@ -4,6 +4,7 @@ import (
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/judgement"
+	"github.com/mex-memory/mex/native/internal/rulechange"
 )
 
 // CurrentInputsHash reuses the evaluator's identity for a loaded delivery item,
@@ -17,12 +18,13 @@ func CurrentInputsHash(checkout, directory, project string, item *entries.Item) 
 		return "", false
 	}
 	defer ev.Close()
+	defer ev.useURLRecords(directory, project)()
 	ev.files.maxBytes = judgement.MaxEvidenceFileBytes
 	checks := make([]Check, 0, len(item.Entry.Checks))
 	needsIndex := false
 	for _, c := range item.Entry.Checks {
 		checks = append(checks, Check{Kind: c.Kind, Role: c.Role, Target: c.Target, Saw: c.Saw, Files: c.Files})
-		needsIndex = needsIndex || c.Kind == "pattern" || c.Kind == "symbol"
+		needsIndex = needsIndex || c.Kind == "pattern" || c.Kind == "symbol" || c.Kind == "scope"
 	}
 	asOf := ""
 	if needsIndex {
@@ -34,5 +36,9 @@ func CurrentInputsHash(checkout, directory, project string, item *entries.Item) 
 		ev.UseIndex(ix)
 		asOf = ix.AsOf()
 	}
-	return ev.inputsHash(Loaded{Hash: item.Hash, Entry: &Entry{Checks: checks}}, asOf), true
+	base := ev.inputsHash(Loaded{Hash: item.Hash, Entry: &Entry{Checks: checks}}, asOf)
+	if policySignal(item.Entry.Kind, item.Level, item.Entry.Source.Learned(item.Entry.ID)) {
+		base = withRuleSignal(base, rulechange.Read(directory, project, checkout).For(item.Entry.ID, item.Hash))
+	}
+	return base, true
 }

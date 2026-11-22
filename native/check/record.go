@@ -3,6 +3,8 @@ package check
 import (
 	"errors"
 	"fmt"
+
+	"github.com/mex-memory/mex/native/delivery/entries"
 )
 
 // ErrNotRecordable is returned when a check can't be written against today's
@@ -13,7 +15,7 @@ var ErrNotRecordable = errors.New("check can't be recorded")
 // saw and the hashes of the files read, and confirms the result passes. A
 // writer (setup, capture, the judge) calls this, so every stored check
 // passed when it was written.
-func (ev *Evaluator) Record(kind, role string, target map[string]any) (Check, error) {
+func (ev *Evaluator) Record(kind, role string, target map[string]any, when ...entries.Trigger) (Check, error) {
 	if role != Complete && role != Supporting {
 		return Check{}, fmt.Errorf("%w: role %q", ErrNotRecordable, role)
 	}
@@ -63,7 +65,15 @@ func (ev *Evaluator) Record(kind, role string, target map[string]any) (Check, er
 	case "source":
 		file = str(target, "file")
 		if file == "" {
-			return Check{}, fmt.Errorf("%w: URL sources are recorded by the network pass", ErrNotRecordable)
+			res := ev.urlCheck(c)
+			if res.Status != Pass && res.Now == nil {
+				return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
+			}
+			c.Saw["hash"] = res.Now
+			if confirmed := ev.urlCheck(c); confirmed.Status != Pass {
+				return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, confirmed.Reason)
+			}
+			return c, nil
 		}
 		data, _, ok := ev.readTarget(file)
 		if !ok {
@@ -87,6 +97,24 @@ func (ev *Evaluator) Record(kind, role string, target map[string]any) (Check, er
 			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
 		}
 		c.Saw["fingerprint"] = fp
+	case "fixture", "scope", "quote", "until":
+		r := ev.runWithTriggers(c, when)
+		if r.Status != Pass {
+			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, r.Reason)
+		}
+		switch kind {
+		case "fixture":
+			c.Saw["ok"] = r.Now
+			return c, nil
+		case "scope":
+			c.Saw["count"] = r.Now
+			return c, nil
+		case "quote":
+			c.Saw["hash"] = r.Now
+		case "until":
+			c.Saw["value"] = r.Now
+		}
+		file = str(target, "file")
 	case "pattern":
 		count, res, ok := ev.patternCount(target)
 		if !ok {

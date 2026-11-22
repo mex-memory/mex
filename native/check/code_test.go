@@ -211,6 +211,10 @@ func TestSymbolCheck(t *testing.T) {
 		"src/match.ts":  {{Name: "Matcher", Kind: "class", Start: 1, End: 6}, {Name: "match", Kind: "method", Start: 2, End: 5, Parent: &zero}},
 	}
 	check(Held, Pass)
+	moved := indexed(t, root, ix).Evaluate(&Entry{Status: "active", Checks: []Check{c}}).Checks[0].Relink
+	if moved == nil || moved.File != "src/match.ts" || moved.Symbol != "Matcher.match" {
+		t.Fatalf("relink: %+v", moved)
+	}
 
 	// Renamed in place.
 	write(t, root, "src/router.ts", strings.Replace(router, "match(method", "find(method", 1))

@@ -17,6 +17,7 @@ export interface Proposal {
   oneLine?: string;
   aliases?: Entry["aliases"];
   asks?: Entry["asks"];
+  fix?: Entry["fix"];
   source: Pick<Entry["source"], "type" | "ref" | "quote"> & { text?: string };
   evidence?: Array<string | number>;
   evidenceClass?: Entry["evidence"];

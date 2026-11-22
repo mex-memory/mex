@@ -3,7 +3,7 @@ import { lstatSync, opendirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { z } from "zod";
 import { globPrefix, globToRegExp } from "../file-index/glob.js";
-import type { KnowledgeEntry } from "../knowledge/entry.js";
+import { isLearnedEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import type { NativeReport } from "../knowledge/check.js";
 import type { CheckResult } from "../knowledge/check.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
@@ -146,8 +146,12 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
   const loaded: Loaded[] = [], seen = new Set<string>(), duplicates = new Set<string>();
   if ((report.items?.length ?? 0)>10_000) throw new Error("Rule evidence exceeds the entry limit");
   for(const item of report.items ?? []) { if(seen.has(item.id)) duplicates.add(item.id); seen.add(item.id); }
-  const items=(report.items ?? []).filter(item=>item.level==="team" && item.status==="active" && policyKind(item.kind)
-    && !duplicates.has(item.id) && !writer.setting(projectId,`knowledge.retired.${item.id}`)).sort((a,b)=>a.id.localeCompare(b.id));
+  const items=(report.items ?? []).filter(item=> {
+    const learned = (item as typeof item & { learned?: boolean }).learned || /^mx_deep[a-f0-9]{32}$/u.test(item.id);
+    return (item.level==="team" && policyKind(item.kind) || item.level==="personal" && learned && (policyKind(item.kind) || item.kind==="procedure")
+      || item.level==="team" && learned && item.kind==="procedure") && item.status==="active"
+      && !duplicates.has(item.id) && !writer.setting(projectId,`knowledge.retired.${item.id}`);
+  }).sort((a,b)=>a.id.localeCompare(b.id));
   const manifest=hash(JSON.stringify(items.map(item=>[item.id,item.entry_hash])));
   const key=ruleChangeKey(checkout),cursorKey=`${key}.after`;
   let after="",previous:RuleSnapshot|undefined;
@@ -168,6 +172,7 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
   for (const item of ordered) {
     const found = readCandidate(item, checkout, writer.location.home, projectId);
     if (!found || item.entry_hash !== hash(found.content)) continue;
+    if (item.level === "personal" && !isLearnedEntry(found.entry.mex)) continue;
     if ((bytes += Buffer.byteLength(found.content)) > RULE_CHANGE_LIMITS.bytes) break;
     loaded.push({ ...found, path: item.path, level: item.level, verdict: item.verdict, inputs: report.results?.find(r=>r.entry_id===item.id)?.inputs });
   }
@@ -187,13 +192,20 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
     // Creation is not the last assertion time. Only history after an exact
     // committed entry revision may challenge that revision.
     let history:string[]=[];
-    {
+    if (rule.level === "team") {
       const path=relative(checkout,rule.path).split("\\").join("/");
       const commit=(await git(checkout,["log","-1","--format=%H","--",path]))?.trim();
       if (commit && /^[a-f0-9]{40,64}$/u.test(commit)) {
         const text=await git(checkout,["show",`${commit}:${path}`],64<<10);
         if (text!==undefined && hash(text)===hash(rule.content)) history=(await git(checkout,["log","-32","--format=%H%x00%cI%x00%P%x00%s%x00%b%x00",`${commit}..HEAD`],128<<10))?.split("\0") ?? [];
       }
+    } else {
+      let since = `${entry.mex.created}T00:00:00Z`;
+      try {
+        const verified = JSON.parse(writer.setting(projectId, `knowledge.verified.${entry.mex.id}`) ?? "{}") as { at?: string };
+        if (verified.at && Number.isFinite(Date.parse(verified.at))) since = new Date(verified.at).toISOString();
+      } catch { /* Use the entry's creation date when verification is unavailable. */ }
+      history = (await git(checkout, ["log", "-32", "--format=%H%x00%cI%x00%P%x00%s%x00%b%x00", `--since=${since}`], 128 << 10))?.split("\0") ?? [];
     }
     for (let i = 0; i + 4 < history.length; i += 5) {
       const [commit, date, parents, subject, body] = history.slice(i, i + 5).map(s => s!.trim());

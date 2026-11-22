@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { serializeEntry, validateEntry, type EntryCheck, type KnowledgeEntry } from "../knowledge/entry.js";
+import { isLearnedEntry, serializeEntry, validateEntry, type EntryCheck, type KnowledgeEntry } from "../knowledge/entry.js";
 import { assertNoSecrets, hasSecret } from "../knowledge/gates.js";
 import type { ModelResult } from "../model-runner/index.js";
 import { JUDGE_LIMITS, hash, readSource, type Candidate, type Evidence } from "./evidence.js";
@@ -51,6 +51,28 @@ export function parseAnswers(text: string, ids: string[]): JudgeAnswer[] {
   return exactIds(Response.parse(JSON.parse(text)).results, ids);
 }
 interface Attempt { value: ResolvedAnswer; errors?: Recording["errors"] }
+
+/** The judgement confirms the claim. Only the evaluator can mint new
+ * observations. Edited anchors name the passage or source it just checked. */
+function renewAfterConfirmation(candidate: Candidate): KnowledgeEntry | undefined {
+  const { entry } = candidate;
+  if (!isLearnedEntry(entry.mex) || !candidate.checks.some(c => c.status === "fail")) return undefined;
+  const observations = new Map(candidate.checks.map(result => [result.index, result]));
+  const checks = entry.mex.checks.map((check, index): EntryCheck => {
+    const result = observations.get(index);
+    if (result?.status !== "fail") return check;
+    if (check.kind === "pattern" && typeof result.now === "number") return { ...check, saw: { count: result.now } };
+    if (typeof result.now !== "string") return check;
+    if (check.kind === "quote") return { ...check, target: { ...check.target, exact: result.now } };
+    if (check.kind === "source" && "url" in check.target) return { ...check, saw: { hash: result.now } };
+    return check;
+  });
+  try {
+    const renewed = validateEntry({ ...entry, mex: { ...entry.mex, checks } });
+    assertNoSecrets(renewed);
+    return renewed;
+  } catch { return undefined; }
+}
 async function recordRewrite(context: ReplyContext, candidate: Candidate, answer: RewriteAnswer): Promise<Attempt> {
   const rejected = (reason: JudgeReason, errors?: Recording["errors"]): Attempt => ({ value: { id: answer.id, result: "cannot-tell", reason }, errors });
   try { assertNoSecrets(answer); } catch { return rejected("unsafe-rewrite"); }
@@ -72,7 +94,12 @@ async function recordRewrite(context: ReplyContext, candidate: Candidate, answer
         additional.push({ path, current, current_hash: baseline, baselines: [] });
       }
     }
-    const rewrite = validateEntry({ ...candidate.entry, text: answer.text, mex: { ...candidate.entry.mex, one_line: answer.one_line, checks: recorded.checks } });
+    const old = candidate.entry.mex;
+    const proof = isLearnedEntry(old) ? old.checks.filter(c => c.kind === "fixture" || c.kind === "scope" || c.kind === "until"
+      || c.kind === "source" && "url" in c.target
+      || c.kind === "pattern" && (c.target.expect === "present" || c.target.expect === "at-most")) : [];
+    const rewrite = validateEntry({ ...candidate.entry, text: answer.text, mex: { ...old, one_line: answer.one_line,
+      checks: [...proof, ...recorded.checks] } });
     assertNoSecrets(rewrite);
     if (hasSecret(serializeEntry(rewrite))) return rejected("unsafe-rewrite");
     context.snapshot.files.push(...additional);
@@ -104,7 +131,11 @@ export async function resolveAnswers(answers: JudgeAnswer[], context: ReplyConte
     let attempt: Attempt;
     if (answer.result === "rewritten") attempt = await recordRewrite(context, candidate, answer);
     else if (answer.result === "still-true" && candidate.item.verdict === "broken") attempt = { value: { id: answer.id, result: "cannot-tell", reason: "complete-check-conflict" } };
-    else attempt = { value: { id: answer.id, result: answer.result, reason: answer.result === "cannot-tell" ? "model-abstained" : "accepted" } };
+    else {
+      const rewrite = answer.result === "still-true" ? renewAfterConfirmation(candidate) : undefined;
+      attempt = { value: { id: answer.id, result: answer.result,
+        reason: answer.result === "cannot-tell" ? "model-abstained" : "accepted", ...(rewrite ? { rewrite } : {}) } };
+    }
     resolved.set(answer.id, attempt.value);
     emitDiagnostic(context.diagnostic, { id: answer.id, phase: "answer", model_answer: answer.result, outcome: attempt.value.result, reason: attempt.value.reason, errors: attempt.errors });
     if (answer.result === "rewritten" && attempt.value.reason === "checks-rejected") rejected.push({ answer, attempt });

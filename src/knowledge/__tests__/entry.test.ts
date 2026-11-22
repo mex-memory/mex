@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assertPersonQuote, CheckSchema, KNOWLEDGE_LIMITS, parseEntry, serializeEntry, validateEntry, type KnowledgeEntry } from "../entry.js";
 
@@ -12,6 +13,16 @@ export function sample(): KnowledgeEntry {
   };
 }
 const digest = `sha256:${"a".repeat(64)}`;
+const learnedFixtures = new URL("../../../native/delivery/entries/testdata/learn-deeper/", import.meta.url);
+describe("learned entry codec parity", () => {
+  it.each(readdirSync(learnedFixtures).sort())("preserves %s", name => {
+    const text = readFileSync(new URL(name, learnedFixtures), "utf8").replace(/\r\n/gu, "\n");
+    const [, metadata, body] = text.split("---\n");
+    const parsed = parseEntry(text);
+    expect(parsed).toEqual({ ...JSON.parse(metadata), text: body.trim() });
+    expect(parseEntry(serializeEntry(parsed))).toEqual(parsed);
+  });
+});
 const observations = [
   { kind: "key", target: { file: "pyproject.toml", pointer: "/project/dependencies", member: "colorama" }, saw: { value: true } },
   { kind: "key", target: { file: "package.json", pointer: "/scripts/test" }, saw: { value: "vitest run" } },

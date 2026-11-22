@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/mex-memory/mex/native/delivery/entries"
 )
 
 // Roles.
@@ -48,7 +50,8 @@ type CheckResult struct {
 	Now any `json:"now,omitempty"`
 	// FilesChanged lists recorded files whose hash differs today, or that
 	// are missing.
-	FilesChanged []string `json:"files_changed,omitempty"`
+	FilesChanged []string      `json:"files_changed,omitempty"`
+	Relink       *SymbolRelink `json:"relink,omitempty"`
 }
 
 // Result is one entry's verdict and why.
@@ -69,7 +72,8 @@ type Evaluator struct {
 	index Index
 	graph Graph
 	// behind caches whether the index predates the checkout's HEAD: 0 unread, 1 no, 2 yes.
-	behind int
+	behind    int
+	urlSource func(url string) (string, bool)
 }
 
 // NewEvaluator opens a checkout for reading. Reads never leave it.
@@ -110,14 +114,19 @@ func (ev *Evaluator) Evaluate(e *Entry) Result {
 		raise(Unknown)
 	}
 	for i, c := range e.Checks {
-		r := ev.run(c)
+		r := ev.runWithTriggers(c, e.When)
 		r.Index, r.Kind, r.Role = i, c.Kind, c.Role
-		if c.Kind != "legacy-grounding" {
+		if c.Kind != "legacy-grounding" && c.Kind != "fixture" {
 			r.FilesChanged = ev.floor(c, res.Inputs)
+		}
+		if r.Relink != nil {
+			res.Inputs[r.Relink.File] = inputState(ev.files.read(r.Relink.File))
 		}
 		switch r.Status {
 		case Fail, Gone:
-			if c.Role == Complete {
+			// A relocated but edited quote needs interpretation even if it
+			// is the entire evidence. A missing complete quote still breaks.
+			if c.Role == Complete && !(c.Kind == "quote" && r.Status == Fail) {
 				raise(Broken)
 			} else {
 				raise(Changed)
@@ -183,7 +192,9 @@ func inputState(r fileRead) string {
 	return r.hash
 }
 
-func (ev *Evaluator) run(c Check) CheckResult {
+func (ev *Evaluator) run(c Check) CheckResult { return ev.runWithTriggers(c, nil) }
+
+func (ev *Evaluator) runWithTriggers(c Check, when []entries.Trigger) CheckResult {
 	switch c.Kind {
 	case "key":
 		return ev.key(c)
@@ -203,6 +214,14 @@ func (ev *Evaluator) run(c Check) CheckResult {
 		return ev.patternCheck(c)
 	case "relation":
 		return ev.relationCheck(c)
+	case "fixture":
+		return fixtureCheck(c, when)
+	case "scope":
+		return ev.scopeCheck(c)
+	case "quote":
+		return ev.quoteCheck(c)
+	case "until":
+		return ev.untilCheck(c)
 	}
 	return CheckResult{Status: Floor, Reason: fmt.Sprintf("%s checks are not evaluated yet", c.Kind)}
 }
@@ -316,7 +335,7 @@ func (ev *Evaluator) section(c Check) CheckResult {
 func (ev *Evaluator) source(c Check) CheckResult {
 	file := str(c.Target, "file")
 	if file == "" {
-		return CheckResult{Status: Floor, Reason: "URL sources are checked by the weekly network pass"}
+		return ev.urlCheck(c)
 	}
 	data, res, ok := ev.readTarget(file)
 	if !ok {
