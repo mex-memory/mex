@@ -13,6 +13,8 @@ export interface Producer {
   namespace: { prefix: string; hexCharacters: number };
   evidence: EvidenceClass;
   requiresAnchor: boolean;
+  /** Entries of these kinds with this evidence may use scope `**` with no anchor. */
+  repoWide?: { kinds: readonly string[]; evidence: readonly EvidenceClass[] };
   variesEvidence?: boolean;
 }
 
@@ -22,7 +24,9 @@ const definitions: Readonly<Record<ProducerId, Omit<Producer, "id">>> = {
   "setup-question": { name: "Setup questions", active: true, personAuthored: true, namespace: { prefix: "mx_answer", hexCharacters: 32 }, evidence: "person", requiresAnchor: true },
   "code-facts": { name: "Code facts", active: true, personAuthored: false, namespace: { prefix: "mx_fact", hexCharacters: 32 }, evidence: "mined", requiresAnchor: true },
   "fail-pass": { name: "Fail-to-pass capture", active: true, personAuthored: false, namespace: { prefix: "mx_fix", hexCharacters: 32 }, evidence: "observed", requiresAnchor: true },
-  "learn-deeper": { name: "Learn deeper", active: true, personAuthored: false, namespace: { prefix: "mx_deep", hexCharacters: 32 }, evidence: "review", requiresAnchor: true, variesEvidence: true },
+  "learn-deeper": { name: "Learn deeper", active: true, personAuthored: false, namespace: { prefix: "mx_deep", hexCharacters: 32 }, evidence: "review", requiresAnchor: true, variesEvidence: true,
+    // A rule taken from a teammate's doc or review is delivered like a person's note: in the start brief and recall.
+    repoWide: { kinds: ["rule", "decision", "procedure"], evidence: ["docs", "review"] } },
   judge: { name: "Judge", active: true, personAuthored: false, namespace: { prefix: "mx_judge", hexCharacters: 32 }, evidence: "observed", requiresAnchor: true, variesEvidence: true },
   "session-import": { name: "Past sessions", active: false, personAuthored: false, namespace: { prefix: "mx_import", hexCharacters: 32 }, evidence: "observed", requiresAnchor: true },
   "session-ongoing": { name: "Session learning", active: false, personAuthored: false, namespace: { prefix: "mx_session", hexCharacters: 32 }, evidence: "observed", requiresAnchor: true },
@@ -31,6 +35,12 @@ const definitions: Readonly<Record<ProducerId, Omit<Producer, "id">>> = {
 export function producer(id: ProducerId): Producer {
   const value = definitions[id];
   return { id, ...value, namespace: { ...value.namespace } };
+}
+
+/** Whether an entry of this kind and evidence class needs a code anchor (a narrower scope, `when:`, a symbol or a command). */
+export function anchorRequired(id: ProducerId, kind: string, evidence: string): boolean {
+  const { requiresAnchor, repoWide } = definitions[id];
+  return requiresAnchor && !(repoWide && repoWide.kinds.includes(kind) && (repoWide.evidence as readonly string[]).includes(evidence));
 }
 
 export function listProducers(): Producer[] { return PRODUCER_IDS.map(producer); }

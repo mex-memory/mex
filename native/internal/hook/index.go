@@ -3,6 +3,7 @@ package hook
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/mex-memory/mex/native/index/shift"
@@ -19,15 +20,17 @@ var errNoDetection = errors.New("network detection is skipped on the hook path")
 // noteEdit keeps the file index exact after an edit: for each edited file in an
 // indexed checkout it writes a line shift, so outlines stay right until the
 // background re-parse. It never parses, never opens a database, and ignores
-// every error.
-func noteEdit(ev contract.Event, recordDirectory string) {
+// every error. It returns the edits it placed, or found it couldn't place,
+// for the session's record of changed lines.
+func noteEdit(ev contract.Event, recordDirectory string) []fileEdit {
 	if recordDirectory == "" || ev.Kind != contract.PostTool || ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.OK {
-		return
+		return nil
 	}
 	edits := editsOf(*ev.Tool)
 	if len(edits) == 0 {
-		return
+		return nil
 	}
+	var noted []fileEdit
 	location := place.Location{Directory: recordDirectory}
 	wrote := false
 	for _, edit := range edits {
@@ -58,6 +61,8 @@ func noteEdit(ev contract.Event, recordDirectory string) {
 		} else {
 			record.Unknown = true
 		}
+		path := filepath.Join(checkout.Root, filepath.FromSlash(rel))
+		noted = append(noted, fileEdit{path: path, ranges: ranges, placed: placed})
 		if shift.WriteShift(shift.Directory(location.Directory, checkout.ProjectID), checkout.Key, record) == nil {
 			wrote = true
 		}
@@ -65,6 +70,7 @@ func noteEdit(ev contract.Event, recordDirectory string) {
 	if wrote {
 		shift.MarkPending(location.Directory)
 	}
+	return noted
 }
 
 type fileEdit struct {

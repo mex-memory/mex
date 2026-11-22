@@ -13,6 +13,7 @@
 // Swap in another corpus with --corpus: any directory with the same four
 // files and a matching digest works, including one written by setup.
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +31,9 @@ export function loadCorpus(dir) {
 }
 
 export const entryId = claim => `mx_kbx${claim.replace(/[^a-z0-9]/g, '')}`;
+
+/** The file index's id for a literal pattern (src/file-index/classify.ts). */
+export const patternId = pattern => 'p' + createHash('sha256').update(`literal\n${pattern}`).digest('hex').slice(0, 15);
 
 function hook(binary, flag, request, env) {
   const r = spawnSync(binary, [flag], { input: JSON.stringify(request), encoding: 'utf8', env: { ...env, MEX_BACKGROUND: '1' }, maxBuffer: 64 << 20, timeout: 120_000, windowsHide: true });
@@ -69,6 +73,18 @@ export function runBench({ subject, corpusDir, binary, work, cli = join(root, 'd
   const registered = mirrors.map(f => JSON.parse(readFileSync(join(recordDirectory, 'hook-checkouts', f), 'utf8')));
   const reg = registered.find(r => resolve(r.root).toLowerCase() === resolve(checkout).toLowerCase()) ?? registered[0];
   const base = { checkout: reg.root, project_id: reg.project_id, mex_home: home, record_directory: recordDirectory };
+  // Pattern checks read counts the file index keeps for the literals it was
+  // given: register the corpus's literals, then index again to count them.
+  const literals = corpus.claims.filter(c => c.check.kind === 'pattern').map(c => c.check.target.pattern);
+  if (literals.length) {
+    const patterns = [...new Set(literals)].map(pattern => ({ id: patternId(pattern), pattern, match: 'literal' }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    writeFileSync(join(recordDirectory, 'projects', reg.project_id, 'index', 'patterns.json'), `${JSON.stringify(patterns, null, 2)}\n`);
+    mexCli('index', '--json');
+  }
+  // Calls relations read the code graph: build it wherever the corpus has one.
+  const graph = corpus.claims.some(c => c.check.kind === 'relation' && c.check.target.query === 'calls');
+  if (graph) mexCli('graph', '--json');
 
   // Seed at C0: each claim's check, recorded by the evaluator on today's code.
   const learned = join(checkout, '.mex', 'learned');
@@ -87,6 +103,7 @@ export function runBench({ subject, corpusDir, binary, work, cli = join(root, 'd
   for (const cp of corpus.checkpoints) {
     git(checkout, 'checkout', '-f', '--detach', cp.sha);
     mexCli('index', '--json');
+    if (graph) mexCli('graph', '--json');
     const t0 = performance.now();
     const evaluated = hook(binary, '--check-run', { action: 'evaluate', ...base, store: true, team_only: false }, env);
     const checksMs = Math.round(performance.now() - t0);

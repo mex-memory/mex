@@ -1,6 +1,8 @@
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import * as cliTools from "../../cli-tools.js";
@@ -8,25 +10,33 @@ import { literalPattern } from "../../file-index/classify.js";
 import { openIndex } from "../../file-index/read.js";
 import { indexDirectory, writePatterns } from "../../file-index/store.js";
 import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
+import { propose } from "../../knowledge/gate.js";
+import { forget } from "../../knowledge/mutations.js";
+import { producerEntryId } from "../../knowledge/producers.js";
 import { snapshotNotes } from "../../knowledge/personal-store.js";
 import { prepareShare } from "../../knowledge/share-plan.js";
 import { writeSharedKnowledgeFiles } from "../../knowledge/share.js";
 import { claimHash } from "../../knowledge/state.js";
 import { runModel } from "../../model-runner/index.js";
+import * as consent from "../../model-runner/consent.js";
 import { CEILING_WAIT, recordedModelSpend } from "../../model-runner/consent.js";
 import { claimModelBatch, enqueueModelBatch, recoverModelBatches, withModelJob } from "../../model-runner/budget-queue.js";
 import { ModelRunError } from "../../model-runner/errors.js";
+import { DEFAULT_MODELS } from "../../model-runner/models.js";
 import { queueJob } from "../../record/background.js";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob, listJobs, ownerId, recoverInterruptedJobs, registerJobKind, requeueReadyJobs, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { ZERO } from "../../record/usage.js";
 import { runRepoStart } from "../../repo-start/command.js";
+import { githubReviewLines, withVerifiedAnchors } from "../anchors.js";
 import { approvedCoverage, coverageKey, noteKey, parseManifest, readTeamCoverage, sourceRead, type SourceRef } from "../coverage.js";
+import { prepareEntries } from "../entries.js";
 import { ForgeClient } from "../forge.js";
-import { createLearnKind } from "../job.js";
-import { offerLearning } from "../offer.js";
+import { PinnedTree } from "../git.js";
+import { createLearnKind, writerModel } from "../job.js";
+import { chooseAgent, offerLearning } from "../offer.js";
 import { LEARN_KIND, Plan } from "../plan.js";
-import { sourceDigest } from "../source.js";
+import { sourceDigest, type DocSource, type ReviewSource } from "../source.js";
 import { DAY_MS, nextWeeklyAt, queueDueWeekly, saveWeeklySchedule, WEEKLY_KIND, weeklySchedule, weeklyWakeDue } from "../weekly-schedule.js";
 
 let suite: string, binary: string, fixture: string, repo: string;
@@ -143,11 +153,19 @@ it("quotes first, uses one logged model batch, and delivers a private rule throu
     expect(weeklyWakeDue(writer.location.home, schedule.due + 10)).toBe(true);
     const notes = [...snapshotNotes(writer, start.projectId!).files.values()];
     expect(notes).toHaveLength(1);
-    expect(parseEntry(notes[0]!).mex.source).toEqual({ type: "docs", ref: "README.md" });
+    const learned = parseEntry(notes[0]!);
+    const selected = DEFAULT_MODELS.codex.best;
+    expect(learned.mex.source).toEqual({ type: "docs", ref: "README.md", producer: "learn-deeper",
+      model: { id: selected, version: "unknown" }, label: "Learned from 1 doc" });
+    expect(learned.mex.scope).toEqual(["**"]);
+    expect(writer.setting(start.projectId!, `knowledge.gate.${learned.mex.id}`)).toBeDefined();
+    const results = listJobs({ all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never });
+    expect(results.find(item => item.id === job.id)?.summary).toContain(`Writer model ${selected} (unknown) · Learned from 1 doc.`);
     expect(notes[0]).not.toContain(quote);
     const receipt = writer.db.prepare("SELECT value FROM settings WHERE key LIKE 'learning.deep.batch.%'").get()?.value;
     expect(String(receipt)).not.toContain(review);
     expect(JSON.parse(String(receipt)).sources).toHaveLength(3);
+    expect(JSON.parse(String(receipt)).diagnostics.anchors).toEqual([{ id: learned.mex.id, kinds: ["command"] }]);
     expect(readdirSync(join(writer.location.home, "learn-checks"))).toEqual([]);
     const hook = execFileSync(binary, ["codex", "SessionStart"], {
       cwd: repo, encoding: "utf8", input: JSON.stringify({ cwd: repo, source: "startup", hook_event_name: "SessionStart", session_id: "new-session" }),
@@ -175,8 +193,216 @@ function jobRow(writer: RecordWriter): JobRow {
   return writer.db.prepare("SELECT * FROM jobs WHERE kind=?").get(LEARN_KIND) as unknown as JobRow;
 }
 function reply(value: object) {
-  return { text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture", estimated: false } };
+  return { text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } };
 }
+
+/**
+ * OSS-67 rules replayed at $0. Each row holds the doc excerpt its quotes come from and the pinned files the anchor
+ * code reads: paths and globs the quote or claim names, and the files that mention each identifier the quote marks
+ * (real content when at most 8 files do, stubs otherwise). The mex rows were rebuilt from mex at 515e034a; the pip and
+ * go-git rows are the human-Correct rules kept from the earlier fixture.
+ */
+type ReplayRule = {
+  repo: string; slug: string; revision: string; id: string; label: "Correct" | "Kept"; kind: string; text: string; oneLine: string;
+  evidence: Array<{ path: string; link: string; quote: string }>; sources: Record<string, string>; files: Record<string, string>;
+};
+const replay: ReplayRule[] = JSON.parse(readFileSync(new URL("./fixtures/oss67-anchor-replay.json", import.meta.url), "utf8"));
+const fixtureModel = { id: "fixture", version: "fixture-2026-11" };
+
+async function fixturePlan(slug: string) {
+  const pinned = (await PinnedTree.open(repo, git("rev-parse", "HEAD")))!;
+  const origin = { host: "github.com", slug };
+  const plan = Plan.parse({ checkout: repo, head: pinned.head, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
+    since: "2025-01-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z", preferred: [], docs: [], pulls: [], gaps: [], estimate: 100, ceiling: 150 });
+  return { pinned, plan };
+}
+
+// Frozen from the replay. Code anchors come only from paths the quotes name; every other rule is repo-wide.
+const repoWide = ["repo-wide", "scope **"];
+const REPLAY_KINDS: Record<string, string[]> = {
+  mx_deep2d1ff0cb74224aa6b03a61c9ef574b45: ["code-scope", "scope .gitignore"], // mex: graph eval artifacts (evaluate/README.md)
+  mx_deep397d4cd1b05b63f28b8fdd3af5825ea8: repoWide, // mex: watch hook cleanup
+  mx_deep6be26c5dde592fb81485dc6aef0484c4: repoWide, // mex: automatic model work (`runModel` is in 16 files, so no symbol)
+  mx_deep6ece297b313cc8b07f4e86df02992685: repoWide, // mex: team-entry evidence gates
+  mx_deep753a7d851c8edcd528a9038da610293a: repoWide, // mex: runtime verdicts in the local record
+  mx_deepe740d73545708cd2377e38419155a795: repoWide, // mex: pure single-file extractors
+  mx_deepfc7b4569f40848e12bec69aac49486fe: repoWide, // mex: code-graph contribution scope
+  mx_deepfecb873071b891fcc3247023d009f506: repoWide, // mex: block conversion on complete: false
+  mx_deep4f78c5b8e89314355be98afe9f1f7fad: ["code-scope", "scope src/model-runner/models.ts"], // mex: model names (Correct)
+  mx_deep4edf88f972f4debe2c227f63146d72f6: repoWide, // pip: news entries (Correct)
+  mx_deep1a32010843b2eaf7111ef4d70586f935: repoWide, // go-git: AI policy (Correct)
+};
+const REPLAY_COUNTS = { rules: 11, codeScope: 2, when: 0, symbol: 0, command: 0, repoWide: 9 };
+
+it("replays the OSS-67 rules through propose() and counts each anchor kind", async () => {
+  const observed: Record<string, string[]> = {};
+  for (const [i, row] of replay.entries()) {
+    repo = join(fixture, `replay-${i}`); mkdirSync(repo);
+    git("init", "-qb", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
+    for (const [path, content] of Object.entries({ ...row.files, ...row.sources })) {
+      mkdirSync(dirname(join(repo, path)), { recursive: true });
+      writeFileSync(join(repo, path), content);
+    }
+    git("add", "-f", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", `Pin ${row.repo} at ${row.revision.slice(0, 8)}`);
+    const { pinned, plan } = await fixturePlan(row.slug);
+    const sources: DocSource[] = Object.entries(row.sources).map(([path, text]) => ({ id: "doc:" + path, kind: "docs", path, text,
+      hash: sourceDigest(text), coverage: "partial", link: row.evidence.find(item => item.path === path)!.link }));
+    const prepared = await prepareEntries(reply({ entries: [{ kind: row.kind, scope: [], text: row.text, one_line: row.oneLine, checks: [],
+      evidence: row.evidence.map(({ path, quote }) => ({ id: "doc:" + path, quote })) }] }).text, sources, plan, pinned, fixtureModel);
+    expect(prepared.validation.rejected, row.id).toEqual([]);
+    const saved = await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async ([proposal], check) => {
+      if (!proposal || typeof proposal === "string") throw new Error(`${row.id} did not anchor: ${String(proposal)}`);
+      observed[row.id] = [...proposal.anchorKinds, ...(proposal.anchors?.scope ?? []).map(glob => "scope " + glob),
+        ...(proposal.anchors?.when ?? []).map(item => "when " + item.pattern),
+        ...(proposal.checks ?? []).flatMap(item => item.kind === "symbol" ? ["symbol " + item.target.symbol] : [])];
+      return propose([proposal], { ...check, home: fixture, projectPath: repo });
+    });
+    expect(saved, row.id).toEqual([{ status: "accepted", entryId: row.id, change: "new" }]);
+  }
+  expect(observed).toEqual(REPLAY_KINDS);
+  const count = (kind: string) => Object.values(observed).filter(kinds => kinds.includes(kind)).length;
+  expect({ rules: replay.length, codeScope: count("code-scope"), when: count("when"), symbol: count("symbol"), command: count("command"),
+    repoWide: count("repo-wide") }).toEqual(REPLAY_COUNTS);
+}, 120_000);
+
+it.each([
+  { name: "a cited code file", quote: "Commit a regression test when updating src/runtime.ts.",
+    text: "Changes to the runtime need a regression test that checks stable snapshots.", modelScope: ["src/*.ts"], scope: ["src/*.ts"], kinds: ["code-scope"] },
+  { name: "a cited code glob", quote: "Update the regression fixtures when modifying src/*.ts.",
+    text: "Refresh the regression fixtures when editing a top-level runtime module.", scope: ["src/*.ts"], kinds: ["code-scope"] },
+  { name: "a cited directory with a trailing slash", quote: "Update regression fixtures when modifying files under src/.",
+    text: "Changes to source modules require a refresh of the regression fixtures.", scope: ["src/**"], kinds: ["code-scope"] },
+  { name: "a model's trailing-slash scope", quote: "Commit a regression test when updating src/runtime.ts.",
+    text: "Runtime changes need a regression test for stable snapshots.", modelScope: ["src/"], scope: ["src/**"], kinds: ["code-scope"] },
+  { name: "a trailing-slash scope with no pinned file", quote: "Keep the examples under unpinned/ in sync.",
+    text: "Update copied examples when their original behavior changes.", modelScope: ["unpinned/"], liveFile: "unpinned/example.ts",
+    scope: ["**"], kinds: ["repo-wide"] },
+  { name: "a pinned path elsewhere in the verified excerpt", quote: "Regression tests should cover runtime behavior.",
+    body: "The implementation is in src/runtime.ts.", text: "Provide runtime regression tests when updating src/runtime.ts.",
+    scope: ["src/runtime.ts"], kinds: ["code-scope"] },
+  { name: "a named symbol", quote: "The function canonicalSnapshotId should preserve identifiers between releases.",
+    text: "Keep snapshot IDs stable across releases in canonicalSnapshotId.", scope: ["src/ids.ts"], kinds: ["symbol"] },
+  { name: "a declared Makefile target", quote: "Before release, run make verify-index to check generated fixtures.",
+    text: "Verify the generated index before releases.", scope: ["**"], kinds: ["command", "repo-wide"] },
+  { name: "no code anchor, so the doc rule is repo-wide", quote: "Record the intended audience and the reason when proposing a policy amendment.",
+    text: "When proposing policy amendments, describe who the change affects and why it is needed.",
+    scope: ["**"], kinds: ["repo-wide"] },
+])("anchors a doc rule using $name through the real gate", async scenario => {
+  mkdirSync(join(repo, "src"));
+  mkdirSync(join(repo, "unrelated"));
+  mkdirSync(join(repo, "docs"));
+  writeFileSync(join(repo, "src/runtime.ts"), "export function startRuntime() { return true; }\n");
+  writeFileSync(join(repo, "src/ids.ts"), "export function canonicalSnapshotId() { return 'fixture'; }\n");
+  writeFileSync(join(repo, "unrelated/other.ts"), "export const unrelated = true;\n");
+  writeFileSync(join(repo, "Makefile"), "verify-index:\n\t@printf fixture\n");
+  const path = "docs/guide.rst", content = [scenario.quote, scenario.body].filter(Boolean).join("\n\n");
+  writeFileSync(join(repo, path), content);
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin docs, definitions, and command targets");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  // A model glob needs both a real pinned file and evidence linking it to the rule.
+  const proposals = [{ kind: "rule", scope: [...(scenario.modelScope ?? []), "unrelated/**"],
+    text: scenario.text, one_line: scenario.text, evidence: [{ id: "doc:" + path, quote: scenario.quote }], checks: [] }];
+  const sources: DocSource[] = [{ id: "doc:" + path, kind: "docs", path, text: content, hash: sourceDigest(content), coverage: "full",
+    link: `https://github.com/example/memory/blob/${plan.head}/${path}` }];
+  const prepared = await prepareEntries(reply({ entries: proposals }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  writeFileSync(join(repo, "src/ids.ts"), "export function renamedInTheWorkingTree() { return ''; }\n");
+  if (scenario.liveFile) {
+    mkdirSync(dirname(join(repo, scenario.liveFile)));
+    writeFileSync(join(repo, scenario.liveFile), "export const example = true;\n");
+  }
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async ([anchor], options) => {
+    if (!anchor || typeof anchor === "string") throw new Error("Expected the doc proposal to anchor");
+    expect(anchor.anchors?.scope).toEqual(scenario.scope);
+    expect(anchor.anchorKinds).toEqual(scenario.kinds);
+    expect(await propose([anchor], { ...options, home: fixture, projectPath: repo })).toEqual([expect.objectContaining({ status: "accepted" })]);
+  });
+});
+
+it("uses pinned changed files from verified top-level reviews as code anchors", async () => {
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, "src/runtime.ts"), "export const version = 1;\n");
+  git("add", "src"); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the changed code");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  const sources: ReviewSource[] = [1, 2].map(pull => ({
+    id: "review:" + pull, kind: "review", link: `https://github.com/example/memory/pull/${pull}`,
+    hash: sourceDigest(review), text: review, writer: true, pull, at: plan.until, topLevel: true, outdated: false,
+    changedPaths: ["src/runtime.ts", "src/deleted.ts"],
+  }));
+  const prepared = await prepareEntries(reply({ entries: [{ ...answer, kind: "rule", checks: [],
+    evidence: sources.map(source => ({ id: source.id, quote: source.text })) }] }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async ([anchor]) => {
+    expect(anchor).toMatchObject({ anchors: { scope: ["src/runtime.ts"] }, anchorKinds: ["code-scope"] });
+  });
+});
+
+it("makes an ungrounded review rule repo-wide and drops an unverified symbol or an anchorless recipe", async () => {
+  writeFileSync(join(repo, "unrelated.ts"), "export const actualName = 1;\n");
+  git("add", "unrelated.ts"); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the unrelated file");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  const sources: ReviewSource[] = [1, 2].map(pull => ({
+    id: "review:" + pull, kind: "review", link: `https://github.com/example/memory/pull/${pull}`,
+    hash: sourceDigest(review), text: review, writer: true, pull, at: plan.until, topLevel: true, outdated: false,
+  }));
+  const rule = { kind: "rule", scope: ["**", "**/*", "unrelated.ts", "../README.md"], text: answer.text, one_line: answer.one_line,
+    evidence: sources.map(source => ({ id: source.id, quote: source.text })), checks: [] };
+  const prepared = await prepareEntries(reply({ entries: [
+    rule,
+    { ...rule, checks: [{ kind: "symbol", role: "supporting", target: { file: "unrelated.ts", symbol: "missingName" } }] },
+    { ...rule, kind: "recipe", text: "Recipes from reviews still need a code or command anchor." },
+  ] }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), undefined, async anchors => {
+    expect(anchors).toEqual([expect.objectContaining({ anchors: { scope: ["**"] }, anchorKinds: ["repo-wide"] }), "check-verification", "no-anchor"]);
+  });
+});
+
+it("keeps only edit patterns verified on a review's actual lines and the pinned fix", async () => {
+  const path = "src/renderer.ts", body = "Use the shared date formatting conventions inside the `render` function.";
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, path), "import { format } from 'date-fns';\nexport const render = format;\n");
+  git("add", path); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the code after the fix");
+  const { pinned, plan } = await fixturePlan("example/memory");
+  // A dirty file must not turn the reviewed pattern into current code.
+  writeFileSync(join(repo, path), "import moment from 'moment';\n");
+  const sources: ReviewSource[] = [1, 2].map(pull => ({
+    id: `github:discussion_r:${pull}`, kind: "review", link: `https://github.com/example/memory/pull/${pull}#discussion_r${pull}`,
+    hash: sourceDigest(body), text: body, writer: true, pull, at: plan.until, topLevel: false, outdated: true, path,
+  }));
+  const request = vi.fn(async (input: RequestInfo | URL) => {
+    const id = String(input).split("/").at(-1);
+    expect(["1", "2"]).toContain(id);
+    return Response.json({ html_url: sources.find(source => source.id.endsWith(":" + id))!.link, path, body, side: "RIGHT", original_line: 2,
+      diff_hunk: "@@ -1,0 +1,3 @@\n+import { helper } from 'another-lib';\n+import moment from 'moment';\n+export const render = moment;\n" });
+  });
+  const client = new ForgeClient(plan.source, "fixture-forge-token", request);
+  const pattern = { type: "anti", match: "literal", pattern: "from 'moment'" };
+  const prepared = await prepareEntries(reply({ entries: [{
+    kind: "rule", scope: ["src/**", "unrelated/**"], text: "Centralize date handling in the shared formatter to keep renderer output consistent.",
+    one_line: "Use the shared date formatter when updating the renderer.",
+    evidence: sources.map(source => ({ id: source.id, quote: source.text })), when: [pattern, { ...pattern, pattern: "from 'another-lib'" }],
+    checks: [{ kind: "symbol", role: "complete", target: { file: path, symbol: "render" } }],
+  }] }).text, sources, plan, pinned, fixtureModel);
+  expect(prepared.validation.rejected).toEqual([]);
+  await withVerifiedAnchors(prepared.entries, pinned, fixture, randomUUID(), source => githubReviewLines(client, plan.source, source), async (anchors, check) => {
+    const [proposal] = anchors;
+    if (!proposal || typeof proposal === "string") throw new Error("Expected a verified review anchor");
+    expect(proposal.anchors).toEqual({ scope: ["src/**"], when: [pattern] });
+    expect(proposal.anchorKinds).toEqual(["code-scope", "symbol", "when"]);
+    const accepted = await propose([proposal], { ...check, home: fixture, projectPath: repo });
+    expect(accepted).toEqual([expect.objectContaining({ status: "accepted" })]);
+    const writer = openRecord({ home: fixture, projectPath: repo });
+    try {
+      const note = parseEntry([...snapshotNotes(writer, writer.checkout(repo)!.project_id).files.values()][0]!);
+      expect(note.mex.when).toEqual([pattern]);
+      expect(note.mex.checks[0]).toMatchObject({ kind: "symbol", role: "complete", target: { file: path, symbol: "render" } });
+      expect(note.mex.source).toMatchObject({ type: "review", producer: "learn-deeper", label: "Learned from 2 reviews" });
+      expect(note.mex.source.quote).toBeUndefined();
+    } finally { writer.close(); }
+  });
+  expect(request).toHaveBeenCalled();
+});
 async function accept(ask = vi.fn(async () => true)) {
   vi.stubGlobal("fetch", mockGithub());
   const lines: string[] = [];
@@ -184,6 +410,44 @@ async function accept(ask = vi.fn(async () => true)) {
   return { result, lines, ask };
 }
 const only = (job: JobRow) => ({ only: new Set([job.id]) });
+
+it("learns from a scanned pinned excerpt and reports a doc whose secret leaves no safe excerpt", async () => {
+  git("rm", "README.md");
+  mkdirSync(join(repo, "docs"));
+  const flagged = "https://fixture-user:fixture-password@example.invalid/simple/";
+  const suffix = "Withheld material after the flagged example.";
+  writeFileSync(join(repo, "docs/guide.rst"), quote + "\n\n" + flagged + "\n" + suffix + "\n");
+  writeFileSync(join(repo, "docs/no-safe.rst"), flagged + "\n" + suffix + "\n");
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin docs with a fixture credential-like example");
+  await accept();
+  const model = vi.fn<typeof runModel>(async request => {
+    expect(request.prompt).toContain(quote);
+    expect(request.prompt).not.toContain(flagged);
+    expect(request.prompt).not.toContain(suffix);
+    expect(request.prompt).not.toContain("docs/no-safe.rst");
+    return reply({ entries: [
+      { ...answer, evidence: [{ id: "doc:docs/guide.rst", quote }] },
+      { ...answer, evidence: [{ id: "doc:docs/guide.rst", quote: suffix }] },
+    ] });
+  });
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 1 });
+    const receipt = JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+    expect(receipt.sources).toContainEqual(expect.objectContaining({ id: "doc:docs/guide.rst", coverage: "partial" }));
+    expect(receipt.diagnostics.docPrivacy).toEqual([
+      { path: "docs/guide.rst", status: "excerpt", reason: "possible-secret" },
+      { path: "docs/no-safe.rst", status: "skipped", reason: "possible-secret" },
+    ]);
+    expect(receipt.diagnostics.validation.rejected).toEqual([{ index: 2, reason: "quote-mismatch" }]);
+    const summary = writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(job.id)?.summary;
+    expect(summary).toContain("Some docs were skipped because no safe excerpt remained after secret scanning.");
+  } finally { writer.close(); }
+});
 
 it("records insufficient review evidence without spending on the batch", async () => {
   git("rm", "README.md");
@@ -209,14 +473,80 @@ it("records insufficient review evidence without spending on the batch", async (
   } finally { writer.close(); }
 });
 
+it("records the no-anchor drop and publishes no note for a corroborated but unanchored review claim", async () => {
+  git("rm", "README.md");
+  git("-c", "commit.gpgsign=false", "commit", "-qm", "Use top-level review sources only");
+  await accept();
+  const model = vi.fn<typeof runModel>(async () => reply({ entries: [{ ...answer, scope: ["**/*.js", "package.json"],
+    evidence: [1, 2].map(pull => ({ id: `github:pullrequestreview-:${pull}`, quote: review })), checks: [],
+  }] }));
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 0 });
+    const saved = JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+    expect(saved.diagnostics.validation.rejected).toEqual([{ index: 1, reason: "no-anchor" }]);
+    expect(writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(job.id)?.summary).toContain("Rejected proposals (1 no-anchor).");
+    expect(snapshotNotes(writer, job.project_id!).files.size).toBe(0);
+  } finally { writer.close(); }
+});
+
+it("leaves no gate publication or learning receipt when the job loses its owner", async () => {
+  await accept();
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    const model = vi.fn<typeof runModel>(async () => {
+      writer.db.prepare("UPDATE jobs SET owner=? WHERE id=?").run("other-runner", job.id);
+      return reply({ entries: [answer] });
+    });
+    registerJobKind(createLearnKind({ model }));
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(snapshotNotes(writer, job.project_id!).files.size).toBe(0);
+    expect(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)).toBeUndefined();
+    expect(writer.db.prepare("SELECT key FROM settings WHERE key LIKE 'knowledge.gate.%'").all()).toEqual([]);
+  } finally { writer.close(); }
+});
+
+it("compares a 112 KB AGENTS.md and finishes with a gap when a rule file can't be staged", async () => {
+  const filler = Array.from({ length: 1600 }, (_, i) => `- Fixture guidance line ${i} keeps this rule file above the old staging bound.`).join("\n");
+  writeFileSync(join(repo, "AGENTS.md"), `# Instructions\n\n${filler}\n- ${answer.one_line}\n`);
+  expect(Buffer.byteLength(readFileSync(join(repo, "AGENTS.md")))).toBeGreaterThan(112 << 10);
+  mkdirSync(join(repo, ".claude/rules"), { recursive: true });
+  writeFileSync(join(repo, ".claude/rules/large.md"), "# Large\n" + "x".repeat(1 << 20) + "\n");
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Add large rule files");
+  await accept();
+  const other = { ...answer, kind: "rule", text: "Generated snapshot changes must be verified before each release.",
+    one_line: "Check generated snapshots before every release.", checks: [] };
+  const model = vi.fn<typeof runModel>(async () => reply({ entries: [answer, other] }));
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const job = jobRow(writer);
+    expect(await runOneBatch(writer, ownerId("foreground"), only(job))).toBe("ran");
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(jobRow(writer)).toMatchObject({ state: "done with gaps", results: 1 });
+    const saved = JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+    expect(saved.checkpoint.gaps).toContain("Some rule files could not be read, so duplicate checks skipped them.");
+    expect(saved.diagnostics.unreadRules).toEqual([".claude/rules/large.md"]);
+    // The 112 KB AGENTS.md was staged and compared: the proposal repeating its last line is dropped.
+    expect(saved.gateSummary).toBe("1 saved, 0 to Review, 1 dropped (duplicate-rule-line 1)");
+    const [learned] = [...snapshotNotes(writer, job.project_id!).files.values()].map(raw => parseEntry(raw));
+    expect(learned).toMatchObject({ text: other.text, mex: { scope: ["**"] } });
+  } finally { writer.close(); }
+});
+
 it("matches line endings in doc quotes and records only rejection reasons", async () => {
-  const exact = "Keep snapshot IDs stable across releases.\nThe renderer uses their values as cache keys.";
+  const exact = "Keep snapshot IDs stable across releases.\nThe renderer uses their values as cache keys. Ask [reviewer] before rotating them.";
   git("config", "core.autocrlf", "false");
-  writeFileSync(join(repo, "README.md"), exact.replace("\n", "\r\n"));
+  writeFileSync(join(repo, "README.md"), exact.replace("[reviewer]", "@testuser").replace("\n", "\r\n"));
   git("add", "README.md");
   git("-c", "commit.gpgsign=false", "commit", "-qm", "Use CRLF in the documentation");
   await accept();
-  const rule = { ...answer, text: "Preserve snapshot identifiers to avoid invalidating the renderer cache.",
+  const rule = { ...answer, kind: "rule", text: "Preserve snapshot identifiers to avoid invalidating the renderer cache.",
     evidence: [{ id: "doc:README.md", quote: exact }], checks: [] };
   const model = vi.fn<typeof runModel>(async request => {
     expect(request.prompt).toContain("releases.\\r\\nThe renderer uses");
@@ -242,6 +572,14 @@ it("matches line endings in doc quotes and records only rejection reasons", asyn
       { index: 6, reason: "insufficient-evidence" },
     ] });
     expect(saved).not.toContain("The renderer uses");
+    const learned = parseEntry([...snapshotNotes(writer, job.project_id!).files.values()][0]!);
+    expect(learned.mex.source.model).toEqual(fixtureModel);
+    expect(learned.mex.source.label).toBe("Learned from 1 doc");
+    const summary = writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(job.id)?.summary;
+    expect(summary).toContain("1 saved, 0 to Review, 0 dropped");
+    expect(summary).toContain("Rejected proposals (1 non-rule-kind, 1 unknown-source, 1 quote-mismatch, 1 insufficient-evidence, 1 check-target).");
+    expect(JSON.parse(jobRow(writer).checkpoint!).gaps).not.toContain("Some proposed entries could not be verified.");
+    expect(summary).toContain("Writer model fixture (fixture-2026-11) · Learned from 1 doc.");
   } finally { writer.close(); }
 });
 
@@ -350,16 +688,26 @@ it("previews eligible past sessions, skips drift and non-user rows, and delivers
     claudeTurn(repo, "Credential password=fixtureSecret123"), claudeTurn(repo, "Ask private@example.invalid about secrets"),
     claudeTurn(fixture, "OUTSIDE_REPO_DATA"), claudeTurn(repo, "PRIVATE_ASSISTANT_DATA", { type: "assistant" })]);
   history("codex", codexId, [codexMeta(repo), codexTurn({ new_shape: "UNKNOWN_CODEX_DATA" })]);
+  // Setup's quote leaves past sessions out; a person asks for them with `mex learn --sessions`.
   const { result, ask } = await accept(vi.fn(async (lines: readonly string[]) => {
+    expect(lines.join("\n")).not.toContain("past session");
+    return false;
+  }));
+  const offered = vi.fn(async (lines: readonly string[]) => {
     expect(lines.join("\n")).toContain("1 past session and 1 eligible prompt");
     expect(lines.join("\n")).toContain("Codex capture paused");
     expect(lines.join("\n")).not.toContain(typed);
     return true;
-  }));
+  });
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, sessions: true, write: () => {}, confirm: offered });
+  expect(offered).toHaveBeenCalledTimes(1);
   const remote = vi.fn(async () => { throw new Error("Dry run attempted network"); });
   vi.stubGlobal("fetch", remote);
+  const off: string[] = [];
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, write: line => off.push(line) });
+  expect(off).toEqual(["Past-session import is off. Add --sessions to preview it."]);
   const preview: string[] = [];
-  await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, write: line => preview.push(line) });
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, sessions: true, write: line => preview.push(line) });
   expect(preview.join("\n")).toContain("1 past session");
   expect(preview.join("\n")).toContain("capture paused");
   expect(remote).not.toHaveBeenCalled();
@@ -391,7 +739,7 @@ it("previews eligible past sessions, skips drift and non-user rows, and delivers
     });
     expect(hook).toContain("[learned, not shared] Verify generated snapshots before release.");
     const repeated: string[] = [];
-    await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, write: line => repeated.push(line) });
+    await offerLearning({ root: repo, projectId: result.projectId!, interactive: false, dryRun: true, sessions: true, write: line => repeated.push(line) });
     expect(repeated.join("\n")).toContain("0 past sessions");
   } finally { writer.close(); }
 }, 25_000);
@@ -401,9 +749,10 @@ it("leaves changed sessions out of the approved batch and supports a reviews-onl
   const ask = vi.fn(async () => false);
   const { result } = await accept(ask);
   const lines: string[] = [];
-  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, sessions: false, write: line => lines.push(line),
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, write: line => lines.push(line),
     confirm: async shown => { expect(shown.join("\n")).not.toContain("Past-session dry run"); return false; } });
-  await accept();
+  await offerLearning({ root: repo, projectId: result.projectId!, interactive: true, explicit: true, sessions: true, write: () => {},
+    confirm: async shown => { expect(shown.join("\n")).toContain("Past-session dry run"); return true; } });
   history("codex", codexId, [codexMeta(repo), codexTurn("REPLACED_AFTER_CONSENT")]);
   const model = vi.fn<typeof runModel>(async () => reply({ entries: [] }));
   registerJobKind(createLearnKind({ model }));
@@ -535,11 +884,20 @@ it("uses shared receipts before model selection and respects a deleted legacy ru
   const writer = openRecord({ projectPath: repo, isNetwork: () => false });
   try {
     const project = writer.checkout(repo)!.project_id, job = due(writer, project, old, now);
+    const [seeded] = await propose([{ producer: "learn-deeper", key: JSON.stringify(["github.com", "example/memory", claimHash(answer.text)]),
+      kind: "rule", text: answer.text, oneLine: answer.one_line, source: { type: "docs", ref: "README.md", quote, text: quote }, evidenceClass: "docs",
+      anchors: { scope: ["**"] }, model: { id: "fixture", version: "fixture-1" } }], { home: writer.location.home, projectPath: repo });
+    if (seeded?.status !== "accepted") throw new Error("Expected the local learned note");
+    writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, noteKey(seeded.entryId), "{}");
+    expect(snapshotNotes(writer, project).files.has(seeded.entryId)).toBe(true);
     await runOneBatch(writer, ownerId("foreground"), only(job));
     await runOneBatch(writer, ownerId("foreground"), only(job));
     expect(model).toHaveBeenCalledTimes(1);
     expect(weeklyJob(writer)).toMatchObject({ state: "done", results: 0 });
-    expect(snapshotNotes(writer, project).files.size).toBe(0);
+    // The team retired this claim: the local note is swept and its proof goes with it.
+    const notes = [...snapshotNotes(writer, project).files.values()].map(raw => parseEntry(raw));
+    expect(notes.filter(note => note.mex.status === "active")).toEqual([]);
+    expect(writer.setting(project, noteKey(seeded.entryId))).toBeUndefined();
   } finally { writer.close(); }
 }, 25_000);
 
@@ -708,4 +1066,225 @@ it("conserves unknown timed-out or killed usage, applies the window guard, and b
     expect(jobs.find(item => item.id === job.id)?.tokens.used).toBe(240);
     expect(enqueueJob(writer, { kind: LEARN_KIND, projectId: job.project_id }).existing).toBe(true);
   } finally { writer.close(); }
+});
+
+function latestJob(writer: RecordWriter): JobRow {
+  return writer.db.prepare("SELECT * FROM jobs WHERE kind=? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(LEARN_KIND) as unknown as JobRow;
+}
+async function learnAgain(writer: RecordWriter) {
+  const { path, project_id } = writer.checkout(repo)!;
+  await offerLearning({ root: path, projectId: project_id, interactive: true, explicit: true, write: () => {}, confirm: async () => true });
+  const job = latestJob(writer);
+  await runOneBatch(writer, ownerId("foreground"), only(job));
+  return latestJob(writer);
+}
+const receipt = (writer: RecordWriter, job: JobRow) => JSON.parse(writer.setting(job.project_id!, `learning.deep.batch.${job.id}.0`)!);
+const learnedKey = (text: string) => JSON.stringify(["github.com", "example/memory", claimHash(text)]);
+
+it("keeps the stronger anchor when a later job repeats an owned claim, and unions the proof's sources", async () => {
+  const pathQuote = "Commit a regression test when updating src/runtime.ts.";
+  const plainQuote = "Every runtime change needs its own regression test.";
+  mkdirSync(join(repo, "src")); mkdirSync(join(repo, "docs"));
+  writeFileSync(join(repo, "src/runtime.ts"), "export function startRuntime() { return true; }\n");
+  writeFileSync(join(repo, "README.md"), `# Verification\n${pathQuote}\n`);
+  writeFileSync(join(repo, "docs/guide.md"), `# Guide\n${plainQuote}\n`);
+  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "Pin the runtime and two docs");
+  const rule = { kind: "rule", scope: [], text: "Runtime changes need a regression test.", one_line: "Add a regression test with runtime changes.", checks: [] };
+  const answers = [
+    { ...rule, evidence: [{ id: "doc:docs/guide.md", quote: plainQuote }] },
+    { ...rule, evidence: [{ id: "doc:README.md", quote: pathQuote }] },
+    { ...rule, evidence: [{ id: "doc:docs/guide.md", quote: plainQuote }] },
+  ];
+  let calls = 0;
+  const model = vi.fn<typeof runModel>(async () => reply({ entries: [answers[calls++]] }));
+  registerJobKind(createLearnKind({ model }));
+  await accept();
+  const writer = openRecord();
+  try {
+    const project = writer.checkout(repo)!.project_id;
+    const id = producerEntryId("learn-deeper", learnedKey(rule.text));
+    const note = () => parseEntry(snapshotNotes(writer, project).files.get(id)!);
+    const sources = () => JSON.parse(writer.setting(project, noteKey(id))!).sources.map((source: SourceRef) => source.id);
+    const first = latestJob(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(first));
+    expect(note().mex.scope).toEqual(["**"]);
+    expect(sources()).toEqual(["doc:docs/guide.md"]);
+    // A code anchor is stronger than repo-wide, so the second job updates the entry and keeps both sources.
+    const second = await learnAgain(writer);
+    expect(receipt(writer, second)).toMatchObject({ count: 1, gateSummary: "1 saved, 0 to Review, 0 dropped",
+      diagnostics: { anchors: [{ id, kinds: ["code-scope"] }] } });
+    expect(note().mex.scope).toEqual(["src/runtime.ts"]);
+    expect(sources()).toEqual(["doc:docs/guide.md", "doc:README.md"]);
+    // A repo-wide repeat never weakens it: the entry is kept unchanged and counted as saved.
+    const before = snapshotNotes(writer, project).files.get(id);
+    const third = await learnAgain(writer);
+    expect(model).toHaveBeenCalledTimes(3);
+    expect(third).toMatchObject({ results: 1 });
+    expect(receipt(writer, third)).toMatchObject({ count: 1, gateSummary: "1 saved, 0 to Review, 0 dropped" });
+    expect(snapshotNotes(writer, project).files.get(id)).toBe(before);
+    expect(note().mex.scope).toEqual(["src/runtime.ts"]);
+    expect(sources()).toEqual(["doc:docs/guide.md", "doc:README.md"]);
+  } finally { writer.close(); }
+}, 40_000);
+
+it("drops only the proposal whose replacement target changed before saving", async () => {
+  const oldQuote = "Snapshots are stored next to each renderer test file.";
+  const newQuote = "Snapshots now live in one shared snapshots folder.";
+  mkdirSync(join(repo, "docs"));
+  writeFileSync(join(repo, "docs/old.md"), `# Old\n${oldQuote}\n`);
+  git("add", ".");
+  const dated = "2025-06-01T12:00:00Z";
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-qm", "An older doc"], { cwd: repo, stdio: "pipe",
+    env: { ...process.env, GIT_AUTHOR_DATE: dated, GIT_COMMITTER_DATE: dated } });
+  const older = { kind: "rule", scope: [], text: "Keep snapshots next to their renderer tests.", one_line: "Store snapshots beside renderer tests.",
+    checks: [], evidence: [{ id: "doc:docs/old.md", quote: oldQuote }] };
+  const model = vi.fn<typeof runModel>(async () => reply({ entries: [older] }));
+  registerJobKind(createLearnKind({ model }));
+  await accept();
+  const writer = openRecord();
+  try {
+    const project = writer.checkout(repo)!.project_id;
+    await runOneBatch(writer, ownerId("foreground"), only(latestJob(writer)));
+    const target = producerEntryId("learn-deeper", learnedKey(older.text));
+    expect(parseEntry(snapshotNotes(writer, project).files.get(target)!).mex.status).toBe("active");
+    writeFileSync(join(repo, "docs/new.md"), `# New\n${newQuote}\n`);
+    git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "A newer doc");
+    model.mockImplementation(async () => {
+      // The target changes after the writer saw it.
+      forget(target, "No longer wanted.", { home: writer.location.home, projectPath: repo });
+      return reply({ entries: [
+        { ...older, text: "Keep snapshots in the shared snapshots folder.", one_line: "Store snapshots in one shared folder.",
+          evidence: [{ id: "doc:docs/new.md", quote: newQuote }], replaces: target },
+        { ...older, text: "Verify generated snapshots before each release.", one_line: "Verify snapshots before releases.",
+          evidence: [{ id: "doc:README.md", quote }] },
+      ] });
+    });
+    const job = await learnAgain(writer);
+    expect(job.reason).toBeNull();
+    expect(job).toMatchObject({ results: 1 });
+    expect(receipt(writer, job).gateSummary).toBe("1 saved, 0 to Review, 1 dropped (invalid 1)");
+    expect(model).toHaveBeenCalledTimes(2);
+  } finally { writer.close(); }
+}, 40_000);
+
+it("asks for about ten rules in the first batch and rejects the rest", async () => {
+  const rules = Array.from({ length: 12 }, (_, i) => ({ kind: "rule", scope: [], checks: [], evidence: [{ id: "doc:README.md", quote }],
+    text: `Snapshot rule number ${i + 1} applies to release ${i + 1}.`, one_line: `Snapshot rule ${i + 1} for release ${i + 1}.` }));
+  const model = vi.fn<typeof runModel>(async request => {
+    expect(request.prompt).toContain("Return at most 10 entries");
+    return reply({ entries: rules });
+  });
+  registerJobKind(createLearnKind({ model }));
+  await accept();
+  const writer = openRecord();
+  try {
+    const job = latestJob(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    const saved = receipt(writer, job);
+    expect(saved.diagnostics.validation.rejected).toEqual([{ index: 11, reason: "batch-limit" }, { index: 12, reason: "batch-limit" }]);
+    expect(saved).toMatchObject({ count: 10, gateSummary: "10 saved, 0 to Review, 0 dropped" });
+    expect(latestJob(writer)).toMatchObject({ results: 10 });
+    expect(saved.checkpoint.gaps).not.toContain("Some proposed entries could not be verified.");
+  } finally { writer.close(); }
+}, 25_000);
+
+const failing = { kind: "rule", scope: [], text: "Keep the verify script declared for snapshot checks.", one_line: "Declare the verify script for snapshot checks.",
+  evidence: [{ id: "doc:README.md", quote }], checks: [{ kind: "key", role: "supporting", target: { file: "package.json", pointer: "/scripts/missing" } }] };
+
+it("retries the writer once for an entry the gate dropped on a failed check", async () => {
+  const fixed = { ...failing, checks: [{ kind: "key", role: "supporting", target: { file: "package.json", pointer: "/scripts/verify" } }] };
+  const model = vi.fn<typeof runModel>(async request => {
+    if (model.mock.calls.length === 1) return reply({ entries: [failing] });
+    expect(request.prompt).toContain("failed verification against the pinned code");
+    expect(request.prompt).toContain('"failure":"check-fails"');
+    expect(request.prompt).toContain("Return at most 1 entries");
+    return reply({ entries: [fixed] });
+  });
+  registerJobKind(createLearnKind({ model }));
+  await accept();
+  const writer = openRecord();
+  try {
+    const job = latestJob(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(model).toHaveBeenCalledTimes(2);
+    const saved = receipt(writer, job);
+    expect(saved).toMatchObject({ count: 1, gateSummary: "1 saved, 0 to Review, 1 dropped (check-fails 1)",
+      diagnostics: { retry: { response: "valid", proposed: 1, rejected: [] } } });
+    expect(writer.setting(job.project_id!, `learning.deep.retry.${job.id}.0`)).toBeUndefined();
+    const [note] = [...snapshotNotes(writer, job.project_id!).files.values()].map(raw => parseEntry(raw));
+    expect(note!.mex.checks).toContainEqual(expect.objectContaining({ kind: "key", target: { file: "package.json", pointer: "/scripts/verify" } }));
+    expect(writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(job.id)?.summary).toContain("Writer retry · 1 resubmitted.");
+  } finally { writer.close(); }
+}, 25_000);
+
+it("skips the writer retry when the approved ceiling can't cover it", async () => {
+  let ceiling = 0;
+  const model = vi.fn<typeof runModel>(async () => {
+    vi.spyOn(consent, "recordedModelSpend").mockReturnValue(ceiling - 100);
+    return reply({ entries: [failing] });
+  });
+  registerJobKind(createLearnKind({ model }));
+  await accept();
+  const writer = openRecord();
+  try {
+    const job = latestJob(writer);
+    ceiling = Plan.parse(JSON.parse(job.params)).ceiling;
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(receipt(writer, job)).toMatchObject({ count: 0, gateSummary: "0 saved, 0 to Review, 1 dropped (check-fails 1)" });
+    expect(receipt(writer, job).diagnostics.retry).toBeUndefined();
+    expect(writer.setting(job.project_id!, `learning.deep.retry.${job.id}.0`)).toBeUndefined();
+  } finally { writer.close(); }
+}, 25_000);
+
+it("finishes a first round saved before an interruption without another model call", async () => {
+  const model = vi.fn<typeof runModel>(async () => {
+    if (model.mock.calls.length === 1) return reply({ entries: [failing] });
+    throw new Error("The runner died during the retry.");
+  });
+  registerJobKind(createLearnKind({ model }));
+  await accept();
+  const writer = openRecord();
+  try {
+    const job = latestJob(writer);
+    await runOneBatch(writer, ownerId("foreground"), only(job));
+    // The failed retry keeps the first answer and still finishes the batch.
+    expect(model).toHaveBeenCalledTimes(2);
+    const saved = receipt(writer, job);
+    expect(saved.checkpoint.gaps).toContain("The writer retry could not run; the first answer was kept.");
+    expect(saved.gateSummary).toBe("0 saved, 0 to Review, 1 dropped (check-fails 1)");
+    expect(writer.setting(job.project_id!, `learning.deep.retry.${job.id}.0`)).toBeUndefined();
+  } finally { writer.close(); }
+}, 25_000);
+
+it("names the model with the most usage, or unknown, never the requested alias", () => {
+  const usage = { ...ZERO, model: "mixed", estimated: false };
+  expect(writerModel({ selectedModel: "best", usage: { ...usage, byModel: [
+    { ...ZERO, input: 10, model: "small-2026", estimated: false }, { ...ZERO, input: 900, output: 50, model: "large-2026", estimated: false },
+  ] } })).toEqual({ id: "best", version: "large-2026" });
+  expect(writerModel({ selectedModel: "best", usage: { ...usage, model: "large-2026" } })).toEqual({ id: "best", version: "large-2026" });
+  expect(writerModel({ selectedModel: "best", usage })).toEqual({ id: "best", version: "unknown" });
+  expect(writerModel({ selectedModel: "best", usage: { ...usage, model: "unknown" } })).toEqual({ id: "best", version: "unknown" });
+});
+
+it("picks the runner from the last 7 days, this project first", () => {
+  vi.spyOn(cliTools, "isCliAvailable").mockImplementation(() => true);
+  const writer = openRecord({ projectPath: repo });
+  const project = writer.checkout(repo)!.project_id;
+  const hooks = new DatabaseSync(join(writer.location.directory, "hooks.db"));
+  try {
+    const schema = resolve("native/record/schema/hooks");
+    for (const file of readdirSync(schema).filter(name => name.endsWith(".sql")).sort()) hooks.exec(readFileSync(join(schema, file), "utf8"));
+    const at = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString();
+    const add = (id: string, agent: string, projectId: string, days: number) =>
+      hooks.prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,0)").run(id, agent, projectId, repo, at(days), at(days));
+    // Codex was used more, but only before the window.
+    for (const id of ["c1", "c2", "c3"]) add(id, "codex", project, 20);
+    add("k1", "claude-code", project, 2);
+    expect(chooseAgent(project)).toBe("claude");
+    // With no recent use here, recent use anywhere on the machine decides.
+    hooks.exec("DELETE FROM sessions");
+    add("o1", "codex", "g-other", 1);
+    expect(chooseAgent(project)).toBe("codex");
+  } finally { hooks.close(); writer.close(); }
 });

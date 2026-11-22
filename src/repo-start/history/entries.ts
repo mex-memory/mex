@@ -421,8 +421,25 @@ function layerDrafts(facts: CodeFactsFile, recipes: RecipesFile | undefined): Ty
   const packages = recipes?.packages ?? [];
   for (const rule of facts.layer_rules) {
     const target = packages.find(pkg => pkg.path === rule.to && pkg.kind === "node" && pkg.name);
-    // A folder reached by relative paths has no literal that names only it.
-    if (!target || !preciseName(target.name)) { skip(out, "no precise import literal"); continue; }
+    if (!target || !preciseName(target.name)) {
+      // A folder reached by relative paths has no literal that names only it, but the file
+      // index resolves those imports to paths: a relation check counts them (0 today, which
+      // the gate proves), and the speed bump stops an edit that adds one.
+      if (out.drafts.length >= FACT_LIMITS.layer) { out.capped = true; break; }
+      const scope = `${rule.from}/**`, from = base(rule.from), to = base(rule.to);
+      out.drafts.push({
+        proposal: proposal({
+          key: `layer\n${rule.from}\n${rule.to}`, kind: "rule",
+          anchors: { scope: [scope] },
+          text: `${code(rule.from)} never imports ${code(rule.to)}: ${plural(rule.imports, "import")} go from ${code(rule.to)} into ${code(rule.from)} and none go back. Keep the dependency one-way.`,
+          oneLine: `${code(rule.from)} never imports ${code(rule.to)}; keep the dependency one-way.`,
+          label: label(`mined from code: ${rule.imports} imports go ${to}→${from}, none ${from}→${to}`, `mined from code: ${rule.imports} imports one way, none back`),
+          source: { type: "mined", ref: scope },
+          checks: [{ kind: "relation", role: "complete", target: { query: "imports", from: scope, to: `${rule.to}/**` }, saw: { count: 0 } }],
+        }),
+      });
+      continue;
+    }
     if (out.drafts.length >= FACT_LIMITS.layer) { out.capped = true; break; }
     const name = target.name, scope = `${rule.from}/**`;
     const literals = [`'${name}'`, `"${name}"`, `'${name}/`, `"${name}/`];

@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { nativeBinary } from "./check.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import type { KnowledgeEntry } from "./entry.js";
+import type { GateContext } from "./gate-types.js";
 
 export type WhenPattern = NonNullable<KnowledgeEntry["mex"]["when"]>[number];
 
@@ -36,15 +37,18 @@ export const PATTERN_CHECK_MAX = 64;
  * Returns null when the check couldn't run (no native binary, a crash):
  * callers then keep no pattern, never an unchecked one.
  */
-export function checkPatterns(candidates: readonly PatternCandidate[], scope: readonly string[], options: KnowledgeOptions): PatternVerdict[] | null {
+export function checkPatterns(candidates: readonly PatternCandidate[], scope: readonly string[],
+  options: KnowledgeOptions & Pick<GateContext, "checkTree" | "checkIndex">): PatternVerdict[] | null {
   if (!candidates.length) return [];
   if (candidates.length > PATTERN_CHECK_MAX) return null;
   const binary = nativeBinary(options.env);
   if (!binary) return null;
-  const project = knowledgeProject(options);
+  const target = options.checkTree && options.checkIndex
+    ? { checkout: options.checkTree, project_id: options.checkIndex.projectId, record_directory: options.checkIndex.recordDirectory }
+    : liveTarget(options);
   const run = spawnSync(binary, ["--pattern-check"], {
     input: JSON.stringify({
-      checkout: project.root, project_id: project.projectId, record_directory: project.location.directory, scope,
+      ...target, scope,
       candidates: candidates.map(c => ({ type: c.type, match: c.match, pattern: c.pattern, objected: c.objected, fixed: c.fixed, anchor: c.anchor ?? "" })),
     }),
     encoding: "utf8", timeout: 30_000, windowsHide: true, maxBuffer: 1 << 20,
@@ -57,6 +61,11 @@ export function checkPatterns(candidates: readonly PatternCandidate[], scope: re
   } catch {
     return null;
   }
+}
+
+function liveTarget(options: KnowledgeOptions) {
+  const project = knowledgeProject(options);
+  return { checkout: project.root, project_id: project.projectId, record_directory: project.location.directory };
 }
 
 /** The patterns an entry may carry: the candidates the self-check kept. */

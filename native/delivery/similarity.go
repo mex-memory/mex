@@ -48,12 +48,13 @@ func shingleSimilar(a, b string) bool {
 	return float64(n)/float64(len(sx)+len(sy)-n) >= .6
 }
 
-func nativeSimilar(line string, texts []string) bool {
+// nativeSimilar says whether a rule file already says the candidate's claim.
+func nativeSimilar(claim string, texts []string) bool {
 	for _, text := range texts {
 		// A native file can contain many independent rules; compare paragraphs
 		// and individual lines instead of diluting one rule in the whole file.
 		for _, part := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
-			if similar(line, part) {
+			if similar(claim, part, part) {
 				return true
 			}
 		}
@@ -64,7 +65,14 @@ func nativeSimilar(line string, texts []string) bool {
 // Text containment is deliberately strict: a false merge hides a useful entry.
 // The dev pair study found no labelled duplicate at .95, but also no false
 // merges; looser thresholds suppressed unrelated entries. No paraphrase claim.
-func similar(a, b string) bool {
+//
+// It is directional. The candidate's claim (its one line, not its rationale)
+// is a duplicate only when the prior's whole text covers the claim's words.
+// A short entry contained in a longer one must not hide the longer one:
+// "Lint: `pnpm run lint`" covers one of five commands in a CI procedure, not
+// the procedure. Negations and numbers are compared claim to claim, so a
+// prior "never X" can't hide a candidate "X".
+func similar(claim, priorClaim, priorText string) bool {
 	// Dropping stop words or short numbers must not erase a disagreement.
 	anchors := func(s string) string {
 		var out []string
@@ -76,14 +84,14 @@ func similar(a, b string) bool {
 		sort.Strings(out)
 		return strings.Join(out, " ")
 	}
-	if anchors(a) != anchors(b) {
+	if anchors(claim) != anchors(priorClaim) {
 		return false
 	}
 	sx, sy := map[string]bool{}, map[string]bool{}
-	for _, w := range rank.Tokens(boundedText(a, 32768)) {
+	for _, w := range rank.Tokens(boundedText(claim, 32768)) {
 		sx[w] = true
 	}
-	for _, w := range rank.Tokens(boundedText(b, 32768)) {
+	for _, w := range rank.Tokens(boundedText(priorText, 32768)) {
 		sy[w] = true
 	}
 	if min(len(sx), len(sy)) < 3 {
@@ -95,9 +103,19 @@ func similar(a, b string) bool {
 			n++
 		}
 	}
-	return float64(n)/float64(min(len(sx), len(sy))) >= .95
+	return float64(n)/float64(len(sx)) >= .95
 }
+
+// itemSimilar says whether candidate a repeats prior b; see similar.
 func itemSimilar(a, b *entries.Item) bool {
 	x, y := shaped{candidate: candidate{item: a}}, shaped{candidate: candidate{item: b}}
-	return (a.Entry.Kind == b.Entry.Kind || overlapping(x, y)) && similar(a.Entry.OneLine+" "+a.Entry.Text, b.Entry.OneLine+" "+b.Entry.Text)
+	return (a.Entry.Kind == b.Entry.Kind || overlapping(x, y)) && similar(entryClaim(a.Entry), entryClaim(b.Entry), b.Entry.OneLine+" "+b.Entry.Text)
+}
+
+// entryClaim is what an entry says, without its rationale.
+func entryClaim(e *entries.Entry) string {
+	if strings.TrimSpace(e.OneLine) != "" {
+		return e.OneLine
+	}
+	return e.Text
 }

@@ -103,6 +103,17 @@ func (ev *Evaluator) Record(kind, role string, target map[string]any) (Check, er
 			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, got.Reason)
 		}
 		return c, nil
+	case "relation":
+		count, res, ok := ev.relationCount(target, nil)
+		if !ok {
+			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
+		}
+		c.Saw["count"] = count.n
+		// Like a pattern, a relation covers a scope, not a single file.
+		if got := ev.run(c); got.Status != Pass {
+			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, got.Reason)
+		}
+		return c, nil
 	default:
 		return Check{}, fmt.Errorf("%w: %s checks are not built yet", ErrNotRecordable, kind)
 	}

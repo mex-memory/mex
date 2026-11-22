@@ -72,14 +72,16 @@ function showJob(reader: RecordReader, job: JobRow, write: Print): void {
   else write(`Learn deeper: ${job.state}. ${job.reason ?? "See `mex jobs --all`."}`);
 }
 
-function chooseAgent(project: string): ModelAgent | undefined {
+/** The agent used most in the last 7 days, in this project first and then anywhere on this machine. */
+export function chooseAgent(project: string): ModelAgent | undefined {
   const hooks = openHooksReadOnly();
   let used: ModelAgent[] = [];
   try {
-    const since = new Date(Date.now() - 28 * 86_400_000).toISOString();
-    used = hooks?.all<{ agent: string }>(`SELECT agent FROM sessions WHERE project_id=? AND last_seen_at>=?
-      AND agent IN ('claude-code','codex') GROUP BY agent ORDER BY count(*) DESC,max(last_seen_at) DESC`, project, since)
+    const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const ranked = (where: string, ...args: string[]) => hooks?.all<{ agent: string }>(`SELECT agent FROM sessions WHERE ${where}last_seen_at>=?
+      AND agent IN ('claude-code','codex') GROUP BY agent ORDER BY count(*) DESC,max(last_seen_at) DESC`, ...args, since)
       .map(row => row.agent === "claude-code" ? "claude" : "codex") ?? [];
+    used = [...ranked("project_id=? AND ", project), ...ranked("")];
   } catch { /* an unavailable history cannot choose the runner */ }
   finally { hooks?.close(); }
   return [...new Set<ModelAgent>([...used, "claude", "codex"])].find(agent => isCliAvailable(agent));
@@ -127,10 +129,12 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       return;
     }
     const window = reviewWindow();
-    const preview = () => options.sessions === false ? { files: [], gaps: [] } : previewImport({ checkout: root, project: projectId, window, store: reader });
+    // Past-session import is off unless asked for with --sessions, like the inactive session-import producer.
+    const preview = () => options.sessions !== true ? { files: [], gaps: [] } : previewImport({ checkout: root, project: projectId, window, store: reader });
     if (options.dryRun) {
       const { files, gaps } = preview();
-      write(options.sessions === false || !importsEnabled(reader, projectId) ? "Past-session capture is off for this preview."
+      write(options.sessions !== true ? "Past-session import is off. Add --sessions to preview it."
+        : !importsEnabled(reader, projectId) ? "Past-session capture is off for this preview."
         : `Past-session dry run found ${importCount(files)} for this checkout. Preview only · $0.`);
       gaps.forEach(write);
       return;
@@ -169,7 +173,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     if (inventory.more) gaps.push("Some merged changes were outside the source scan limit.");
     if (docs.length > MAX_DOCS) gaps.push("Some docs were outside the source scan limit.");
     const setup = options.modelSetup ?? "best-only";
-    const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), setup, sessions, BACKFILL_PULLS_PER_BATCH);
+    const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), agent, setup, sessions, BACKFILL_PULLS_PER_BATCH);
     plan = Plan.parse({ checkout: root, head, origin: repo, source: inventory.source, visibility: inventory.visibility, agent,
       setup, ...window, preferred, pulls: orderBackfillPulls(inventory.pulls), pullsPerBatch: BACKFILL_PULLS_PER_BATCH,
       docs: docs.slice(0, MAX_DOCS), sessions, refresh: options.weekly !== false,
@@ -184,7 +188,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     if (inventory.anonymous) lines.push(`Fetching slowly without a ${repo.host === "github.com" ? "GitHub" : "GitLab"} login. Sign in with \`${repo.host === "github.com" ? "gh" : "glab"} auth login\` to speed it up.`);
     if (plan.visibility === "private") lines.push("Review and doc excerpts from this private repo will be sent to your selected agent account. Start only if your organization allows it.");
     if (sessions.length) lines.push(`Past-session dry run found ${importCount(sessions)} for this checkout. Eligible typed excerpts go to your selected agent account.`,
-      "For reviews and docs alone, decline and run `mex learn --no-sessions`.");
+      "For reviews and docs alone, decline and run `mex learn` without --sessions.");
     if (plan.refresh) lines.push("After this run, MEX checks for new reviews and docs every 7–14 days when idle, signed in, and within the 3% automatic allowance. Use `mex learn --no-weekly` for a one-time run.");
     lines.push(...importGaps);
     const windows = usageWindows(reader).filter(item => item.agent === agent && Date.parse(item.observed_at) <= Date.now()).map(item => ({
@@ -251,7 +255,7 @@ export async function runLearnCommand(options: { raiseCeiling?: boolean; modelSe
     if (!reader?.get("SELECT 1 FROM checkouts WHERE path=? AND project_id=?", project.root, project.projectId)) throw new Error("Run `mex` here to register this repo first.");
   } finally { reader?.close(); }
   if (options.raiseCeiling) {
-    if (options.dryRun || options.sessions === false || options.weekly === false) throw new Error("Use --raise-ceiling by itself to resume the existing quote.");
+    if (options.dryRun || options.sessions !== undefined || options.weekly === false) throw new Error("Use --raise-ceiling by itself to resume the existing quote.");
     if (!interactive) { console.log("Run `mex learn --raise-ceiling` in a terminal to review and approve a new limit."); return; }
     await raiseCeiling(project.root, project.projectId, console.log);
   } else await offerLearning({ root: project.root, projectId: project.projectId, write: console.log, interactive,

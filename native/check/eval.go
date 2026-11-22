@@ -67,6 +67,7 @@ type Result struct {
 type Evaluator struct {
 	files *files
 	index Index
+	graph Graph
 	// behind caches whether the index predates the checkout's HEAD: 0 unread, 1 no, 2 yes.
 	behind int
 }
@@ -200,6 +201,8 @@ func (ev *Evaluator) run(c Check) CheckResult {
 		return CheckResult{Status: Floor, Reason: "legacy grounding needs review"}
 	case "pattern":
 		return ev.patternCheck(c)
+	case "relation":
+		return ev.relationCheck(c)
 	}
 	return CheckResult{Status: Floor, Reason: fmt.Sprintf("%s checks are not evaluated yet", c.Kind)}
 }

@@ -546,6 +546,31 @@ graphCommand
     }
   });
 
+for (const [question, description] of [
+  ["callers", "Who calls a symbol, re-checked against today's files"],
+  ["callees", "What a symbol calls, including from functions nested in it"],
+  ["impact", "Callers two levels up: what a change to a symbol reaches"],
+  ["tests", "Tests that cover a symbol, directly or through a tested caller"],
+] as const) {
+  graphCommand
+    .command(`${question} <symbol>`)
+    .description(`${description}. Name it as name, Owner.name or path/to/file.ts:name`)
+    .option("--json", "Output the answer as JSON")
+    .option("--root <dir>", "Project root (defaults to current directory)")
+    .action(async (symbol: string, opts) => {
+      try {
+        const { runGraphRead } = await import("./graph/cli-read.js");
+        await runGraphRead(question, symbol, {
+          root: opts.root ?? graphCommand.opts().root,
+          json: opts.json ?? graphCommand.opts().json,
+        });
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      }
+    });
+}
+
 graphCommand
   .command("refresh")
   .description("Explicitly refresh a compatible graph from the current repository")
@@ -1077,8 +1102,8 @@ program
   .description("Review a quote for learning from past reviews and docs")
   .option("--model-setup <setup>", "Choose mixed or best-only")
   .option("--raise-ceiling", "Review a higher token ceiling for a waiting learning job")
-  .option("--dry-run", "Preview past-session import without queuing learning")
-  .option("--no-sessions", "Learn from reviews and docs without importing sessions")
+  .option("--dry-run", "Preview without queuing learning")
+  .option("--sessions", "Also import eligible past sessions (off by default)")
   .option("--no-weekly", "Approve a one-time run without enrolling in weekly refresh")
   .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }) => {
     try {

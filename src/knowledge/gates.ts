@@ -17,6 +17,11 @@ const SECRETS = [
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s/@]+@/iu,
 ];
 export function hasSecret(text: string): boolean { return SECRETS.some(pattern => pattern.test(text)); }
+/** Offset only. A caller can exclude a finding without retaining the value. */
+export function firstSecretOffset(text: string): number | undefined {
+  const offset = Math.min(...SECRETS.map(pattern => pattern.exec(text)?.index ?? Infinity));
+  return Number.isFinite(offset) ? offset : undefined;
+}
 const secretKey = /^(?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password|authorization|private[_ -]?key|aws_secret_access_key)$/iu;
 export function assertNoSecrets(value: unknown): void {
   const visit = (value: unknown, key = ""): boolean => typeof value === "string"

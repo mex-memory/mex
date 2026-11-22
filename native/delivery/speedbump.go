@@ -16,11 +16,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
+	pathscope "github.com/mex-memory/mex/native/internal/scope"
 	"github.com/mex-memory/mex/native/pattern"
 	"github.com/mex-memory/mex/native/record"
 )
@@ -182,6 +185,16 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 		for i := range snap.Items {
 			it := &snap.Items[i]
 			typ := bumpType(it)
+			if typ == "anti" && len(it.Entry.When) == 0 {
+				// A layer rule held by an import relation has no literal to
+				// match: the edit's imports are resolved instead.
+				if inScope(it, v.rel) {
+					if t, ok := relationBump(it, v.rel, added, old); ok {
+						out = append(out, bump{item: it, trigger: t, rel: v.rel, project: v.project, check: v.checkout})
+					}
+				}
+				continue
+			}
 			if typ == "" || !p.InEdit(added, it, typ) {
 				continue
 			}
@@ -200,6 +213,64 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 				out = append(out, bump{item: it, trigger: t, rel: v.rel, project: v.project, check: v.checkout})
 				break
 			}
+		}
+	}
+	return out
+}
+
+// importSpec is the module an import, export-from, dynamic import or
+// require names.
+var importSpec = lazy(`(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"'\n]+)["']`)
+
+// relationBump finds, for a rule held by an import relation ("core never
+// imports app": a complete relation check), an import the edit adds from a
+// file in the rule's from scope into its to scope. Imports are resolved as
+// the file index resolves them, relative to the edited file; package imports
+// name no folder here and never stop an edit.
+func relationBump(it *entries.Item, rel, added, old string) (entries.Trigger, bool) {
+	for _, c := range it.Entry.Checks {
+		query, _ := c.Target["query"].(string)
+		from, _ := c.Target["from"].(string)
+		to, _ := c.Target["to"].(string)
+		if c.Kind != "relation" || c.Role != "complete" || query != "imports" || from == "" || to == "" {
+			continue
+		}
+		fromRE, err := pathscope.CompileGlob(pathscope.Normalize(from))
+		if err != nil || !fromRE.MatchString(rel) {
+			continue
+		}
+		toRE, err := pathscope.CompileGlob(pathscope.Normalize(to))
+		if err != nil {
+			continue
+		}
+		before := importsInto(rel, old, toRE)
+		for spec, n := range importsInto(rel, added, toRE) {
+			if n > before[spec] {
+				return entries.Trigger{Type: "anti", Match: "literal", Pattern: spec}, true
+			}
+		}
+	}
+	return entries.Trigger{}, false
+}
+
+// importsInto counts the relative imports in text, from file, that resolve
+// into the to scope (a folder import reaches its index file).
+func importsInto(file, text string, to *regexp.Regexp) map[string]int {
+	out := map[string]int{}
+	if text == "" {
+		return out
+	}
+	for _, m := range importSpec().FindAllStringSubmatch(text, 256) {
+		spec := m[1]
+		if !strings.HasPrefix(spec, "./") && !strings.HasPrefix(spec, "../") {
+			continue
+		}
+		target := path.Clean(path.Join(path.Dir(file), spec))
+		if target == ".." || strings.HasPrefix(target, "../") {
+			continue
+		}
+		if to.MatchString(target) || to.MatchString(target+"/index.ts") {
+			out[spec]++
 		}
 	}
 	return out

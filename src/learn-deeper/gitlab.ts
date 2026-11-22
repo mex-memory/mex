@@ -1,4 +1,5 @@
-import { ForgeClient, object, positive, rows, SourceError, type Inventory, type Pull, type RepositoryAccess, type ReviewBatch, type ReviewRequest } from "./forge.js";
+import { ForgeClient, object, positive, readChangedPaths, rows, SourceError,
+  type Inventory, type Pull, type RepositoryAccess, type ReviewBatch, type ReviewRequest } from "./forge.js";
 import { Reviewers } from "./reviewers.js";
 import { redactReviews, repository, reviewSource, sourceBands, spreadPulls, validAt, type ReviewSource, type SourceWindow } from "./source.js";
 
@@ -92,5 +93,14 @@ export async function gitlabReviews(client: ForgeClient, request: ReviewRequest)
       reviews.push({ ...candidate, writer: writer === true, outdated });
     }
   }
-  return { reviews: redactReviews(reviews, reviewers, gaps, request.preferred, request.preferDistinctPulls), reviewers, gaps: [...gaps] };
+  const kept = redactReviews(reviews, reviewers, gaps, request.preferred, request.preferDistinctPulls);
+  const files = new Map<number, string[]>();
+  for (const source of kept) {
+    if (!source.writer || files.has(source.pull)) continue;
+    files.set(source.pull, await readChangedPaths(client, `${prefix}/merge_requests/${source.pull}/diffs`, "new_path", tree));
+  }
+  return { reviews: kept.map(source => {
+    const changedPaths = source.writer ? files.get(source.pull) : undefined;
+    return changedPaths?.length ? { ...source, changedPaths } : source;
+  }), reviewers, gaps: [...gaps] };
 }

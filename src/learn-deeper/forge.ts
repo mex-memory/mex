@@ -1,10 +1,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { command, type PinnedTree } from "./git.js";
+import { hasSecret, stripHidden } from "../knowledge/gates.js";
+import { command, repoPath, type PinnedTree } from "./git.js";
 import type { Reviewers } from "./reviewers.js";
 import type { Repository, ReviewSource, SourceWindow } from "./source.js";
 
 const MAX_RESPONSE = 2 << 20;
 const MAX_TOKEN_LENGTH = 4096;
+export const MAX_REVIEW_FILES = 8;
 
 export type FetchProblem = "login" | "offline" | "rate-limit" | "unavailable";
 export class SourceError extends Error {
@@ -37,6 +39,24 @@ export function rows(value: unknown): Record<string, unknown>[] {
 }
 export function positive(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+export function pinnedChangedPaths(value: unknown, field: string, tree: Pick<PinnedTree, "has">): string[] {
+  if (!Array.isArray(value)) return [];
+  const paths = value.slice(0, MAX_REVIEW_FILES).flatMap(value => {
+    const path = object(value)?.[field];
+    return repoPath(path) && tree.has(path) && stripHidden(path) === path && !hasSecret(path) ? [path] : [];
+  });
+  return [...new Set(paths)];
+}
+
+/** Changed-file metadata is optional evidence. Keep existing sources if it is unavailable. */
+export async function readChangedPaths(client: ForgeClient, route: string, field: string, tree: Pick<PinnedTree, "has">): Promise<string[]> {
+  const page = await client.get(route + "?per_page=" + MAX_REVIEW_FILES, true).catch(error => {
+    if (!(error instanceof SourceError)) throw error;
+    return undefined;
+  });
+  return pinnedChangedPaths(page?.value, field, tree);
 }
 
 function validToken(value: string | undefined): string | undefined {

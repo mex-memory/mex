@@ -148,7 +148,7 @@ func deliverHistory(h *record.Hooks, ev contract.Event, env Environment, notices
 
 var (
 	testCommandRE = sync.OnceValue(func() *regexp.Regexp {
-		return regexp.MustCompile(`(?:^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b|npx\s+(?:vitest|jest|mocha)\b|vitest\b|jest\b|mocha\b|pytest\b|python[0-9.]*\s+-m\s+(?:pytest|unittest)\b|go\s+test\b|cargo\s+(?:test|nextest)\b|dotnet\s+test\b|mvn\s+(?:\S+\s+)*test\b|gradlew?\s+(?:\S+\s+)*test\b|rspec\b|phpunit\b|tox\b|nox\b|make\s+(?:\S+\s+)*(?:test|check)\b|ctest\b)`)
+		return regexp.MustCompile(`(?:^|[\s;&|(])(?:(?:npm|pnpm|yarn|bun)\s+(?:(?:--filter[= ]\S+|-F\s+\S+|-w\s+\S+|--workspace[= ]\S+|workspace\s+\S+|-r|--recursive)\s+)*(?:run\s+)?test\b|npx\s+(?:vitest|jest|mocha)\b|vitest\b|jest\b|mocha\b|pytest\b|python[0-9.]*\s+-m\s+(?:pytest|unittest)\b|go\s+test\b|cargo\s+(?:test|nextest)\b|dotnet\s+test\b|mvn\s+(?:\S+\s+)*test\b|gradlew?\s+(?:\S+\s+)*test\b|rspec\b|phpunit\b|tox\b|nox\b|make\s+(?:\S+\s+)*(?:test|check)\b|ctest\b)`)
 	})
 	gitHistoryRE = sync.OnceValue(func() *regexp.Regexp {
 		return regexp.MustCompile(`^git\s+(?:-C\s+\S+\s+)?(?:log|blame|show|annotate)\b`)
