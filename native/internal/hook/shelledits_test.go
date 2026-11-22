@@ -87,7 +87,7 @@ func TestShellEditsReachGraphCards(t *testing.T) {
 			} else {
 				const script = `sed 's/width: number,/width: number, height: number,/' area.ts > area.tmp && cat area.tmp > area.ts && sed 's/area(1)/area(1, 2)/' caller2.ts > caller.tmp && cat caller.tmp > caller2.ts`
 				runCommand("sh", "-c", script)
-				command = "sh -c '" + script + "'"
+				command = script // as agents send it: sed and cat only read, the redirects write
 			}
 			if agent == "codex" {
 				tool = "exec_command"

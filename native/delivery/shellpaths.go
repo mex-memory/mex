@@ -27,7 +27,7 @@ func shellTargets(ev contract.Event) (targets []string, write, bounded bool) {
 		if len(command) > maxCommandBytes {
 			return false
 		}
-		if readsOrSearches(command) {
+		if readsOrSearches(command) && !redirectsToFile(command) {
 			return true
 		}
 		write = true
@@ -126,6 +126,47 @@ func shellPathWords(command string) iter.Seq[string] {
 			}
 		}
 	}
+}
+
+// redirectsToFile reports an unquoted `>` or `>>` into a file: `sed ... > x.ts`
+// and `cat tmp > x.ts` write although sed and cat only read. Redirects to
+// /dev/null, $null, NUL or another stream (&1) write nothing.
+func redirectsToFile(command string) bool {
+	quote := byte(0)
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '>':
+			j := i + 1
+			if j < len(command) && command[j] == '>' {
+				j++
+			}
+			for j < len(command) && (command[j] == ' ' || command[j] == '\t') {
+				j++
+			}
+			end := j
+			for end < len(command) && !strings.ContainsRune(" \t\r\n;|&)", rune(command[end])) {
+				end++
+			}
+			target := strings.Trim(command[j:end], "'\"")
+			if j < len(command) && command[j] == '&' {
+				target = ""
+			}
+			switch strings.ToLower(target) {
+			case "", "/dev/null", "$null", "nul":
+			default:
+				return true
+			}
+			i = end - 1
+		}
+	}
+	return false
 }
 
 func changesDirectory(word string) bool {

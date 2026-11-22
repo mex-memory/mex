@@ -81,6 +81,29 @@ func TestShellTargetsFollowCd(t *testing.T) {
 	}
 }
 
+func TestRedirectsToFile(t *testing.T) {
+	for command, want := range map[string]bool{
+		"sed 's/a/b/' x.ts > x.tmp && cat x.tmp > x.ts": true,
+		"cat a.ts >> b.ts":            true,
+		"grep -n foo src 2>/dev/null": false,
+		"rg foo 2>&1":                 false,
+		"Get-Content x.ts > $null":    false,
+		"cat x.ts > NUL":              false,
+		"echo 'a > b.ts'":             false,
+		"grep -rn 'x' src":            false,
+	} {
+		if got := redirectsToFile(command); got != want {
+			t.Errorf("redirectsToFile(%q) = %v, want %v", command, got, want)
+		}
+	}
+	ev := contract.Event{Checkout: t.TempDir(), Tool: &contract.Tool{Name: contract.ToolShell, Output: &contract.ToolOutput{OK: true},
+		Input: contract.ToolInput{Command: "sed 's/a/b/' area.ts > area.tmp && cat area.tmp > area.ts"}}}
+	ev.Cwd = ev.Checkout
+	if got, write, _ := shellTargets(ev); !write || !reflect.DeepEqual(got, []string{"area.ts"}) {
+		t.Fatalf("targets = %v, write = %v; want [area.ts], true", got, write)
+	}
+}
+
 func TestRecentlyChangedCode(t *testing.T) {
 	f := rescueFixture(t)
 	files := map[string][]plantedSymbol{"src/recent.ts": nil, "src/old.ts": nil, "src/backdated.ts": nil, "src/future.ts": nil, "src/unchanged.ts": nil}
