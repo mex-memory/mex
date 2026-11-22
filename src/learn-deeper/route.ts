@@ -107,18 +107,23 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const proven = proof.when.length > 0;
 
   if (proven && glob) {
-    const pairs = [...new Set(proof.when.flatMap(item => item.pairs))].slice(0, 3).map(index => proof.pairs[index]!);
+    // One fixture per pattern, holding only the pairs that pattern was proven on: the evaluator requires every
+    // pair in a fixture to satisfy every trigger it proves. All fixtures share the entry's size budget.
     let bytes = 0;
-    const fixturePairs = pairs.flatMap(pair => {
-      const before = trimRegion(pair.before, ROUTE_LIMITS.fixtureLines, pair.anchor);
-      const after = trimRegion(pair.after, ROUTE_LIMITS.fixtureLines);
-      bytes += Buffer.byteLength(before.text) + Buffer.byteLength(after.text);
-      return bytes <= ROUTE_LIMITS.fixtureBytes
-        ? [{ path: pair.after.path, commit: pair.after.commit, before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
-          after: { start: after.start, end: after.end, text: after.text, hash: after.hash } }] : [];
-    });
-    if (fixturePairs.length) {
-      checks.push({ kind: "fixture", role: "complete", target: { pairs: fixturePairs, proves: proof.when.map((_, i) => i) }, saw: { ok: true } } as ProposedCheck);
+    for (const [index, item] of proof.when.entries()) {
+      const fixturePairs = item.pairs.slice(0, 3).flatMap(at => {
+        const pair = proof.pairs[at]!;
+        const before = trimRegion(pair.before, ROUTE_LIMITS.fixtureLines, pair.anchor);
+        const after = trimRegion(pair.after, ROUTE_LIMITS.fixtureLines);
+        const size = Buffer.byteLength(before.text) + Buffer.byteLength(after.text);
+        if (bytes + size > ROUTE_LIMITS.fixtureBytes) return [];
+        bytes += size;
+        return [{ path: pair.after.path, commit: pair.after.commit, before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
+          after: { start: after.start, end: after.end, text: after.text, hash: after.hash } }];
+      });
+      if (fixturePairs.length) {
+        checks.push({ kind: "fixture", role: "complete", target: { pairs: fixturePairs, proves: [index] }, saw: { ok: true } } as ProposedCheck);
+      }
     }
     if (proof.fixLiteral) {
       checks.push({ kind: "pattern", role: "complete", target: { scope: glob, pattern: proof.fixLiteral, match: "literal", expect: "present" } } as ProposedCheck);
