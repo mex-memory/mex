@@ -93,9 +93,9 @@ What these numbers don't cover yet:
 
 Precision rose because a call resolves only through scoping, imports, `self`, `super()` and evidence-typed receivers, and a name bound two ways in one scope stays unresolved. Recall rose because imports inside functions, package re-exports, inherited methods, typed parameters, `x = Cls()` and `self.x` fields now count. Most remaining misses are calls on untyped parameters and values (`untyped_receiver`).
 
-### M3 CLI measurements on schema v4
+### M2 CLI measurements on schema v4
 
-With `MEX_GRAPH_ENGINE_LANGUAGES=python`, `mex graph rebuild` takes Python from one engine `stage` job and writes it into today's schema v4 graph. Every other language, framework resolution and publication stay as they are. Same machine and method, this branch with the flag off and on (Django two runs, the others three):
+At M2, `MEX_GRAPH_ENGINE_LANGUAGES=python` put Python on one engine `stage` job and wrote the results into the schema v4 graph. The other languages, framework resolution and publication followed their existing paths. These measurements compare the flag off and on, with two runs for Django and three for each other repository.
 
 | Repo | Rebuild s | Peak MB | Refresh s | Edges | Precision | Recall |
 |---|---:|---:|---:|---:|---:|---:|
@@ -639,6 +639,23 @@ Compiler-era graphs require a rebuild because the build manifest changed.
 The engine keeps its existing node ids, spans and sketches. The archived
 `next2` compiler graphs remain the reference for parity, and TypeScript
 5.9 remains a development dependency for the TypeScript-based judges.
+
+`measure.mjs --checkout` ran three consecutive trials per arm on the same
+machine. Each cell shows the median from `04862dd2` followed by the stage 3
+median. Both arms used the same engine binary. The v4 base ran with its
+compiler default. The v5 base opted TypeScript and JavaScript into the engine.
+
+| Storage | Repo | Cold build s | Peak MiB | Refresh s |
+|---|---|---:|---:|---:|
+| Default v4 | Hono | 9.643 → 5.505 | 960 → 436 | 2.967 → 2.194 |
+| Default v4 | NestJS | 18.826 → 9.266 | 1,109 → 566 | 7.103 → 3.865 |
+| Engine v5 | Hono | 1.333 → 1.296 | 240 → 238 | 0.230 → 0.231 |
+| Engine v5 | NestJS | 2.356 → 2.337 | 302 → 308 | 0.366 → 0.400 |
+
+Accuracy and call-form results matched `04862dd2` with engine staging enabled
+on Hono, zod and NestJS. Parity matched all 57,960 checked node ids and the
+framework rows, with the same field differences against `next2`. Hono's v5
+`callgraph.mjs --gate` measured 0.998 precision, 0.966 recall and 0.981 F1.
 
 ## Locked targets
 
