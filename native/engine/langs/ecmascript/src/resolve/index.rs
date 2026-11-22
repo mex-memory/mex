@@ -11,7 +11,7 @@ use super::{Lane, Reason};
 
 // The extracted facts remain available by file. Bound the derived lexical
 // maps separately so a cold job does not keep every model resident.
-const MODEL_CAPACITY: usize = 4096;
+const MODEL_CAPACITY: usize = 3072;
 
 struct CachedModel<'a> {
     model: Rc<FileIndex<'a>>,

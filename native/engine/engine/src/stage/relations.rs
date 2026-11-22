@@ -110,6 +110,7 @@ impl<'a> Projection<'a> {
     pub(super) fn new(
         file: &'a StagedFile<'_>,
         facts: &FileFacts,
+        signature: edit_facts::Signature,
         file_key: impl Fn(&str) -> i64,
         mut node_key: impl FnMut(&str) -> Result<i64, JobError>,
     ) -> Result<Self, JobError> {
@@ -158,7 +159,7 @@ impl<'a> Projection<'a> {
             })
             .collect::<Result<_, JobError>>()?;
         Ok(Self {
-            signature: edit_facts::Signature::new(facts)?,
+            signature,
             routes: routes(facts)?,
             edges,
             unresolved,

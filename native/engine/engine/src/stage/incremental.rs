@@ -407,8 +407,15 @@ impl Corpus<'_> {
                                incoming|
              -> Result<(), JobError> {
                 let facts = load(index);
+                let signature = match build
+                    .as_deref_mut()
+                    .and_then(|build| build.take_signature(&facts.path))
+                {
+                    Some(signature) => signature,
+                    None => edit_facts::Signature::new(facts)?,
+                };
                 let projection =
-                    relations::Projection::new(&file, facts, &file_key, &mut node_key)?;
+                    relations::Projection::new(&file, facts, signature, &file_key, &mut node_key)?;
                 projection.install(writer, keys[index], &mut encoder)?;
                 for marker in &facts.frameworks {
                     if marker.kind == DETECTION {
@@ -667,6 +674,11 @@ impl<'a> Plan<'a> {
         if complete {
             resolve = current.keys().copied().collect();
         } else {
+            let topology =
+                !removed.is_empty() || edited.iter().any(|path| prior.file(path).is_none());
+            if !topology {
+                writer.restrict_read_index_to_surfaces();
+            }
             let mut frontier: VecDeque<_> = surfaces
                 .iter()
                 .copied()
@@ -699,8 +711,6 @@ impl<'a> Plan<'a> {
                         .map_err(JobError::write)?,
                 );
             }
-            let topology =
-                !removed.is_empty() || edited.iter().any(|path| prior.file(path).is_none());
             if topology {
                 for path in removed.iter().copied().chain(
                     edited

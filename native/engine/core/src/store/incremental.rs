@@ -2,7 +2,7 @@
 //! callbacks whose publicly visible edge has a different source file.
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{OptionalExtension, params};
 
@@ -102,6 +102,7 @@ pub(super) struct Dependencies {
     names: RefCell<HashMap<String, i64>>,
     lookups: RefCell<HashMap<(LookupKind, i64, i64), ReadId>>,
     readers: OnceCell<HashMap<ReadId, Vec<i64>>>,
+    surface_reads_only: Cell<bool>,
     last_lookup: Cell<i64>,
 }
 
@@ -361,11 +362,40 @@ impl Writer {
         sql
     }
 
+    /// Surface-only edits can skip lookups that only change on topology edits.
+    pub fn restrict_read_index_to_surfaces(&self) {
+        debug_assert!(self.dependencies.readers.get().is_none());
+        self.dependencies.surface_reads_only.set(true);
+    }
+
+    fn surface_keys(&self) -> rusqlite::Result<HashSet<ReadId>> {
+        self.conn
+            .prepare_cached(
+                "SELECT id FROM base.resolution_keys WHERE kind IN (?1, ?2, ?3)
+             UNION ALL SELECT id FROM main.resolution_keys WHERE kind IN (?1, ?2, ?3)",
+            )?
+            .query_map(
+                params![
+                    LookupKind::CSharpType as u8,
+                    LookupKind::TsHeritage as u8,
+                    LookupKind::TsDispatch as u8
+                ],
+                |row| Ok(ReadId::lookup(row.get(0)?)),
+            )?
+            .collect()
+    }
+
     fn read_index(&self) -> rusqlite::Result<&HashMap<ReadId, Vec<i64>>> {
         if let Some(index) = self.dependencies.readers.get() {
             return Ok(index);
         }
         let _timer = crate::timing::Timer::start("incremental.reverseReads");
+        let surface_keys = self
+            .dependencies
+            .surface_reads_only
+            .get()
+            .then(|| self.surface_keys())
+            .transpose()?;
         let mut index: HashMap<_, Vec<_>> = HashMap::new();
         let sql = self.prior_sql("resolution_reads", "origin, reads", "1");
         let mut statement = self.conn.prepare_cached(&sql)?;
@@ -376,7 +406,10 @@ impl Writer {
             let mut id = 0;
             while !bytes.is_empty() {
                 id = next_read(&mut bytes, id)?;
-                index.entry(ReadId(id)).or_default().push(origin);
+                let key = ReadId(id);
+                if id & 1 == 0 || surface_keys.as_ref().is_none_or(|keys| keys.contains(&key)) {
+                    index.entry(key).or_default().push(origin);
+                }
             }
         }
         Ok(self.dependencies.readers.get_or_init(|| index))

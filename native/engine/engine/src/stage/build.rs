@@ -10,7 +10,9 @@ use mex_graph_core::store::{FileRow, NodeRow, Writer};
 use mex_graph_core::timing::{self, Timer};
 use sha2::{Digest, Sha256};
 
-use super::{StagedNode, declared_nodes, incremental::Corpus, node_ids, relations};
+use super::{
+    StagedNode, declared_nodes, edit_facts::Signature, incremental::Corpus, node_ids, relations,
+};
 use crate::frameworks::Enabled;
 use crate::job::{
     ConfigSource, ExtractedFiles, JobCounts, JobError, Request, RequestFile, emit, read_source,
@@ -52,42 +54,53 @@ pub(crate) fn write(
         .count();
     let mut writer = Writer::create(output, nodes).map_err(write)?;
     let declarations = Timer::start("v5.declarations");
-    for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
-        if index != 0 && index.is_multiple_of(256) {
-            progress("parse", index, request.files.len())?;
-        }
-        let (facts, size) = match extracted.file(entry) {
-            Ok(file) => file,
-            Err((path, reason)) => {
-                if request.build_metadata.is_some() {
-                    return Err(JobError::request(format!(
-                        "Unable to build input {path}: {reason}"
-                    )));
-                }
-                writer.add_coverage(path, reason).map_err(write)?;
-                counts.coverage_gaps += 1;
-                continue;
+    // A large base can sign each origin while the main thread writes the
+    // declarations. Keep one producer so normalization does not clone
+    // several large fact arenas at once.
+    let signatures = std::thread::scope(|scope| {
+        let signatures = (request.files.len() >= 1024 && request.limits.threads != Some(1))
+            .then(|| scope.spawn(|| build_signatures(&extracted, request)));
+        for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
+            if index != 0 && index.is_multiple_of(256) {
+                progress("parse", index, request.files.len())?;
             }
-        };
-        let ids = &ids_by_file[index];
-        register_nodes(ids, &mut node_keys, &mut public_ids)?;
-        let file = write_file(
-            &mut writer,
-            root,
-            request,
-            input,
-            facts,
-            size,
-            ids,
-            &node_keys,
-            None,
-        )?;
-        file_keys.insert(input.path.as_str(), file);
-        identities.insert(input.path.as_str(), ids.as_slice());
-        sizes.insert(input.path.as_str(), size);
-        counts.files += 1;
-        counts.coverage_gaps += usize::from(facts.health.status == ParseStatus::Failed);
-    }
+            let (facts, size) = match extracted.file(entry) {
+                Ok(file) => file,
+                Err((path, reason)) => {
+                    if request.build_metadata.is_some() {
+                        return Err(JobError::request(format!(
+                            "Unable to build input {path}: {reason}"
+                        )));
+                    }
+                    writer.add_coverage(path, reason).map_err(write)?;
+                    counts.coverage_gaps += 1;
+                    continue;
+                }
+            };
+            let ids = &ids_by_file[index];
+            register_nodes(ids, &mut node_keys, &mut public_ids)?;
+            let file = write_file(
+                &mut writer,
+                root,
+                request,
+                input,
+                facts,
+                size,
+                ids,
+                &node_keys,
+                None,
+            )?;
+            file_keys.insert(input.path.as_str(), file);
+            identities.insert(input.path.as_str(), ids.as_slice());
+            sizes.insert(input.path.as_str(), size);
+            counts.files += 1;
+            counts.coverage_gaps += usize::from(facts.health.status == ParseStatus::Failed);
+        }
+        match signatures {
+            Some(worker) => worker.join().expect("signature worker"),
+            None => Ok(HashMap::new()),
+        }
+    })?;
     counts.nodes = node_keys.len();
     drop(declarations);
 
@@ -117,6 +130,7 @@ pub(crate) fn write(
     let selected: HashSet<_> = by_path.keys().copied().collect();
     let mut outgoing = OutgoingBuild {
         public_ids: &public_ids,
+        signatures,
         total: counts.files,
         written: 0,
         edges: 0,
@@ -165,8 +179,24 @@ pub(crate) fn write(
     Ok(counts)
 }
 
+fn build_signatures<'a>(
+    extracted: &ExtractedFiles<'_>,
+    request: &'a Request,
+) -> Result<HashMap<&'a str, Signature>, JobError> {
+    extracted
+        .files
+        .iter()
+        .zip(&request.files)
+        .filter_map(|(entry, input)| {
+            let (facts, _) = extracted.file(entry).ok()?;
+            Some(Signature::new(facts).map(|signature| (input.path.as_str(), signature)))
+        })
+        .collect()
+}
+
 pub(super) struct OutgoingBuild<'a> {
     public_ids: &'a [[u8; 16]],
+    signatures: HashMap<&'a str, Signature>,
     total: usize,
     written: usize,
     edges: usize,
@@ -174,6 +204,10 @@ pub(super) struct OutgoingBuild<'a> {
 }
 
 impl OutgoingBuild<'_> {
+    pub(super) fn take_signature(&mut self, path: &str) -> Option<Signature> {
+        self.signatures.remove(path)
+    }
+
     pub(super) fn project(
         &mut self,
         writer: &mut Writer,
