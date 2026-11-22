@@ -32,7 +32,9 @@ func needsJudge(report check.StageReport) bool {
 	}
 	for _, result := range report.Results {
 		for _, c := range result.Checks {
-			if c.Role == check.Complete && len(c.FilesChanged) > 0 {
+			// A symbol found under a new name or file passes, so the entry holds,
+			// but only the judge job writes the new place back into the entry.
+			if c.Relink != nil || (c.Role == check.Complete && len(c.FilesChanged) > 0) {
 				return true
 			}
 		}
