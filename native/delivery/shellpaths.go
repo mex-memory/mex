@@ -9,6 +9,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/index/shift"
 	"github.com/mex-memory/mex/native/internal/contract"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // shellTargets takes literal paths from the write commands of one event.
@@ -29,6 +30,13 @@ func shellTargets(ev contract.Event) (targets []string, write, bounded bool) {
 		}
 		if readsOrSearches(command) && !redirectsToFile(command) {
 			return true
+		}
+		if !write && !samePath(cwd, ev.Checkout) {
+			// The checkout is registered by its real path. The agent's folder
+			// may name it through a link (macOS /var is /private/var).
+			if real, err := place.RealPath(cwd); err == nil {
+				cwd = real
+			}
 		}
 		write = true
 		dir, changeDir := cwd, false
@@ -126,6 +134,14 @@ func shellPathWords(command string) iter.Seq[string] {
 			}
 		}
 	}
+}
+
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // redirectsToFile reports an unquoted `>` or `>>` into a file: `sed ... > x.ts`
