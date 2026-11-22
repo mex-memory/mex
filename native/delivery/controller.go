@@ -534,7 +534,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				}
 				if possible {
 					for _, r := range g.ranked {
-						if it := byID[r.ID]; it != nil {
+						if it := byID[r.ID]; it != nil && !it.Entry.Learned() {
 							g.cands = append(g.cands, candidate{item: it, moment: momentPrompt, tier: tierPrompt, pointer: true})
 						}
 					}
@@ -701,7 +701,11 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(g.cands) == 0 {
 		return "", nil
 	}
-	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel, brief.Options{Checkout: g.checkout, MexHome: env.Home, ProjectID: g.project, Agent: ev.Agent, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd})
+	opts := brief.Options{Checkout: g.checkout, MexHome: env.Home, ProjectID: g.project, Agent: ev.Agent, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd}
+	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel, opts)
+	pathCoverage := map[string]coverage{g.firstRel: cov}
+	var ruleFiles []record.DeliveryCandidate
+	coveredIDs := map[string]bool{}
 	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout, hooks: h}
 	defer senv.close()
 	// Strongest moment per entry, then the verdict decides the form.
@@ -709,7 +713,20 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	var ids []string
 	for _, c := range g.cands {
 		id := c.item.Entry.ID
-		if cov.covers(c.item) {
+		if c.moment == momentAnchor && c.item.Entry.Learned() {
+			byPath, ok := pathCoverage[c.rel]
+			if !ok {
+				byPath = loadCoverage(ev.Agent, g.checkout, c.rel, opts)
+				pathCoverage[c.rel] = byPath
+			}
+			if byPath.covers(c.item) {
+				if !coveredIDs[id] {
+					ruleFiles = append(ruleFiles, ruleFileReceipt(id, c.item.Entry.Kind, c.item.Level))
+					coveredIDs[id] = true
+				}
+				continue
+			}
+		} else if cov.covers(c.item) {
 			continue
 		}
 		old, ok := best[id]
@@ -719,6 +736,11 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		if !ok || c.tier < old.tier || (c.reserve && !old.reserve) {
 			best[id] = c
 		}
+	}
+	if len(ruleFiles) > 0 {
+		req := baseRequest(ev, env, g.project, g.checkout)
+		req.Candidates = ruleFiles
+		_, _ = h.CheckAndMark(req)
 	}
 	if len(ids) == 0 {
 		return "", nil
@@ -838,7 +860,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	}
 	companion := func(id string) *shaped {
 		it := byID[id]
-		if it == nil || cov.covers(it) {
+		if it == nil || it.Entry.Learned() || cov.covers(it) {
 			return nil
 		}
 		s := shape(candidate{item: it, moment: "companion", tier: tierFolder}, verdictOf(id), senv)

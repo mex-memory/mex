@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { planNative } from "../native-plan.js";
-import type { Candidate } from "../native-select.js";
+import { selectNative, type Candidate } from "../native-select.js";
 import { entry } from "./fixtures.js";
 
 const dirs: string[] = [];
@@ -100,5 +100,36 @@ describe("Copilot's path-scoped instructions", () => {
     const plan = planNative(root, ["copilot"], [team("mx_root01")]);
     expect(plan.files).toEqual([]);
     expect(plan.notes[0]).toContain("is yours");
+  });
+});
+
+describe("learned routing", () => {
+  it("keeps process rules at the root and folder notes in file-matched instructions", () => {
+    const process = team("mx_deeproot");
+    const folder = mine("mx_deepfolder", "src/**");
+    const ordinary = mine("mx_plain01", "src/**");
+    const pattern = team("mx_deepcode", "src/**");
+    pattern.entry.mex.when = [{ type: "anti", match: "literal", pattern: "oldAccessor()" }];
+    const { selected } = selectNative([process, folder, ordinary, pattern, team("mx_deepunchecked")],
+      new Map([["team/mx_deeproot", "held"], ["personal/mx_deepfolder", "held"], ["team/mx_deepcode", "held"]]));
+    expect(selected.map(candidate => candidate.entry.mex.id)).not.toContain("mx_deepunchecked");
+    const root = repo();
+    const agents = ["codex", "claude-code", "copilot"] as const;
+    for (const agent of agents) {
+      const files = planNative(root, [agent], selected).files;
+      expect(files.find(file => file.ids.includes("mx_deeproot"))?.area).toBe("");
+      const scoped = files.filter(file => file.ids.includes("mx_deepfolder"));
+      if (agent === "codex") expect(scoped).toHaveLength(0);
+      else {
+        expect(scoped).toHaveLength(1);
+        expect(scoped[0]?.text).toContain(agent === "claude-code" ? 'paths:\n  - "src/**"' : 'applyTo: "src/**"');
+      }
+      expect(files.some(file => file.ids.includes("mx_plain01"))).toBe(true);
+      expect(files.some(file => file.ids.includes("mx_deepcode"))).toBe(false);
+    }
+
+    const combined = planNative(root, agents, selected).files;
+    expect(combined.find(file => file.path === "src/AGENTS.md")?.ids).toEqual(["mx_plain01"]);
+    expect(combined.filter(file => file.ids.includes("mx_deepfolder")).flatMap(file => file.agents).sort()).toEqual(["claude-code", "copilot"]);
   });
 });

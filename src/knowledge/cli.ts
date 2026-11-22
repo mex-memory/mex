@@ -101,16 +101,31 @@ export function buildKnowledgeCommands(): Command[] {
       });
     });
   const search = new Command("recall")
-    .description("Search knowledge by words, without AI")
-    .argument("<words>", "Words to find")
+    .description("Search knowledge by words or read a learned entry by id")
+    .argument("<words-or-id>", "Words to find or a learned entry id")
     .option("--limit <n>", "Maximum results, 1-100", "20")
     .option("--agent <name>", "Recipient agent; include hints from other agents only")
     .option("--json", "Print matching entries as JSON")
     .action(async (query, opts) => {
       await run(opts.json, async () => {
         const { recall } = await import("./store.js");
-        if (!/^[0-9]+$/u.test(opts.limit)) throw new KnowledgeError("INVALID_LIMIT", "Search limit must be between 1 and 100.");
-        const result = recall(query, { projectPath: process.cwd(), consumerAgent: opts.agent }, Number(opts.limit));
+        const limit = Number(opts.limit);
+        if (!/^[0-9]+$/u.test(opts.limit) || limit < 1 || limit > 100) {
+          throw new KnowledgeError("INVALID_LIMIT", "Search limit must be between 1 and 100.");
+        }
+        const options = { projectPath: process.cwd(), consumerAgent: opts.agent };
+        const { EntryIdSchema } = await import("./entry.js");
+        if (EntryIdSchema.safeParse(query).success) {
+          const { recallLearned, formatLearnedRecall, noteLearnedRecall } = await import("./recall-learned.js");
+          const item = recallLearned(query, options);
+          if (item) {
+            if (opts.json) console.log(JSON.stringify({ ok: true, ...item }));
+            else console.log(formatLearnedRecall(item));
+            noteLearnedRecall(item, options);
+            return;
+          }
+        }
+        const result = recall(query, options, limit);
         if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
         else {
           if (!result.entries.length) console.log("No matching knowledge entries.");
@@ -132,6 +147,14 @@ export function buildKnowledgeCommands(): Command[] {
         const { entryVerdict, expand } = await import("./store.js");
         const options = { projectPath: process.cwd(), consumerAgent: opts.agent };
         const item = expand(id, options);
+        const { describeLearnedRecall, formatLearnedRecall, noteLearnedRecall } = await import("./recall-learned.js");
+        const learned = describeLearnedRecall(item, options);
+        if (learned) {
+          if (opts.json) console.log(JSON.stringify({ ok: true, ...learned }));
+          else console.log(formatLearnedRecall(learned));
+          noteLearnedRecall(learned, options);
+          return;
+        }
  const {noteProbe}=await import("./what.js");noteProbe(id,"opened",{projectPath:process.cwd()});
         // The truth gate: an agent never reads an entry the code no longer
         // matches; a person sees it with that status.

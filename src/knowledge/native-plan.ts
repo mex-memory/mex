@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import type { NativeAgent } from "./agents-in-use.js";
 import { renderNative, type NativeFormat } from "./native-render.js";
-import { areaOf, type Candidate } from "./native-select.js";
+import { areaOf, isLearned, type Candidate } from "./native-select.js";
 import { claudeReadsAgentsIn, GENERATED_MARK } from "./rule-files.js";
 import { containedDirectory, readBoundedTextFile } from "./files.js";
 import { realPath } from "../record/project.js";
@@ -78,13 +78,23 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
     const mine = selected.filter(c => (c.level === "team") === (sharing === "shared"));
     for (const [area, group] of byArea(mine)) {
       const folder = area ? `${area}/` : "";
+      // Nested AGENTS.md follows the session working directory. Only Claude
+      // and Copilot load these learned notes according to the file touched.
+      const agentsGroup = area ? group.filter(c => !isLearned(c.entry)) : group;
+      const learned = area ? group.filter(c => isLearned(c.entry)) : [];
       let codexCovers = false;
-      if (agents.includes("codex")) {
+      if (agents.includes("codex") && agentsGroup.length) {
         const path = `${folder}AGENTS.md`;
-        if (taken.has(path)) notes.push(`${path} is already generated from team entries; your notes for ${area || "the repo"} reach Codex at session start instead.`);
-        else if (ownedByPerson(root, path)) notes.push(`${path} is yours, so MEX doesn't write into it; these entries reach Codex at session start instead.`);
-        else {
-          const out = renderNative("codex-agents", area, group);
+        const takenByTeam = taken.has(path);
+        if (takenByTeam || ownedByPerson(root, path)) {
+          const reason = takenByTeam ? "is already generated from team entries" : "is yours, so MEX doesn't write into it";
+          const fallbacks = [
+            agentsGroup.some(c => !isLearned(c.entry)) ? "Your other notes reach Codex at session start instead." : "",
+            agentsGroup.some(c => isLearned(c.entry)) ? "Use mex recall to read your learned rules in Codex." : "",
+          ];
+          notes.push(`${path} ${reason}. ${fallbacks.filter(Boolean).join(" ")}`);
+        } else {
+          const out = renderNative("codex-agents", area, agentsGroup);
           add({ path, format: "codex-agents", sharing, area, agents: ["codex"], ...out });
           codexCovers = out.ids.length > 0;
         }
@@ -92,18 +102,21 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
       const generatedAgents = codexCovers ? files[files.length - 1] : undefined;
       if (agents.includes("copilot")) {
         if (generatedAgents) generatedAgents.agents.push("copilot");
-        else {
+        if (!generatedAgents || learned.length) {
           const path = copilotPath(area, sharing);
           if (ownedByPerson(root, path)) notes.push(`${path} is yours, so MEX doesn't write into it.`);
-          else add({ path, format: "copilot-instructions", sharing, area, agents: ["copilot"], ...renderNative("copilot-instructions", area, group) });
+          else add({ path, format: "copilot-instructions", sharing, area, agents: ["copilot"], ...renderNative("copilot-instructions", area, generatedAgents ? learned : group) });
         }
       }
       if (agents.includes("claude-code")) {
         const claudeReadsAgents = codexCovers && claudeReadsAgentsIn(root, area);
-        if (claudeReadsAgents) { generatedAgents!.agents.unshift("claude-code"); continue; }
+        if (claudeReadsAgents) {
+          generatedAgents!.agents.unshift("claude-code");
+          if (!learned.length) continue;
+        }
         const path = claudePath(area, sharing);
         if (ownedByPerson(root, path)) { notes.push(`${path} is yours, so MEX doesn't write into it.`); continue; }
-        add({ path, format: "claude-rules", sharing, area, agents: ["claude-code"], ...renderNative("claude-rules", area, group) });
+        add({ path, format: "claude-rules", sharing, area, agents: ["claude-code"], ...renderNative("claude-rules", area, claudeReadsAgents ? learned : group) });
       }
     }
   }
