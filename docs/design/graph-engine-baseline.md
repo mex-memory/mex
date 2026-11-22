@@ -93,6 +93,29 @@ What these numbers don't cover yet:
 
 Precision rose because a call resolves only through scoping, imports, `self`, `super()` and evidence-typed receivers, and a name bound two ways in one scope stays unresolved. Recall rose because imports inside functions, package re-exports, inherited methods, typed parameters, `x = Cls()` and `self.x` fields now count. Most remaining misses are calls on untyped parameters and values (`untyped_receiver`).
 
+### Through `mex graph`, into today's storage
+
+With `MEX_GRAPH_ENGINE_LANGUAGES=python`, `mex graph rebuild` takes Python from one engine `stage` job and writes it into today's schema v4 graph. Every other language, framework resolution and publication stay as they are. Same machine and method, this branch with the flag off and on (Django two runs, the others three):
+
+| Repo | Rebuild s | Peak MB | Refresh s | Edges | Precision | Recall |
+|---|---:|---:|---:|---:|---:|---:|
+| flask | 1.43 → 1.09 | 365 → 341 | 0.84 → 0.83 | 2,810 → 3,549 | 85.6% → **100%** | 22.2% → **83.9%** |
+| httpx | 1.33 → 0.97 | 355 → 337 | 0.81 → 0.76 | 2,173 → 3,463 | 89.4% → **99.8%** | 33.0% → **82.9%** |
+| fastapi | 4.84 → 3.39 | 552 → 463 | 2.15 → 2.19 | 13,098 → 15,029 | 98.4% → **100%** | 22.9% → **70.8%** |
+| django | 28.1 → 19.5 | 1,076 → 911 | 7.7 → 8.2 | 102,830 → 147,460 | 92.4% → **99.3%** | 61.6% → **92.9%** |
+
+Nodes and sketches are unchanged, and accuracy matches the engine's own builds. Wall time falls by only 25–33%, because today's storage now dominates. Django's phase timings, off → on:
+
+| Phase | Off s | On s |
+|---|---:|---:|
+| Extract (tree-sitter or engine) | 3.9 | 1.3 |
+| Fingerprints | 4.4 | 0.3 |
+| Resolve | 0.4 | 0.2 |
+| Publish to schema v4 (rows, fingerprints, LSH) | 12.5 | 11.5 |
+| Validate and inspect the candidate | 2.9 | 2.9 |
+
+All staging falls from 8.8 s to 1.9 s, while the v4 write and its checks take 14–15 s either way. That is what schema v5 removes (the engine writes Django's v5 graph within its 1.3 s), once TypeScript and JavaScript are on the engine too. Refresh is a little slower with the flag on, since the engine stages every Python file again where today reuses cached extractions; engine refresh is M5.
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.
