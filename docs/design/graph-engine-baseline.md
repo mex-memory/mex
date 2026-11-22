@@ -157,6 +157,23 @@ Most remaining misses are calls whose target the judge places on an interface or
 
 novu (9,856 files) builds in 3.85 s at 879 MB, against `next2`'s 77 s and 2.6 GB. The v5 graphs have no search tables yet, so disk is not like for like, as for Python.
 
+### Through `mex graph`, into today's storage
+
+`MEX_GRAPH_ENGINE_LANGUAGES=typescript,javascript` stages TypeScript and JavaScript with one engine job and writes them into today's schema v4 graph. With the flag on, the compiler route is not loaded at all. Framework resolution still runs. Warm edits go to a normal refresh, so compiler captures never touch an engine-built graph.
+
+Flag off → on, medians of three runs per flag:
+
+| Repo | Rebuild s | Peak MB | Refresh s | Graph MB | Precision | Recall |
+|---|---:|---:|---:|---:|---:|---:|
+| hono | 8.96 → 5.30 | 947 → 424 | 3.27 → 2.65 | 70.0 → 64.2 | 99.98% → **100%** | 83.9% → 80.1% |
+| zod | 12.57 → 6.73 | 908 → 486 | 4.43 → 3.10 | 85.4 → 75.6 | 99.62% → **100%** | 62.6% → 61.7% |
+| nest | 21.73 → 11.07 | 1,072 → 555 | 8.99 → 4.61 | 127.7 → 122.1 | 99.93% → **100%** | 94.2% → **95.3%** |
+| express | 2.29 → 1.50 | 439 → 284 | 1.45 → 0.77 | 15.5 → 15.0 | 100% → 100% | 99.3% → **100%** |
+
+Every node row and fingerprint that grounded anchors read is unchanged: ids, spans, containers, body hashes, export flags, minhash and token counts, on all 61,462 baseline nodes. The listed M3 differences remain (signatures, inherited docstrings, zod's one export flag, and Express's 90 extra `require()` binding nodes).
+
+Builds and refreshes take about half the time and memory, but no less, because today's storage now dominates. On NestJS the compiler or engine step falls from 7.9 s to 0.8 s and fingerprints from 0.9 s to 0.02 s, while writing v4 rows and fingerprints and validating the candidate still take 6.4 s either way. Schema v5 removes that cost: the engine writes NestJS's v5 graph in 0.58 s.
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.
