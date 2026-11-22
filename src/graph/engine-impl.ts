@@ -2118,6 +2118,46 @@ export function restoreGraphAliases(
   createCompatibilityAliases(destination, plan, fresh, destinationFingerprints);
 }
 
+/** Overlay continuity looks up candidates only for IDs that disappeared. */
+export function restoreOverlayAliases(
+  previous: GraphStore,
+  destination: GraphStore,
+  vanished: readonly GraphNode[],
+  previousFingerprints: FingerprintStore,
+  destinationFingerprints: FingerprintStore,
+): void {
+  const missing = new Set(vanished.map(node => node.id));
+  const remapped = new Map<string, string>();
+  const one = (nodes: readonly GraphNode[]): GraphNode | undefined => nodes.length === 1 ? nodes[0] : undefined;
+  for (const old of vanished) {
+    const qualified = one(destination.getNodesByFile(old.filePath)
+      .filter(node => node.kind === old.kind && node.qualifiedName === old.qualifiedName));
+    let match = qualified && { node: qualified, method: "qualified-name", confidence: 1 };
+    if (!match && normalizedSignature(old.signature)) {
+      const key = compatibilitySignatureKey(old);
+      const matchesSignature = (node: GraphNode) => compatibilitySignatureKey(node) === key;
+      if (one(previous.getNodesByName(old.kind, old.name).filter(matchesSignature))) {
+        const node = one(destination.getNodesByName(old.kind, old.name).filter(matchesSignature));
+        if (node) match = { node, method: "signature", confidence: 0.98 };
+      }
+    }
+    if (!match && old.bodyHash) {
+      const node = one(destination.getNodesByBodyHash(old.kind, old.bodyHash, 2));
+      if (node) match = { node, method: "body-hash", confidence: 0.95 };
+    }
+    match ??= fingerprintAliasMatch(old, previousFingerprints.get(old.id) ?? undefined,
+      destinationFingerprints, id => destination.getNodeById(id) ?? undefined) ?? undefined;
+    if (match) {
+      destination.insertAlias(old.id, match.node.id, match.method, match.confidence);
+      remapped.set(old.id, match.node.id);
+    }
+  }
+  for (const alias of previous.getAllAliases()) {
+    const canonical = missing.has(alias.canonicalNodeId) ? remapped.get(alias.canonicalNodeId) : alias.canonicalNodeId;
+    if (canonical) destination.insertAlias(alias.aliasId, canonical, alias.matchMethod, alias.confidence);
+  }
+}
+
 function planCompatibilityAliases(
   store: GraphStore,
   fresh: readonly GraphNode[],
@@ -2227,7 +2267,7 @@ function createCompatibilityAliases(
   if (plan.fingerprints.length > 0) {
     const freshById = new Map(fresh.map((node) => [node.id, node]));
     for (const old of plan.fingerprints) {
-      const match = fingerprintAliasMatch(old, old.baseline, freshFingerprints, freshById);
+      const match = fingerprintAliasMatch(old, old.baseline, freshFingerprints, id => freshById.get(id));
       if (!match) continue;
       store.insertAlias(old.id, match.node.id, match.method, match.confidence);
       plan.canonicalMap.set(old.id, match.node.id);
@@ -2262,7 +2302,7 @@ function applyIncrementalCompatibilityAliases(
   };
   for (const alias of plan.direct) put(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
   for (const old of plan.fingerprints) {
-    const match = fingerprintAliasMatch(old, old.baseline, freshFingerprints, freshById);
+    const match = fingerprintAliasMatch(old, old.baseline, freshFingerprints, id => freshById.get(id));
     if (!match) continue;
     put(old.id, match.node.id, match.method, match.confidence);
     plan.canonicalMap.set(old.id, match.node.id);
@@ -2296,16 +2336,16 @@ function fingerprintAliasMatch(
   old: Pick<GraphNode, "kind">,
   baseline: Fingerprint | undefined,
   freshFingerprints: FingerprintStore,
-  freshById: ReadonlyMap<string, GraphNode>,
+  lookupNode: (id: string) => GraphNode | undefined,
 ): { node: GraphNode; method: string; confidence: number } | null {
   if (!baseline || baseline.tokenCount < MIN_TOKENS) return null;
   const scored = freshFingerprints.lookup(baseline)
-    .filter((candidate) => freshById.get(candidate.nodeId)?.kind === old.kind)
-    .map((candidate) => ({
-      ...candidate,
-      node: freshById.get(candidate.nodeId)!,
-      score: minhashJaccard(baseline.minhash, candidate.fingerprint.minhash),
-    }))
+    .flatMap(candidate => {
+      const node = lookupNode(candidate.nodeId);
+      return node?.kind === old.kind
+        ? [{ ...candidate, node, score: minhashJaccard(baseline.minhash, candidate.fingerprint.minhash) }]
+        : [];
+    })
     .sort((left, right) => right.score - left.score || left.nodeId.localeCompare(right.nodeId));
   const best = scored[0];
   if (!best || best.score < 0.95) return null;

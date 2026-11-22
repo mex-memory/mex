@@ -46,7 +46,7 @@ import { prepareNativeGraphBuild, type NativeGraphBuild, type NativeGraphFile, t
 import type { GraphEngineBuildMetadata } from "./native-engine.js";
 import { auditRecordProvenInProcess, holdsAuditedBytes, recordAuditedDatabase } from "./audit-record.js";
 import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
-import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing, restoreGraphAliases } from "./engine-impl.js";
+import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing, restoreGraphAliases, restoreOverlayAliases } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
@@ -704,8 +704,13 @@ function restoreStandaloneContinuity(previous: string, candidate: string, delta 
       const sourceStore = new GraphStore(source);
       const destinationStore = new GraphStore(destination);
       destination.transaction(() => {
-        if (delta && overlayKeepsNodeIds(source, destination)) {
-          if (source.prepare("SELECT 1 FROM main.aliases LIMIT 1").get()) {
+        if (delta) {
+          const paths = overlayShadowPaths(source, destination);
+          if (!overlayKeepsNodeIds(source, destination, paths)) {
+            const vanished = paths.flatMap(path => sourceStore.getNodesByFile(path)
+              .filter(node => destinationStore.getNodeById(node.id)?.id !== node.id));
+            restoreOverlayAliases(sourceStore, destinationStore, vanished, sourceFingerprints, destinationFingerprints);
+          } else if (source.prepare("SELECT 1 FROM main.aliases LIMIT 1").get()) {
             for (const alias of sourceStore.getAllAliases()) {
               destinationStore.insertAlias(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
             }
@@ -717,10 +722,15 @@ function restoreStandaloneContinuity(previous: string, candidate: string, delta 
   } finally { source.close(); }
 }
 
-function overlayKeepsNodeIds(source: ReturnType<typeof openSqlite>, destination: ReturnType<typeof openSqlite>): boolean {
+function overlayShadowPaths(source: ReturnType<typeof openSqlite>, destination: ReturnType<typeof openSqlite>): string[] {
   const shadows = (db: typeof source) => overlayBase(db)
     ? db.prepare("SELECT path FROM main.shadow_files").all().map(row => (row as { path: string }).path) : [];
-  const paths = [...new Set([...shadows(source), ...shadows(destination)])];
+  return [...new Set([...shadows(source), ...shadows(destination)])];
+}
+
+function overlayKeepsNodeIds(
+  source: ReturnType<typeof openSqlite>, destination: ReturnType<typeof openSqlite>, paths: readonly string[],
+): boolean {
   if (paths.length === 0) return true;
   const prior = source.prepare(`SELECT hex(n.public_id) AS id FROM ${v5Rows(source, "files")} f
     CROSS JOIN ${v5Rows(source, "nodes")} n ON n.file = f.id

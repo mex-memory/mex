@@ -18,6 +18,7 @@ pub const OVERLAY_KEY_START: i64 = 1 << 40;
 const INDEXES: &str = "
 CREATE INDEX nodes_file_line ON nodes(file, start_line);
 CREATE INDEX nodes_name ON nodes(name);
+CREATE INDEX nodes_body_hash ON nodes(body_hash) WHERE body_hash IS NOT NULL;
 CREATE INDEX nodes_lower_name ON nodes(lower(name));
 CREATE INDEX nodes_parent ON nodes(parent) WHERE parent IS NOT NULL;
 CREATE INDEX edges_target ON edges(target, kind);
