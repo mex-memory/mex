@@ -259,11 +259,24 @@ func readsOrSearches(command string) bool {
 		if len(w) == 0 {
 			continue
 		}
-		if !readTools[strings.ToLower(strings.TrimSuffix(lastPart(w[0]), ".exe"))] {
+		tool := strings.TrimSuffix(strings.ToLower(lastPart(w[0])), ".exe")
+		if !readTools[tool] || (tool == "sed" && sedInPlace(w[1:])) {
 			return false
 		}
 	}
 	return true
+}
+
+func sedInPlace(args []string) bool {
+	for _, arg := range args {
+		switch {
+		case arg == "--":
+			return false
+		case arg == "--in-place", strings.HasPrefix(arg, "--in-place="), strings.HasPrefix(arg, "-i"):
+			return true
+		}
+	}
+	return false
 }
 
 // codexFailed reads Codex's "Exit code: N" output header, the only failure

@@ -172,15 +172,10 @@ func shellProcedures(v toolView, env Environment, snap *entries.Snapshot) []cand
 // changedFile reports a file modified recently that the index says changed
 // outside any edit the hook recorded, with its full path.
 func changedFile(idx *index.Reader, checkout, rel string, since time.Time) (string, bool) {
-	full := filepath.Join(filepath.FromSlash(checkout), filepath.FromSlash(rel))
-	info, err := os.Stat(full)
-	if err != nil || !info.Mode().IsRegular() || info.ModTime().Before(since) || info.Size() > shellCatchBytes {
+	if !idx.RecentlyChanged(rel, since, shellCatchBytes) {
 		return "", false
 	}
-	if _, miss := idx.FileInfo(rel); miss == nil || miss.NotIndexed != "changed since the last parse" {
-		return "", false
-	}
-	return full, true
+	return filepath.Join(filepath.FromSlash(checkout), filepath.FromSlash(rel)), true
 }
 
 // changedByCommand reports a file modified recently that the index says

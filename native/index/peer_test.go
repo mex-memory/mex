@@ -60,6 +60,8 @@ func TestPeer(t *testing.T) {
 			answer, err = reader.PatternCounts(q.Arg, q.Args)
 		case "coverage":
 			answer, err = reader.Coverage(q.Arg)
+		case "importsFrom":
+			answer, err = reader.ImportsFrom(q.Arg)
 		default:
 			t.Fatalf("unknown op %s", q.Op)
 		}

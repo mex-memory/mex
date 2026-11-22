@@ -113,7 +113,7 @@ func immutableURI(file string) string {
 	return u.String()
 }
 
-// Reader answers the six reads for one checkout. Close it when done.
+// Reader answers the seven reads for one checkout. Close it when done.
 type Reader struct {
 	db         *sql.DB
 	pointer    Pointer
@@ -121,6 +121,8 @@ type Reader struct {
 	key        string
 	root       string
 	patternIDs map[string]bool
+	// known is every indexed path, read once for import resolution.
+	known map[string]bool
 }
 
 // Open opens a checkout's index read-only. Snapshots never change once
