@@ -190,6 +190,58 @@ Every node row and fingerprint that grounded anchors read is unchanged: ids, spa
 
 Builds and refreshes take about half the time and memory, but no less, because today's storage now dominates. On NestJS the compiler or engine step falls from 7.9 s to 0.8 s and fingerprints from 0.9 s to 0.02 s, while writing v4 rows and fingerprints and validating the candidate take 7.0 s and 6.4 s. Schema v5 removes that cost: the engine writes NestJS's v5 graph in 0.58 s.
 
+## M4: frameworks, Rust and C# on the engine
+
+The engine now builds every language MEX supports, along with the five framework resolvers (Express, NestJS, Next.js, Flask, FastAPI). Grammars match today's WASM ones: `tree-sitter-rust` 0.20.4 is vendored as C source (MIT), and `tree-sitter-c-sharp` 0.23.5 is pinned (MIT).
+
+**Nodes and frameworks are unchanged.** Every node row and sketch matches today on ripgrep (4,424 nodes), fd (724), a C# repository (Ardalis GuardClauses at `dfa042c`, 1,940 nodes) and the test fixtures. Framework route nodes and edges match exactly: Flask 290 / 437, FastAPI 1,251 / 2,426, NestJS 2 / 2 and Express on NestJS 2 / 2, plus the positive fixtures for each framework.
+
+**Rust resolution binds only through the written owner.** There is no answer key for Rust here, so these are counts and examples, not scores:
+- Today's resolver bound calls by name. For example, it bound ripgrep's `io::Error::new` to `DecompressionMatcherBuilder::new` and fd's `CommandTemplate::new` to `CommandSet::new`. Those edges are gone: 202 calls on ripgrep and 24 on fd that only today's graph has.
+- The engine adds calls through declared return types (`TestEnv::new(...).global_ignore_file(...)`), `Self { … }` construction, field types and `pub use` re-exports: 996 calls on ripgrep and 53 on fd that only the engine's graph has.
+- C# edges match today exactly.
+
+SCIP accuracy is unchanged on Flask, FastAPI, Express and NestJS.
+
+## Schema v5 storage
+
+With `MEX_GRAPH_STORAGE=v5` and every corpus language engine-owned, `mex graph rebuild` and `refresh` run the engine's `build`. The engine writes a complete v5 candidate. Node validates it under the existing lease and publishes it by pointer. Switching storage rebuilds once. Refresh is a full engine build for now, and warm edits fall back to refresh.
+
+The v5 schema has:
+- integer keys between rows;
+- 16-byte public ids;
+- hashes stored as bytes;
+- code tables for kinds, languages, provenances, resolution methods and unresolved reasons;
+- no JSON columns, no `identity_key` and no LSH table.
+
+`unresolved_calls` stores each unresolved call with an interned, indexed name, a reason, its site, and the candidate when there is exactly one, as graph-03 asked. NestJS stores 1,583 interface calls with a single implementation. Search keeps `nodes_fts` and source-chunk full-text tables.
+
+**v4 and v5 answer the same.** `scripts/graph-engine-bench/storage-parity.ts` asks both graphs the same questions through MEX's read APIs and CLI. For three symbols per repository, it covers status, node and source search, definition, callers, callees, impact, the grounded anchor (id, body hash, `mh2:` fingerprint), the CLI's where-defined, who-calls, what-calls, get and impact, and reconciliation after a file move. Results:
+
+| Repo | Answers identical | Deliberate differences |
+|---|---:|---|
+| flask | 38 / 38 | none |
+| hono | 38 / 39 | `Context::waitUntil` who-calls now lists two calls whose single candidate is the method |
+| nest | 38 / 38 | none |
+
+v4 → v5 through `mex graph`, with the engine flag on in both. Medians of three runs for Hono and NestJS, and one run for the others:
+
+| Repo | Rebuild s | Peak MB | Refresh s | Graph MB |
+|---|---:|---:|---:|---:|
+| flask | 1.62 → 0.39 | 246 → 128 | 0.62 → 0.37 | 7.1 → 2.4 |
+| hono | 5.40 → 1.30 | 425 → 252 | 2.07 → 1.40 | 64 → 17 |
+| nest | 11.2 → 2.5 | 575 → 322 | 4.80 → 2.78 | 122 → 30 |
+| ripgrep | 2.99 → 0.55 | 370 → 163 | 0.95 → — | 21 → 7.6 |
+
+Against `next2`'s compiler route, Hono rebuilds in 1.3 s instead of 9.0 s and NestJS in 2.5 s instead of 21.7 s. v5 graphs are about a quarter of v4's size. For Hono, v5 takes 17 MB against v4's 64 MB:
+- edges 17.7 → 2.3 MB;
+- nodes 15.2 → 4.3 MB;
+- unresolved references 17.5 → 1.7 MB.
+
+The LSH table (4.1 MB) and import bindings (1.0 MB) are gone. What remains is mostly fingerprints (4.1 MB) and the two full-text indexes (3.3 MB). About a tenth of each v5 file is SQLite free space, which a final `VACUUM` would recover.
+
+Still to do on v5: incremental refresh, per-worktree overlays and warm edits (M5), and graph-03's Go reader (`native/graph/store.go`, in the unmerged mex #398).
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.
