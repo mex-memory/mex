@@ -1,8 +1,8 @@
-# Graph engine contract (version 2)
+# Graph engine contract (version 3)
 
-How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts and resolves graph rows. In `build` it writes a schema v5 candidate. In `stage` it streams Python, TypeScript and JavaScript rows for Node to write into its schema v4 store.
+How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs, the CLI and every reader. The engine parses, extracts and resolves graph rows. In `build` it writes a schema v5 candidate. In `stage` it streams Python, TypeScript, JavaScript, Rust and C# rows for Node to write into its schema v4 store.
 
-`CONTRACT_VERSION` in `native/engine/core/src/lib.rs` and Node's `GRAPH_ENGINE_CONTRACT` in `src/graph/native-engine.ts` must both be 2. A caller-visible change bumps both, and Node refuses an engine whose version differs.
+`CONTRACT_VERSION` in `native/engine/core/src/lib.rs` and Node's `GRAPH_ENGINE_CONTRACT` in `src/graph/native-engine.ts` must both be 3. Incompatible changes bump both. Node refuses an engine whose version differs.
 
 ## Modes
 
@@ -44,7 +44,8 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 - `languages` names the languages this engine run handles. During migration Node keeps every other language on today's path.
 - For `build`, `output` is the absolute path to a new candidate in an existing folder. Temporary files sit beside it. For `stage`, set `mode` to `"stage"`. The engine ignores a supplied `output` path or `null` and opens no database.
 - `base` and `changed` are set for `refresh`: the published base graph (opened read-only) and the repository-relative paths that changed.
-- `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, and `jsx` for `.jsx`. Node's `MEX_GRAPH_ENGINE_LANGUAGES` flag accepts `python`, `typescript` and `javascript` as comma-separated names. `typescript` also selects `tsx`, and `javascript` also selects `jsx`.
+- `stage` uses the same guard, start barrier and parallel extraction as `build`, and resolves across the full extracted set. The request language ids are `python` for `.py`, `typescript` for `.ts`, `.mts` and `.cts`, `tsx` for `.tsx`, `javascript` for `.js`, `.mjs` and `.cjs`, `jsx` for `.jsx`, `rust` for `.rs`, and `csharp` for `.cs`. Node's `MEX_GRAPH_ENGINE_LANGUAGES` flag accepts `python`, `typescript`, `javascript`, `rust` and `csharp` as comma-separated names. `typescript` also selects `tsx`, and `javascript` also selects `jsx`.
+- `build` includes framework rows. Stage requests opt in by sending `"frameworks": true`. A binary that handled the pass sets `frameworksResolved` on its staged events so Node can skip framework extraction for those files. If a file falls back because the native read differed from discovery, Node recomputes framework rows from the captured corpus.
 
 ### Published schema v5 candidates
 
@@ -55,16 +56,18 @@ and per-file `staged` basenames, `contentHash`, `modifiedAt` and
 The child verifies the captured content before extracting and indexing it.
 The optional `buildMetadata` carries exact Git, manifest, corpus and coverage
 provenance for publication. The engine stores it relationally and adds the
-health counts from the files it wrote. A standalone engine benchmark may omit
-the publication fields. Node retains the lease and validates the finished
-database before advancing the pointer. A refresh builds a full base.
+health counts from the files it wrote. It writes all declarations, including
+framework routes, before writing edges and unresolved references. A standalone
+engine benchmark may omit the publication fields. Node retains the lease and
+validates the finished database before advancing the pointer. A refresh builds
+a full base.
 
 ## Events
 
 ```json
-{"type":"progress","phase":"extract","done":1000,"total":1454}
+{"type":"progress","phase":"parse","done":1024,"total":1454}
 {"type":"result","files":1454,"nodes":15516,"edges":34653,"coverageGaps":2,"usage":{"wallMs":1500,"peakRssMb":310}}
-{"type":"error","code":"graph_contract_mismatch","message":"the request is contract 1, this engine is 2"}
+{"type":"error","code":"graph_contract_mismatch","message":"the request is contract 1, this engine is 3"}
 ```
 
 - `build` can report `progress` while writing the candidate and records per-file coverage gaps there. `stage` reports each file as described below.
@@ -93,9 +96,17 @@ database before advancing the pointer. A refresh builds a full base.
 - Nodes use the compiler route's ordinal profile for `id` and `identityKey`. They carry `containerId`, names, file and language, spans, and `isExported`. `docstring`, `signature`, `visibility`, `isAsync`, `isStatic`, `isAbstract`, `decorators`, `typeParameters` and `returnType` are included when present. Body kinds carry `bodyHash`, `minhash` and `tokenCount`. The engine derives display text from syntax.
 - `contains` uses the child's start line and column and `lexical-containment`. Resolved `calls`, `instantiates`, `imports`, `extends`, `implements` and `references` use `engine-ecmascript`. Resolved edges carry the written `metadata.targetName` and the target's `metadata.targetQualifiedName`. Structural and direct reference edges use `typescript-compiler` provenance and confidence 1, following the v4 compiler-route row convention. Callback edges use `callback-synthesis` and confidence 0.85. Their line and column describe the argument site, with `evidence[].wiringSite` giving its file and coordinates.
 - Unresolved entries use the corresponding reference kind, the written name and site, `status: "unresolved"`, `confidence: 0`, `candidates: []` and `resolver: "engine-ecmascript"`. The metadata includes the reason. The Node fallback resolver leaves these references as emitted.
-- When present, `imports` contains the named import bindings for the file. Bindings carry the local name, imported name, module specifier, type-only flag, binding key, site metadata and any resolved file path and target id. Node's framework resolvers can use these bindings with the staged nodes and captured source.
+- When present, `imports` contains the named import bindings for the file. Bindings carry the local name, imported name, module specifier, type-only flag, binding key, site metadata and any resolved file path and target id.
 
 Lines across all stage rows and diagnostics are 1-based. Columns are 0-based UTF-16 code units. Node fills `updatedAt` on nodes and supplies the derived or operational `FileRecord` fields (`nodeCount`, `errors` from `health.diagnostics`, the diagnostic counters and coverage from `health`, `modifiedAt`, `indexedAt`, `extractorVersion`).
+
+#### Rust and C# rows
+
+Rust and C# use the tree-sitter signature profile, including declaration ordinals for repeated signatures. Both persist visibility, and C# persists static and abstract flags. The body hash uses the declaration's original lines and the sketch uses the pinned grammar's leaf kinds on those lines. Resolution uses lexical scope, Rust module paths and `use` bindings, or C# namespaces and `using` directives. Each unresolved reference keeps its written name and site, with an `engine-rust` or `engine-csharp` resolver and a snake-case reason. The Rust resolver can follow named re-exports and abstains on untyped member receivers. C# selects a qualified static member only when the visible type and method are unambiguous.
+
+#### Framework rows
+
+Express, NestJS, Next.js, Flask and FastAPI preserve their existing route roles and use the signature profile. Framework edges have `framework` provenance and confidence 0.8. Both formats preserve the framework resolution method and wiring site. Handlers bind through a named import or a proven same-file declaration. Unresolved handlers use `engine-framework` and a stable reason.
 
 ## Exit codes
 
