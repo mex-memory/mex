@@ -240,6 +240,31 @@ Against `next2`'s compiler route, Hono rebuilds in 1.3 s instead of 9.0 s and Ne
 
 The LSH table (4.1 MB) and import bindings (1.0 MB) are gone. What remains is mostly fingerprints (4.1 MB) and the two full-text indexes (3.3 MB). About a tenth of each v5 file is SQLite free space, which a final `VACUUM` would recover.
 
+## M5 stage 1: incremental refresh
+
+A refresh reuses each unchanged file's cached facts, re-parses only changed files, and publishes an overlay of the changed rows over the v5 base. `scripts/graph-engine-bench/refresh-replay.ts` replays 30 Hono commits and 6 Flask edits (including package additions and removals). After every step, it compares the overlay with an independent cold rebuild across 31 table and full-text digests, 864 point reads and 444 searches. There are 0 differences.
+
+The facts cache (`facts-v2.db`) stores binary records in Zstandard blocks. Its budget is 12 KiB per source file, from 64 to 256 MiB. novu's cache takes 49.4 MB (182 MB as LZ4-compressed JSON) and is never evicted at novu's size.
+
+Through `mex graph` with every language on the engine and v5 storage. Medians of three runs. Refresh is after appending one line to a fixed source file:
+
+| Repo | Rebuild s | Peak MB | Refresh s (M4 → now) | Overlay | Facts cache MB |
+|---|---:|---:|---:|---:|---:|
+| flask | 0.32 | 147 | 0.37 → 0.19 | 446 KB | 0.6 |
+| hono | 1.21 | 226 | 1.40 → 0.23 | 852 KB | 4.5 |
+| nest | 2.21 | 316 | 2.78 → 0.35 | 905 KB | 7.6 |
+| ripgrep | 0.48 | 161 | — → 0.19 | 442 KB | 1.0 |
+| novu | 13.1 | 944 | — → 0.81 | 2.7 MB | 49.4 |
+
+Against `next2`, novu rebuilds in 13.1 s instead of 77 s at 944 MB instead of 2.6 GB, and refreshes one file in 0.81 s instead of 23 s. Hono refreshes in 0.23 s instead of 3.3 s and NestJS in 0.35 s instead of 9.0 s.
+
+novu's rebuild spends about 9.8 s in the engine:
+- 3.7 s extracting;
+- 0.4 s resolving;
+- 5.7 s in the v5 writer, including 1.8 s indexing source for search.
+
+Node's discovery, validation and publication take the rest. In a novu refresh the engine's job takes 83 ms, and Node's checks take most of the remaining 0.7 s. Stage 2 is meant to remove those checks. Set `MEX_GRAPH_PHASE_TIMINGS` to a JSONL path to get the engine's phases beside Node's. Flask's peak, 147 MB, is 40.3% of `next2`'s 365 MB. Node's process accounts for 109 MB of it, and the engine's per-thread cache state for about 17 MB.
+
 Still to do on v5: warm edits (M5 stage 2) and graph-03's Go reader (`native/graph/store.go`, in the unmerged mex #398).
 
 ## Locked targets
