@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ForgeClient } from "../forge.js";
 import { PinnedTree } from "../git.js";
@@ -9,39 +9,45 @@ import { Familiarity } from "../harvest/familiarity.js";
 import { DEFAULT_HARVEST_BUDGET, estimateHarvest, forecastCounts, harvestBatch, planHarvest,
   type Candidate, type HarvestBatch, type HarvestCursor, type HarvestOptions } from "../harvest/index.js";
 import { productionPath } from "../harvest/local.js";
+import { addHarvestEvidence, emptyHarvestEvidence, projectHarvestSpend } from "../harvest/estimate.js";
+import { reviewedFiles } from "../harvest/forge.js";
 import { Gaps } from "../harvest/evidence.js";
 import { align, hunkSpan, RegionReader, reviewRegions } from "../harvest/regions.js";
 import { sourceDigest } from "../source.js";
 
 const source = { host: "github.com", slug: "fiction/transports" } as const;
 const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
+const reviewWindow = { since: "2026-11-12T00:00:00Z", until: "2026-11-15T00:00:00Z" };
 const raw = readFileSync(new URL("fixtures/harvest/changes.json", import.meta.url), "utf8");
 const fixture = JSON.parse(raw);
+const forkFixture = JSON.parse(readFileSync(new URL("fixtures/harvest/reviewed-contents.json", import.meta.url), "utf8"));
+// Git subprocesses on Windows can queue behind parallel workers. These timeouts guard hangs.
+const GIT_FIXTURE_TIMEOUT = 45_000;
 let checkout: string, head: string, original: string, merge: string, attempt: string, revert: string, reland: string,
   cause: string, discussionRevert: string;
 let pinned: PinnedTree;
 
 const normalized = (value: string) => new Date(value).toISOString();
-function git(args: string[], day?: number): string {
-  const at = `2026-11-${String(day).padStart(2, "0")}T10:00:00Z`;
-  return execFileSync("git", args, { cwd: checkout, encoding: "utf8", windowsHide: true,
+function git(args: string[], input?: string): string {
+  return execFileSync("git", args, { cwd: checkout, input, encoding: "utf8", windowsHide: true,
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(checkout, "empty-gitconfig"), GIT_TERMINAL_PROMPT: "0",
-      GIT_AUTHOR_NAME: "Fixture Writer", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-      GIT_COMMITTER_NAME: "Fixture Writer", GIT_COMMITTER_EMAIL: "fixture@example.invalid",
-      ...(day === undefined ? {} : { GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at }) },
+    },
   }).trim();
 }
 
-function file(path: string, body: string): void {
-  const full = join(checkout, path);
-  mkdirSync(dirname(full), { recursive: true });
-  writeFileSync(full, body + "\n");
+function gitData(text: string): string {
+  return `data ${Buffer.byteLength(text)}\n${text}\n`;
 }
 
-function commit(subject: string, day: number, body?: string): string {
-  git(["add", "--all"]);
-  git(["-c", "commit.gpgsign=false", "commit", "-m", subject, ...(body ? ["-m", body] : [])], day);
-  return git(["rev-parse", "HEAD"]);
+function fixtureCommit(day: number, subject: string, files: Record<string, string | undefined> = {}, opts: {
+  body?: string; parent?: string; branch?: string; mark?: number;
+} = {}): string {
+  const { body, parent, branch = "main", mark = day } = opts;
+  const when = Date.UTC(2026, 10, day, 10) / 1000;
+  const changes = Object.entries(files).map(([path, content]) => content === undefined
+    ? `D ${path}\n` : `M 100644 inline ${path}\n${gitData(content + "\n")}`).join("");
+  return `commit refs/heads/${branch}\nmark :${mark}\ncommitter Fixture Writer <fixture@example.invalid> ${when} +0000\n`
+    + gitData(subject + (body ? "\n\n" + body : "") + "\n") + (parent ? `from ${parent}\n` : "") + changes + "\n";
 }
 
 const variant = (topic: string, call: string) => [
@@ -51,57 +57,83 @@ const variant = (topic: string, call: string) => [
 
 beforeAll(async () => {
   checkout = mkdtempSync(join(tmpdir(), "mex-harvest-"));
-  git(["init", "--initial-branch=main"]);
-  file("CODEOWNERS", "/src/changed.ts @fern-owner\n/src/new-name.ts @fiction/transport");
-  file("packages/transport/package.json", '{"name":"transport"}');
-  file("packages/transport/README.md", "# Transport\n\n## Usage\n\nCall the API.\n\n## Development\n\nBuild the test harness.");
-  file("docs/adr/001-transport.md", "# Transport\n\n## Considered options\n\nA second transport adds a deployment boundary.\n\n## Decision\n\nKeep the in-process transport.");
-  file("docs/AGENTS.md", "# Development\n\nDo not learn this rule file.");
-  file("docs/nested/.github/instructions/test.instructions.md", "# Development\n\nDo not learn this nested rule file.");
-  file(".cursor/rules/x.mdc", "# Development\n\nDo not learn this cursor rule file.");
-  file("docs/contributing.md", "# Contributing\n\n## Patches\n\nUse the smoke tests.");
-  file("src/retry.ts", "export const retried = 1;");
-  file("src/state.ts", "export const state = 'pending';");
-  file("src/changed.ts", fixture.originalLines.join("\n"));
-  file("src/unchanged.ts", variant("unchanged", "stable"));
-  file("src/outdated.ts", variant("outdated", "stable"));
-  file("src/secret.ts", variant("secret", "fallback"));
-  file("src/old-name.ts", variant("renamed", "fallback"));
-  commit("Establish transports", 2);
-  file("src/retry.ts", "export const retried = 2;");
-  attempt = commit("Tune retries (#14)", 4);
-  file("src/retry.ts", "export const retried = 1;");
-  revert = commit('Revert "Tune retries (#14)" (#15)', 6, `This reverts commit ${attempt}.\n\nThe extra retry can repeat delivery.`);
-  file("src/queue.ts", "export const enabled = true;");
-  commit("Enable the buffered queue (#21)", 7);
-  file("src/retry.ts", "export const retried = conditionalRetry();");
-  reland = commit("Re-land: Tune retries (#16)", 8);
-  file("src/state.ts", "export const state = 'recorded';");
-  cause = commit("Stop repeated writes caused by a stale state flag", 9);
-  file("test/transport.test.ts", "expect(run()).toBe('recorded');");
-  commit("Test the regression from a stale state", 10);
-  file("src/queue.ts", "export const enabled = false;");
-  discussionRevert = commit('Revert "Enable the buffered queue (#21)" (#22)', 11);
-  original = git(["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Prepare a reviewed transport branch"], 11);
-  file("src/changed.ts", fixture.originalLines.join("\n").replace("fallback(label)", "stable(label)"));
-  file("src/outdated.ts", variant("outdated", "newStable"));
-  git(["mv", "src/old-name.ts", "src/new-name.ts"]);
-  file("src/new-name.ts", variant("renamed", "stable"));
-  merge = commit("Wire the adapters (#31)", 13);
-  file("src/unchanged.ts", variant("unchanged", "stable").replace("return stable", "return   stable"));
-  file("src/changed.ts", "// Current transport\n" + fixture.originalLines.join("\n").replace("fallback(label)", "stable(label)"));
-  head = commit("Use consistent spacing", 14);
+  git(["init", "--bare", "--initial-branch=main", "--template="]);
+  const reviewed = fixture.originalLines.join("\n");
+  const merged = reviewed.replace("fallback(label)", "stable(label)");
+  // Import once per phase to avoid a separate staging, commit and ref lookup
+  // for each fixture change. The revert body needs the first phase's real OID.
+  git(["fast-import", "--quiet"], [
+    fixtureCommit(1, "Write the deployment guide", {
+      "docs/deployment-guide.md": "# Development\n\n## Rollout\n\n"
+        + "Document each deployment step and record the verification from the running service. ".repeat(145),
+    }),
+    fixtureCommit(2, "Establish transports", {
+      "CODEOWNERS": "/src/changed.ts @fern-owner\n/src/new-name.ts @fiction/transport",
+      "packages/transport/package.json": '{"name":"transport"}',
+      "packages/transport/README.md": "# Transport\n\n## Usage\n\nCall the API.\n\n## Development\n\nBuild the test harness.",
+      "docs/adr/001-transport.md": "# Transport\n\n## Considered options\n\nA second transport adds a deployment boundary.\n\n## Decision\n\nKeep the in-process transport.",
+      "docs/AGENTS.md": "# Development\n\nDo not learn this rule file.",
+      "docs/nested/.github/instructions/test.instructions.md": "# Development\n\nDo not learn this nested rule file.",
+      ".cursor/rules/x.mdc": "# Development\n\nDo not learn this cursor rule file.",
+      "docs/contributing.md": "# Contributing\n\n## Patches\n\nUse the smoke tests.",
+      "src/retry.ts": "export const retried = 1;",
+      "src/state.ts": "export const state = 'pending';",
+      "src/changed.ts": reviewed,
+      "src/unchanged.ts": variant("unchanged", "stable"),
+      "src/outdated.ts": variant("outdated", "stable"),
+      "src/secret.ts": variant("secret", "fallback"),
+      "src/old-name.ts": variant("renamed", "fallback"),
+    }),
+    fixtureCommit(4, "Tune retries (#14)", { "src/retry.ts": "export const retried = 2;" }),
+    "done\n",
+  ].join(""));
+  attempt = git(["rev-parse", "HEAD"]);
+  git(["fast-import", "--quiet", "--export-marks=fixture-marks"], [
+    fixtureCommit(6, 'Revert "Tune retries (#14)" (#15)', { "src/retry.ts": "export const retried = 1;" },
+      { parent: attempt, body: `This reverts commit ${attempt}.\n\nThe extra retry can repeat delivery.` }),
+    fixtureCommit(7, "Enable the buffered queue (#21)", { "src/queue.ts": "export const enabled = true;" }),
+    fixtureCommit(8, "Re-land: Tune retries (#16)", { "src/retry.ts": "export const retried = conditionalRetry();" }),
+    fixtureCommit(9, "Stop repeated writes caused by a stale state flag", { "src/state.ts": "export const state = 'recorded';" }),
+    fixtureCommit(10, "Test the regression from a stale state", { "test/transport.test.ts": "expect(run()).toBe('recorded');" }),
+    fixtureCommit(11, 'Revert "Enable the buffered queue (#21)" (#22)', { "src/queue.ts": "export const enabled = false;" }),
+    fixtureCommit(11, "Prepare a reviewed transport branch", {}, { parent: ":11", branch: "reviewed", mark: 12 }),
+    fixtureCommit(13, "Wire the adapters (#31)", {
+      "src/changed.ts": merged, "src/outdated.ts": variant("outdated", "newStable"),
+      "src/old-name.ts": undefined, "src/new-name.ts": variant("renamed", "stable"),
+    }),
+    fixtureCommit(14, "Use consistent spacing", {
+      "src/unchanged.ts": variant("unchanged", "stable").replace("return stable", "return   stable"),
+      "src/changed.ts": "// Current transport\n" + merged,
+    }),
+    "done\n",
+  ].join(""));
+  const marks = Object.fromEntries(readFileSync(join(checkout, "fixture-marks"), "utf8").trimEnd().split(/\r?\n/u)
+    .map(line => line.split(" ")));
+  [revert, reland, cause, discussionRevert, original, merge, head] = [6, 8, 9, 11, 12, 13, 14].map(mark => marks[`:${mark}`]!);
   pinned = (await PinnedTree.open(checkout, head))!;
-}, 30_000);
+}, GIT_FIXTURE_TIMEOUT);
 
 afterAll(() => {
   // This private fixture contains only the files above and Git's own metadata.
   if (checkout) rmSync(checkout, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false } = {}) {
+function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false } = {}) {
   const captures: string[] = [];
   const data = JSON.parse(raw.replaceAll("OID_ORIGINAL", original).replaceAll("OID_MERGE", merge));
+  if (fork) {
+    data.merged.headRepository = forkFixture.headRepository;
+    const rows = data.merged.reviewThreads.nodes;
+    for (const review of forkFixture.reviews) {
+      const row = rows.find((item: { id: string }) => item.id === review.id);
+      Object.assign(row.comments.nodes[0], { originalCommit: { oid: forkFixture.commit }, diffHunk: review.shortHunk });
+    }
+    const repeated = structuredClone(rows[0]);
+    repeated.id = "PRRT_fork_repeat";
+    repeated.comments.nodes[0].id = "PRRC_fork_repeat";
+    rows.push(repeated);
+    data.merged.reviewThreads.totalCount = rows.length;
+  }
   if (textOnly) {
     data.merged.reviewThreads.nodes = data.merged.reviewThreads.nodes.slice(0, 4);
     for (const thread of data.merged.reviewThreads.nodes) thread.comments.nodes[0].diffHunk = "";
@@ -113,7 +145,15 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
     body: "Clients still need the handshake.", stateReason: "NOT_PLANNED", closedAt: "2026-11-19T10:00:00Z",
     comments: { nodes: [{ ...data.closed[0].comments.nodes[0], id: "IC_fixture61", body: "The older protocol has no version handshake." }] } }] : [];
   const request = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-    const path = new URL(String(url)).pathname;
+    const requestUrl = new URL(String(url));
+    const path = requestUrl.pathname;
+    if (fork && path.startsWith("/repos/fern-fork/transports/contents/")) {
+      const file = path.slice("/repos/fern-fork/transports/contents/".length);
+      expect(requestUrl.searchParams.get("ref")).toBe(forkFixture.commit);
+      captures.push("contents:" + file);
+      const review = forkFixture.reviews.find((item: { contents: { path: string } }) => item.contents.path === file);
+      return review ? Response.json(review.contents) : new Response(null, { status: 404 });
+    }
     if (path.endsWith("/collaborators/fern-owner/permission")) {
       captures.push("permission");
       return Response.json({ permission: "write" });
@@ -189,9 +229,29 @@ async function drain(opts: HarvestOptions, deps: ReturnType<typeof forge>, curso
 const thread = (candidates: Candidate[], number: number) => candidates.find(candidate => candidate.id === `gh:thread:PRRT_fixture${number}`)!;
 
 describe("harvest", () => {
+  it("recovers after regions for the known acted-on fork threads", async () => {
+    const deps = forge({ fork: true });
+    const { candidates, cursor } = await drain(options({ ...reviewWindow, requestBudget: 6 }), deps);
+    const cohort = [...forkFixture.reviews.map((review: { id: string }) => "gh:thread:" + review.id), "gh:thread:PRRT_fork_repeat"];
+    const threads = candidates.filter(candidate => cohort.includes(candidate.id));
+    expect(threads).toHaveLength(4);
+    const after = threads.filter(candidate => candidate.code?.after);
+    console.log(`Acted-on fork threads with an after region: ${after.length}/${cohort.length}`);
+    expect(after).toHaveLength(4);
+    for (const thread of threads) {
+      expect(thread).toMatchObject({ weights: { actedOn: true }, code: { before: { commit: forkFixture.commit, start: 1, end: 18 } } });
+      expect(thread.code?.before?.text).toContain("// reviewed tail 12");
+    }
+    expect(deps.captures.filter(call => call.startsWith("contents:"))).toEqual([
+      "contents:src/changed.ts", "contents:src/outdated.ts", "contents:src/old-name.ts",
+    ]);
+    expect(cursor.run?.requests).toBe(6);
+    expect(cursor.run?.requests).toBe(deps.captures.length);
+  }, GIT_FIXTURE_TIMEOUT);
+
   it("anchors the reviewed side against a squash merge, follows a rename, and drops a secret hunk", async () => {
     const deps = forge({ paging: true });
-    const { candidates, gaps } = await drain(options({ since: "2026-11-12T00:00:00Z", until: "2026-11-15T00:00:00Z" }), deps);
+    const { candidates, gaps } = await drain(options(reviewWindow), deps);
     expect(deps.captures).toContain("query HarvestThreadPages");
     expect(git(["merge-base", "--is-ancestor", merge, head])).toBe("");
     const changed = thread(candidates, 1);
@@ -209,7 +269,7 @@ describe("harvest", () => {
     expect(thread(candidates, 5)).toBeUndefined();
     expect(gaps).toContain("Privacy checks withheld 1 code regions or hunks.");
     expect(gaps.some(gap => gap.includes("threads unread"))).toBe(false);
-  });
+  }, GIT_FIXTURE_TIMEOUT);
 
   it("keeps a maintainer closure, excludes both bot closures, and makes issues opt-in and last", async () => {
     const deps = forge({ issue: true });
@@ -220,9 +280,9 @@ describe("harvest", () => {
     expect(closures[0]!.text).toMatch(/^We don't want two transport versions/u);
     expect(closures[0]!.text).toContain("This proposal uses a different transport.");
     expect(trial.candidates.at(-1)?.id).toBe("gh:issue:61");
-    const standard = await planHarvest(options(bounds), deps);
+    const standard = await planHarvest(options(bounds), { ...deps, tree: pinned });
     expect(standard.inventory.bands.some(band => band.source === "issue")).toBe(false);
-  });
+  }, GIT_FIXTURE_TIMEOUT);
 
   it("joins a local revert to its PR and re-land, and compares regions on their common path", async () => {
     const { candidates } = await drain(options({ since: "2026-11-03T00:00:00Z", until: "2026-11-09T00:00:00Z" }), forge());
@@ -232,7 +292,7 @@ describe("harvest", () => {
         reland: { before: { commit: attempt, text: "export const retried = 2;" },
           after: { commit: reland, text: "export const retried = conditionalRetry();" } } },
     });
-  });
+  }, GIT_FIXTURE_TIMEOUT);
 
   it("fetches related PR discussion once when a subject-only local revert lacks a reason", async () => {
     const deps = forge({ reverts: true });
@@ -241,7 +301,7 @@ describe("harvest", () => {
       text: "The queue started before the handshake completed.", nodeIds: ["PRR_revertReason"], related: { pulls: [22, 21] },
     });
     expect(deps.captures.filter(query => query === "query HarvestRevertDiscussion")).toHaveLength(1);
-  });
+  }, GIT_FIXTURE_TIMEOUT);
 
   it("finds cause-phrase commits with production changes and skips tests-only changes", async () => {
     const { candidates, plan } = await drain(options({ since: "2026-11-09T00:00:00Z", until: "2026-11-11T00:00:00Z" }), forge());
@@ -250,10 +310,10 @@ describe("harvest", () => {
       id: `git:cause:${cause}`, path: "src/state.ts", code: { before: { text: "export const state = 'pending';" },
         after: { text: "export const state = 'recorded';" } },
     });
-  });
+  }, GIT_FIXTURE_TIMEOUT);
 
   it("splits contributor headings, tags package usage and excludes nested rule files", async () => {
-    const { candidates } = await drain(options({ until: "2026-11-03T00:00:00Z" }), forge());
+    const { candidates } = await drain(options({ since: "2026-11-02T00:00:00Z", until: "2026-11-03T00:00:00Z" }), forge());
     expect(candidates.find(candidate => candidate.id.endsWith("#considered-options"))).toMatchObject({
       kind: "adr", document: { headings: ["Transport", "Considered options"], consumerUsage: false },
     });
@@ -261,15 +321,16 @@ describe("harvest", () => {
       kind: "doc", document: { headings: ["Transport", "Usage"], consumerUsage: true },
     });
     expect(candidates.some(candidate => /AGENTS|instructions\.md|\.cursor/u.test(candidate.id))).toBe(false);
-  });
+  }, GIT_FIXTURE_TIMEOUT);
 
   it("stops at the run allowance, resumes without duplicate IDs, and reads weekly points strictly newer", async () => {
     const deps = forge({ textOnly: true });
-    const budget = estimateHarvest({ "review-thread": 3 }, "claude").total;
+    const budget = 26_470;
     const bounds = { since: "2026-11-12T00:00:00Z" };
     const first = await drain(options({ ...bounds, budget }), deps);
     expect(first.candidates).toHaveLength(3);
-    expect(first.spent).toBe(budget);
+    expect(first.spent).toBeLessThanOrEqual(budget);
+    expect(first.spent).toBe(projectHarvestSpend(first.cursor.run!.evidence, "claude"));
     expect(first.gaps).toContain("Learning reached its estimated token budget.");
     const second = await drain(options(bounds), deps, first.cursor);
     const joined = [...first.candidates, ...second.candidates].map(candidate => candidate.id);
@@ -278,7 +339,32 @@ describe("harvest", () => {
     const weekly = await drain(options({ ...bounds, mode: "weekly", until: "2026-11-30T00:00:00Z" }), forge({ weekly: true }), second.cursor);
     expect(weekly.candidates.map(candidate => candidate.id).sort()).toEqual(["gh:pr:51", "gh:pr:52"]);
     expect(weekly.cursor.sources.merged?.newest.at).toBe("2026-11-27T10:00:00.000Z");
-  });
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("stops earlier on long doc passages than on short comments at the same token budget", async () => {
+    const budget = 29_500;
+    const docs = await drain(options({ budget, until: "2026-11-02T00:00:00Z" }), forge());
+    const reviews = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true }));
+    expect(docs.candidates).toHaveLength(1);
+    expect(docs.candidates[0]?.kind).toBe("doc");
+    expect(Buffer.byteLength(docs.candidates[0]!.text)).toBeGreaterThan(4_000);
+    expect(docs.gaps).toContain("Learning reached its estimated token budget.");
+    expect(reviews.candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(4);
+    expect(reviews.candidates).toHaveLength(5);
+    expect(reviews.gaps).not.toContain("Learning reached its estimated token budget.");
+    expect(reviews.spent).toBeLessThan(docs.spent);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("keeps queued changes for a later run when the forge budget ends after search", async () => {
+    const deps = forge({ textOnly: true });
+    const blocked = await drain(options({ ...reviewWindow, requestBudget: 2 }), deps);
+    expect(blocked.candidates).toEqual([]);
+    expect(blocked.cursor.run?.requests).toBe(2);
+    expect(blocked.gaps).toContain("Learning reached its forge request budget.");
+    expect(deps.captures).toEqual(["query HarvestSearch", "query HarvestSearch"]);
+    const resumed = await drain(options(reviewWindow), deps, blocked.cursor);
+    expect(resumed.candidates).toHaveLength(5);
+  }, GIT_FIXTURE_TIMEOUT);
 
   it("recognizes verified CODEOWNERS teams and two distinct earlier PRs in the same package", async () => {
     const history = {};
@@ -290,7 +376,7 @@ describe("harvest", () => {
     expect(familiarity.knows("plant-dev", "packages/transport/src/b.ts", 3, "2026-11-04")).toBe(true);
     expect(familiarity.knows("plant-dev", "packages/transport/src/b.ts", 2, "2026-11-03")).toBe(false);
     expect(JSON.stringify(history)).not.toContain("plant-dev");
-  });
+  }, GIT_FIXTURE_TIMEOUT);
 });
 
 it.each([["src/server.go", true], ["src/server_test.go", false], ["src/config.ts", false],
@@ -313,6 +399,30 @@ it("recovers context when the reviewed object is missing and GitHub ends the hun
     hunk: `@@ -1,3 +1,3 @@\n ${first}\n ${next}\n ${anchor}`, original: "a".repeat(40),
     merge, head, changedPaths: [] }, new RegionReader(checkout), new Gaps());
   expect(location).toMatchObject({ actedOn: true, code: { before: { end: 3 }, after: { commit: merge }, anchor } });
+}, GIT_FIXTURE_TIMEOUT);
+
+it("projects UTF-8 prose and charges PR excerpts and code toward writing", () => {
+  const bare = addHarvestEvidence(emptyHarvestEvidence, { text: "設定" });
+  const region = { path: "src/example.ts", commit: "a".repeat(40), start: 1, end: 1, text: "const answer = 42;", hash: "" };
+  const full = addHarvestEvidence(emptyHarvestEvidence, { text: "設定", prText: "See the rollout.",
+    code: { before: region, after: region, head: region, anchor: "const" },
+    related: { reland: { before: region, after: region } } });
+  expect(full.triageTokens).toBe(2);
+  expect(full.writerTokens).toBe(Math.ceil(Buffer.byteLength("設定See the rollout.const" + region.text.repeat(5)) / 3));
+  expect(projectHarvestSpend(full, "claude")).toBeGreaterThan(projectHarvestSpend(bare, "claude"));
+});
+
+it("caps reviewed-file requests per batch and caches missing files", async () => {
+  const gaps = new Gaps();
+  const get = vi.fn(async (_path: string) => undefined);
+  const read = reviewedFiles({ repo: source, anonymous: false, get, graphql: vi.fn() }, () => true, gaps);
+  const commit = "b".repeat(40);
+  await read(commit, "src/first.ts");
+  await read(commit, "src/first.ts");
+  for (let i = 0; i < 8; i++) await read(commit, `src/example-${i}.ts`);
+  expect(get).toHaveBeenCalledTimes(8);
+  expect(get.mock.calls.filter(([path]) => path.includes("first.ts"))).toHaveLength(1);
+  expect(gaps.list()).toContain("Some reviewed files exceeded the forge request budget.");
 });
 
 it("quotes both calibration shapes using packed calls, prose-only triage and an allowance for one repair in five", () => {

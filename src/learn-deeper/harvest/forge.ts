@@ -1,9 +1,9 @@
 import { object, positive, rows, SourceError } from "../forge.js";
 import { Reviewers } from "../reviewers.js";
-import { sourceDigest, validAt, type SourceWindow } from "../source.js";
+import { repository, sourceDigest, validAt, type SourceWindow } from "../source.js";
 import { cleanText, newCandidate, PR_BYTES, reviewerKey, safePath, safeRaw, type Gaps } from "./evidence.js";
 import type { Familiarity } from "./familiarity.js";
-import { oid, reviewRegions, type RegionReader } from "./regions.js";
+import { MAX_BLOB, oid, reviewRegions, type ReadReviewedFile, type RegionReader } from "./regions.js";
 import type { Candidate, ForgeSource, HarvestDeps, HarvestPlan, HarvestPoint, SearchPage } from "./types.js";
 
 const THREAD_PAGE = 12;
@@ -12,6 +12,9 @@ const REPLIES = 4;
 const FILE_PAGE = 24;
 const SEARCH_PAGE = 32;
 const MAX_PERMISSION_READS = 12;
+// Share these reads across all threads in a batch. Allow a few missing fork
+// objects without turning a busy review into a long chain of requests.
+const MAX_REVIEWED_FILE_REQUESTS = 8;
 const actor = "author{__typename login ... on User{name}}";
 const common = `id fullDatabaseId body createdAt isMinimized ${actor}`;
 const discussionFields = `comments(last:${COMMENT_PAGE}){pageInfo{hasPreviousPage} nodes{${common}}}
@@ -58,6 +61,62 @@ function connection(value: unknown): Connection {
   const body = object(value), page = object(body?.pageInfo), count = body?.totalCount;
   return { nodes: body?.nodes == null ? [] : rows(body.nodes), more: page?.hasNextPage === true || page?.hasPreviousPage === true,
     end: string(page?.endCursor), total: typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined };
+}
+
+function contentsText(value: unknown, path: string): string | undefined {
+  const file = object(value);
+  const size = file?.size;
+  if (file?.type !== "file" || file.path !== path || file.encoding !== "base64"
+    || typeof size !== "number" || !Number.isSafeInteger(size) || size < 0 || size > MAX_BLOB
+    || typeof file.content !== "string") return undefined;
+  const encoded = file.content.replace(/[\r\n]/gu, "");
+  if (encoded.length !== Math.ceil(size / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(encoded)) return undefined;
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length !== size || bytes.includes(0)) return undefined;
+  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { return undefined; }
+}
+
+export function reviewedFiles(client: Client, canRequest: () => boolean, gaps: Gaps): ReadReviewedFile {
+  const cache = new Map<string, Promise<string | undefined>>();
+  let requests = 0, unavailable = false;
+
+  async function read(commit: string, path: string, headRepo?: string): Promise<string | undefined> {
+    if (unavailable) return undefined;
+    const fork = headRepo && repository("github.com", headRepo);
+    const repos = [client.repo.slug];
+    if (fork && fork.slug.toLowerCase() !== client.repo.slug.toLowerCase() && safeRaw(fork.slug) === fork.slug) repos.unshift(fork.slug);
+    for (const repo of repos) {
+      if (!canRequest() || requests >= MAX_REVIEWED_FILE_REQUESTS) {
+        gaps.messages.add("Some reviewed files exceeded the forge request budget.");
+        return undefined;
+      }
+      requests++;
+      const file = path.split("/").map(segment => encodeURIComponent(segment)).join("/");
+      try {
+        const reply = await client.get(`/repos/${repo}/contents/${file}?ref=${commit}`, true);
+        const text = contentsText(reply?.value, path);
+        if (text !== undefined) return text;
+      } catch (error) {
+        if (!(error instanceof SourceError)) throw error;
+        unavailable = error.problem === "offline" || error.problem === "rate-limit";
+        if (unavailable) break;
+      }
+    }
+    gaps.messages.add("Some reviewed files could not be read from GitHub.");
+    return undefined;
+  }
+
+  return (commit, path, headRepo) => {
+    if (!oid.test(commit) || !safePath(path)) return Promise.resolve(undefined);
+    const key = `${commit}:${path}`;
+    let reply = cache.get(key);
+    if (!reply) {
+      reply = read(commit, path, headRepo);
+      cache.set(key, reply);
+    }
+    return reply;
+  };
 }
 
 export async function search(client: Client, requests: Array<{ source: ForgeSource; page: SearchPage }>, countsOnly = false):
@@ -158,7 +217,7 @@ function addDiscussionGaps(row: Raw, gaps: Gaps): void {
   if (connection(row.files).more) gaps.messages.add("Some changed paths exceeded the file page limit.");
 }
 
-export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pageMore: boolean): Promise<Change[]> {
+export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pageMore: () => boolean): Promise<Change[]> {
   if (!items.length) return [];
   const [owner, name] = client.repo.slug.split("/");
   const fields = items.map(({ source, point }, i) => {
@@ -168,7 +227,7 @@ export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pa
       ${closureFields} comments(last:${COMMENT_PAGE}){pageInfo{hasPreviousPage} nodes{${common}}}}`;
     return `p${i}:pullRequest(number:${number}){id number title body mergedAt closedAt state mergeCommit{oid} headRefOid
       changedFiles ${actor} files(first:${FILE_PAGE}){pageInfo{hasNextPage} nodes{path}}
-      ${discussionFields} ${source === "closed" ? closureFields : `reviewThreads(first:${THREAD_PAGE}){
+      ${discussionFields} ${source === "closed" ? closureFields : `headRepository{nameWithOwner} reviewThreads(first:${THREAD_PAGE}){
         totalCount pageInfo{hasNextPage endCursor} nodes{${threadFields}}}`}}`;
   });
   const data = object((await client.graphql(`query HarvestChanges($owner:String!,$name:String!){repository(owner:$owner,name:$name){
@@ -185,7 +244,7 @@ export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pa
     }
     addDiscussionGaps(row, gaps);
     const page = connection(row.reviewThreads);
-    if (page.more && pageMore && page.end) extra.push({ index, number: row.number, after: page.end });
+    if (page.more && pageMore() && page.end) extra.push({ index, number: row.number, after: page.end });
     return [{ item, row, threads: page.nodes }];
   });
   if (extra.length) {
@@ -326,7 +385,7 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     const location = hunk && original && side && positive(first) && positive(last)
       && (position.startDiffSide == null || position.startDiffSide === side)
       ? await reviewRegions({ path, side, first, last, original, hunk, merge: gitId(object(row.mergeCommit)?.oid),
-        head: plan.head, changedPaths }, reader, gaps) : { actedOn: false };
+        head: plan.head, changedPaths, headRepo: string(object(row.headRepository)?.nameWithOwner) }, reader, gaps) : { actedOn: false };
     if (location.withheld) continue;
     const afterPath = location.code?.after?.path;
     const familiar = !!familiarity && comments.some(comment => familiarity.knows(comment.login, path, pull, point.at)

@@ -5,7 +5,7 @@ import type { Candidate, Region } from "./types.js";
 
 export const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 const CONTEXT = 15;
-const MAX_BLOB = 512 << 10;
+export const MAX_BLOB = 512 << 10;
 const MAX_BLOB_READS = 96;
 const MAX_REGION = 8 << 10;
 const MAX_HUNK = 64 << 10;
@@ -13,11 +13,13 @@ const MAX_ANCHOR_LINES = 16;
 const normalize = (line: string) => line.replace(/\s+/gu, "");
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((line, i) => normalize(line) === normalize(b[i]!));
 const splitLines = (text: string) => text === "" ? [] : text.replace(/\r\n/gu, "\n").replace(/\n$/u, "").split("\n");
+export type ReadReviewedFile = (commit: string, path: string, headRepo?: string) => Promise<string | undefined>;
 
 export class RegionReader {
   private readonly reads = new Map<string, Promise<string[] | undefined>>();
+  private readonly commits = new Map<string, Promise<boolean>>();
   limitReached = false;
-  constructor(readonly root: string) {}
+  constructor(readonly root: string, private readonly readRemote?: ReadReviewedFile) {}
 
   read(commit: string, path: string): Promise<string[] | undefined> {
     if (!oid.test(commit) || !safePath(path)) return Promise.resolve(undefined);
@@ -33,6 +35,21 @@ export class RegionReader {
       this.reads.set(key, read);
     }
     return read;
+  }
+
+  async reviewed(commit: string, path: string, headRepo?: string): Promise<string[] | undefined> {
+    const local = await this.read(commit, path);
+    if (local !== undefined || !this.readRemote || this.limitReached || !oid.test(commit) || !safePath(path)) return local;
+    let exists = this.commits.get(commit);
+    if (!exists) {
+      // cat-file -e is silent on success. A present object can still have a
+      // missing, binary or oversized path. Only a missing object needs the forge.
+      exists = command(this.root, "git", ["cat-file", "-e", commit]).then(output => output !== undefined);
+      this.commits.set(commit, exists);
+    }
+    if (await exists) return undefined;
+    const remote = await this.readRemote(commit, path, headRepo);
+    return remote === undefined ? undefined : splitLines(remote);
   }
 }
 
@@ -115,7 +132,7 @@ export function align(span: Span, lines: string[]): Span | undefined {
 
 export interface ReviewLocation {
   path: string; side: string; first: number; last: number; hunk: string; original: string;
-  merge?: string; head: string; changedPaths: string[];
+  merge?: string; head: string; changedPaths: string[]; headRepo?: string;
 }
 
 export async function reviewRegions(where: ReviewLocation, reader: RegionReader, gaps: Gaps):
@@ -138,7 +155,7 @@ Promise<{ code?: Candidate["code"]; actedOn: boolean; withheld?: boolean }> {
     original = base;
   }
   let span = hunkCode;
-  const blob = await reader.read(original, path);
+  const blob = side === "RIGHT" ? await reader.reviewed(original, path, where.headRepo) : await reader.read(original, path);
   if (blob && same(hunkCode.lines, blob.slice(hunkCode.offset, hunkCode.offset + hunkCode.lines.length))) {
     span = { lines: blob, offset: 0, first: first - 1, last };
   } else if (side === "LEFT") {

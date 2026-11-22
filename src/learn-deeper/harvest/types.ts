@@ -51,11 +51,18 @@ export interface HarvestCursor {
   sources: Partial<Record<HarvestSource, SourceRead>>;
   backfill?: HarvestScan;
   weekly?: HarvestScan;
-  run?: { id: string; counts: CandidateCounts };
+  run?: { id: string; evidence: HarvestEvidenceSize; requests: number };
   /** Hashed reviewer/path-or-package pairs and the dates of their two earliest observed PRs. */
   familiarity?: Record<string, Array<{ pull: number; at: string }>>;
 }
 export type CandidateCounts = Partial<Record<CandidateKind, number>>;
+/** Aggregates for resuming the spend projection without retaining source text. */
+export interface HarvestEvidenceSize {
+  candidates: number;
+  triageTokens: number;
+  writerTokens: number;
+  largestWriterTokens: number;
+}
 export interface HarvestBatch { candidates: Candidate[]; cursor: HarvestCursor; spentEstimate: number; gaps: string[]; done: boolean; }
 export interface HarvestOptions extends SourceWindow {
   checkout: string;
@@ -64,14 +71,16 @@ export interface HarvestOptions extends SourceWindow {
   agent: "claude" | "codex";
   mode?: "backfill" | "weekly";
   budget?: number;
+  requestBudget?: number;
   issues?: boolean;
   /** Pinned upstream default branch when it differs from the checkout's HEAD. */
   defaultHead?: string;
 }
-export interface HarvestPlan extends Omit<HarvestOptions, "mode" | "budget" | "defaultHead"> {
+export interface HarvestPlan extends Omit<HarvestOptions, "mode" | "budget" | "requestBudget" | "defaultHead"> {
   id: string;
   mode: "backfill" | "weekly";
   budget: number;
+  requestBudget: number;
   defaultHead: string;
   estimate: number;
   ceiling: number;

@@ -4,10 +4,10 @@ import { command, PinnedTree } from "../git.js";
 import { quoteCeiling } from "../plan.js";
 import { Reviewers } from "../reviewers.js";
 import { repository, type SourceWindow } from "../source.js";
-import { DEFAULT_HARVEST_BUDGET, estimateHarvest, forecastCounts } from "./estimate.js";
+import { addHarvestEvidence, DEFAULT_HARVEST_BUDGET, emptyHarvestEvidence, estimateHarvest, forecastCounts, projectHarvestSpend } from "./estimate.js";
 import { Gaps, rankCandidates, safeRaw } from "./evidence.js";
 import { Familiarity } from "./familiarity.js";
-import { changeCandidates, changes, discussions, observeAuthors, readyThreads, revertDiscussion, ReviewRead, search, type ForgeItem } from "./forge.js";
+import { changeCandidates, changes, discussions, observeAuthors, readyThreads, revertDiscussion, reviewedFiles, ReviewRead, search, type ForgeItem } from "./forge.js";
 import { localCandidates, localInventory, readRevert } from "./local.js";
 import { oid, RegionReader } from "./regions.js";
 import type { Candidate, ForgeSource, HarvestBatch, HarvestCursor, HarvestDeps, HarvestLane, HarvestOptions, HarvestPlan,
@@ -20,6 +20,10 @@ export { corroborateReviewFamiliarity } from "./familiarity.js";
 const FORGE_PER_BATCH = 4;
 const LOCAL_PER_BATCH = 2;
 const SEARCHES_PER_BATCH = 6;
+// Covers the grouped inventory, search and detail reads for a typical
+// backfill, with room for permission checks and a limited number of blobs.
+const DEFAULT_REQUEST_BUDGET = 256;
+const FORGE_BUDGET_GAP = "Learning reached its forge request budget.";
 const SECOND = 1000;
 const localSources = ["revert", "cause", "adr", "doc"] as const;
 const forgeSource = (source: HarvestSource): source is ForgeSource => source === "merged" || source === "closed" || source === "issue";
@@ -48,6 +52,27 @@ function clientFor(plan: Pick<HarvestOptions, "source">, deps: HarvestDeps): Non
   return client;
 }
 
+function countedClient(client: NonNullable<HarvestDeps["client"]>, run: NonNullable<HarvestCursor["run"]>,
+  available: () => boolean, gaps: Gaps): NonNullable<HarvestDeps["client"]> {
+  return {
+    repo: client.repo,
+    anonymous: client.anonymous,
+    async get(path, optional) {
+      if (!available()) {
+        gaps.messages.add(FORGE_BUDGET_GAP);
+        return undefined;
+      }
+      run.requests++;
+      return client.get(path, optional);
+    },
+    async graphql(query, variables) {
+      if (!available()) throw new SourceError("unavailable");
+      run.requests++;
+      return client.graphql(query, variables);
+    },
+  };
+}
+
 async function openTree(options: HarvestOptions, deps: HarvestDeps): Promise<PinnedTree> {
   if (deps.tree?.root === options.checkout && deps.tree.head === options.head) return deps.tree;
   const tree = await PinnedTree.open(options.checkout, options.head);
@@ -63,17 +88,20 @@ export async function planHarvest(options: HarvestOptions, deps: HarvestDeps = {
     || options.defaultHead !== undefined && !oid.test(options.defaultHead)) throw new Error("Invalid learning harvest window or repository.");
   const budget = options.budget ?? DEFAULT_HARVEST_BUDGET;
   if (!Number.isSafeInteger(budget) || budget < 0) throw new Error("Invalid learning token budget.");
+  const requestBudget = options.requestBudget ?? DEFAULT_REQUEST_BUDGET;
+  if (!Number.isSafeInteger(requestBudget) || requestBudget < 0) throw new Error("Invalid learning request budget.");
   const normalized = { ...options, since: new Date(options.since).toISOString(), until: new Date(options.until).toISOString() };
   const mode = options.mode ?? "backfill";
   const prior = cursor?.[mode];
   const sameWindow = prior && matchesWindow(prior, normalized);
   const gaps = new Gaps(), client = clientFor(options, deps);
   if (!client) gaps.messages.add("Review history requires an authenticated GitHub source.");
+  else if (requestBudget === 0) gaps.messages.add(FORGE_BUDGET_GAP);
   const tree = await openTree(options, deps);
   const remote = !options.defaultHead && (await command(options.checkout, "git", ["rev-parse", "--verify", "refs/remotes/origin/HEAD^{commit}"]))?.trim();
   const defaultHead = options.defaultHead ?? (remote && oid.test(remote) ? remote : options.head);
   const sources: ForgeSource[] = options.issues ? ["merged", "closed", "issue"] : ["merged", "closed"];
-  const requests = client ? sources.flatMap(source => bands(normalized).flatMap(window => {
+  const requests = client && requestBudget > 0 ? sources.flatMap(source => bands(normalized).flatMap(window => {
     const boundary = sameWindow ? prior.boundary[source] : cursor?.sources[source]?.[mode === "weekly" ? "newest" : "oldest"];
     const clipped = intersects(window, mode === "weekly" ? boundary?.at : undefined);
     if (clipped && mode === "backfill" && boundary && boundary.at < clipped.until) clipped.until = boundary.at;
@@ -104,7 +132,7 @@ export async function planHarvest(options: HarvestOptions, deps: HarvestDeps = {
   const projected = estimateHarvest(forecastCounts({ merged: count("merged"), closed: count("closed"), issue: options.issues ? count("issue") : 0,
     revert: localCount("revert"), cause: localCount("cause"), adr: localCount("adr"), doc: localCount("doc") }), options.agent).total;
   const estimate = Math.min(projected, budget);
-  return { ...normalized, id: randomUUID(), mode, budget, defaultHead, inventory, gaps: gaps.list(), estimate, ceiling: quoteCeiling(estimate) };
+  return { ...normalized, id: randomUUID(), mode, budget, requestBudget, defaultHead, inventory, gaps: gaps.list(), estimate, ceiling: quoteCeiling(estimate) };
 }
 
 function scanFor(plan: HarvestPlan, cursor: HarvestCursor): HarvestScan {
@@ -240,9 +268,12 @@ const itemKey = (item: HarvestScan["partial"][number]) => item.source + ":" + it
 
 export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | undefined, deps: HarvestDeps = {}): Promise<HarvestBatch> {
   const next: HarvestCursor = structuredClone(cursor ?? { sources: {} });
-  if (next.run?.id !== plan.id) next.run = { id: plan.id, counts: {} };
-  const counts = next.run.counts;
-  const already = estimateHarvest(counts, plan.agent).total;
+  if (next.run?.id !== plan.id) {
+    // All search totals come from a single inventory request.
+    next.run = { id: plan.id, evidence: emptyHarvestEvidence, requests: Number(plan.inventory.bands.length > 0) };
+  }
+  const run = next.run;
+  const already = projectHarvestSpend(run.evidence, plan.agent);
   const scan = next[plan.mode] = scanFor(plan, next);
   const gaps = new Gaps();
   if (already === 0) for (const gap of plan.gaps) gaps.messages.add(gap);
@@ -251,32 +282,45 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
   let budgetStopped = false;
   const result = (): HarvestBatch => ({ candidates: candidates.sort(rankCandidates), cursor: next,
     spentEstimate: spent - already, gaps: gaps.list(), done: budgetStopped || !scanHasWork(scan, plan) && matchesWindow(scan, plan) });
-  // All candidate kinds currently carry the same stage allowance.
-  const nextCandidate = estimateHarvest({ ...counts, "review-thread": (counts["review-thread"] ?? 0) + 1 }, plan.agent).total;
-  if (scanHasWork(scan, plan) && nextCandidate > plan.budget) {
+  const minimumNext = projectHarvestSpend(addHarvestEvidence(run.evidence, { text: "" }), plan.agent);
+  if (scanHasWork(scan, plan) && minimumNext > plan.budget) {
     gaps.messages.add("Learning reached its estimated token budget.");
     budgetStopped = true;
     return result();
   }
-  const client = clientFor(plan, deps);
+  const available = () => run.requests < plan.requestBudget;
+  const rawClient = clientFor(plan, deps);
+  const client = rawClient && countedClient(rawClient, run, available, gaps);
+  if (client && !available() && (active(scan, plan).some(lane => forgeSource(lane.source))
+    || scan.partial.some(item => forgeSource(item.source) && (item.source !== "issue" || plan.issues)))) {
+    gaps.messages.add(FORGE_BUDGET_GAP);
+    budgetStopped = true;
+    return result();
+  }
   if (!scan.partial.some(item => item.source !== "issue" || plan.issues)) await fill(plan, next, scan, client, gaps);
   const work = take(scan, plan);
   if (!work.length) return result();
+  const forge = work.filter((item): item is typeof item & ForgeItem => forgeSource(item.source));
+  if (forge.length && !client) throw new SourceError("login");
+  if (forge.length && !available()) {
+    gaps.messages.add(FORGE_BUDGET_GAP);
+    budgetStopped = true;
+    return result();
+  }
   const tree = await openTree(plan, deps);
   const docTree = scan.head !== tree.head && work.some(item => item.source === "doc" || item.source === "adr")
     ? await openTree({ ...plan, head: scan.head }, deps) : tree;
   const read = client ? new ReviewRead(client, gaps) : undefined;
   const reviewers = read?.reviewers ?? new Reviewers();
-  const reader = new RegionReader(tree.root);
-  const forge = work.filter((item): item is typeof item & ForgeItem => forgeSource(item.source));
-  if (forge.length && !client) throw new SourceError("login");
-  const changesByPull = client ? await changes(client, forge, gaps, plan.budget > already) : [];
+  const reader = new RegionReader(tree.root, client && reviewedFiles(client, available, gaps));
+  const changesByPull = client ? await changes(client, forge, gaps, available) : [];
   const familiarity = changesByPull.some(change => change.threads.length)
     ? await Familiarity.open(plan.source.slug, tree, next.familiarity ??= {}, deps.teams) : undefined;
   const reverts = new Map<string, Awaited<ReturnType<typeof readRevert>>>();
   for (const item of work) if (item.source === "revert") reverts.set(item.point.id, await readRevert(plan, item.point));
   const relatedPulls = [...new Set([...reverts.values()].flatMap(revert => revert && !revert.reason ? revert.reasonPulls : []))];
-  const related = client ? await revertDiscussion(client, relatedPulls, gaps) : new Map();
+  if (client && relatedPulls.length && !available()) gaps.messages.add(FORGE_BUDGET_GAP);
+  const related = client && available() ? await revertDiscussion(client, relatedPulls, gaps) : new Map();
   const threads = new Map<string, Awaited<ReturnType<typeof readyThreads>>>();
   if (read) {
     observeAuthors(read, changesByPull, related);
@@ -305,14 +349,14 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
     .sort((a, b) => rankCandidates(a.candidate, b.candidate));
   for (const { item, candidate } of ranked) {
     if (item.emitted.includes(candidate.id)) continue;
-    const count = (counts[candidate.kind] ?? 0) + 1;
-    const estimate = estimateHarvest({ ...counts, [candidate.kind]: count }, plan.agent).total;
+    const evidence = addHarvestEvidence(run.evidence, candidate);
+    const estimate = projectHarvestSpend(evidence, plan.agent);
     if (estimate > plan.budget) {
       gaps.messages.add("Learning reached its estimated token budget.");
       budgetStopped = true;
       break;
     }
-    counts[candidate.kind] = count;
+    run.evidence = evidence;
     spent = estimate;
     candidates.push(candidate);
     item.emitted.push(candidate.id);
