@@ -5,7 +5,7 @@
 //! fingerprint (committed as `mh2:`) lets a renamed or moved declaration be
 //! found again. Both must equal what TypeScript produced for the same source.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
@@ -54,27 +54,37 @@ impl Sketch {
 /// tokens discard spellings, so the same few trigrams recur everywhere.
 #[derive(Default)]
 pub struct SketchBuilder {
-    trigram_hashes: HashMap<String, Box<[u32; K]>>,
+    tokens: HashMap<String, u32>,
+    trigram_hashes: HashMap<[u32; 3], Box<[u32; K]>>,
+    seen: HashSet<[u32; 3]>,
 }
 
 impl SketchBuilder {
     pub fn sketch<S: AsRef<str>>(&mut self, tokens: &[S]) -> Sketch {
         let mut minima = [u32::MAX; K];
-        let mut seen = std::collections::HashSet::new();
-        for window in tokens.windows(3) {
-            let trigram = format!(
-                "{}\0{}\0{}",
-                window[0].as_ref(),
-                window[1].as_ref(),
-                window[2].as_ref()
-            );
-            if !seen.insert(trigram.clone()) {
+        self.seen.clear();
+        let mut trigram = [0; 3];
+        for (i, token) in tokens.iter().enumerate() {
+            let token = token.as_ref();
+            let id = self.tokens.get(token).copied().unwrap_or_else(|| {
+                let id = self.tokens.len() as u32;
+                self.tokens.insert(token.to_owned(), id);
+                id
+            });
+            trigram = [trigram[1], trigram[2], id];
+            if i < 2 || !self.seen.insert(trigram) {
                 continue;
             }
-            let hashes = self.trigram_hashes.entry(trigram).or_insert_with_key(|t| {
+            let hashes = self.trigram_hashes.entry(trigram).or_insert_with(|| {
+                let text = format!(
+                    "{}\0{}\0{}",
+                    tokens[i - 2].as_ref(),
+                    tokens[i - 1].as_ref(),
+                    token
+                );
                 let mut out = Box::new([0u32; K]);
                 for (seed, slot) in out.iter_mut().enumerate() {
-                    *slot = hash32(t, seed);
+                    *slot = hash32(&text, seed);
                 }
                 out
             });
