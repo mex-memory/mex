@@ -322,6 +322,7 @@ impl Session {
                 sizes: &sizes,
                 load: &load,
                 modules: Some(modules),
+                identities: None,
             };
             let plan = Plan::new(&corpus, &prior, &writer, false, inputs.iter().copied())?;
             if loader.over_budget() || plan.resolution_count() > MAX_RESIDENT_ORIGINS {

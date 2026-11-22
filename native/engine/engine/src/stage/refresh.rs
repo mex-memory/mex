@@ -138,6 +138,7 @@ pub(crate) fn write(
             sizes: &sizes,
             load: &load,
             modules: None,
+            identities: None,
         };
         Plan::new(&corpus, &prior, &writer, complete, inputs.iter().copied())?.write(
             &corpus,

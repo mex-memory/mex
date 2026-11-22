@@ -25,6 +25,7 @@ pub(super) struct Stage<'a> {
     heritage: Vec<Vec<UnresolvedHeritage>>,
     imports: Vec<Vec<ImportResolution>>,
     frameworks: Option<Enabled>,
+    callback_owners: Vec<bool>,
 }
 
 impl<'a> Stage<'a> {
@@ -34,7 +35,7 @@ impl<'a> Stage<'a> {
         frameworks: Option<&Enabled>,
     ) -> Self {
         Self::resolve(
-            Files::Dense(facts),
+            Identities::new(Files::Dense(facts)),
             modules,
             frameworks,
             &(0..facts.len()).collect::<Vec<_>>(),
@@ -45,13 +46,14 @@ impl<'a> Stage<'a> {
     }
 
     pub(super) fn resolve(
-        facts: Files<'a>,
+        ids: Identities<'a>,
         modules: &ModuleResolver,
         frameworks: Option<&Enabled>,
         origins: &[usize],
         descendants: impl Fn(DefRef) -> Vec<DefRef>,
         by_site: bool,
     ) -> (Self, Vec<(DefRef, DefRef)>) {
+        let facts = ids.facts;
         let mut resolver = Resolver::new(facts, modules);
         let resolution = resolver.resolve(origins.iter().copied(), descendants);
         let mut imports = (0..facts.len()).map(|_| Vec::new()).collect::<Vec<_>>();
@@ -65,21 +67,26 @@ impl<'a> Stage<'a> {
                     .any(|marker| marker.def >= 0);
             imports[file] = resolver.resolve_import_bindings(file, need_targets);
         }
-        Self::group(facts, frameworks, resolution, imports, by_site)
+        Self::group(ids, frameworks, resolution, imports, by_site)
     }
 
     fn group(
-        facts: Files<'a>,
+        ids: Identities<'a>,
         frameworks: Option<&Enabled>,
         resolution: Resolution,
         imports: Vec<Vec<ImportResolution>>,
         by_site: bool,
     ) -> (Self, Vec<(DefRef, DefRef)>) {
+        let facts = ids.facts;
         let mut edges = vec![Vec::new(); facts.len()];
+        let mut callback_owners = vec![false; facts.len()];
         let mut inheritance = Vec::new();
         for edge in resolution.edges {
             if by_site && matches!(edge.kind, "extends" | "implements") {
                 inheritance.push((edge.from, edge.to));
+            }
+            if by_site && edge.from.0 != edge.site_file {
+                callback_owners[edge.from.0] = true;
             }
             let owner = if by_site { edge.site_file } else { edge.from.0 };
             edges[owner].push(edge);
@@ -99,15 +106,20 @@ impl<'a> Stage<'a> {
         (
             Self {
                 facts,
-                ids: Identities::new(facts),
+                ids,
                 edges,
                 calls,
                 heritage,
                 frameworks: frameworks.cloned(),
+                callback_owners,
                 imports,
             },
             inheritance,
         )
+    }
+
+    pub(super) fn has_incoming_callback(&self, file: usize) -> bool {
+        self.callback_owners[file]
     }
 
     pub(super) fn file(&self, index: usize, size: u64, include_nodes: bool) -> StagedFile<'_> {

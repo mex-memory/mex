@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Error, OpenFlags, OptionalExtension, params};
 
-use super::{OVERLAY_KEY_START, SCHEMA_VERSION, Writer, decode_hex};
+use super::{OVERLAY_KEY_START, SCHEMA_VERSION, Writer};
 
 #[derive(Clone)]
 pub struct BaseFile {
@@ -109,11 +109,20 @@ impl RefreshBase {
     }
 
     pub fn node_key(&self, public_id: &str) -> rusqlite::Result<Option<i64>> {
-        let (_, digest) = public_id.split_once(':').ok_or(Error::InvalidQuery)?;
+        self.node_key_by_id(crate::id::decode_node_id(public_id).ok_or(Error::InvalidQuery)?)
+    }
+
+    pub fn node_key_by_id(&self, public_id: [u8; 16]) -> rusqlite::Result<Option<i64>> {
         self.0
             .prepare_cached("SELECT id FROM nodes WHERE public_id = ?1")?
-            .query_row([decode_hex(digest)?], |row| row.get(0))
+            .query_row([public_id], |row| row.get(0))
             .optional()
+    }
+
+    pub fn node_id(&self, key: i64) -> rusqlite::Result<[u8; 16]> {
+        self.0
+            .prepare_cached("SELECT public_id FROM nodes WHERE id = ?1")?
+            .query_row([key], |row| row.get(0))
     }
 }
 

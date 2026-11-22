@@ -129,6 +129,27 @@ pub fn node_id(kind: &str, identity: &str) -> String {
     out
 }
 
+/// Decode the binary identity used by the v5 node table.
+pub fn decode_node_id(id: &str) -> Option<[u8; 16]> {
+    let (_, hex) = id.split_once(':')?;
+    if hex.len() != 32 {
+        return None;
+    }
+    fn digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+    let mut bytes = [0; 16];
+    for (byte, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        *byte = digit(pair[0])? << 4 | digit(pair[1])?;
+    }
+    Some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

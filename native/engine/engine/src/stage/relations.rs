@@ -1,7 +1,8 @@
-//! A compact, position-bearing projection of one resolver origin. Keep it
-//! before edge deduplication so an edited callback can expose the next site
-//! for the same edge key. The public graph still owns edges by source node.
+//! The projection belongs to the origin where the site was written. Keep
+//! rows before SQL deduplication so removing one callback can expose the
+//! next site for the same edge key.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use bincode::{Decode, Encode};
@@ -9,48 +10,51 @@ use mex_graph_core::facts::{FileFacts, Kind};
 use mex_graph_core::store::{EdgeEvidence, EdgeRow, UnresolvedRow, Writer};
 use sha2::{Digest, Sha256};
 
-use super::StagedFile;
-use super::{build, edit_facts};
+use super::{StagedFile, build, edit_facts};
 use crate::job::JobError;
 
 const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
-
 type Site = (u32, Option<u32>);
 
 #[derive(Encode, Decode)]
-pub(super) struct Projection {
+pub(super) struct Projection<'a> {
     pub(super) signature: edit_facts::Signature,
     routes: [u8; 32],
-    edges: Vec<Edge>,
-    unresolved: Vec<Unresolved>,
-    remote: BTreeMap<i64, Vec<Edge>>,
+    edges: Vec<Edge<'a>>,
+    unresolved: Vec<Unresolved<'a>>,
+    remote: BTreeMap<i64, Vec<Edge<'a>>>,
 }
 
 #[derive(Encode, Decode)]
-struct Edge {
-    source: String,
-    target: String,
-    kind: String,
+struct Edge<'a> {
+    source: i64,
+    target: i64,
+    fields: EdgeFields<'a>,
+}
+
+#[derive(Encode, Decode)]
+struct EdgeFields<'a> {
+    kind: Cow<'a, str>,
     site: Site,
-    provenance: String,
+    provenance: Cow<'a, str>,
     confidence: f64,
-    method: String,
-    target_name: Option<String>,
-    evidence: Option<Evidence>,
+    method: Cow<'a, str>,
+    target_name: Option<Cow<'a, str>>,
+    evidence: Option<Evidence<'a>>,
 }
 
 #[derive(Encode, Decode)]
-enum Evidence {
-    Declaration(Option<String>),
+enum Evidence<'a> {
+    Declaration(Option<Cow<'a, str>>),
     Import,
     Heritage,
-    Expression(String),
+    Expression(Cow<'a, str>),
     Callback(u32),
-    Framework(Option<String>),
-    SyntaxImport(String),
+    Framework(Option<Cow<'a, str>>),
+    SyntaxImport(Cow<'a, str>),
 }
 
-impl Evidence {
+impl Evidence<'_> {
     fn row(&self) -> EdgeEvidence<'_> {
         match self {
             Self::Declaration(role) => EdgeEvidence::Declaration(role.as_deref()),
@@ -64,53 +68,61 @@ impl Evidence {
     }
 }
 
-impl From<EdgeEvidence<'_>> for Evidence {
-    fn from(evidence: EdgeEvidence<'_>) -> Self {
+impl<'a> From<EdgeEvidence<'a>> for Evidence<'a> {
+    fn from(evidence: EdgeEvidence<'a>) -> Self {
         match evidence {
-            EdgeEvidence::Declaration(role) => Self::Declaration(role.map(str::to_owned)),
+            EdgeEvidence::Declaration(role) => Self::Declaration(role.map(Cow::Borrowed)),
             EdgeEvidence::Import => Self::Import,
             EdgeEvidence::Heritage => Self::Heritage,
             EdgeEvidence::Expression(text) => Self::Expression(text.into()),
             EdgeEvidence::Callback(argument) => Self::Callback(argument),
-            EdgeEvidence::Framework(binding) => Self::Framework(binding.map(str::to_owned)),
+            EdgeEvidence::Framework(binding) => Self::Framework(binding.map(Cow::Borrowed)),
             EdgeEvidence::SyntaxImport(specifier) => Self::SyntaxImport(specifier.into()),
         }
     }
 }
 
 #[derive(Encode, Decode)]
-struct Unresolved {
-    source: String,
-    name: String,
-    written: Option<String>,
-    kind: String,
-    reason: String,
-    line: u32,
-    column: u32,
-    candidate: Option<String>,
-    receiver: Option<String>,
+struct Unresolved<'a> {
+    source: i64,
+    candidate: Option<i64>,
+    fields: UnresolvedFields<'a>,
 }
 
-impl Projection {
+#[derive(Encode, Decode)]
+struct UnresolvedFields<'a> {
+    name: Cow<'a, str>,
+    written: Option<Cow<'a, str>>,
+    kind: Cow<'a, str>,
+    reason: Cow<'a, str>,
+    line: u32,
+    column: u32,
+    receiver: Option<Cow<'a, str>>,
+}
+
+impl<'a> Projection<'a> {
     pub(super) fn new(
-        file: &StagedFile<'_>,
+        file: &'a StagedFile<'_>,
         facts: &FileFacts,
         file_key: impl Fn(&str) -> i64,
+        mut node_key: impl FnMut(&str) -> Result<i64, JobError>,
     ) -> Result<Self, JobError> {
         let mut edges = Vec::with_capacity(file.edges.len());
-        let mut remote: BTreeMap<i64, Vec<Edge>> = BTreeMap::new();
+        let mut remote: BTreeMap<i64, Vec<Edge<'a>>> = BTreeMap::new();
         for edge in &file.edges {
             let (_, evidence) = build::edge_evidence(edge);
             let row = Edge {
-                source: edge.source.into(),
-                target: edge.target.into(),
-                kind: edge.kind.into(),
-                site: (edge.line, edge.column),
-                provenance: edge.provenance.into(),
-                confidence: edge.confidence.as_f64().expect("finite edge confidence"),
-                method: edge.resolution_method.into(),
-                target_name: edge.metadata.as_ref().map(|meta| meta.target_name.into()),
-                evidence: evidence.map(Evidence::from),
+                source: node_key(edge.source)?,
+                target: node_key(edge.target)?,
+                fields: EdgeFields {
+                    kind: edge.kind.into(),
+                    site: (edge.line, edge.column),
+                    provenance: edge.provenance.into(),
+                    confidence: edge.confidence.as_f64().expect("finite edge confidence"),
+                    method: edge.resolution_method.into(),
+                    target_name: edge.metadata.as_ref().map(|meta| meta.target_name.into()),
+                    evidence: evidence.map(Evidence::from),
+                },
             };
             if let Some(owner) = edge.owner {
                 remote.entry(file_key(owner)).or_default().push(row);
@@ -121,18 +133,22 @@ impl Projection {
         let unresolved = file
             .unresolved
             .iter()
-            .map(|row| Unresolved {
-                source: row.from_node_id.into(),
-                name: row.called_name.unwrap_or(row.reference_name).into(),
-                written: row.called_name.map(|_| row.reference_name.into()),
-                kind: row.reference_kind.into(),
-                reason: row.metadata["reason"].as_str().unwrap_or("unknown").into(),
-                line: row.line,
-                column: row.column,
-                candidate: row.candidate_id.map(str::to_owned),
-                receiver: row.receiver.map(str::to_owned),
+            .map(|row| {
+                Ok(Unresolved {
+                    source: node_key(row.from_node_id)?,
+                    candidate: row.candidate_id.map(&mut node_key).transpose()?,
+                    fields: UnresolvedFields {
+                        name: row.called_name.unwrap_or(row.reference_name).into(),
+                        written: row.called_name.map(|_| row.reference_name.into()),
+                        kind: row.reference_kind.into(),
+                        reason: row.metadata["reason"].as_str().unwrap_or("unknown").into(),
+                        line: row.line,
+                        column: row.column,
+                        receiver: row.receiver.map(Cow::Borrowed),
+                    },
+                })
             })
-            .collect();
+            .collect::<Result<_, JobError>>()?;
         Ok(Self {
             signature: edit_facts::Signature::new(facts)?,
             routes: routes(facts)?,
@@ -152,16 +168,18 @@ impl Projection {
             .iter_mut()
             .chain(self.remote.values_mut().flatten())
         {
-            let Some(&site) = positions.get(&edge.site) else {
+            let Some(&site) = positions.get(&edge.fields.site) else {
                 return Ok(false);
             };
-            edge.site = site;
+            edge.fields.site = site;
         }
         for row in &mut self.unresolved {
-            let Some(&(line, Some(col))) = positions.get(&(row.line, Some(row.column))) else {
+            let fields = &mut row.fields;
+            let Some(&(line, Some(col))) = positions.get(&(fields.line, Some(fields.column)))
+            else {
                 return Ok(false);
             };
-            (row.line, row.column) = (line, col);
+            (fields.line, fields.column) = (line, col);
         }
         self.routes = routes(facts)?;
         Ok(true)
@@ -175,134 +193,175 @@ impl Projection {
         Ok(positions.iter().all(|(old, new)| old == new) && self.routes == routes(facts)?)
     }
 
-    pub(super) fn install(&self, writer: &Writer, origin: i64) -> Result<(), JobError> {
+    pub(super) fn install(
+        &self,
+        writer: &Writer,
+        origin: i64,
+        encoder: &mut Encoder,
+    ) -> Result<(), JobError> {
         let _timer = mex_graph_core::timing::Timer::start("v5.resolutionInputs");
-        let blob = encode(self)?;
         writer
-            .put_projection(origin, Some(&blob))
+            .put_projection(origin, Some(&encoder.encode(self)?))
             .map_err(JobError::write)?;
         for (&owner, edges) in &self.remote {
             writer
-                .put_callback(owner, origin, &encode(edges)?)
+                .put_callback(owner, origin, &encoder.encode(edges)?)
                 .map_err(JobError::write)?;
         }
         Ok(())
     }
 }
 
-pub(super) struct Outgoing {
+struct CallbackRows {
+    origin: i64,
     path: String,
-    local: Projection,
-    callbacks: Vec<(String, Vec<Edge>)>,
+    rows: Vec<Edge<'static>>,
 }
 
-impl Outgoing {
+pub(super) struct Outgoing<'a> {
+    path: &'a str,
+    local: Projection<'a>,
+    callbacks: Vec<CallbackRows>,
+}
+
+impl<'a> Outgoing<'a> {
+    pub(super) fn local(path: &'a str, local: Projection<'a>) -> Self {
+        Self {
+            path,
+            local,
+            callbacks: Vec::new(),
+        }
+    }
+
     pub(super) fn load(
         writer: &Writer,
         file: i64,
-        path: &str,
-        local: Projection,
+        path: &'a str,
+        local: Projection<'a>,
     ) -> Result<Self, JobError> {
         let mut callbacks = writer
             .callbacks_for(file)
             .map_err(JobError::write)?
             .into_iter()
             .map(|(origin, blob)| {
-                Ok((
-                    writer.file_path(origin).map_err(JobError::write)?,
-                    decode(&blob)?,
-                ))
+                Ok(CallbackRows {
+                    origin,
+                    path: writer.file_path(origin).map_err(JobError::write)?,
+                    rows: decode(&blob)?,
+                })
             })
             .collect::<Result<Vec<_>, JobError>>()?;
-        callbacks.sort_unstable_by(|(left, _), (right, _)| {
-            left.encode_utf16().cmp(right.encode_utf16())
+        callbacks.sort_unstable_by(|left, right| {
+            left.path.encode_utf16().cmp(right.path.encode_utf16())
         });
         Ok(Self {
-            path: path.into(),
+            path,
             local,
             callbacks,
         })
     }
 
-    fn edges(&self) -> impl Iterator<Item = (&str, &Edge)> {
-        let before = self
-            .callbacks
-            .partition_point(|(path, _)| path.encode_utf16().cmp(self.path.encode_utf16()).is_lt());
-        fn callback_edges(slice: &[(String, Vec<Edge>)]) -> impl Iterator<Item = (&str, &Edge)> {
-            slice
-                .iter()
-                .flat_map(|(path, edges)| edges.iter().map(|edge| (path.as_str(), edge)))
+    fn edges(&self) -> impl Iterator<Item = (Option<(i64, &str)>, &Edge<'_>)> {
+        let before = self.callbacks.partition_point(|row| {
+            row.path
+                .encode_utf16()
+                .cmp(self.path.encode_utf16())
+                .is_lt()
+        });
+        fn callback_edges(
+            slice: &[CallbackRows],
+        ) -> impl Iterator<Item = (Option<(i64, &str)>, &Edge<'_>)> {
+            slice.iter().flat_map(|callback| {
+                callback
+                    .rows
+                    .iter()
+                    .map(|edge| (Some((callback.origin, callback.path.as_str())), edge))
+            })
         }
         callback_edges(&self.callbacks[..before])
-            .chain(
-                self.local
-                    .edges
-                    .iter()
-                    .map(|edge| (self.path.as_str(), edge)),
-            )
+            .chain(self.local.edges.iter().map(|edge| (None, edge)))
             .chain(callback_edges(&self.callbacks[before..]))
     }
 
-    pub(super) fn digest(&self) -> Result<[u8; 32], JobError> {
+    /// Keys are publication-local. Include each endpoint's public identity
+    /// and, for callbacks, the actual site path in the comparable digest.
+    pub(super) fn digest(
+        &self,
+        mut identity: impl FnMut(i64) -> Result<[u8; 16], JobError>,
+    ) -> Result<[u8; 32], JobError> {
+        let _timer = mex_graph_core::timing::Timer::start("v5.resolutionDigest");
         let mut bytes = Vec::new();
         let mut digest = Sha256::new();
         digest.update(self.local.routes);
-        for row in self.edges() {
-            bincode::encode_into_std_write(row, &mut bytes, bincode::config::standard())
-                .map_err(JobError::write)?;
+        let config = bincode::config::standard();
+        for (site, row) in self.edges() {
+            bincode::encode_into_std_write(
+                (
+                    identity(row.source)?,
+                    identity(row.target)?,
+                    site.map(|(_, path)| path),
+                    &row.fields,
+                ),
+                &mut bytes,
+                config,
+            )
+            .map_err(JobError::write)?;
         }
         digest.update(bytes.len().to_le_bytes());
         digest.update(&bytes);
         bytes.clear();
-        bincode::encode_into_std_write(
-            &self.local.unresolved,
-            &mut bytes,
-            bincode::config::standard(),
-        )
-        .map_err(JobError::write)?;
+        for row in &self.local.unresolved {
+            bincode::encode_into_std_write(
+                (
+                    identity(row.source)?,
+                    row.candidate.map(&mut identity).transpose()?,
+                    &row.fields,
+                ),
+                &mut bytes,
+                config,
+            )
+            .map_err(JobError::write)?;
+        }
         digest.update(bytes);
         Ok(digest.finalize().into())
     }
 
-    pub(super) fn write(
-        &self,
-        writer: &mut Writer,
-        file_key: impl Fn(&str) -> i64,
-        mut node_key: impl FnMut(&str) -> Result<i64, JobError>,
-    ) -> Result<usize, JobError> {
+    pub(super) fn write(&self, writer: &mut Writer) -> Result<usize, JobError> {
         let _timer = mex_graph_core::timing::Timer::start("v5.writeOutgoing");
         let mut count = 0;
-        for (origin, edge) in self.edges() {
+        for (site, edge) in self.edges() {
+            let fields = &edge.fields;
             count += usize::from(
                 writer
                     .add_edge(&EdgeRow {
-                        source: node_key(&edge.source)?,
-                        target: node_key(&edge.target)?,
-                        kind: &edge.kind,
-                        line: Some(edge.site.0),
-                        col: edge.site.1,
-                        site_file: (origin != self.path).then(|| file_key(origin)),
-                        provenance: &edge.provenance,
-                        confidence: edge.confidence,
-                        method: &edge.method,
-                        target_name: edge.target_name.as_deref(),
-                        evidence: edge.evidence.as_ref().map(Evidence::row),
+                        source: edge.source,
+                        target: edge.target,
+                        kind: &fields.kind,
+                        line: Some(fields.site.0),
+                        col: fields.site.1,
+                        site_file: site.map(|(file, _)| file),
+                        provenance: &fields.provenance,
+                        confidence: fields.confidence,
+                        method: &fields.method,
+                        target_name: fields.target_name.as_deref(),
+                        evidence: fields.evidence.as_ref().map(Evidence::row),
                     })
                     .map_err(JobError::write)?,
             );
         }
         for row in &self.local.unresolved {
+            let fields = &row.fields;
             writer
                 .add_unresolved(&UnresolvedRow {
-                    source: node_key(&row.source)?,
-                    name: &row.name,
-                    written_name: row.written.as_deref(),
-                    kind: &row.kind,
-                    reason: &row.reason,
-                    line: row.line,
-                    col: row.column,
-                    candidate: row.candidate.as_deref().map(&mut node_key).transpose()?,
-                    receiver: row.receiver.as_deref(),
+                    source: row.source,
+                    name: &fields.name,
+                    written_name: fields.written.as_deref(),
+                    kind: &fields.kind,
+                    reason: &fields.reason,
+                    line: fields.line,
+                    col: fields.column,
+                    candidate: row.candidate,
+                    receiver: fields.receiver.as_deref(),
                 })
                 .map_err(JobError::write)?;
         }
@@ -320,10 +379,27 @@ fn routes(facts: &FileFacts) -> Result<[u8; 32], JobError> {
     Ok(sha.finalize().into())
 }
 
-fn encode(value: impl Encode) -> Result<Vec<u8>, JobError> {
-    let payload =
-        bincode::encode_to_vec(value, bincode::config::standard()).map_err(JobError::write)?;
-    zstd::bulk::compress(&payload, 1).map_err(JobError::write)
+pub(super) struct Encoder {
+    payload: Vec<u8>,
+    compressor: zstd::bulk::Compressor<'static>,
+}
+
+impl Encoder {
+    pub(super) fn new() -> Result<Self, JobError> {
+        Ok(Self {
+            payload: Vec::new(),
+            compressor: zstd::bulk::Compressor::new(1).map_err(JobError::write)?,
+        })
+    }
+
+    fn encode(&mut self, value: impl Encode) -> Result<Vec<u8>, JobError> {
+        self.payload.clear();
+        bincode::encode_into_std_write(value, &mut self.payload, bincode::config::standard())
+            .map_err(JobError::write)?;
+        self.compressor
+            .compress(&self.payload)
+            .map_err(JobError::write)
+    }
 }
 
 pub(super) fn decode<T: Decode<()>>(blob: &[u8]) -> Result<T, JobError> {

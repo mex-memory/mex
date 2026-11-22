@@ -5,7 +5,8 @@ use std::path::Path;
 
 use mex_graph_core::facts::{FileFacts, ParseStatus};
 use mex_graph_core::fingerprint::K;
-use mex_graph_core::store::{EdgeEvidence, FileRow, NodeRow, RefreshBase, Writer};
+use mex_graph_core::id::decode_node_id;
+use mex_graph_core::store::{EdgeEvidence, FileRow, NodeRow, Writer};
 use mex_graph_core::timing::{self, Timer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -31,7 +32,10 @@ pub(crate) fn write(
     let mut counts = JobCounts::default();
     let mut file_keys = HashMap::new();
     let mut node_keys = HashMap::new();
+    // Row IDs are dense on a new base. Slot zero is never a node.
+    let mut public_ids = vec![[0; 16]];
     let mut by_path = HashMap::new();
+    let mut identities = HashMap::new();
     let mut sizes = HashMap::new();
     // Register every declaration before writing cross-file references.
     let ids_by_file: Vec<_> = extracted
@@ -63,7 +67,7 @@ pub(crate) fn write(
             }
         };
         let ids = &ids_by_file[index];
-        register_nodes(ids, &mut node_keys, None)?;
+        register_nodes(ids, &mut node_keys, &mut public_ids)?;
         let file = write_file(
             &mut writer,
             root,
@@ -77,6 +81,7 @@ pub(crate) fn write(
         )?;
         file_keys.insert(facts.path.as_str(), file);
         by_path.insert(facts.path.as_str(), facts);
+        identities.insert(facts.path.as_str(), ids.as_slice());
         sizes.insert(facts.path.as_str(), size);
         counts.files += 1;
         counts.coverage_gaps += usize::from(facts.health.status == ParseStatus::Failed);
@@ -87,6 +92,13 @@ pub(crate) fn write(
     progress("resolve", 0, counts.files)?;
     let load = |path: &str| by_path[path];
     let selected: HashSet<_> = by_path.keys().copied().collect();
+    let mut outgoing = OutgoingBuild {
+        public_ids: &public_ids,
+        total: counts.files,
+        written: 0,
+        edges: 0,
+        deferred: Vec::new(),
+    };
     Corpus {
         root,
         request,
@@ -94,34 +106,18 @@ pub(crate) fn write(
         sizes: &sizes,
         load: &load,
         modules: None,
+        identities: Some(&identities),
     }
-    .resolve(&writer, frameworks, &selected, false, |path| {
-        file_keys[path]
-    })?;
-    for (index, input) in request
-        .files
-        .iter()
-        .filter(|file| by_path.contains_key(file.path.as_str()))
-        .enumerate()
-    {
-        let _timer = Timer::start("v5.relationships");
-        let path = &input.path;
-        let key = file_keys[path.as_str()];
-        let blob = writer
-            .projection(key)
-            .map_err(write)?
-            .ok_or_else(|| JobError::request("Missing build projection"))?;
-        let outgoing = relations::Outgoing::load(&writer, key, path, relations::decode(&blob)?)?;
-        writer
-            .set_file_resolution(key, &outgoing.digest()?)
-            .map_err(write)?;
-        counts.edges +=
-            outgoing.write(&mut writer, |path| file_keys[path], |id| Ok(node_keys[id]))?;
-        if (index + 1).is_multiple_of(256) || index + 1 == counts.files {
-            progress("resolve", index + 1, counts.files)?;
-        }
-    }
-    drop((file_keys, by_path, node_keys));
+    .resolve(
+        &mut writer,
+        frameworks,
+        &selected,
+        Some(&mut outgoing),
+        |path| file_keys[path],
+        |id| Ok(node_keys[id]),
+    )?;
+    counts.edges = outgoing.finish(&mut writer)?;
+    drop((file_keys, by_path, node_keys, public_ids, identities));
     drop((ids_by_file, extracted));
 
     writer
@@ -144,6 +140,67 @@ pub(crate) fn write(
         .map_err(write)?;
     finish(writer, request, &mut counts)?;
     Ok(counts)
+}
+
+pub(super) struct OutgoingBuild<'a> {
+    public_ids: &'a [[u8; 16]],
+    total: usize,
+    written: usize,
+    edges: usize,
+    deferred: Vec<i64>,
+}
+
+impl OutgoingBuild<'_> {
+    pub(super) fn project(
+        &mut self,
+        writer: &mut Writer,
+        file: i64,
+        path: &str,
+        projection: relations::Projection<'_>,
+        incoming_callback: bool,
+    ) -> Result<(), JobError> {
+        if incoming_callback {
+            // Only these owners need a second pass after all sites are known.
+            self.deferred.push(file);
+            return Ok(());
+        }
+        self.write(writer, file, relations::Outgoing::local(path, projection))
+    }
+
+    fn write(
+        &mut self,
+        writer: &mut Writer,
+        file: i64,
+        outgoing: relations::Outgoing<'_>,
+    ) -> Result<(), JobError> {
+        let _timer = Timer::start("v5.relationships");
+        writer
+            .set_file_resolution(
+                file,
+                &outgoing.digest(|key| Ok(self.public_ids[key as usize]))?,
+            )
+            .map_err(JobError::write)?;
+        self.edges += outgoing.write(writer)?;
+        self.written += 1;
+        if self.written.is_multiple_of(256) || self.written == self.total {
+            progress("resolve", self.written, self.total)?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, writer: &mut Writer) -> Result<usize, JobError> {
+        for file in std::mem::take(&mut self.deferred) {
+            let path = writer.file_path(file).map_err(JobError::write)?;
+            let blob = writer
+                .projection(file)
+                .map_err(JobError::write)?
+                .ok_or_else(|| JobError::request("Missing build projection"))?;
+            let outgoing =
+                relations::Outgoing::load(writer, file, &path, relations::decode(&blob)?)?;
+            self.write(writer, file, outgoing)?;
+        }
+        Ok(self.edges)
+    }
 }
 
 pub(super) fn finish(
@@ -219,19 +276,14 @@ pub(super) fn resolution_context(
     crate::hex(&hash.finalize())
 }
 
-pub(super) fn register_nodes<'a>(
+fn register_nodes<'a>(
     ids: &'a [Option<String>],
     keys: &mut HashMap<&'a str, i64>,
-    base: Option<&RefreshBase>,
+    public_ids: &mut Vec<[u8; 16]>,
 ) -> Result<(), JobError> {
     for id in ids.iter().filter_map(Option::as_deref) {
-        let key = match base {
-            Some(base) => base
-                .node_key(id)
-                .map_err(JobError::write)?
-                .unwrap_or_else(|| Writer::next_overlay_key(keys.len())),
-            None => 1 + keys.len() as i64,
-        };
+        let key = public_ids.len() as i64;
+        public_ids.push(decode_node_id(id).expect("generated public ID"));
         if keys.insert(id, key).is_some() {
             return Err(JobError::request("Duplicate public node id"));
         }

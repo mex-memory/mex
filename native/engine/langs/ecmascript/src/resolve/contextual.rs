@@ -13,7 +13,7 @@ type Substitutions<'a> = HashMap<&'a str, Option<Value>>;
 
 impl<'a> Resolver<'a, '_> {
     pub(super) fn prepare_context(&mut self, file: usize) {
-        if !self.context_ready.insert(file) {
+        if std::mem::replace(&mut self.context_ready[file], true) {
             return;
         }
         let Some(model) = self.index(file) else {
@@ -80,7 +80,7 @@ impl<'a> Resolver<'a, '_> {
         &mut self,
         file: usize,
         scope: i32,
-        name: &str,
+        name: &'a str,
         depth: usize,
     ) -> Lookup {
         let mut parts = name.split('.');

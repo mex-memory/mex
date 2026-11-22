@@ -6,7 +6,7 @@ use crate::modules::{ModuleTarget, Syntax};
 use super::index::ExportEntry;
 use super::{Lane, Lookup, Resolver, Value, check_depth, def_ref};
 
-impl Resolver<'_, '_> {
+impl<'a> Resolver<'a, '_> {
     pub(super) fn import(&self, file: usize, index: usize) -> Lookup {
         let facts = self.files.get(file);
         let import = &facts.imports[index];
@@ -30,26 +30,25 @@ impl Resolver<'_, '_> {
                 .map(|_| Default::default())
                 .collect()
         });
-        let target = targets[index]
-            .get_or_init(|| self.modules.resolve(&facts.path, &import.specifier, syntax));
-        match target {
-            ModuleTarget::File { path, .. } => {
-                let file = self
+        let target = *targets[index].get_or_init(|| {
+            match self.modules.resolve(&facts.path, &import.specifier, syntax) {
+                ModuleTarget::File { path, .. } => self
                     .paths
                     .get(path.as_str())
                     .copied()
-                    .ok_or("module_not_indexed")?;
-                if self.files.get(file).ecmascript.is_none() {
-                    return Err("module_not_indexed");
-                }
-                Ok(Value::Module { file, require })
+                    .ok_or("module_not_indexed"),
+                ModuleTarget::External { .. } => Err("external_module"),
+                ModuleTarget::Builtin { .. } => Err("builtin_module"),
+                ModuleTarget::Ambiguous { .. } => Err("ambiguous_module"),
+                ModuleTarget::Namespace { .. } => Err("namespace_module_without_file"),
+                ModuleTarget::Unresolved { reason } => Err(reason),
             }
-            ModuleTarget::External { .. } => Err("external_module"),
-            ModuleTarget::Builtin { .. } => Err("builtin_module"),
-            ModuleTarget::Ambiguous { .. } => Err("ambiguous_module"),
-            ModuleTarget::Namespace { .. } => Err("namespace_module_without_file"),
-            ModuleTarget::Unresolved { reason } => Err(reason),
+        });
+        let file = target?;
+        if self.files.get(file).ecmascript.is_none() {
+            return Err("module_not_indexed");
         }
+        Ok(Value::Module { file, require })
     }
 
     pub(super) fn commonjs_default(&mut self, file: usize, depth: usize) -> Lookup {
@@ -61,7 +60,7 @@ impl Resolver<'_, '_> {
     pub(super) fn export(
         &mut self,
         file: usize,
-        name: &str,
+        name: &'a str,
         lane: Lane,
         require: bool,
         depth: usize,
@@ -72,8 +71,8 @@ impl Resolver<'_, '_> {
         // the same invalidation dependencies as an uncached lookup.
         let memoizable =
             self.export_stack.is_empty() && !require && self.preparing_context.is_none();
-        let key = (file, name.to_owned(), lane);
-        let cache_key = (file, name.to_owned(), lane, depth);
+        let key = (file, name, lane);
+        let cache_key = (file, name, lane, depth);
         if memoizable && let Some(&(value, memo)) = self.export_cache.get(&cache_key) {
             self.files.read_memo(memo);
             return value;
@@ -102,7 +101,7 @@ impl Resolver<'_, '_> {
     fn compute_export(
         &mut self,
         file: usize,
-        name: &str,
+        name: &'a str,
         lane: Lane,
         require: bool,
         depth: usize,
@@ -192,7 +191,7 @@ impl Resolver<'_, '_> {
         &mut self,
         file: usize,
         import: usize,
-        name: &str,
+        name: &'a str,
         lane: Lane,
         depth: usize,
     ) -> Lookup {

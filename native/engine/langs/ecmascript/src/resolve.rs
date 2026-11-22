@@ -12,7 +12,7 @@ use mex_graph_core::facts::{
 
 use mex_graph_core::resolve::{Files, LookupKind};
 
-use crate::modules::{ModuleResolver, ModuleTarget};
+use crate::modules::ModuleResolver;
 
 mod contextual;
 mod index;
@@ -149,15 +149,15 @@ pub struct Resolver<'a, 'modules> {
     index: Vec<OnceCell<Option<FileIndex<'a>>>>,
     paths: HashMap<&'a str, usize>,
     modules: &'modules ModuleResolver,
-    imports: Vec<OnceCell<Vec<OnceCell<ModuleTarget>>>>,
+    imports: Vec<OnceCell<Vec<OnceCell<Result<usize, Reason>>>>>,
     contextual_this: HashMap<(usize, ExprId), Value>,
-    context_ready: HashSet<usize>,
+    context_ready: Vec<bool>,
     preparing_context: Option<usize>,
-    export_cache: HashMap<(usize, String, Lane, usize), (Lookup, usize)>,
+    export_cache: HashMap<(usize, &'a str, Lane, usize), (Lookup, usize)>,
     next_memo: usize,
     // Re-export cycles are tracked per query. The cycle itself is not a failed
     // export: a different star can still name the same symbol unambiguously.
-    export_stack: Vec<(usize, String, Lane)>,
+    export_stack: Vec<(usize, &'a str, Lane)>,
 }
 
 impl<'a, 'modules> Resolver<'a, 'modules> {
@@ -173,7 +173,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
             modules,
             imports: (0..files.len()).map(|_| OnceCell::new()).collect(),
             contextual_this: HashMap::new(),
-            context_ready: HashSet::new(),
+            context_ready: vec![false; files.len()],
             preparing_context: None,
             export_cache: HashMap::new(),
             next_memo: 0,
@@ -483,14 +483,14 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         }
     }
 
-    fn resolve_call(&mut self, file: usize, call: &Call) -> Result<DefRef, Reason> {
+    fn resolve_call(&mut self, file: usize, call: &'a Call) -> Result<DefRef, Reason> {
         self.resolve_call_with_dispatch(file, call, &mut None)
     }
 
     fn resolve_call_with_dispatch(
         &mut self,
         file: usize,
-        call: &Call,
+        call: &'a Call,
         interface: &mut Option<DefRef>,
     ) -> Result<DefRef, Reason> {
         let scope = call.scope;
@@ -646,7 +646,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         }
     }
 
-    fn name(&mut self, file: usize, scope: i32, name: &str, lane: Lane, depth: usize) -> Lookup {
+    fn name(&mut self, file: usize, scope: i32, name: &'a str, lane: Lane, depth: usize) -> Lookup {
         check_depth(depth)?;
         let index = self.model(file).binding(scope, name, lane)?;
         let binding = &self.model(file).facts.bindings[index];
@@ -984,7 +984,7 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         Ok(value)
     }
 
-    fn member(&mut self, value: Value, name: &str, lane: Lane, depth: usize) -> Lookup {
+    fn member(&mut self, value: Value, name: &'a str, lane: Lane, depth: usize) -> Lookup {
         check_depth(depth)?;
         let value = self.peel(value, depth + 1)?;
         match value {

@@ -230,19 +230,34 @@ fn python_file<'a, 'facts: 'a>(
 
 struct Identities<'a> {
     facts: Files<'a>,
-    ids: Vec<OnceCell<Vec<Option<String>>>>,
+    ids: FileIds<'a>,
+}
+
+enum FileIds<'a> {
+    Lazy(Vec<OnceCell<Vec<Option<String>>>>),
+    Known(Vec<&'a [Option<String>]>),
 }
 
 impl<'a> Identities<'a> {
     fn new(facts: Files<'a>) -> Self {
+        Self::with_known(facts, None)
+    }
+
+    fn with_known(facts: Files<'a>, ids: Option<Vec<&'a [Option<String>]>>) -> Self {
         Self {
             facts,
-            ids: (0..facts.len()).map(|_| OnceCell::new()).collect(),
+            ids: match ids {
+                Some(ids) => FileIds::Known(ids),
+                None => FileIds::Lazy((0..facts.len()).map(|_| OnceCell::new()).collect()),
+            },
         }
     }
 
     fn file(&self, file: usize) -> &[Option<String>] {
-        self.ids[file].get_or_init(|| node_ids(self.facts.get(file)))
+        match &self.ids {
+            FileIds::Known(ids) => ids[file],
+            FileIds::Lazy(ids) => ids[file].get_or_init(|| node_ids(self.facts.get(file))),
+        }
     }
 
     fn id(&self, (file, def): (usize, usize)) -> Option<&str> {

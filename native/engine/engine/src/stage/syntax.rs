@@ -19,17 +19,21 @@ pub(super) struct Stage<'a> {
 
 impl<'a> Stage<'a> {
     pub(super) fn new(facts: &'a [FileFacts], language: SyntaxLanguage) -> Self {
-        Self::resolved(Files::Dense(facts), language, language.resolve(facts))
+        Self::resolved(
+            Identities::new(Files::Dense(facts)),
+            language,
+            language.resolve(facts),
+        )
     }
 
     pub(super) fn resolved(
-        facts: Files<'a>,
+        ids: Identities<'a>,
         language: SyntaxLanguage,
         resolution: Vec<FileResolution<'a>>,
     ) -> Self {
         Self {
-            facts,
-            ids: Identities::new(facts),
+            facts: ids.facts,
+            ids,
             resolution,
             resolver: match language {
                 SyntaxLanguage::Rust => "engine-rust",

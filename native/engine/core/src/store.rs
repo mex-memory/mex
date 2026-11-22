@@ -346,8 +346,7 @@ impl Writer {
 
     pub fn add_node(&mut self, node: &NodeRow) -> rusqlite::Result<()> {
         let kind = self.code(Code::NodeKind, node.kind)?;
-        let (_, public_id) = node.public_id.split_once(':').ok_or(Error::InvalidQuery)?;
-        let public_id = decode_hex(public_id)?;
+        let public_id = crate::id::decode_node_id(node.public_id).ok_or(Error::InvalidQuery)?;
         self.conn
             .prepare_cached(
                 "INSERT INTO nodes(id, public_id, kind, file, parent, name, qualified_name,
