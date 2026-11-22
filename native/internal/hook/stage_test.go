@@ -3,6 +3,7 @@ package hook
 import (
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,14 +197,25 @@ func TestHookRunsTheFreeStage(t *testing.T) {
 	if got := verdict(); got != check.Held {
 		t.Fatalf("a command that reads no file re-ran the stage: %q", got)
 	}
+	write(t, filepath.Join(root, "README.md"), "# Fixture\n")
+	run(t, []string{"claude-code", "PostToolUse"}, strings.NewReader(posted("Read", map[string]any{"file_path": filepath.Join(root, "README.md")}, root)), env)
+	if got := verdict(); got != check.Held {
+		t.Fatalf("a read of a file no entry checks re-ran the stage: %q", got)
+	}
 	run(t, []string{"claude-code", "PostToolUse"}, strings.NewReader(posted("Read", map[string]any{"file_path": filepath.Join(root, "package.json")}, root)), env)
 	if got := verdict(); got != check.Broken {
 		t.Fatalf("after reading the changed file: %q", got)
 	}
 	write(t, filepath.Join(root, "package.json"), `{"scripts":{"test":"tsc && vitest"}}`)
+	pending := filepath.Join(h.mex, "judge-pending")
+	before, _ := os.ReadDir(pending)
 	run(t, []string{"claude-code", "PostToolUse"}, strings.NewReader(posted("Bash", map[string]any{"command": "cat package.json"}, root)), env)
 	if got := verdict(); got != check.Held {
 		t.Fatalf("after a shell read of the changed file: %q", got)
+	}
+	// A read never queues the judge, a model job.
+	if after, _ := os.ReadDir(pending); len(after) != len(before) {
+		t.Fatalf("a read queued a judge request: %d → %d", len(before), len(after))
 	}
 	if detached != 0 {
 		t.Fatalf("detached %d times", detached)

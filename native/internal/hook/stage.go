@@ -38,16 +38,18 @@ const maxStageReads = 8
 // A read re-checks the entries on that file because the file can change
 // outside any edit tool: a shell command, a formatter, the person's editor.
 // The stage runs before delivery, so the read's own moment sees the new
-// verdict. Unchanged inputs reuse the cached verdict.
-func stageTrigger(ev contract.Event) (run bool, paths []string, budget time.Duration) {
+// verdict. Unchanged inputs reuse the cached verdict. readsOnly says the
+// paths come from reads alone, which the caller filters cheaply first.
+func stageTrigger(ev contract.Event) (run bool, paths []string, budget time.Duration, readsOnly bool) {
 	switch ev.Kind {
 	case contract.SessionStart:
-		return true, nil, stageBudgetStart
+		return true, nil, stageBudgetStart, false
 	case contract.PostTool, contract.PostToolBatch:
 		tools := ev.Batch
 		if ev.Tool != nil {
 			tools = []contract.Tool{*ev.Tool}
 		}
+		readsOnly = true
 		seen := map[string]bool{}
 		add := func(p string) {
 			if p == "" {
@@ -67,7 +69,7 @@ func stageTrigger(ev contract.Event) (run bool, paths []string, budget time.Dura
 			switch tool.Name {
 			case contract.ToolShell:
 				if movesGit(tool.Input.Command) {
-					return true, nil, stageBudgetGit
+					return true, nil, stageBudgetGit, false
 				}
 				for i, r := range shellparse.Reads(tool.Input.Command, ev.Cwd, ev.Agent == "codex") {
 					if i >= maxStageReads {
@@ -79,13 +81,14 @@ func stageTrigger(ev contract.Event) (run bool, paths []string, budget time.Dura
 				add(tool.Input.Path)
 			default:
 				for _, edit := range editsOf(tool) {
+					readsOnly = false
 					add(edit.path)
 				}
 			}
 		}
-		return len(paths) > 0, paths, stageBudgetEdit
+		return len(paths) > 0, paths, stageBudgetEdit, readsOnly
 	}
-	return false, nil, 0
+	return false, nil, 0, false
 }
 
 // movesGit reports a git command that can change many files at once.
@@ -128,13 +131,24 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 	if recordDirectory == "" || ev.ProjectID == "" || ev.Checkout == "" {
 		return
 	}
-	run, paths, budget := stageTrigger(ev)
+	run, paths, budget, readsOnly := stageTrigger(ev)
 	if !run {
 		return
 	}
+	// Most reads touch no entry: skip the database and the evaluator.
+	if readsOnly && !check.ReadTouchesEntries(check.StageOptions{Checkout: ev.Checkout, ProjectID: ev.ProjectID, MexHome: h.mex, RecordDirectory: recordDirectory, Paths: paths}) {
+		return
+	}
+	// A read changes no code, so it never asks for the judge (a model job);
+	// edits, git moves and session starts still do.
+	judge := func() {
+		if !readsOnly {
+			requestJudge(ev, recordDirectory, paths)
+		}
+	}
 	hooks, err := localrecord.OpenHooks(hooksLocation(h, recordDirectory))
 	if err != nil {
-		requestJudge(ev, recordDirectory, paths)
+		judge()
 		return
 	}
 	defer hooks.Close()
@@ -143,7 +157,7 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 		Store: hooks, Paths: paths, Deadline: time.Now().Add(budget),
 	})
 	if err != nil || needsJudge(report) {
-		requestJudge(ev, recordDirectory, paths)
+		judge()
 	}
 	if err == nil {
 		rebuildOnFlip(report, recordDirectory, ev.ProjectID, ev.Checkout)
