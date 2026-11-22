@@ -1,6 +1,6 @@
 # Graph engine contract (version 3)
 
-How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs and the CLI. The engine parses, extracts and resolves graph rows. `build` writes a complete schema v5 candidate. `refresh` and `serve` write v5 overlays. `stage` streams Python, TypeScript, JavaScript, Rust and C# rows for Node's schema v4 writer.
+How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery, the maintenance envelope (lease, candidate, validate, publish by pointer), jobs and the CLI. The engine parses, extracts and resolves graph rows. `build` writes a complete schema v5 candidate. `refresh` and `serve` write v5 overlays. `stage` streams rows for Node's schema v4 writer.
 
 `CONTRACT_VERSION` in `native/engine/core/src/lib.rs` and Node's `GRAPH_ENGINE_CONTRACT` in `src/graph/native-engine.ts` must both be 3. Incompatible changes bump both. Node refuses an engine whose version differs.
 
@@ -15,6 +15,33 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 | `mex-graph refresh --request <file>` | Writes an overlay against a published base | one job |
 | `mex-graph serve --request <file>` | Keeps one checkout warm and takes edits on stdin | until stdin closes or the parent exits |
 | `mex-graph facts <file>` | Prints one file's facts as JSON, for people and tests | exits |
+
+## Language adapters
+
+`native/engine/langs/registry.toml` lists `[[language]]` entries with
+`id`, `folder` and `level` (`basic` or `full`). Each entry uses
+`<folder>/<id>.toml` under `langs/`. The config declares `grammar`,
+`adapter_version`, `extensions` and the `[functions]`, `[classes]`,
+`[imports]` and `[calls]` tables. Table keys are named syntax node kinds.
+Values select the name using dot-separated field names or zero-based named
+child indexes. See [Adding a language adapter](graph-engine-adding-a-language.md).
+
+Cargo embeds the registry and configs in the binary. The grammar names select
+prelinked grammars. Basic entries use the configured rules for extraction.
+Full entries route to their language's native extractor and resolver.
+The engine loads full entries before basic entries and uses registry order
+within each level. Each extension has one owner, compared without ASCII case.
+The first valid entry owns it. A bad or conflicting entry is skipped as a unit
+and produces a warning on stderr. Node owns repository discovery for the
+shipped extensions.
+
+`mex-graph languages` prints a JSON array in load order. Each object has
+`id`, `level`, `extensions` (with leading dots), `grammarVersion` and
+`adapterVersion`. One entry looks like this.
+
+```json
+{"id":"python","level":"full","extensions":[".py"],"grammarVersion":"0.21.0","adapterVersion":1}
+```
 
 ## Starting a job
 
@@ -41,7 +68,7 @@ How Node runs `mex-graph`, the Rust graph engine (OSS-73). Node keeps discovery,
 ```
 
 - `files` gives the git-aware paths Node discovered, with sizes. `configs` accepts repository-relative paths or objects with a repository-relative `path` and captured `source` text. The engine reads named files and configs only under `root`. For ECMAScript staging, Node supplies the tsconfig, jsconfig and package.json texts from discovery so resolution uses that snapshot.
-- `languages` names the languages this engine run handles. Node stages TypeScript and JavaScript on the engine by default when a binary resolves.
+- `languages` names the registry ids this engine run handles. Node stages TypeScript and JavaScript on the engine by default when a binary resolves.
 - For `build`, `output` is the absolute path to a new candidate in an existing folder. Temporary files sit beside it. For `stage`, set `mode` to `"stage"`. The engine ignores a supplied `output` path or `null` and opens no database.
 - `base` and `changed` are set for `refresh`. `base` is the absolute path of the published v5 base and is opened read-only. An optional `overlay` names the current published overlay for that base. `changed` lists repository-relative paths, including deletions. `files` still lists the complete current corpus. The engine compares its complete input to the current publication, so omitted hints cannot hide a change.
 - `factsCache` optionally names an absolute directory for disposable file-local facts. In `facts-v2.db`, workers encode complete facts as binary records and group them into Zstandard-compressed blocks. The SQLite index keys records by path, language adapter version, facts and framework-capture versions, and source SHA-256. Reads verify the block checksum, decode bounds, record format, path, language and source hash. A single writer commits the blocks in one transaction and evicts the oldest blocks as needed. The payload budget is 12 KiB per observed source file, bounded to 64–256 MiB, and a smaller checkout never reduces a shared cache's budget. Missing, incompatible, corrupt, contended and oversized entries are ordinary misses.
@@ -109,6 +136,10 @@ records, dependency rules and complete-resolution cases.
 The private `refresh_format` in `meta` versions the resolver inputs separately
 from schema v5 and JSONL. Prefix `7` covers packed per-origin read IDs, the
 retained path and lookup dictionaries, and page-packed base projection frames.
+A registry containing basic adapters appends a digest of their config and
+extraction identities to the private format value. The same identities key
+their file facts. An edit to a basic source rechecks the basic name index so
+new, removed or duplicate names can change matches in other files.
 A format mismatch returns `graph_refresh_base_incompatible` and sends
 maintenance through the one-time base build path.
 
@@ -133,6 +164,16 @@ integer keys and export symbol IDs as `kind:hex`. A row in
 `unresolved_calls` with one call candidate contributes a through-call to
 that symbol.
 
+Basic call and import hints use the existing `resolutionMethod: "basic"`
+and `confidence: 0` edge fields. Schema v4 stores the method text and
+schema v5 interns it in `resolution_methods`. These rows are available to
+typed edge readers with their label. Node and Go omit them from resolved
+callers, callees, impact and cards. A parsed basic file records
+`coverage.reason = 'basic'` while its declarations and lexical containment
+remain readable. That coverage is incomplete for call resolution, so an
+empty Go callers answer is unknown. Failed parses keep their parse-failure
+coverage.
+
 ## Events
 
 ```json
@@ -142,7 +183,7 @@ that symbol.
 ```
 
 - `build` can report `progress` while writing the candidate and records per-file coverage gaps there. `stage` reports each file as described below.
-- `result` is the last line of a successful job. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files and failed parses. `usage` gives elapsed milliseconds (`wallMs`) and peak sampled resident memory in MiB (`peakRssMb`). Node owns validation, publication and usage logging.
+- `result` is the last line of a successful job. `files`, `nodes` and `edges` count the resulting graph, including the base and overlay union for a refresh. `filesReextracted` counts files parsed on a cache miss. `shadowedFiles` is the overlay path count for refresh. `coverageGaps` counts skipped files, failed parses and files with basic resolution. `usage` gives elapsed milliseconds (`wallMs`) and peak sampled resident memory in MiB (`peakRssMb`). Node owns validation, publication and usage logging.
 
 `MEX_GRAPH_PHASE_TIMINGS` also enables the engine's JSONL timing records
 (`engine.build`, `engine.refresh`, `engine.stage`, and `engine.serve`). The engine appends to
@@ -184,6 +225,16 @@ Lines across all stage rows and diagnostics are 1-based. Columns are 0-based UTF
 #### Rust and C# rows
 
 Rust and C# use the tree-sitter signature profile, including declaration ordinals for repeated signatures. Both persist visibility, and C# persists static and abstract flags. The body hash uses the declaration's original lines and the sketch uses the pinned grammar's leaf kinds on those lines. Resolution uses lexical scope, Rust module paths and `use` bindings, or C# namespaces and `using` directives. Each unresolved reference keeps its written name and site, with an `engine-rust` or `engine-csharp` resolver and a snake-case reason. The Rust resolver can follow named re-exports and abstains on untyped member receivers. C# selects a qualified static member only when the visible type and method are unambiguous.
+
+#### Basic rows
+
+Parsed basic files carry `"coverage":"basic"` on the staged event. Basic
+definitions use the tree-sitter signature profile and lexical containment.
+A call can match one declaration with exactly the captured name. An import
+can match a declaration or file stem. Both searches stay within the adapter
+id. Zero or multiple matches emit unresolved references with
+`resolver: "basic"` and no candidate. Node preserves that result during
+staging and writes the per-file coverage reason in v4.
 
 #### Framework rows
 
