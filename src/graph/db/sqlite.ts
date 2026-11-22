@@ -78,8 +78,15 @@ class NodeSqliteAdapter implements SqliteDatabase {
     const stmt = this.db.prepare(sql);
     return {
       run(...params: Params) {
-        const r = stmt.run(...params);
-        return { changes: Number(r?.changes ?? 0), lastInsertRowid: r?.lastInsertRowid ?? 0 };
+        // A delete from a contentless_delete FTS5 table leaves a tombstone page id
+        // (65537 << 37) as last_insert_rowid; read as a number it throws on some Node versions.
+        stmt.setReadBigInts(true);
+        try {
+          const r = stmt.run(...params);
+          return { changes: Number(r?.changes ?? 0), lastInsertRowid: r?.lastInsertRowid ?? 0 };
+        } finally {
+          stmt.setReadBigInts(false);
+        }
       },
       get: (...params: Params) => stmt.get(...params),
       all: (...params: Params) => stmt.all(...params),
