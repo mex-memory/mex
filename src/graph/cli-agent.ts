@@ -12,7 +12,7 @@ import {
   coverageFields, coverageReportable, hasGraphCoverageCache, readGraphCoverageObservation,
   type GraphCoverageObservation,
 } from "./coverage.js";
-import type { GraphEdge, GraphNode } from "./types.js";
+import { BASIC_RESOLUTION, type GraphEdge, type GraphNode } from "./types.js";
 import {
   compactFact, groupByFile, planFileSource, readNodeSource, selectScope, sourceHash, splitSourceLines,
   type CompactFact, type DetailLevel, type RankedScopeFile, type ScopedCandidate, type SourceRange,
@@ -2723,9 +2723,10 @@ function relatedCallNodes(
   queried: GraphNode,
   relation: Exclude<QueryRelation, "where-defined">,
 ): Array<{ node: GraphNode; callLine?: number }> {
-  const typed = relation === "who-calls"
+  const typed = (relation === "who-calls"
     ? (graph.getIncoming?.(queried.id, ["calls"]) ?? [])
-    : (graph.getOutgoing?.(queried.id, ["calls"]) ?? []);
+    : (graph.getOutgoing?.(queried.id, ["calls"]) ?? []))
+    .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION);
   if (typed.length > 0) {
     const firstCallLine = new Map<string, number>();
     for (const { node, edge } of typed) {
@@ -2807,6 +2808,7 @@ function transitiveCallNeighbors(
 function firstCallLine(graph: GraphEngine, callerId: string, calleeId: string): number | undefined {
   let first: number | undefined;
   for (const { node, edge } of graph.getOutgoing?.(callerId, ["calls"]) ?? []) {
+    if (edge.resolutionMethod === BASIC_RESOLUTION) continue;
     if (node.id === calleeId && edge.line !== undefined) first = Math.min(edge.line, first ?? edge.line);
   }
   return first;

@@ -19,6 +19,7 @@
 
 import type { EdgeKind, GraphEdge, GraphNode, NodeKind, Language } from "./types.js";
 import { NotImplementedError } from "./errors.js";
+import type { GraphCoverage } from "./read-coverage.js";
 import type { GraphEngineReport } from "../team/contracts/graph.js";
 export type { GraphEngineFallback, GraphEngineReport } from "../team/contracts/graph.js";
 
@@ -131,7 +132,7 @@ export interface SourceChunkMatch {
  * layered on top (Track B) and are NOT part of this surface.
  */
 export interface GraphEngine {
-  coverageFor(path: string): { indexed: true } | { indexed: false; reason: string };
+  coverageFor(path: string): GraphCoverage;
   /**
    * Build/rebuild the whole graph for the repo into `.mex/`. Deterministic.
    * Runs in `mex setup` for fresh installs and on `mex graph`. Async: lazy-loads
@@ -162,10 +163,10 @@ export interface GraphEngine {
    */
   getNode(id: string): GraphNode | null;
 
-  /** Nodes with an incoming `calls` edge to `id` (its callers). Synchronous. */
+  /** Resolved callers of `id`. Synchronous. */
   getCallers(id: string): GraphNode[];
 
-  /** Nodes with an outgoing `calls` edge from `id` (its callees). Synchronous. */
+  /** Resolved callees of `id`. Synchronous. */
   getCallees(id: string): GraphNode[];
 
   /** Incoming relationships of any requested kinds, preserving edge metadata. */

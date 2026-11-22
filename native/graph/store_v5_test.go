@@ -16,7 +16,7 @@ import (
 
 // Use the engine's schema with deterministic rows so the Go suite needs no
 // Rust binary. The overlay only adds new codes and reuses surviving keys.
-func openV5Fixture(t *testing.T, overlay bool) *Store {
+func openV5Fixture(t *testing.T, overlay bool, baseRows, overlayRows string) *Store {
 	t.Helper()
 	root := t.TempDir()
 	records := t.TempDir()
@@ -46,10 +46,10 @@ func openV5Fixture(t *testing.T, overlay bool) *Store {
 		t.Fatal(err)
 	}
 	key := place.ShortHash(p.Root)
-	write(p.Base, v5TestBase)
+	write(p.Base, v5TestBase+baseRows)
 	if overlay {
 		name := "graph-o-" + key + "-fixture.db"
-		write(name, v5TestOverlay)
+		write(name, v5TestOverlay+overlayRows)
 		p.Overlay = &name
 	}
 	data, err := json.Marshal(p)
@@ -143,7 +143,7 @@ func v5SiteNames(sites []Site) []string {
 }
 
 func TestV5Store(t *testing.T) {
-	s := openV5Fixture(t, false)
+	s := openV5Fixture(t, false, "", "")
 	runID, mainID := v5FixtureID("method", 3), v5FixtureID("function", 11)
 	run, ok := s.Node(runID)
 	if !ok || run != (Symbol{ID: runID, Name: "run", Path: "src/service.ts", Start: 3, End: 5,
@@ -211,7 +211,7 @@ func TestV5Store(t *testing.T) {
 }
 
 func TestV5StoreOverlay(t *testing.T) {
-	s := openV5Fixture(t, true)
+	s := openV5Fixture(t, true, "", "")
 	mainID, runID := v5FixtureID("function", 11), v5FixtureID("method", 3)
 	if main, ok := s.Node(mainID); !ok || main.End != 16 {
 		t.Fatalf("overlay replacement = %+v, %v", main, ok)
@@ -262,5 +262,45 @@ func TestV5StoreOverlay(t *testing.T) {
 	n, src, dst, line, complete, err := s.CallsBetween("src/", "src/service", from, to)
 	if err != nil || !complete || n != 2 || !from(src) || !to(dst) || line != 12 {
 		t.Fatalf("overlay CallsBetween = %d, %q:%d -> %q, complete=%v, %v", n, src, line, dst, complete, err)
+	}
+}
+
+func TestV5BasicCallHints(t *testing.T) {
+	const base = `
+DELETE FROM coverage;
+INSERT INTO coverage VALUES ('src/static.ts','basic');
+INSERT INTO resolution_methods VALUES (2,'basic');
+UPDATE nodes SET flags=1 WHERE id=8;
+INSERT INTO edges(source,kind,target,line,col,provenance,confidence,method,sequence)
+	VALUES (41,7,8,3,0,1,0,2,10);
+`
+	const overlay = `
+INSERT INTO coverage VALUES ('src/static.ts','basic'), ('src/entry.ts','basic');
+INSERT INTO edges(source,kind,target,line,col,provenance,confidence,method,sequence)
+	VALUES (12,7,8,14,0,1,0,2,2);
+`
+	for _, overlaid := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overlay=%t", overlaid), func(t *testing.T) {
+			s := openV5Fixture(t, overlaid, base, overlay)
+			quiet, ok := s.Node(v5FixtureID("function", 8))
+			if !ok {
+				t.Fatal("missing definition")
+			}
+			files := listedFiles{&fakeFiles{hashes: s.BuiltFiles()}}
+			source := texts(map[string]string{})
+			for _, op := range []Op{OpCallers, OpImpact} {
+				answer, err := Ask(s, files, source, op, "quiet")
+				if err != nil || answer.Verdict != Unknown || answer.Complete || len(answer.Sites) != 0 {
+					t.Fatalf("%s(quiet) = %+v, %v", op, answer, err)
+				}
+			}
+			if sites, err := s.Callees(v5FixtureID("function", 41)); err != nil || slices.ContainsFunc(sites, func(site Site) bool { return site.In.ID == quiet.ID }) {
+				t.Fatalf("Callees(staticCaller) = %+v, %v", sites, err)
+			}
+			v := View{R: s, Files: files, Src: source}
+			if card, ok := v.SignatureCard(quiet, "quiet()", 1, nil, nil); ok {
+				t.Fatalf("basic call hint produced a signature card: %+v", card)
+			}
+		})
 	}
 }

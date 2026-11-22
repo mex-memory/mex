@@ -66,6 +66,43 @@ async function query(root: string, relation: string, id: string) {
 }
 
 describe.skipIf(!engineBinary)("schema v5 with the Rust writer", () => {
+  it("keeps labelled basic hints out of cards and impact while exposing the outline", async () => {
+    const root = fixture();
+    writeFileSync(join(root, "target.ts"), "export function target() { return 1; }\n");
+    writeFileSync(join(root, "resolved.ts"), 'import { target } from "./target";\nexport function resolved() { return target(); }\n');
+    writeFileSync(join(root, "basic.ts"), 'import { target } from "./target";\nexport function guess() { return target(); }\n');
+    expect((await rebuildGraph(root)).status.schemaVersion).toBe(5);
+    const target = declaration(root, "target");
+    const guess = declaration(root, "guess");
+    const db = openSqlite(currentGraphPath(root));
+    try {
+      db.exec(`
+        INSERT INTO resolution_methods (name) VALUES ('basic');
+        UPDATE edges SET method = (SELECT id FROM resolution_methods WHERE name = 'basic'), confidence = 0
+          WHERE source IN (SELECT n.id FROM nodes n JOIN files f ON f.id=n.file WHERE f.path='basic.ts')
+          AND kind IN (SELECT id FROM edge_kinds WHERE name IN ('calls', 'imports'));
+        INSERT INTO coverage VALUES ('basic.ts', 'basic');
+      `);
+    } finally { db.close(); }
+    const port = new RepositoryGraphPort(root);
+    const source = { maxLines: 20, maxBytes: 4096, limit: 10 };
+    const workspace = await port.readSymbolWorkspace({
+      symbolId: target, source, callers: { limit: 20 }, impact: { depth: 2, maxNodes: 20 },
+    });
+    expect(workspace.callers?.items).toHaveLength(1);
+    expect(workspace.impact?.impacted.map(entry => entry.symbol.name)).toEqual(["resolved"]);
+    expect((await port.readSymbolWorkspace({ symbolId: guess, source, callees: { limit: 20 } })).callees?.items).toEqual([]);
+    const graph = createGraphEngine({ rootDir: root, readOnly: true });
+    try {
+      expect(graph.coverageFor("basic.ts")).toEqual({ indexed: true, reason: "basic" });
+      expect(graph.searchNodes("guess").map(node => node.id)).toContain(guess);
+      expect(graph.getIncoming(target, ["calls"])).toContainEqual(expect.objectContaining({
+        edge: expect.objectContaining({ source: guess, resolutionMethod: "basic", confidence: 0 }),
+      }));
+      expect(graph.getCallers(target).map(node => node.name)).toEqual(["resolved"]);
+    } finally { graph.close(); }
+  });
+
   it("serves the same search, symbol, relation, impact and grounded evidence as staged v4", async () => {
     const root = fixture();
     writeFileSync(join(root, "worker.ts"), tsSource);

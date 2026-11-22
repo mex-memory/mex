@@ -99,7 +99,7 @@ func installV5Overlay(db *sql.DB, base string) error {
 	}
 	// The writer keeps base codes and only adds new ones to the overlay.
 	// Coverage is checkout-wide in v5, so reads use main.coverage directly.
-	for _, table := range []string{"node_kinds", "edge_kinds", "unresolved_names"} {
+	for _, table := range []string{"node_kinds", "edge_kinds", "unresolved_names", "resolution_methods"} {
 		if _, err := db.Exec("CREATE TEMP VIEW " + table + " AS SELECT * FROM main." + table +
 			" UNION ALL SELECT * FROM base." + table); err != nil {
 			return err
@@ -143,6 +143,7 @@ func (s *Store) nodeRow(id, v4Query, v5Query string) *sql.Row {
 
 const v5CallKind = "(SELECT id FROM edge_kinds WHERE name='calls')"
 const v5UseKinds = "(SELECT id FROM edge_kinds WHERE name IN ('calls','references'))"
+const v5ResolvedEdge = "method IS NOT (SELECT id FROM resolution_methods WHERE name='basic')"
 
 // Restrict the live union to the integer keys in the site's working set.
 // Without the IN predicate, SQLite can materialize all v5_file_nodes before
@@ -151,7 +152,7 @@ const v5SiteNodes = ` FROM temp.v5_file_nodes n CROSS JOIN uses u ON u.node=n.id
 	WHERE n.id IN (SELECT node FROM uses)`
 
 const v5Callers = `WITH uses(node, line, kind, through) AS MATERIALIZED (
-		SELECT source, line, kind, 0 FROM edges WHERE target=?1 AND kind IN ` + v5UseKinds + `
+		SELECT source, line, kind, 0 FROM edges WHERE target=?1 AND kind IN ` + v5UseKinds + ` AND ` + v5ResolvedEdge + `
 		UNION ALL
 		SELECT source, line, kind, 1 FROM unresolved_calls WHERE candidate=?1 AND kind=` + v5CallKind + `
 	)
@@ -188,7 +189,7 @@ func (s *Store) v5Callees(from Symbol) ([]Site, error) {
 	return s.sites(s.v5Within()+`, uses(node, line, kind, through) AS MATERIALIZED (
 		SELECT target, line, kind, 0 FROM edges
 		WHERE source IN (SELECT id FROM inner) AND target NOT IN (SELECT id FROM inner)
-		AND kind IN `+v5UseKinds+`
+		AND kind IN `+v5UseKinds+` AND `+v5ResolvedEdge+`
 		UNION ALL
 		SELECT candidate, line, kind, 1 FROM unresolved_calls
 		WHERE source IN (SELECT id FROM inner) AND candidate NOT IN (SELECT id FROM inner)
@@ -201,6 +202,7 @@ func (s *Store) v5Callees(from Symbol) ([]Site, error) {
 func v5Tests(targets string) string {
 	return `WITH uses(node, target, line) AS MATERIALIZED (
 		SELECT source, target, line FROM edges WHERE kind=` + v5CallKind + `
+		AND ` + v5ResolvedEdge + `
 		AND target IN (SELECT id FROM nodes WHERE public_id IN (` + targets + `))
 	)
 	SELECT ` + v5SymbolColumns + `, coalesce(nullif(u.line,-1),n.start_line),
@@ -235,7 +237,7 @@ func (s *Store) v5UnresolvedIn(id string) int {
 const v5CallsBetween = `WITH matched(id, path) AS MATERIALIZED (
 		SELECT id, path FROM temp.v5_file_nodes WHERE path >= ?1 AND path < ?1 || char(1114111)
 	), uses(source, target, line) AS MATERIALIZED (
-		SELECT source, target, line FROM edges WHERE source IN (SELECT id FROM matched) AND kind=` + v5CallKind + `
+		SELECT source, target, line FROM edges WHERE source IN (SELECT id FROM matched) AND kind=` + v5CallKind + ` AND ` + v5ResolvedEdge + `
 		UNION ALL
 		SELECT source, candidate, line FROM unresolved_calls WHERE source IN (SELECT id FROM matched)
 		AND kind=` + v5CallKind + ` AND candidate IS NOT NULL

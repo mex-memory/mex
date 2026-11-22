@@ -19,6 +19,7 @@ import { flushGraphPhaseTimings, recordGraphPhase } from "./phase-timing.js";
 import { computeSourceCorpusDigest, gitProvenanceChanged, readGraphGitProvenance, type GraphGitProvenance } from "./snapshot.js";
 import { graphWalkObservations, withSourceMemo } from "./source-memo.js";
 import { acquireGraphWriter, collectGraphGarbage, discardGraphTemporary, graphTemporary, readGraphPointer, type GraphLocation, type GraphPointer } from "./storage.js";
+import { BASIC_RESOLUTION } from "./types.js";
 import type { WarmEditResult, WarmGraphCheckout } from "./warm.js";
 
 const active = new Set<string>();
@@ -406,6 +407,6 @@ function readMetadata(db: SqliteDatabase): GraphEngineBuildMetadata {
     lower(hex(corpus_digest)) AS sourceCorpusDigest FROM main.snapshot`).get() as GraphEngineBuildMetadata | undefined;
   if (!metadata) throw new Error("The resident checkout has no v5 snapshot metadata.");
   metadata.indexedHead ||= null;
-  metadata.skipped = db.prepare("SELECT path, reason FROM main.coverage WHERE reason <> 'parse failed' ORDER BY path").all() as GraphEngineBuildMetadata["skipped"];
+  metadata.skipped = db.prepare("SELECT path, reason FROM main.coverage WHERE reason NOT IN ('parse failed', ?) ORDER BY path").all(BASIC_RESOLUTION) as GraphEngineBuildMetadata["skipped"];
   return metadata;
 }

@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { createGraphEngine } from "../engine-impl.js";
+import { rebuildGraph } from "../maintenance.js";
 import { GRAPH_ENGINE_CONTRACT, graphEngineBinary, graphEngineVersion, runGraphEngine, type EngineEvent } from "../native-engine.js";
 
 /**
@@ -12,6 +14,7 @@ import { GRAPH_ENGINE_CONTRACT, graphEngineBinary, graphEngineVersion, runGraphE
 const binary = graphEngineBinary();
 const dirs: string[] = [];
 afterAll(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => vi.unstubAllEnvs());
 
 function fixture(): { root: string; index: string } {
   const dir = mkdtempSync(join(tmpdir(), "mex-native-engine-"));
@@ -56,6 +59,51 @@ describe.skipIf(!binary)("the Rust graph engine from Node", () => {
     expect(staged.nodes.map((node) => node.kind)).toEqual(["file", "function"]);
     expect(staged.edges).toEqual([expect.objectContaining({ kind: "contains", target: staged.nodes[1]!.id })]);
     expect(readdirSync(index)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("publishes basic stage rows in v4 with visible definitions and unresolved call coverage", async () => {
+    const { root, index } = fixture();
+    const path = "src/app.py";
+    writeFileSync(join(root, path), "def target():\n    pass\n\ndef caller():\n    target()\n");
+    const events: EngineEvent[] = [];
+    const run = await runGraphEngine(binary!, {
+      mode: "stage", root, files: [{ path }], languages: ["python"],
+      limits: { memoryMb: 4096, deadlineMs: 60_000 },
+    }, { onEvent: event => events.push(event), requestDir: index });
+    expect(run.exitCode).toBe(0);
+    const staged = events.find(event => event.type === "staged")!;
+    const call = staged.edges.find(edge => edge.kind === "calls")!;
+    expect(call).toBeDefined();
+    staged.coverage = "basic";
+    call.resolutionMethod = "basic";
+    call.confidence = 0;
+    const stub = join(index, "stage-basic");
+    writeFileSync(stub, `#!/bin/sh
+if [ "$1" = version ]; then
+  echo '{"version":"0.1.0","contract":${GRAPH_ENGINE_CONTRACT}}'
+  exit 0
+fi
+read -r start
+[ "$start" = start ] || exit 2
+cat <<'MEX_STAGE'
+${events.map(event => JSON.stringify(event)).join("\n")}
+MEX_STAGE
+`, { mode: 0o755 });
+    vi.stubEnv("MEX_HOME", join(index, "home"));
+    vi.stubEnv("MEX_GRAPH_ENGINE", stub);
+    vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "python");
+    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
+    expect(await rebuildGraph(root)).toMatchObject({ status: { schemaVersion: 4 }, engine: { fallbackFiles: 0 } });
+    const graph = createGraphEngine({ rootDir: root, readOnly: true });
+    try {
+      expect(graph.coverageFor(path)).toEqual({ indexed: true, reason: "basic" });
+      expect(graph.getNode(call.target)?.name).toBe("target");
+      expect(graph.getIncoming(call.target, ["calls"])).toEqual([expect.objectContaining({
+        edge: expect.objectContaining({ source: call.source, resolutionMethod: "basic", confidence: 0 }),
+      })]);
+      expect(graph.getCallers(call.target)).toEqual([]);
+      expect(graph.getCallees(call.source)).toEqual([]);
+    } finally { graph.close(); }
   });
 
   it("removes the candidate when the engine stops over its cap", async () => {

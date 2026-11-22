@@ -499,6 +499,7 @@ func (s *Store) Callers(id string) ([]Site, error) {
 		SELECT `+symbolColumns+`, coalesce(e.line, n.start_line), e.kind, 0 FROM edges e
 		JOIN nodes n ON n.id = e.source
 		WHERE e.target=?1 AND e.kind IN ('calls','references')
+		AND e.resolution_method IS NOT 'basic'
 		UNION ALL
 		SELECT `+symbolColumns+`, u.line, 'calls', 1 FROM unresolved_refs u
 		JOIN nodes n ON n.id = u.from_node_id
@@ -526,6 +527,7 @@ func (s *Store) Callees(id string) ([]Site, error) {
 		JOIN nodes n ON n.id = e.target
 		WHERE e.source IN (SELECT id FROM inner) AND e.target NOT IN (SELECT id FROM inner)
 		AND e.kind IN ('calls','references')
+		AND e.resolution_method IS NOT 'basic'
 		UNION ALL
 		SELECT `+symbolColumns+`, u.line, 'calls', 1 FROM unresolved_refs u
 		JOIN nodes n ON n.id = json_extract(u.candidates, '$[0]')
@@ -628,6 +630,7 @@ func (s *Store) Tests(id string) ([]TestLink, error) {
 		JOIN nodes n ON n.id = e.source
 		LEFT JOIN nodes callee ON callee.id = e.target
 		WHERE e.target IN (` + targets + `) AND e.kind='calls'
+		AND e.resolution_method IS NOT 'basic'
 		ORDER BY n.file_path, e.line LIMIT 500`
 	if s.v5 {
 		query = v5Tests(targets)
@@ -698,8 +701,8 @@ func (s *Store) UnresolvedIn(id string) int {
 	return n
 }
 
-// Complete reports that the graph indexed every file it saw: nothing too
-// big, unreadable or failed to parse.
+// Complete reports that every file the graph saw has full coverage.
+// A basic file has an outline and name hints but leaves call resolution incomplete.
 func (s *Store) Complete() bool {
 	if s.complete != nil {
 		return *s.complete
@@ -758,6 +761,7 @@ func (s *Store) CallsBetween(fromPrefix, toPrefix string, from, to func(path str
 		CROSS JOIN edges e ON e.source = src.id AND e.kind = 'calls'
 		CROSS JOIN nodes dst ON dst.id = e.target
 		WHERE src.file_path >= ?1 AND src.file_path < ?1 || char(1114111)
+		AND e.resolution_method IS NOT 'basic'
 		AND dst.file_path >= ?2 AND dst.file_path < ?2 || char(1114111) AND src.file_path <> dst.file_path
 		UNION ALL
 		SELECT src.file_path, dst.file_path, u.line FROM unresolved_refs u

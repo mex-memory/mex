@@ -51,7 +51,7 @@ import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { createScopedSourcePredicate, inspectGraphStatus } from "./status.js";
 import { prepareCodeHashing } from "./code-hash.js";
 import { createGroundingEvidence, type CommittedBody, type GroundingChangeEvidence } from "./grounding-evidence.js";
-import { LANGUAGES, NODE_KINDS, type GraphNode } from "./types.js";
+import { BASIC_RESOLUTION, LANGUAGES, NODE_KINDS, type GraphNode } from "./types.js";
 
 const MAX_CURSOR_BYTES = 4 * 1024;
 const MAX_QUERY_CHARS = 256;
@@ -515,9 +515,24 @@ export class RepositoryGraphPort implements GraphPort {
       listFiles() { load(); return [...files!.keys()].sort().map(path => ({ path })); },
       nodesInFile(path) { load(); return files!.get(path) ?? []; },
       describeNode(id) { load(); return nodes!.get(id) ?? null; },
-      callersOf(id) { assertActive(); return context.session.graph.getIncoming(id, ["calls"]).map(neighbor => neighbor.edge.source); },
-      calleesOf(id) { assertActive(); return context.session.graph.getOutgoing(id, ["calls"]).map(neighbor => neighbor.edge.target); },
-      outgoingEdges(id) { assertActive(); return context.session.graph.getOutgoing(id).map(({ edge }) => ({ source: edge.source, target: edge.target, kind: edge.kind })); },
+      callersOf(id) {
+        assertActive();
+        return context.session.graph.getIncoming(id, ["calls"])
+          .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION)
+          .map(({ edge }) => edge.source);
+      },
+      calleesOf(id) {
+        assertActive();
+        return context.session.graph.getOutgoing(id, ["calls"])
+          .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION)
+          .map(({ edge }) => edge.target);
+      },
+      outgoingEdges(id) {
+        assertActive();
+        return context.session.graph.getOutgoing(id)
+          .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION)
+          .map(({ edge }) => ({ source: edge.source, target: edge.target, kind: edge.kind }));
+      },
       readFileLines(path) { assertActive(); return readIndexedSource(context, path).split("\n"); },
     };
     return {
@@ -1146,6 +1161,7 @@ function queryRelationRows(
             edges.confidence, edges.provenance, ${path} AS source_path
        FROM edges ${join}
       WHERE ${predicate} AND edges.kind = 'calls'
+        AND edges.resolution_method IS NOT '${BASIC_RESOLUTION}'
       ORDER BY edges.source, edges.target, edges.kind,
                IFNULL(edges.line, -1), IFNULL(edges.col, -1), edges.id
       LIMIT ?`,
@@ -1256,6 +1272,7 @@ function queryDistinctCallerRows(
               ) AS caller_rank
          FROM edges ${join}
         WHERE edges.target${native ? "_key" : ""} = ? AND edges.kind = 'calls'
+          AND edges.resolution_method IS NOT '${BASIC_RESOLUTION}'
      )
      SELECT source, target, kind, line, col, confidence, provenance, source_path
        FROM ranked_callers

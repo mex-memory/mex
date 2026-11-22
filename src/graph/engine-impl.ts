@@ -2,7 +2,7 @@ import { processGraphSizing } from "./sizing.js";
 import { assertTextSource, unavailableFileReason } from "./source-errors.js";
 import { discoverGraphReadPaths } from "./read-discovery.js";
 import { skippedByRule } from "../file-index/discover.js";
-import { graphCoverage } from "./read-coverage.js";
+import { coverageAllowsNodes, graphCoverage, type GraphCoverage } from "./read-coverage.js";
 import { currentGraphPath, graphStoragePathAllowed } from "./storage.js";
 import { graphManifest, configHashForSources, discoverGraphConfigSources, corpusExtractorVersion, RESOLVER_VERSION, type GraphManifest } from "./manifest.js";
 export { graphManifest, graphManifestHash, graphManifestDiffersOnlyByConfig, type GraphManifest, type GraphManifestInputs } from "./manifest.js";
@@ -101,7 +101,7 @@ import {
 import { getCallees, getCallers, getIncoming, getOutgoing } from "./traversal/traversal.js";
 import { recordGraphMemory, recordGraphPhase, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 import { recallSource, rememberSource, reserveHeldBytes } from "./source-memo.js";
-import type { GraphEdge, GraphNode, Language, ReferenceKind } from "./types.js";
+import { BASIC_RESOLUTION, type GraphEdge, type GraphNode, type Language, type ReferenceKind } from "./types.js";
 
 const BODY_KINDS = new Set<GraphNode["kind"]>([
   "function", "method", "class", "interface", "enum", "type_alias", "struct",
@@ -293,6 +293,7 @@ interface StagedFile {
   edges: GraphEdge[];
   references: UnresolvedRefRecord[];
   imports: ImportBindingRecord[];
+  coverage?: typeof BASIC_RESOLUTION;
   frameworksResolved?: boolean;
   /**
    * Present on files the Rust engine staged: its sketches by node id, which
@@ -637,11 +638,13 @@ class GraphEngineImpl implements GraphEngine {
         });
       }
       timeGraphPhase("publish.coverage", () => {
-        // Rows only for files the corpus considered and did not index; every
-        // other path's coverage follows from `files` (see coverageFor).
+        // Record unavailable files and files with only basic resolution.
         this.db!.exec("CREATE TABLE IF NOT EXISTS coverage(path TEXT PRIMARY KEY, reason TEXT NOT NULL) WITHOUT ROWID; DELETE FROM coverage;");
         const cover = this.db!.prepare("INSERT OR REPLACE INTO coverage(path,reason) VALUES(?,?)");
-        for (const file of staged.files) if (file.record.parseStatus === "failed") cover.run(file.record.path, "parse failed");
+        for (const file of staged.files) {
+          const reason = file.record.parseStatus === "failed" ? "parse failed" : file.coverage;
+          if (reason) cover.run(file.record.path, reason);
+        }
         for (const file of staged.skipped) cover.run(file.filePath, file.reason === "corpus-limit" ? "too big" : file.reason);
       });
       timeGraphPhase("publish.invariants", () => store.validateInvariants(expectedNodes));
@@ -766,9 +769,9 @@ class GraphEngineImpl implements GraphEngine {
     return row?.reason;
   }
 
-  private fileVisible(path: string): boolean { return this.coverageRow(path) === undefined; }
+  private fileVisible(path: string): boolean { return coverageAllowsNodes(this.coverageRow(path)); }
 
-  coverageFor(path: string): { indexed: true } | { indexed: false; reason: string } {
+  coverageFor(path: string): GraphCoverage {
     const relativePath = toPosix(relative(this.rootDir, resolve(this.rootDir, path)));
     return graphCoverage(relativePath, this.coverageRow(relativePath), this.getStore().getFileRecord(relativePath) !== null, this.rootDir);
   }
@@ -1091,7 +1094,7 @@ function stageFrameworkAndFallbackResolution(
     .map((node) => [node.filePath, node]));
 
   for (const file of files) {
-    if (file.record.parseStatus !== "ok" || file.frameworksResolved) continue;
+    if (file.record.parseStatus !== "ok" || file.frameworksResolved || file.coverage === BASIC_RESOLUTION) continue;
     const language = detectLanguage(file.record.path);
     const matchingResolvers = resolvers.filter((resolver) =>
       resolver.extract && (!resolver.languages || resolver.languages.includes(language)));
@@ -1167,6 +1170,7 @@ function stageFrameworkAndFallbackResolution(
   const refs = files.flatMap((file) => file.references).filter((ref) =>
     ref.status !== "resolved"
     && ref.resolver !== "lexical-containment"
+    && ref.resolver !== BASIC_RESOLUTION
     // The Rust engine already resolved its files; what it left unresolved it
     // could not prove, and a name match here would only guess.
     && !ref.resolver?.startsWith("engine-"),
@@ -1480,6 +1484,7 @@ function stageEngineFile(discovered: DiscoveredFile, staged: EngineStagedFile): 
     references: staged.unresolved,
     imports: staged.imports ?? [],
     sketches,
+    coverage: staged.coverage,
     frameworksResolved: staged.frameworksResolved,
   };
 }
@@ -1498,7 +1503,8 @@ function demoteDanglingEngineEdges(files: StagedFile[]): void {
         fromNodeId: edge.source, referenceName: String(edge.metadata?.targetName ?? edge.target), referenceKind: edge.kind,
         filePath: file.record.path, language: file.record.language, line: edge.line, column: edge.column,
         status: "unresolved",
-        resolver: edge.resolutionMethod?.startsWith("engine-") ? edge.resolutionMethod : `engine-${file.record.language}`,
+        resolver: edge.resolutionMethod === BASIC_RESOLUTION || edge.resolutionMethod?.startsWith("engine-")
+          ? edge.resolutionMethod : `engine-${file.record.language}`,
         metadata: { reason: "target_changed_during_build" },
       });
       return false;

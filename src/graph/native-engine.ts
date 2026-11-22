@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import type { GraphCoverageHistogram } from "./corpus-policy.js";
 import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
 import { phaseTimingsWorkerEnv } from "./phase-timing.js";
-import type { GraphEdge, GraphNode, Language } from "./types.js";
+import type { BASIC_RESOLUTION, GraphEdge, GraphNode, Language } from "./types.js";
 
 /** The contract version this module speaks; the engine must report the same. */
 export const GRAPH_ENGINE_CONTRACT = 3;
@@ -85,6 +85,7 @@ export interface EngineStagedFile {
   size: number;
   language: Language;
   parseStatus: "ok" | "partial" | "failed";
+  coverage?: typeof BASIC_RESOLUTION;
   frameworksResolved?: boolean;
   health: {
     status: "ok" | "partial" | "failed";

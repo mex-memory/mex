@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { GraphEngine, GraphNeighbor, IndexedFileInfo, SourceChunkMatch } from "./engine.js";
 import { identifierComponents, isLowValueGraphPath, planGraphQuery } from "./retrieval/query.js";
-import type { EdgeKind, GraphEdge, GraphNode, NodeKind } from "./types.js";
+import { BASIC_RESOLUTION, type EdgeKind, type GraphEdge, type GraphNode, type NodeKind } from "./types.js";
 
 export type DetailLevel = "minimal" | "standard" | "source";
 
@@ -1905,7 +1905,7 @@ function createScopeRequestAccess(graph: GraphEngine): ScopeRequestAccess {
     const key = adjacencyKey(id, kinds);
     const cached = cache.get(key);
     if (cached) return cached;
-    const loaded = rememberNeighbors(load());
+    const loaded = rememberNeighbors(load().filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION));
     cache.set(key, loaded);
     return loaded;
   };
