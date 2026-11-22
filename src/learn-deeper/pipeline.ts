@@ -96,6 +96,17 @@ export function clearRunRows(db: { prepare(sql: string): unknown }, project: str
   (db.prepare("DELETE FROM settings WHERE scope=? AND key LIKE ? ESCAPE '!'") as { run(...args: unknown[]): unknown }).run(project, like);
 }
 
+/** One learned entry of a run, as the review list shows it (job E2; the Hub's Review page reads the same rows). */
+export interface ReviewRow {
+  entryId: string; claim: string; label: string; support: number; reviewers: number; proven: boolean;
+  status: "active" | "proposed" | "retired"; route: string; signal: "strong" | "weak"; link: string;
+}
+/** The review rows of one learning run; this row is not job-scoped, so it outlives the run's raw text. */
+export const reviewRowsKey = (jobId: string) => `learning.deep.review.${jobId}`;
+export function reviewRows(reader: { setting(scope: string, key: string): string | undefined | null }, project: string, jobId: string): ReviewRow[] {
+  try { return JSON.parse(reader.setting(project, reviewRowsKey(jobId)) ?? "[]") as ReviewRow[]; } catch { return []; }
+}
+
 /** Split a harvest batch into chunks a triage call can take. */
 export function chunkCandidates(candidates: readonly Candidate[]): Candidate[][] {
   const chunks: Candidate[][] = [];
@@ -191,10 +202,12 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     const routed = proofs.map(proof => ({ proof, routed: routeEntry(proof, plan.origin, model) }));
     const proposals: Proposal[] = [];
     const sources = new Map<Proposal, Candidate[]>();
-    for (const { routed: item } of routed) {
+    const routedOf = new Map<Proposal, { proof: ProofResult; proven: boolean }>();
+    for (const { proof, routed: item } of routed) {
       if ("dropped" in item) { add(counts, "dropped"); continue; }
       proposals.push(item.proposal);
       sources.set(item.proposal, item.sources);
+      routedOf.set(item.proposal, { proof, proven: item.proven });
       add(counts, item.proven ? "proven" : "prose");
       if (item.status === "proposed") add(counts, "proposed");
     }
@@ -232,6 +245,19 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
             candidate.nodeIds.map(id => ({ id, hash: candidate.commentHashes?.[id] ?? candidate.hash, link: candidate.link }))).slice(0, 32)));
         }
         set.run(project, key(context.job, `${name}.done`), JSON.stringify({ at: deps.now(), summary: summarizeResults(gated) }));
+        // The review list's rows: no source text, only what the person decides on. Kept after the run's cleanup.
+        const reviewKey = reviewRowsKey(context.job.id);
+        const rows: ReviewRow[] = JSON.parse(gate.setting(project, reviewKey) ?? "[]");
+        for (const item of accepted) {
+          const proposal = proposalOf.get(item.entryId);
+          const routed = proposal && routedOf.get(proposal);
+          if (!routed) continue;
+          const cluster = routed.proof.cluster;
+          rows.push({ entryId: item.entryId, claim: item.entry.mex.one_line, label: item.entry.mex.source.label ?? "",
+            support: cluster.support, reviewers: cluster.reviewers, proven: routed.proven, status: item.entry.mex.status,
+            route: routed.proof.draft.route, signal: cluster.strong ? "strong" : "weak", link: proposal.source.ref });
+        }
+        set.run(project, reviewKey, JSON.stringify(rows.slice(-200)));
         for (const [counted, n] of Object.entries(counts)) add(state.counts, counted, n);
         for (const result of gated) if (result.status === "dropped") add(state.counts, `gate-dropped.${result.reason}`);
       },
