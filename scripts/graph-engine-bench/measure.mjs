@@ -17,7 +17,7 @@
 // from SQLite's dbstat. Results go to $BENCH_DIR/results/<tool>/<repo>/.
 import { spawn, execFileSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
-import { join, extname, resolve } from "node:path";
+import { join, basename, extname, resolve } from "node:path";
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, arg, i, all) => {
   if (arg.startsWith("--")) acc.push([arg.slice(2), all[i + 1] && !all[i + 1].startsWith("--") ? all[i + 1] : true]);
@@ -28,6 +28,9 @@ const { cli, engine } = args;
 if (Boolean(cli) === Boolean(engine) || cli === true || engine === true) {
   throw new Error("specify either --cli <path> or --engine <path>");
 }
+const engineContract = engine
+  ? JSON.parse(execFileSync(resolve(engine), ["version"], { encoding: "utf8" })).contract
+  : undefined;
 const runs = Number(args.runs ?? 3);
 const ENGINE_DEADLINE_MIN = 40;
 const timeoutMs = Number(args["timeout-min"] ?? (engine ? ENGINE_DEADLINE_MIN : 30)) * 60_000;
@@ -80,9 +83,10 @@ function writeEngineRequest(root, home, output) {
     // are these folders (GRAPH_CORPUS_IGNORE_GLOBS in src/graph/corpus-policy.ts).
     .filter((path) => !path.split("/").some((part) => part.startsWith(".") || CORPUS_IGNORED.has(part)));
   const files = paths.map((path) => ({ path, size: lstatSync(join(root, path), { throwIfNoEntry: false })?.size ?? 0 }));
+  const configs = paths.filter((path) => /^(?:(?:ts|js)config(?:[.-].*)?|package)\.json$/i.test(basename(path)));
   const request = join(home, "request.json");
   writeFileSync(request, JSON.stringify({
-    contract: 1, mode: "build", root, files, languages, output,
+    contract: engineContract, mode: "build", root, files, configs, languages, output,
     limits: { memoryMb, deadlineMs: ENGINE_DEADLINE_MIN * 60_000 },
   }));
   return request;

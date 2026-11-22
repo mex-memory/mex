@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { callForms } from "./call-forms.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "mex-graph-accuracy-"));
 try {
@@ -50,6 +51,33 @@ try {
   const corrupt = score();
   assert.deepEqual(corrupt, { precision: 0, recall: 0 });
   console.log("v5 corrupt edge", JSON.stringify(corrupt));
+
+  writeFileSync(join(root, "forms.ts"), [
+    'import { f as invoke } from "./lib";',
+    'import * as ns from "./lib";',
+    'import type { f as typeOnly } from "./lib";',
+    'const load = require("./factory");',
+    'invoke();',
+    'function shadow(invoke: () => void) { invoke(); }',
+    'ns.f();',
+    'typeOnly();',
+    'load();',
+    'new A();',
+    'class Derived extends A {',
+    '  constructor() { super(); }',
+    '  test() { this.test(); super.test(); }',
+    '}',
+  ].join("\n"));
+  const forms = callForms(root, ["forms.ts"]);
+  assert.deepEqual([...forms], [
+    ["forms.ts:4:0", "imported_function"],
+    ["forms.ts:6:3", "imported_function"],
+    ["forms.ts:8:0", "imported_function"],
+    ["forms.ts:9:4", "new"],
+    ["forms.ts:11:18", "super"],
+    ["forms.ts:12:16", "this_method"],
+    ["forms.ts:12:30", "super"],
+  ]);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

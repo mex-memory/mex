@@ -28,6 +28,7 @@
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+import { CALL_FORMS, callForms } from "./call-forms.mjs";
 
 const [repoRoot, graphDb, scipPath] = process.argv.slice(2);
 const scip = JSON.parse(readFileSync(scipPath, "utf8"));
@@ -46,11 +47,15 @@ function loadV5() {
     FROM nodes n JOIN node_kinds k ON k.id = n.kind JOIN files f ON f.id = n.file
     WHERE k.name <> 'file'
   `);
+  const hasSiteFile = sql("SELECT 1 FROM pragma_table_info('edges') WHERE name = 'site_file'").length > 0;
+  const location = hasSiteFile ? "coalesce(site.path, f.path)" : "f.path";
+  const siteJoin = hasSiteFile ? "LEFT JOIN files site ON site.id = e.site_file" : "";
   // V5 uses line 0 for an edge without a call site.
   const edges = sql(`
-    SELECT k.name AS kind, e.line, e.col, e.target, f.path AS file
+    SELECT k.name AS kind, e.line, e.col, e.target, ${location} AS file
     FROM edges e JOIN edge_kinds k ON k.id = e.kind
       JOIN nodes s ON s.id = e.source JOIN files f ON f.id = s.file
+      ${siteJoin}
     WHERE k.name IN ('calls','instantiates') AND e.line > 0
   `);
   return { nodes, edges };
@@ -197,6 +202,9 @@ for (const ref of references) {
     }
   }
 }
+// Classification is an additive view of the same judged recall universe.
+const forms = callForms(repoRoot, new Set([...byPosition.values()].map(({ ref }) => ref.path)));
+const by_form = Object.fromEntries(CALL_FORMS.map((form) => [form, { sites: 0, found: 0, recall: null }]));
 // Verdicts the judge can't stand behind: skipped and counted, never scored.
 const SKIP = ["judge_ambiguous", "judge_inconsistent", "non_ascii", "no_definition"];
 for (const [k, { ref, verdicts }] of byPosition) {
@@ -222,18 +230,27 @@ for (const [k, { ref, verdicts }] of byPosition) {
   }
   if (!decls.length) continue;
   t.sites++;
+  const form = by_form[forms.get(k) ?? "other"];
+  form.sites++;
   const viaInterface = decls.every((v) => v.viaInterface);
   if (viaInterface) t.interface_sites++;
-  if (here.some((e) => decls.some((v) => matches(e.target, v)))) { t.found++; if (viaInterface) t.interface_found++; }
+  if (here.some((e) => decls.some((v) => matches(e.target, v)))) {
+    t.found++;
+    form.found++;
+    if (viaInterface) t.interface_found++;
+  }
   else if (here.length) t.site_wrong_target++;
   else { t.site_missing_edge++; if (samples.missing.length < 15) samples.missing.push(`${ref.path}:${ref.line + 1}:${ref.col} ${decls[0].name} (judge ${decls[0].def.path}:${decls[0].def.line + 1})`); }
 }
 t.unjudged = edges.length - judgedEdges.size;
 
+for (const form of Object.values(by_form)) {
+  if (form.sites) form.recall = +(form.found / form.sites).toFixed(4);
+}
 const wrong = t.wrong_declaration + t.wrong_outside + t.wrong_local;
 console.log(JSON.stringify({
   precision: t.edges_judged ? +((t.correct + t.correct_binding) / t.edges_judged).toFixed(4) : null,
   recall: t.sites ? +(t.found / t.sites).toFixed(4) : null,
   recall_concrete: t.sites - t.interface_sites ? +((t.found - t.interface_found) / (t.sites - t.interface_sites)).toFixed(4) : null,
-  ...t, wrong, samples,
+  ...t, wrong, by_form, samples,
 }, null, 2));
