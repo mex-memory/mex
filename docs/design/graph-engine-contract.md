@@ -88,6 +88,12 @@ when a declaration or module surface changes. See
 [Incremental resolution](graph-engine-incremental.md) for the private
 records, dependency rules and complete-resolution cases.
 
+The private `refresh_format` in `meta` versions the resolver inputs separately
+from schema v5 and JSONL. Prefix `7` covers packed per-origin read IDs, the
+retained path and lookup dictionaries, and page-packed base projection frames.
+A format mismatch returns `graph_refresh_base_incompatible` and sends
+maintenance through the one-time base build path.
+
 Files reuse the base key for the same repository path. Nodes reuse the base
 key for the same 16-byte public id. New keys start above `2^40`. Interned
 names use the same rule with the name as their identity. An edge, call

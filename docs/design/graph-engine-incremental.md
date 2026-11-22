@@ -51,6 +51,42 @@ Continuity looks for aliases of vanished nodes on shadowed paths. It checks
 qualified names, signatures, body hashes and fingerprints in the usual
 order. A fingerprint match can require a streaming sketch scan.
 
+## Private storage
+
+- Base file identities come from `files.id`. An overlay allocates IDs above
+  `2^40` for new paths in `resolution_paths` and carries that dictionary across
+  publications, including deleted paths. Overlay node allocation likewise
+  carries a high-water mark. Retained projections can keep their integer
+  endpoints across an edit, a deletion and a later addition.
+- The resolver records file and import ordinals in memory. It interns other
+  lookups once per distinct key and records the reads behind cached export
+  results. `resolution_names` stores distinct spellings. `resolution_keys`
+  assigns IDs to tuples of lookup kind, file ID and name ID. A module probe
+  names its importing file and specifier separately. A path probe can use
+  an existing file ID or intern a spelling for a missing path.
+- `resolution_reads` has one row per origin with reads. The low bit of each
+  encoded ID distinguishes a file from a lookup. The row stores the sorted,
+  unique IDs as unsigned varint deltas. Surface and topology edits decode
+  the visible rows into a reverse index for the candidate. A surface-only
+  change keeps file, type, heritage and dispatch readers in the index.
+  Topology edits also load module and path probes. Append, prepend and local
+  reference edits can skip the index. Framework detection uses its own small
+  table because it is checked on every edit.
+- `resolution_inputs` holds the origin header. In a base it locates the
+  origin's slice of a Zstandard frame. Small records share frames of up to
+  64 KiB of uncompressed data. Larger records get their own frame. The
+  compressed stream is split into SQLite rows with 64 bytes of page headroom
+  per block. Bases under 4,096 nodes use 2 KiB pages. Larger bases use 4 KiB.
+  An overlay keeps each of its updated origins as an independent compressed
+  record, so it can carry retained rows with SQL. A null overlay record
+  masks the previous projection and the origin's dependency rows.
+- `resolution_callbacks`, `resolution_heritage` and `resolution_types` use
+  integer owner, origin or name keys. Relationship projections use graph
+  node keys. The outgoing digest compares binary public identities, edge
+  fields and cross-file site paths across builds. Base writes stream the
+  projection and public rows together and defer the owners of incoming
+  callbacks until all their sites are known.
+
 ## Dependency rules
 
 - **TypeScript and JavaScript.** Each origin records the file facts it

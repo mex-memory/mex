@@ -355,6 +355,245 @@ the published rows. Point reads and searches use the publication directly.
 Still to do on v5 is graph-03's Go reader (`native/graph/store.go`, in
 the unmerged mex #398).
 
+## M5 stage 2c — compact incremental state
+
+Same-machine comparison on an M4 MacBook Air with Node 22.23.2.
+The baseline CLI and release engine were built at `8f91b9cc`. The stage 2c
+CLI and engine were built in the same checkout from the implementation.
+Cold runs alternate arms on fresh shared clones of the pinned repositories
+with empty graph homes. Both arms use schema v5 and the TypeScript,
+JavaScript, Python, Rust and C# adapters. `measure.mjs` times the whole CLI
+invocation, with additional `dbstat` queries during post-build inspection.
+Process-tree RSS is sampled every 100 ms. Each cell gives the median and
+[min–max] spread, from baseline to stage 2c. Disk sizes use decimal MB.
+The facts cache is measured after each run's append refresh.
+
+| Repo | Runs per arm | Cold s | Peak tree RSS MiB | Base MB | Facts cache MB |
+|---|---:|---:|---:|---:|---:|
+| Hono | 3 | 1.138 [1.134–1.141] → 1.180 [1.174–1.185] | 244 [243–255] → 247 [242–253] | 18.510 → 18.313 | 4.489 [4.452–4.506] → 4.493 [4.489–4.514] |
+| Flask | 5 | 0.317 [0.315–0.323] → 0.318 [0.316–0.321] | 147 [146–151] → 147 [142–151] | 2.523 → 2.605 [2.605–2.607] | 0.557 [0.557–0.561] → 0.557 [0.553–0.561] |
+| ripgrep | 5 | 0.463 [0.461–0.471] → 0.468 [0.466–0.469] | 166 [165–168] → 163 [160–167] | 8.069 → 7.045 | 0.963 [0.958–0.963] → 0.963 [0.958–0.967] |
+| NestJS | 3 | 2.106 [2.077–2.107] → 2.122 [2.110–2.133] | 320 [317–321] → 303 [301–306] | 32.621 → 33.268 | 7.614 [7.610–7.631] → 7.614 [7.614–7.619] |
+| novu | 3 | 11.860 [11.825–11.974] → 12.411 [12.335–13.423] | 945 [943–946] → 958 [950–975] | 199.619 → 214.938 [214.934–214.938] | 49.463 [49.439–49.467] → 49.476 [49.455–49.476] |
+
+Novu's 161,688-node base takes 1,329 bytes per node. Relative to
+`8f91b9cc`, its cold median is 4.6% higher, peak RSS is 1.4% higher and
+base size is 7.7% higher. The 958 MiB median equals 1,004.5 MB, 4.5 MB
+above the decimal 1 GB cap. The highest sample was 975 MiB (1,022.4 MB).
+The build still holds extracted facts, resolver models and prepared
+signatures while Node retains the source capture. Both builds use the same
+facts-cache disk format. Novu's 13 KB difference in the median facts-cache
+size falls within the observed variation from concurrent compression block
+grouping. The largest increase among the smaller repositories was Hono's
+3.7% cold wall time. Ripgrep's base shrank by 12.7%, and NestJS peak RSS
+fell by 5.3%.
+
+### Warm edits
+
+Each case measures 24 publications after two warm-ups, using the same edit
+generator for both arms. Cells give CLI p50/p95 in ms, engine p50/p95 in ms,
+and held MiB. Held RSS is the resident engine plus Node's RSS growth since
+opening the checkout.
+
+| Repository and file | Append | Prepend | Insert call |
+|---|---:|---:|---:|
+| Hono `src/hono-base.ts` | 33.9/34.6 · 15.2/15.4 · 52.4 → 34.2/36.3 · 15.8/16.0 · 47.4 | 328.7/333.2 · 309.2/311.5 · 111.6 → 35.5/38.1 · 16.6/16.9 · 49.2 | 326.5/329.9 · 306.9/309.6 · 110.3 → 36.7/37.6 · 17.8/18.1 · 64.3 |
+| Flask `src/flask/app.py` | 35.0/36.4 · 17.5/17.8 · 42.1 → 35.5/37.0 · 18.2/18.6 · 38.0 | 56.7/58.1 · 39.5/39.8 · 43.8 → 35.4/37.2 · 18.2/18.5 · 40.7 | 54.9/57.1 · 38.5/39.4 · 49.7 → 37.1/43.2 · 19.6/19.8 · 45.9 |
+| ripgrep `crates/core/main.rs` | 26.6/28.6 · 9.9/11.0 · 34.5 → 26.9/28.7 · 10.1/10.4 · 36.3 | 77.5/79.0 · 61.2/61.5 · 51.7 → 28.1/29.1 · 10.7/11.1 · 35.8 | 76.4/80.9 · 60.8/61.3 · 48.0 → 27.5/28.9 · 11.1/11.3 · 38.1 |
+| NestJS `packages/core/nest-factory.ts` | 30.5/31.8 · 14.5/15.0 · 66.0 → 30.8/34.7 · 14.1/14.5 · 64.8 | 453.9/457.9 · 437.4/440.5 · 202.0 → 33.3/39.2 · 15.8/18.6 · 66.0 | 449.2/453.0 · 432.4/437.0 · 203.6 → 34.7/38.0 · 18.1/18.6 · 86.0 |
+| novu `apps/api/src/app.module.ts` | 44.8/46.3 · 23.2/23.9 · 159.0 → 38.7/42.2 · 18.8/19.3 · 158.6 | 2642.8/2652.3 · 2619.8/2629.7 · 818.9 → 38.5/40.1 · 19.0/19.5 · 155.1 | 2674.4/2698.1 · 2650.4/2676.3 · 817.6 → 48.3/49.7 · 27.0/28.0 · 193.2 |
+
+Novu held 158.6 MiB after append, 155.1 after prepend and 193.2 after
+inserted calls. The export-only run ended at 262.5 MiB. The mixed run
+reached 254.1 MiB across 26 edits. The surface-only reverse index loaded
+in 21.6 ms median (21.2–21.9 ms) across the export run.
+
+### Novu one-shot refresh
+
+Three fresh bases per arm and edit. Times give the median and [min–max]
+end-to-end milliseconds. The app-module prepend and append each re-extracted
+and rewrote one file.
+
+| Edit | `8f91b9cc` | Stage 2c |
+|---|---:|---:|
+| Prepend to `apps/api/src/app.module.ts` | 2707 [2689–2842] | 805 [795–805] |
+| Append to `apps/api/src/app.module.ts` | 842 [816–853] | 805 [798–805] |
+| `measure.mjs` append to `apps/api/src/app/workflows-v2/workflow.controller.e2e.ts` | 837 [828–873] | 889 [847–895] |
+
+The app-module prepend meets the 1 s target. Its append is 37 ms faster.
+The append selected by `measure.mjs` misses baseline parity by 52 ms
+(6.2%). The Rust refresh job in that series fell from 60.9 to 59.3 ms.
+The regression is in the end-to-end overhead outside the engine.
+Node's base identity hash took 82.8 ms instead of 76.0 ms as the base grew.
+Source capture rose from 213.8 to 219.7 ms. The recorded phases explain
+part of the wall-time difference.
+Neither position-only edit needs to load the reverse dependency index.
+The 6 one-shot replay steps that built it took 26.4 ms median
+(21.3–31.8 ms) for the reverse index alone.
+
+### Novu cold phases
+
+Median milliseconds. The stage 2b column records the regression
+profile. The incremental timer in stage 2c includes the streamed private
+and public writes. The ECMAScript timer covers the resolver and import
+binding pass.
+
+| Phase | `8f91b9cc` | Stage 2b | Stage 2c |
+|---|---:|---:|---:|
+| Rust job | 8509 | 15200 | 8973 |
+| `extract` | 3140 | — | 3327 |
+| Resolve, baseline aggregate | 411 | — | — |
+| `resolve.incremental` | — | 3500 | 1885 |
+| `resolve.ecmascript` | — | 900 | 527 |
+| `resolve.dependencies` | — | 1300 | 167 |
+| `v5.write` | 4958 | 11900 | 5636 |
+| `v5.finish` | 813 | 3500 | 934 |
+| `v5.indexes` | 343 | 2190 | 420 |
+| `v5.relationships` | 1370 | 1900 | 933 |
+| `v5.writeOutgoing` | — | 1300 | 778 |
+| `v5.resolutionDigest` | 596 | — | 144 |
+| `v5.resolutionInputs` | — | — | 129 |
+| `v5.optimizeFts` | 207 | 600 | 201 |
+| `v5.fingerprintNeighbours` | 125 | 280 | 137 |
+| `v5.reclaimPages` | — | — | 3 |
+
+- Resolver memo reads share ordinals. The recorder interns a distinct lookup
+  spelling once and writes one packed row per origin. ECMAScript keeps at
+  most 3,072 derived lexical models cached, and its most common binding and
+  member buckets store a single ordinal inline. Signature preparation builds
+  only the binding proof it needs and overlaps declaration writes on large
+  bases with a single producer.
+- Public relationships stream from the in-memory projection. Only owners of
+  incoming callbacks need projection readback after all their sites are
+  known. Typed edge evidence borrows from facts during staging. Numeric node
+  endpoints avoid reparsing public ID text while writing. The comparable digest
+  uses binary public IDs and takes 144 ms, down from 596 ms in the baseline.
+- Compact origin blobs replace both the per-read table entries and their
+  secondary index. Heritage, callbacks and type declarations use integer keys.
+  Large stores index an eight-byte body-hash prefix for continuity probes
+  and check the full hash for every match. The body-hash prefix and remaining
+  small private indexes are additional work in the finish phase.
+- FTS optimization runs against a much smaller write working set. A probe
+  with packed reads still spent 575 ms optimizing FTS while it reread every
+  origin projection. The streamed build brought that phase to roughly 201 ms.
+  Reclaiming the base's free pages afterward took 3.3 ms in this series.
+  The fingerprint-neighbour pass reads target pairs from the covering edge
+  index and inserts the two directions in primary-key order.
+
+### Novu base allocation
+
+One median-size stage 2c base from `dbstat`. The 2,904 projection blocks
+hold 11,707,828 compressed bytes in 11,927,552 bytes of SQLite pages.
+Block payloads peak at 4,032 bytes. The 8,681 read blobs hold 2,244,160
+bytes and peak at 2,788 bytes. Neither table has overflow pages in this
+sample. The database has zero freelist pages. SQLite's 64 pointer-map pages
+account for the remaining 262,144 bytes outside the `dbstat` allocation.
+The base uses its public file table for paths. Overlays add a dictionary
+for paths absent from the base.
+
+| Table or index | Bytes |
+|---|---:|
+| `fingerprints` | 40,742,912 |
+| `nodes` | 33,443,840 |
+| `source_chunks_fts_data` | 27,250,688 |
+| `edges` | 26,251,264 |
+| `nodes_fts_data` | 15,388,672 |
+| `resolution_blocks` | 11,927,552 |
+| `edges_target` | 6,905,856 |
+| `unresolved_calls` | 5,578,752 |
+| `sqlite_autoindex_nodes_1` | 4,493,312 |
+| `nodes_name` | 4,149,248 |
+| `nodes_lower_name` | 4,149,248 |
+| `resolution_reads` | 2,789,376 |
+| `nodes_body_hash` | 2,523,136 |
+| `unresolved_calls_source` | 2,420,736 |
+| `nodes_fts_docsize` | 2,269,184 |
+| `unresolved_calls_name` | 2,265,088 |
+| `sqlite_autoindex_unresolved_names_1` | 2,142,208 |
+| `nodes_file_line` | 2,129,920 |
+| `unresolved_names` | 1,888,256 |
+| `nodes_parent` | 1,777,664 |
+| `fingerprint_neighbours` | 1,675,264 |
+| `fingerprint_neighbours_neighbour` | 1,650,688 |
+| `files` | 1,646,592 |
+| `source_observations` | 1,531,904 |
+| `node_attributes` | 1,015,808 |
+| `resolution_keys` | 860,160 |
+| `sqlite_autoindex_files_1` | 815,104 |
+| `unresolved_other` | 565,248 |
+| `sqlite_autoindex_resolution_names_1` | 516,096 |
+| `resolution_names` | 454,656 |
+| `file_resolution` | 450,560 |
+| `meta` | 380,928 |
+| `source_chunks` | 368,640 |
+| `source_chunks_fts_docsize` | 335,872 |
+| `coverage_directories` | 335,872 |
+| `source_chunks_file` | 299,008 |
+| `unresolved_other_source` | 290,816 |
+| `unresolved_other_name` | 270,336 |
+| `resolution_inputs` | 233,472 |
+| `resolution_callbacks` | 94,208 |
+| `source_chunks_fts_idx` | 77,824 |
+| `nodes_fts_idx` | 61,440 |
+| `edges_site_file` | 28,672 |
+| `sqlite_schema` | 24,576 |
+| `resolution_heritage_origin` | 24,576 |
+| `resolution_heritage` | 24,576 |
+| `sqlite_autoindex_resolution_callbacks_1` | 16,384 |
+| `unresolved_calls_written_name` | 12,288 |
+| `resolution_callbacks_origin` | 12,288 |
+| `unresolved_reasons` | 4,096 |
+| `unresolved_calls_candidate` | 4,096 |
+| `sqlite_autoindex_unresolved_reasons_1` | 4,096 |
+| `sqlite_autoindex_resolution_methods_1` | 4,096 |
+| `sqlite_autoindex_provenances_1` | 4,096 |
+| `sqlite_autoindex_node_kinds_1` | 4,096 |
+| `sqlite_autoindex_languages_1` | 4,096 |
+| `sqlite_autoindex_edge_kinds_1` | 4,096 |
+| `source_observation_gaps` | 4,096 |
+| `source_chunks_fts_config` | 4,096 |
+| `snapshot` | 4,096 |
+| `resolution_types_origin` | 4,096 |
+| `resolution_types` | 4,096 |
+| `resolution_methods` | 4,096 |
+| `resolution_frameworks` | 4,096 |
+| `provenances` | 4,096 |
+| `nodes_fts_config` | 4,096 |
+| `node_kinds` | 4,096 |
+| `languages` | 4,096 |
+| `grounded_body_hash` | 4,096 |
+| `file_diagnostics` | 4,096 |
+| `edge_kinds` | 4,096 |
+| `coverage_summary` | 4,096 |
+| `coverage_extensions` | 4,096 |
+| `coverage` | 4,096 |
+| `aliases_node` | 4,096 |
+| `aliases` | 4,096 |
+| `_mex_grounded_source` | 4,096 |
+
+### Stage 2c verification
+
+Each replay compared the warm and one-shot refresh publications with an
+independent cold build at every step. All 407 edits per arm published an
+overlay. The two Novu arms ran serially with a 4 GiB free-space check before
+each run.
+
+| Replay | Edits per arm | Point reads per arm | Searches per arm | Warm differences | Refresh differences |
+|---|---:|---:|---:|---:|---:|
+| Hono | 43 | 1,032 | 516 | 0 | 0 |
+| Flask | 18 | 432 | 252 | 0 | 0 |
+| ripgrep | 13 | 312 | 156 | 0 | 0 |
+| novu | 13 | 312 | 130 | 0 | 0 |
+| TypeScript seed | 160 | 1,120 | 1,920 | 0 | 0 |
+| Python seed | 160 | 800 | 1,600 | 0 | 0 |
+
+The first changed refresh against an `8f91b9cc` base published a new full
+base. Rust formatting, workspace Clippy with `-D warnings`, all 108 Rust
+tests and `tsc --noEmit` passed. Vitest passed 892 graph tests. The sole
+failure was the existing `storage.test.ts` network-home assertion. The
+candidate-process test used a checkout-local fixture cache to preserve the
+shared dependency directory.
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.
