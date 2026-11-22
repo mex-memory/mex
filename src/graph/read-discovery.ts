@@ -1,6 +1,7 @@
 import { skippedByRule } from "../file-index/discover.js";
 import { gitignoreMatcher } from "./gitignore.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFileSync } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { GlobOptions } from "glob";
@@ -79,12 +80,32 @@ function discoverGraphReadPathsUnfiltered(
 }
 
 /** The corpus walk, minus what `.gitignore` excludes and what the file index never reads. */
-export function discoverGraphReadPaths(pattern: string | readonly string[], options: GlobOptions, maxFiles: number): string[] {
+export function discoverGraphReadPaths(
+  pattern: string | readonly string[],
+  options: GlobOptions,
+  maxFiles: number,
+  includeTrackedConfigs = false,
+): string[] {
   const paths = discoverGraphReadPathsUnfiltered(pattern, options, maxFiles);
   if (typeof options.cwd !== "string") return paths;
-  const ignored = gitignoreMatcher(resolve(options.cwd));
+  const root = resolve(options.cwd);
+  const ignored = gitignoreMatcher(root);
+  let trackedConfigs: Set<string> | undefined;
   return paths.filter(path => {
     const posix = path.replaceAll("\\", "/");
-    return !skippedByRule(posix) && !ignored(posix);
+    return !skippedByRule(posix) && (!ignored(posix)
+      || (includeTrackedConfigs && (trackedConfigs ??= trackedGraphConfigs(root)).has(posix)));
   });
+}
+
+/** A tracked manifest can match ignore rules for generated files in the same workspace. */
+function trackedGraphConfigs(root: string): Set<string> {
+  try {
+    const paths = execFileSync("git", [
+      "ls-files", "--cached", "-z", "--", ...GRAPH_CONFIG_GLOBS.map((glob) => `:(glob)${glob}`),
+    ], { cwd: root, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, timeout: 2_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    return new Set(paths.split("\0"));
+  } catch {
+    return new Set();
+  }
 }

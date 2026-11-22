@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
+import type { GraphEdge, GraphNode, Language } from "./types.js";
 
 /** The contract version this module speaks; the engine must report the same. */
 export const GRAPH_ENGINE_CONTRACT = 2;
@@ -23,7 +25,7 @@ export interface EngineRequest {
   mode: "build" | "refresh" | "stage";
   root: string;
   files: Array<{ path: string; size?: number }>;
-  configs?: string[];
+  configs?: Array<string | { path: string; source: string }>;
   languages: string[];
   /** The candidate database; `stage` writes none. */
   output?: string;
@@ -33,13 +35,13 @@ export interface EngineRequest {
   limits: { memoryMb: number; deadlineMs: number; threads?: number };
 }
 
-/** One Python file's rows for today's (schema v4) writer, from `mex-graph stage`. */
+/** One file's rows for today's (schema v4) writer, from `mex-graph stage`. */
 export interface EngineStagedFile {
   type: "staged";
   path: string;
   contentHash: string;
   size: number;
-  language: string;
+  language: Language;
   parseStatus: "ok" | "partial" | "failed";
   health: {
     status: "ok" | "partial" | "failed";
@@ -48,9 +50,10 @@ export interface EngineStagedFile {
     errorCoverage: number;
     diagnostics: Array<{ type: string; startLine: number; endLine: number }>;
   };
-  nodes: Array<Record<string, unknown> & { id: string; minhash?: number[]; tokenCount?: number }>;
-  edges: Array<Record<string, unknown> & { source: string; target: string; kind: string }>;
-  unresolved: Array<Record<string, unknown> & { fromNodeId: string; referenceName: string }>;
+  nodes: Array<Omit<GraphNode, "updatedAt"> & { minhash?: number[]; tokenCount?: number }>;
+  edges: GraphEdge[];
+  unresolved: UnresolvedRefRecord[];
+  imports?: ImportBindingRecord[];
 }
 
 export type EngineEvent =
@@ -126,7 +129,7 @@ export function runGraphEngine(
   const requestPath = request.output
     ? `${request.output}.request.json`
     : join(options.requestDir ?? tmpdir(), `mex-graph-request-${process.pid}-${randomBytes(6).toString("hex")}.json`);
-  writeFileSync(requestPath, JSON.stringify({ contract: GRAPH_ENGINE_CONTRACT, ...request }));
+  writeFileSync(requestPath, JSON.stringify({ contract: GRAPH_ENGINE_CONTRACT, ...request }), { mode: 0o600, flag: "wx" });
   return new Promise((resolvePromise) => {
     const child = spawn(binary, [request.mode, "--request", requestPath], {
       stdio: ["pipe", "pipe", "pipe"],

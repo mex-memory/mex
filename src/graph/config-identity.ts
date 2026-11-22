@@ -32,6 +32,13 @@ const SIGNIFICANT_COMPILER_OPTIONS = Object.freeze([
   "target",
 ] as const);
 
+/** Additional options the engine's module resolver reads. */
+const ENGINE_COMPILER_OPTIONS = [
+  ...SIGNIFICANT_COMPILER_OPTIONS,
+  "composite", "customConditions", "declarationDir", "moduleSuffixes", "noEmit", "outDir",
+  "resolveJsonModule", "resolvePackageJsonExports", "resolvePackageJsonImports", "rootDir", "rootDirs",
+] as const;
+
 /** Top-level tsconfig/jsconfig entries that change which files are in a program. */
 const SIGNIFICANT_TSCONFIG_FIELDS = Object.freeze([
   "exclude",
@@ -48,6 +55,11 @@ const SIGNIFICANT_PACKAGE_FIELDS = Object.freeze([
   "type",
   "workspaces",
 ] as const);
+
+const ENGINE_PACKAGE_FIELDS = [
+  ...SIGNIFICANT_PACKAGE_FIELDS,
+  "name", "main", "types", "typings", "tsconfig",
+] as const;
 
 /** Dependency maps whose **names** shape resolution; their versions do not. */
 const DEPENDENCY_FIELDS = Object.freeze([
@@ -76,17 +88,17 @@ export function graphConfigKind(path: string): GraphConfigKind {
  * object. Failing towards over-invalidation keeps an unreadable config from
  * quietly meaning "nothing changed".
  */
-export function graphConfigIdentity(path: string, source: string): string {
+export function graphConfigIdentity(path: string, source: string, engineEcmaScript = false): string {
   const kind = graphConfigKind(path);
   if (kind === "unknown") return source;
-  const parsed = parseJsonWithComments(path, source);
+  const parsed = parseJsonWithComments(path, source, !engineEcmaScript);
   if (parsed === undefined) return source;
-  const projected = kind === "package" ? projectPackage(parsed) : projectTsconfig(parsed);
+  const projected = kind === "package" ? projectPackage(parsed, engineEcmaScript) : projectTsconfig(parsed, engineEcmaScript);
   return projected === undefined ? source : canonicalize(projected);
 }
 
 /** tsconfig is JSON with comments and trailing commas; byte comparison is not parsing. */
-function parseJsonWithComments(path: string, source: string): unknown {
+function parseJsonWithComments(path: string, source: string, allowCompiler: boolean): unknown {
   // JSONC's strings must be preserved before removing comments or commas.
   // Unusual or malformed syntax goes through the original compiler parser.
   try {
@@ -108,13 +120,14 @@ function parseJsonWithComments(path: string, source: string): unknown {
   } catch {
     // Keep the compiler's exact accepted syntax and error behavior.
   }
+  if (!allowCompiler) return undefined;
   const ts: typeof import("typescript") = require("typescript");
   const result = ts.parseConfigFileTextToJson(path, source);
   if (result.error || result.config === undefined) return undefined;
   return result.config;
 }
 
-function projectTsconfig(config: unknown): Record<string, unknown> | undefined {
+function projectTsconfig(config: unknown, engineEcmaScript: boolean): Record<string, unknown> | undefined {
   if (!isPlainObject(config)) return undefined;
   const projected: Record<string, unknown> = {};
   for (const field of SIGNIFICANT_TSCONFIG_FIELDS) {
@@ -123,8 +136,11 @@ function projectTsconfig(config: unknown): Record<string, unknown> | undefined {
   const options = config.compilerOptions;
   if (isPlainObject(options)) {
     const significant: Record<string, unknown> = {};
-    for (const option of SIGNIFICANT_COMPILER_OPTIONS) {
-      if (option in options) significant[option] = options[option];
+    for (const option of engineEcmaScript ? ENGINE_COMPILER_OPTIONS : SIGNIFICANT_COMPILER_OPTIONS) {
+      if (option in options) {
+        // Equal-length path patterns are tried in declaration order.
+        significant[option] = engineEcmaScript && option === "paths" ? JSON.stringify(options[option]) : options[option];
+      }
     }
     if (Object.keys(significant).length > 0) projected.compilerOptions = significant;
   } else if (options !== undefined) {
@@ -135,11 +151,15 @@ function projectTsconfig(config: unknown): Record<string, unknown> | undefined {
   return projected;
 }
 
-function projectPackage(config: unknown): Record<string, unknown> | undefined {
+function projectPackage(config: unknown, engineEcmaScript: boolean): Record<string, unknown> | undefined {
   if (!isPlainObject(config)) return undefined;
   const projected: Record<string, unknown> = {};
-  for (const field of SIGNIFICANT_PACKAGE_FIELDS) {
-    if (field in config) projected[field] = config[field];
+  for (const field of engineEcmaScript ? ENGINE_PACKAGE_FIELDS : SIGNIFICANT_PACKAGE_FIELDS) {
+    if (field in config) {
+      // Package conditions are first-match, even in nested target objects.
+      projected[field] = engineEcmaScript && (field === "imports" || field === "exports")
+        ? JSON.stringify(config[field]) : config[field];
+    }
   }
   // A dependency's presence can change resolution; its version cannot change
   // anything this graph extracts, and versions are what actually move.

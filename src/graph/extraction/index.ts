@@ -23,19 +23,6 @@ export {
 } from "./grammars.js";
 export { getExtractor, EXTRACTORS } from "./languages/index.js";
 export { canonicalNodeIdentity, generateNodeId } from "./node-id.js";
-export {
-  buildTypeScriptExtraction,
-  canonicalCompilerIdentity,
-  captureLocations,
-  CompilerIncrementalFallback,
-  declaresGlobals,
-  discoverTypeScriptProjects,
-  generateCanonicalCompilerNodeId,
-  locationFile,
-  normalizedCompilerTokens,
-  TYPESCRIPT_COMPILER_EXTRACTOR_VERSION,
-  TYPESCRIPT_COMPILER_VERSION,
-} from "./compiler.js";
 export type {
   CompilerDiagnosticSummary,
   CompilerExtractedNode,

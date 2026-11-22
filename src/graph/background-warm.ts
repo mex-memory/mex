@@ -38,7 +38,7 @@ export class BackgroundGraph {
     (await this.warm()).collect(directory);
   }
 
-  /** Publish waiting edits, keep the cap, queue cold refreshes and due checks. */
+  /** Run the registry, which also queues cold refreshes for engine-backed edits. */
   async run(now = Date.now()): Promise<void> {
     if (this.registry?.busy) await this.registry.run();
     if (now - this.lastChecks >= 60 * 60_000) {

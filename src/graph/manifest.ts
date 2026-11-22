@@ -10,7 +10,7 @@ import {
 } from "./corpus-policy.js";
 import { graphConfigIdentity } from "./config-identity.js";
 import { DB_SCHEMA_VERSION } from "./db/database.js";
-import { engineExtractorSuffix, graphEngineLanguages } from "./engine-languages.js";
+import { engineExtractorSuffix, graphEngineHandlesEcmaScript, graphEngineLanguages } from "./engine-languages.js";
 import { grammarManifestHash } from "./extraction/grammars.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
 import { recallSource, rememberSource } from "./source-memo.js";
@@ -132,7 +132,7 @@ export function discoverGraphConfigSources(root: string): Map<string, string> {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
       ignore: graphCorpusIgnoreGlobs(root),
-    }, GRAPH_CORPUS_LIMITS.maxConfigFiles).map(toPosix);
+    }, GRAPH_CORPUS_LIMITS.maxConfigFiles, graphEngineHandlesEcmaScript(graphEngineLanguages())).map(toPosix);
   } catch (error) {
     throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]);
   }
@@ -169,8 +169,9 @@ export function discoverGraphConfigSources(root: string): Map<string, string> {
  * for anything it cannot parse or recognize.
  */
 export function configHashForSources(configSources: ReadonlyMap<string, string>): string {
+  const engineEcmaScript = graphEngineHandlesEcmaScript(graphEngineLanguages());
   return sha256(JSON.stringify([...configSources.entries()]
-    .map(([path, source]) => [path, sha256(graphConfigIdentity(path, source))])
+    .map(([path, source]) => [path, sha256(graphConfigIdentity(path, source, engineEcmaScript))])
     .sort(([left], [right]) => compareCodePoints(left!, right!))));
 }
 

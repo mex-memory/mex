@@ -157,18 +157,30 @@ function isolated(entrypoint: string, extra: Record<string, unknown> = {}): Grap
 }
 
 describe("isolated graph candidate construction", () => {
-  it.skipIf(!graphEngineBinary())("carries the Rust engine's report out of the worker", async () => {
+  it.skipIf(!graphEngineBinary())("publishes a mixed Rust engine stage job through the isolated worker", async () => {
     const path = root();
     writeFileSync(join(path, "caller.py"), "from service import service\n\ndef caller():\n    return service()\n");
+    writeFileSync(join(path, "service.ts"), "export function invoke(): number { return 2; }\n");
+    writeFileSync(join(path, "caller.jsx"), 'import { invoke } from "./service.js";\nexport function caller() { return invoke(); }\n');
     const saved = [process.env[GRAPH_ENGINE_ENV], process.env[GRAPH_ENGINE_LANGUAGES_ENV]] as const;
     // The bundled worker runs outside the checkout, so it is pointed at the engine.
     process.env[GRAPH_ENGINE_ENV] = graphEngineBinary()!;
-    process.env[GRAPH_ENGINE_LANGUAGES_ENV] = "python";
+    process.env[GRAPH_ENGINE_LANGUAGES_ENV] = "python,typescript,javascript";
     try {
       const built = await rebuildGraph(path, isolated(realEntry));
       expect(built.state).toBe("succeeded");
       expect(built.status.status).toBe("fresh");
-      expect(built.engine).toMatchObject({ languages: ["python"], files: 2, fallbackFiles: 0 });
+      expect(built.engine).toMatchObject({ languages: ["javascript", "python", "typescript"], files: 4, fallbackFiles: 0 });
+      expect(built.typescript).toBeUndefined();
+      const db = openSqlite(currentGraphPath(path), { readOnly: true });
+      try {
+        expect(db.prepare(`
+          SELECT e.resolution_method FROM edges e JOIN nodes s ON s.id = e.source
+          WHERE s.file_path = 'caller.jsx' AND e.kind = 'calls'
+        `).all()).toEqual([{ resolution_method: "engine-ecmascript" }]);
+      } finally {
+        db.close();
+      }
     } finally {
       for (const [key, value] of [[GRAPH_ENGINE_ENV, saved[0]], [GRAPH_ENGINE_LANGUAGES_ENV, saved[1]]] as const) {
         if (value === undefined) delete process.env[key];

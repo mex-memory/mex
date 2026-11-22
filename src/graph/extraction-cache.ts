@@ -22,9 +22,8 @@
 
 import { createHash } from "node:crypto";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
-import ts from "typescript";
 import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
-import { captureLocations, declaresGlobals, locationFile, type CompilerFileCapture } from "./extraction/index.js";
+import type { CompilerFileCapture } from "./extraction/compiler.js";
 import type { GraphEdge, GraphNode, Language } from "./types.js";
 
 /** Bump whenever a cached payload's shape or meaning changes. */
@@ -183,6 +182,7 @@ export function planIncrementalExtraction(
   current: ReadonlyMap<string, string>,
   isCompilerFile: (path: string) => boolean,
   readSource: (path: string) => string,
+  compiler?: Pick<typeof import("./extraction/compiler.js"), "captureLocations" | "declaresGlobalsWithoutBinding" | "locationFile">,
 ): IncrementalExtractionPlan | { reason: string } {
   const captures = new Map<string, CompilerFileCapture>();
   const trees = new Map<string, CachedTreeFile>();
@@ -214,7 +214,7 @@ export function planIncrementalExtraction(
     if (decoded.kind === "compiler" && decoded.capture.globalScope) return { reason: "a global declaration changed" };
   }
   for (const path of changed) {
-    if (isCompilerFile(path) && declaresGlobalsWithoutBinding(path, readSource(path))) {
+    if (isCompilerFile(path) && compiler?.declaresGlobalsWithoutBinding(path, readSource(path))) {
       return { reason: "a global declaration changed" };
     }
   }
@@ -241,9 +241,9 @@ export function planIncrementalExtraction(
   const identified = new Map<string, Set<string>>();
   for (const path of modified) identified.set(path, new Set(captures.get(path)!.locations.map(([location]) => location)));
   for (const [path, capture] of captures) {
-    if (affected.has(path)) continue;
-    for (const location of captureLocations(capture)) {
-      const file = locationFile(location);
+    if (affected.has(path) || !compiler) continue;
+    for (const location of compiler.captureLocations(capture)) {
+      const file = compiler.locationFile(location);
       if (file === null) continue;
       if (deletedSet.has(file) || (identified.has(file) && !identified.get(file)!.has(location))) {
         affected.add(path);
@@ -256,20 +256,4 @@ export function planIncrementalExtraction(
     return { reason: "the affected set exceeds 70% of compiler files" };
   }
   return { captures, affected, gated, modified, importers, trees };
-}
-
-/**
- * The parser-only check for a changed compiler file: a declaration file, a
- * global or module augmentation, or a TypeScript script. A JavaScript file
- * without ES module syntax may be a CommonJS module or a script, which only
- * binding tells apart; the compiler checks those itself through each
- * program's global input state.
- */
-function declaresGlobalsWithoutBinding(path: string, source: string): boolean {
-  if (/\.d\.[cm]?ts$/iu.test(path)) return true;
-  const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, false);
-  if (declaresGlobals(sourceFile)) return true;
-  const isJavaScript = /\.[cm]?jsx?$/iu.test(path);
-  const esModule = (sourceFile as ts.SourceFile & { externalModuleIndicator?: unknown }).externalModuleIndicator !== undefined;
-  return !isJavaScript && !esModule;
 }

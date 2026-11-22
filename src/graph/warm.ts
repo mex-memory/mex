@@ -20,11 +20,13 @@ import { join, resolve } from "node:path";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
 import { GraphStore, type FileRecord } from "./db/store.js";
 import { warmStaging, type WarmResolutionCorpus, type WarmStagedFile } from "./engine-impl.js";
+import { engineWarmDecline } from "./engine-languages.js";
 import { decodeCachedExtraction, encodeCachedExtraction } from "./extraction-cache.js";
 import {
   captureLocations,
   finishWarmCapture,
   movedLocations,
+  normalizedCompilerTokens,
   remapCapture,
   restoreWarmCapture,
   warmCompilerContext,
@@ -146,6 +148,8 @@ export class WarmCheckout {
 
   /** Make a checkout warm: materialize its graph privately and read the lookups. */
   static open(rootDir: string): WarmCheckout {
+    const configured = engineWarmDecline();
+    if (configured) throw new Error(configured);
     const root = resolve(rootDir);
     const location = graphLocation(root);
     const pointer = readGraphPointer(location);
@@ -157,6 +161,8 @@ export class WarmCheckout {
       db.exec("PRAGMA journal_mode = DELETE; PRAGMA synchronous = OFF; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -16384; PRAGMA foreign_keys = OFF;");
       const checkout = new WarmCheckout(root, location, pointer, working, db);
       if (pointer.overlay) checkout.applyOverlay(join(location.directory, pointer.overlay));
+      const stored = engineWarmDecline(checkout.store.getMetadata("extractor_version") ?? undefined);
+      if (stored) throw new Error(stored);
       db.exec("PRAGMA foreign_keys = ON;");
       checkout.readLookups();
       return checkout;
@@ -301,6 +307,8 @@ export class WarmCheckout {
       ({ status, ...(reason ? { reason } : {}), files, ms: Math.round((performance.now() - started) * 10) / 10, phases });
     try {
       if (this.closed || this.dirty) throw new Cold("the warm checkout must be opened again");
+      const configured = engineWarmDecline();
+      if (configured) throw new Cold(configured);
       const pointer = readGraphPointer(this.location);
       if (!pointer || pointer.base !== this.pointer.base || pointer.overlay !== this.pointer.overlay) throw new Cold("the graph was published by another writer");
       const relative = [...new Set(paths.map((path) => toPosix(path).startsWith(this.rootPrefix) ? toPosix(path).slice(this.rootPrefix.length) : toPosix(path)))].sort();
@@ -480,7 +488,7 @@ export class WarmCheckout {
           for (const entry of stored) sketches.set(entry.nodeId, { minhash: entry.fingerprint.minhash, tokenCount: entry.fingerprint.tokenCount });
           records.set(path, this.store.getFileRecord(path)!);
         }
-        const fingerprints = warmStaging.fingerprints(staged, spool, { fingerprints: sketches, records });
+        const fingerprints = warmStaging.fingerprints(staged, spool, { fingerprints: sketches, records }, normalizedCompilerTokens);
         const neighbors = this.neighbourhoods(staged, touched);
         for (const entry of fingerprints) entry.fingerprint = { ...entry.fingerprint, neighbors: neighbors(entry.nodeId) };
         const grouped = groupRowsByFile(staged, fingerprints);

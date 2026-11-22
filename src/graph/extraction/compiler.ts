@@ -24,15 +24,9 @@ import { getHeapStatistics } from "node:v8";
 import ts from "typescript";
 import { SpooledCaptures, type CaptureMap } from "./capture-spool.js";
 import { flushGraphPhaseTimings, phaseTimingsEnabled, recordGraphMemory, recordGraphPhase, timeGraphPhase } from "../phase-timing.js";
+import { TYPESCRIPT_COMPILER_EXTRACTOR_VERSION } from "./compiler-version.js";
 
-// v3 (#240): checker-rendered signatures no longer embed absolute module paths.
-// v4 (#209): checker-rendered unions list their members in one canonical order.
-// v6: property-assigned function values retain their authored target name.
-// v7 (#281): out-of-scope aliases render by name, and calls carry no rendered
-// signature evidence.
-// v8: TypeScript 7.1's API builds the graph by default; node signatures are
-// display text with ordinary truncation, and return types are as written.
-export const TYPESCRIPT_COMPILER_EXTRACTOR_VERSION = "typescript-api-v8";
+export { TYPESCRIPT_COMPILER_EXTRACTOR_VERSION } from "./compiler-version.js";
 export const TYPESCRIPT_COMPILER_VERSION = ts.version;
 
 export type CompilerSourceLanguage =
@@ -347,6 +341,8 @@ export interface CompilerExtractionOptions {
    * @internal
    */
   stagedInputs?: readonly CompilerStagedInput[];
+  /** Corpus sources owned by the Rust engine, absent even from compiler import probes. @internal */
+  excludedSourcePaths?: readonly string[];
   /**
    * Secure reader for repository inputs discovered indirectly (for example an
    * extended tsconfig). Results are cached for the complete extraction.
@@ -1653,6 +1649,17 @@ export function declaresGlobals(sourceFile: ts.SourceFile): boolean {
       && (ts.isStringLiteral(statement.name) || (statement.flags & ts.NodeFlags.GlobalAugmentation) !== 0)));
 }
 
+/** Check whether a changed file needs full extraction before opening a program. */
+export function declaresGlobalsWithoutBinding(path: string, source: string): boolean {
+  if (/\.d\.[cm]?ts$/iu.test(path)) return true;
+  const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, false);
+  if (declaresGlobals(sourceFile)) return true;
+  // Only binding can distinguish a CommonJS module from a JavaScript script.
+  const isJavaScript = /\.[cm]?jsx?$/iu.test(path);
+  const esModule = (sourceFile as ts.SourceFile & { externalModuleIndicator?: unknown }).externalModuleIndicator !== undefined;
+  return !isJavaScript && !esModule;
+}
+
 /**
  * A digest of every input a program's files can see without importing it:
  * every global-scope corpus file and every non-corpus file (libraries,
@@ -2052,6 +2059,7 @@ type LibraryResolver = (
  */
 export class CompilerInputLedger {
   private readonly root: string;
+  private readonly excludedSources: ReadonlySet<string>;
   private readonly staged = new Map<string, string>();
   private readonly cache = new Map<string, string | undefined>();
   private readonly observed = new Map<string, string | null>();
@@ -2087,6 +2095,8 @@ export class CompilerInputLedger {
 
   constructor(root: string, private readonly options: CompilerExtractionOptions) {
     this.root = resolve(root);
+    this.excludedSources = new Set(options.excludedSourcePaths?.map((path) =>
+      compilerPathKey(absoluteCandidate(this.root, path))));
     for (const input of options.stagedInputs ?? []) {
       const absolute = absoluteCandidate(this.root, input.filePath);
       if (!withinRoot(this.root, absolute)) {
@@ -2160,6 +2170,7 @@ export class CompilerInputLedger {
 
   readFile(fileName: string): string | undefined {
     const absolute = absoluteCandidate(this.root, fileName);
+    if (this.excludedSources.size > 0 && this.excludedSources.has(compilerPathKey(absolute))) return undefined;
     const staged = this.staged.get(absolute);
     if (staged !== undefined) {
       this.observe(absolute, staged);
@@ -2283,6 +2294,7 @@ export class CompilerInputLedger {
 
   private probeFile(fileName: string): boolean {
     const absolute = absoluteCandidate(this.root, fileName);
+    if (this.excludedSources.size > 0 && this.excludedSources.has(compilerPathKey(absolute))) return false;
     if (this.staged.has(absolute)) return true;
     if (!withinRoot(this.root, absolute)) {
       return isAllowedCompilerDependency(absolute) && ts.sys.fileExists(fileName);
@@ -4233,6 +4245,10 @@ function normalizedAbsolute(value: string): string {
 
 function absoluteCandidate(root: string, file: string): string {
   return normalizedAbsolute(isAbsolute(file) ? file : resolve(root, file));
+}
+
+function compilerPathKey(absolute: string): string {
+  return ts.sys.useCaseSensitiveFileNames ? absolute : absolute.toLowerCase();
 }
 
 function relativePath(root: string, file: string): string {

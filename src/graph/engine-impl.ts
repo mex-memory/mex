@@ -31,7 +31,8 @@ import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
   BuildResult, DeclinedCompilerInput, GraphEngine, GraphEngineReport, GraphPublicationReport, GraphTypeScriptReport, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
-import { engineExtractorSuffix, graphEngineLanguages } from "./engine-languages.js";
+import { engineExtractorSuffix, graphEngineHandlesEcmaScript, graphEngineLanguageFamily, graphEngineLanguages } from "./engine-languages.js";
+import { TYPESCRIPT_COMPILER_EXTRACTOR_VERSION } from "./extraction/compiler-version.js";
 import type { EngineStagedFile } from "./native-engine.js";
 import type { GraphCompilers } from "./extraction/compiler-policy.js";
 import {
@@ -58,17 +59,13 @@ import {
 } from "./db/store.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 import {
-  buildTypeScriptExtraction,
   canonicalNodeIdentity,
-  CompilerIncrementalFallback,
   detectLanguage,
   extractFile,
   grammarManifestHash,
   isSupportedSourceFile,
   loadGrammars,
   normalizedAstTokens,
-  normalizedCompilerTokens,
-  TYPESCRIPT_COMPILER_EXTRACTOR_VERSION,
   type CompilerExtractedNode,
   type CompilerExtractionOptions,
   type CompilerIncrementalInput,
@@ -1052,12 +1049,22 @@ async function stageCorpus(
       }]);
     }
 
-    const compilerFiles = discovered.filter((file) =>
-      COMPILER_LANGUAGES.has(detectLanguage(file.relPath)));
+    internal.afterSemanticInputsStaged?.();
+    const engineLanguages = graphEngineLanguages();
+    const engine = engineLanguages.length > 0
+      ? await timeGraphPhaseAsync("stage.engine", () => stageWithGraphEngine(
+        root, discovered, engineLanguages, configSources, internal.sourceSpoolDirectory))
+      : undefined;
+    const isCompilerFile = (path: string): boolean =>
+      COMPILER_LANGUAGES.has(detectLanguage(path)) && !engine?.files.has(path);
+    const compilerFiles = discovered.filter((file) => isCompilerFile(file.relPath));
     const compilerPaths = compilerFiles.map((file) => file.relPath);
-    const compilerInputs: CompilerStagedInput[] = [...configSources.entries()]
-      .map(([filePath, source]) => ({ filePath, source }));
-    timeGraphPhase("stage.compilerInputs", () => {
+    const excludedSourcePaths = compilerFiles.length > 0
+      ? [...(engine?.files.keys() ?? [])].filter((path) => COMPILER_LANGUAGES.has(detectLanguage(path)))
+      : [];
+    const compilerInputs: CompilerStagedInput[] = [];
+    if (compilerFiles.length > 0) timeGraphPhase("stage.compilerInputs", () => {
+      for (const [filePath, source] of configSources) compilerInputs.push({ filePath, source });
       let compilerSourceBytes = 0;
       for (const file of compilerFiles) {
         const source = sourceSpool.read(file);
@@ -1073,7 +1080,6 @@ async function stageCorpus(
       }
       compilerInputs.sort((left, right) => compareCodePoints(left.filePath, right.filePath));
     });
-    internal.afterSemanticInputsStaged?.();
     const reportParsed = (completed: number): void => internal.onBuildProgress?.({
       phase: "parse",
       completed,
@@ -1083,6 +1089,7 @@ async function stageCorpus(
 
     // The compiler: TypeScript 7.1's API (tsrs, falling back to tsgo, then
     // 5.9 per project) unless the caller chose one.
+    const compilerExtractor = compilerFiles.length > 0 ? await import("./extraction/compiler.js") : undefined;
     let compilers: GraphCompilers | undefined;
     // A caller that replaces 5.9 program creation (a test seam) keeps 5.9.
     if (!compilerExtraction?.selectCompiler && !compilerExtraction?.programFactory && compilerFiles.length > 0) {
@@ -1093,19 +1100,21 @@ async function stageCorpus(
 
     // Incremental extraction (issue #209): plan which files to extract again,
     // or record why the whole corpus is extracted.
+    const routing = excludedSourcePaths.length === 0 ? "" : `\n${sha256(JSON.stringify(excludedSourcePaths.sort(compareCodePoints)))}`;
     const identity = extractionCacheIdentity(
-      compilers ? `${manifest.manifestHash}\n${compilers.identity}` : manifest.manifestHash,
+      manifest.manifestHash + (compilers ? `\n${compilers.identity}` : "") + routing,
       configSources,
     );
     const discoveredByPath = new Map(discovered.map((file) => [file.relPath, file]));
-    const isCompilerFile = (path: string): boolean => COMPILER_LANGUAGES.has(detectLanguage(path));
     let plan: IncrementalExtractionPlan | { reason: string } = "reason" in reuse ? reuse
       : reuse.identity !== identity ? { reason: "the configuration or the engine changed" }
       : timeGraphPhase("stage.plan", () => planIncrementalExtraction(
         reuse.stored,
-        new Map(discovered.map((file) => [file.relPath, file.contentHash])),
+        new Map(discovered.filter((file) => !engine?.files.has(file.relPath))
+          .map((file) => [file.relPath, file.contentHash])),
         isCompilerFile,
         (path) => sourceSpool.read(discoveredByPath.get(path)!),
+        compilerExtractor,
       ));
 
     // Cache entries for the next refresh. Compiler captures arrive as the
@@ -1130,7 +1139,7 @@ async function stageCorpus(
         setCacheEntry(capture.filePath, contentHash, encodeCachedExtraction({ kind: "compiler", capture }));
       }
     };
-    let compiler: CompilerExtractionResult;
+    let compiler: CompilerExtractionResult | undefined;
     // A full extraction reuses nothing, so it must not carry the previous
     // payloads either: that would peak above a plain build. Emptying the map
     // also makes every cache row of the new snapshot a changed row, as in a build.
@@ -1138,16 +1147,18 @@ async function stageCorpus(
       if (!("reason" in reuse)) reuse.stored.clear();
       internal.beforeFullExtraction?.("reason" in reuse ? 0 : reuse.stored.size);
     };
-    const extractCompilerFiles = (incremental?: CompilerIncrementalInput): CompilerExtractionResult => {
+    const extractCompilerFiles = (incremental?: CompilerIncrementalInput): CompilerExtractionResult | undefined => {
+      if (!compilerExtractor) return undefined;
       const semanticInputLedger = createGraphSemanticInputLedger();
       cacheEntries.clear();
-      return timeGraphPhase("compiler.total", () => buildTypeScriptExtraction(root, compilerPaths, {
+      return timeGraphPhase("compiler.total", () => compilerExtractor.buildTypeScriptExtraction(root, compilerPaths, {
         ...compilers?.options,
         ...compilerExtraction,
         ...(incremental ? { incremental } : {}),
         onCapture: takeCapture,
         ...(spoolCaptures(compilerPaths.length) ? { captureSpoolDirectory: internal.sourceSpoolDirectory ?? tmpdir() } : {}),
         stagedInputs: compilerInputs,
+        excludedSourcePaths,
         readProjectFile: (absolutePath) => {
           const source = readCompilerProjectFile(root, absolutePath);
           const relPath = toPosix(relative(resolve(root), resolve(absolutePath)));
@@ -1182,7 +1193,7 @@ async function stageCorpus(
             projectInputs: (reuse as ExtractionReuse).projectInputs,
           });
         } catch (error) {
-          if (!(error instanceof CompilerIncrementalFallback)) throw error;
+          if (!compilerExtractor || !(error instanceof compilerExtractor.CompilerIncrementalFallback)) throw error;
           plan = { reason: error.reason };
           releasePreviousExtraction();
           compiler = extractCompilerFiles();
@@ -1197,27 +1208,21 @@ async function stageCorpus(
       compilerInputs.length = 0;
     }
     internal.afterCompilerExtraction?.();
-    const stagedInputHashes = new Map<string, string>([
-      ...[...configSources.entries()].map(([path, source]) => [path, sha256(source)] as const),
-      ...discovered.map((file) => [file.relPath, file.contentHash] as const),
-    ]);
-    timeGraphPhase("stage.validateCompilerInputs", () =>
-      validateCompilerInputs(discovered, compiler, stagedInputHashes, root));
-    const compilerByPath = new Map(compiler.files.map((file) => [file.filePath, file]));
-    const treeLanguages = [...new Set(discovered.map((file) => detectLanguage(file.relPath))
-      .filter((language) => !COMPILER_LANGUAGES.has(language)))];
-    // Compiler-language files a crashing project could not stage fall back to
-    // tree-sitter, so their grammars must be present too.
-    const fallbackLanguages = [...new Set(discovered
-      .filter((file) => COMPILER_LANGUAGES.has(detectLanguage(file.relPath))
-        && !compilerByPath.has(file.relPath))
+    if (compiler) {
+      const stagedInputHashes = new Map<string, string>([
+        ...[...configSources.entries()].map(([path, source]) => [path, sha256(source)] as const),
+        ...discovered.map((file) => [file.relPath, file.contentHash] as const),
+      ]);
+      timeGraphPhase("stage.validateCompilerInputs", () =>
+        validateCompilerInputs(discovered, compiler, stagedInputHashes, root));
+    }
+    const compilerByPath = new Map(compiler?.files.map((file) => [file.filePath, file]));
+    // Load grammars for the tree route, including compiler files whose
+    // project could not stage them.
+    const treeLanguages = [...new Set(discovered
+      .filter((file) => !engine?.files.has(file.relPath) && !compilerByPath.has(file.relPath))
       .map((file) => detectLanguage(file.relPath)))];
-    await timeGraphPhaseAsync("stage.loadGrammars", () => loadGrammars([...treeLanguages, ...fallbackLanguages]));
-    const engineLanguages = graphEngineLanguages();
-    const engine = engineLanguages.length > 0
-      ? await timeGraphPhaseAsync("stage.engine", () => stageWithGraphEngine(
-        root, discovered, engineLanguages, internal.sourceSpoolDirectory))
-      : undefined;
+    await timeGraphPhaseAsync("stage.loadGrammars", () => loadGrammars(treeLanguages));
 
     // Compiler cache entries were encoded as captures arrived, before
     // resolution adds framework nodes and hydrates bindings in place.
@@ -1230,10 +1235,10 @@ async function stageCorpus(
     }
     const cachedTrees = "reason" in plan ? undefined : plan.trees;
 
-    let parsed = compiler.files.length;
+    let parsed = compilerByPath.size;
     let treesExtracted = 0;
     // Each compiler file is released as soon as its staged shape exists.
-    compiler.files.length = 0;
+    if (compiler) compiler.files.length = 0;
     const files = discovered.map((file) => {
       const compilerFile = compilerByPath.get(file.relPath);
       if (compilerFile) {
@@ -1245,13 +1250,7 @@ async function stageCorpus(
       const engineFile = engine?.files.get(file.relPath);
       if (engineFile) {
         engine!.files.delete(file.relPath);
-        // The engine read the file itself; a file that changed since
-        // discovery is extracted from the spooled bytes as today.
-        if (engineFile.contentHash === file.contentHash) {
-          engine!.report.files++;
-          return stageEngineFile(file, engineFile);
-        }
-        engine!.report.fallbackFiles++;
+        return timeGraphPhase("stage.engineFiles", () => stageEngineFile(file, engineFile));
       }
       const cached = cachedTrees?.get(file.relPath);
       if (cached) {
@@ -1272,8 +1271,7 @@ async function stageCorpus(
     if (engine && engine.report.fallbackFiles > 0) demoteDanglingEngineEdges(files);
     // Release project/file extraction arrays after their durable staged shape
     // has been copied. Per-node compiler spans survive only until fingerprinting.
-    compiler.files.length = 0;
-    compiler.projects.length = 0;
+    if (compiler) compiler.projects.length = 0;
     if (!("reason" in plan)) plan.trees.clear();
     storedExtraction.clear();
     const gc = (globalThis as { gc?: () => void }).gc;
@@ -1292,10 +1290,11 @@ async function stageCorpus(
       files,
       sourceSpool,
       "reason" in reuse ? undefined : reuse,
+      compilerExtractor?.normalizedCompilerTokens,
     ));
     recordGraphMemory("stage.afterFingerprints");
     const coveredPaths = new Set([...discovered.map((file) => file.relPath), ...configSources.keys()]);
-    const semanticInputs = compiler.semanticInputs.filter((input) => !coveredPaths.has(input.filePath));
+    const semanticInputs = compiler?.semanticInputs.filter((input) => !coveredPaths.has(input.filePath)) ?? [];
     if (semanticInputs.length > GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS) {
       throw new GraphSourceStagingError([{
         filePath: ".",
@@ -1305,7 +1304,7 @@ async function stageCorpus(
     }
     return {
       files,
-      ...(compilerFiles.length > 0 ? {
+      ...(compiler ? {
         typescript: {
           compiler: compilers?.description ?? `custom (${Object.values(compiler.projectCompilers)[0] ?? compiler.compilerVersion})`,
           projects: { ...compiler.projectCompilers },
@@ -1315,10 +1314,10 @@ async function stageCorpus(
       } : {}),
       ...(engine ? { engine: engine.report } : {}),
       skipped,
-      declinedInputs: [...compiler.declinedInputs],
+      declinedInputs: [...(compiler?.declinedInputs ?? [])],
       compiler: {
-        compilerVersion: compiler.compilerVersion,
-        semanticInputs: [...compiler.semanticInputs],
+        compilerVersion: compiler?.compilerVersion ?? `typescript-${manifest.inputs.compiler}`,
+        semanticInputs: [...(compiler?.semanticInputs ?? [])],
       },
       semanticInputs,
       fingerprints,
@@ -1327,11 +1326,11 @@ async function stageCorpus(
       extraction: {
         mode: "reason" in plan ? "full" : "incremental",
         ...("reason" in plan ? { fallbackReason: plan.reason } : {}),
-        filesReextracted: compiler.recaptured + treesExtracted,
+        filesReextracted: (compiler?.recaptured ?? 0) + treesExtracted + (engine?.report.files ?? 0),
         cache: {
           identity,
-          projectStates: compiler.projectStates,
-          projectInputs: compiler.projectInputs,
+          projectStates: compiler?.projectStates ?? {},
+          projectInputs: compiler?.projectInputs ?? {},
           entries: discovered.flatMap((file) => cacheEntries.get(file.relPath) ?? []),
         },
       },
@@ -1610,6 +1609,7 @@ function stageFingerprints(
   staged: readonly StagedFile[],
   sourceSpool: GraphSourceSpool,
   stored?: Pick<ExtractionReuse, "fingerprints" | "records">,
+  compilerTokens?: typeof import("./extraction/compiler.js").normalizedCompilerTokens,
 ): Array<{ nodeId: string; fingerprint: Fingerprint }> {
   const fingerprintBuilder = createFingerprintBuilder();
   const pending: Array<{ nodeId: string; fingerprint: Fingerprint }> = [];
@@ -1666,7 +1666,7 @@ function stageFingerprints(
       const nodeIds = new Set(unsketched.map((node) => node.id));
       const compilerNodes = file.compilerNodes?.filter((node) => nodeIds.has(node.id));
       tokens = compilerNodes && compilerNodes.length > 0
-        ? normalizedCompilerTokens(source, compilerNodes)
+        ? compilerTokens!(source, compilerNodes)
         : normalizedAstTokens(file.record.path, source, unsketched);
     }
     for (const node of nodes) {
@@ -1837,11 +1837,16 @@ async function stageWithGraphEngine(
   root: string,
   discovered: readonly DiscoveredFile[],
   languages: string[],
+  configs: ReadonlyMap<string, string>,
   requestDir: string | undefined,
 ): Promise<EngineStaging | undefined> {
-  const paths = discovered.filter((file) => file.relPath.endsWith(".py")
-    && languages.includes(detectLanguage(file.relPath)));
+  const paths = discovered.filter((file) => {
+    const language = detectLanguage(file.relPath);
+    return languages.includes(graphEngineLanguageFamily(language))
+      && (language !== "python" || file.relPath.endsWith(".py"));
+  });
   if (paths.length === 0) return undefined;
+  const requested = new Map(paths.map((file) => [file.relPath, file]));
   const report: GraphEngineReport = { languages, files: 0, fallbackFiles: 0 };
   const files = new Map<string, EngineStagedFile>();
   const fellBack = (reason: string): EngineStaging => {
@@ -1853,23 +1858,46 @@ async function stageWithGraphEngine(
   if (!binary) return fellBack("no mex-graph binary was found");
   const version = graphEngineVersion(binary);
   if ("problem" in version) return fellBack(version.problem);
-  const run = await runGraphEngine(binary, {
-    mode: "stage",
-    root,
-    files: paths.map((file) => ({ path: file.relPath, size: file.size })),
-    languages,
-    limits: ENGINE_STAGE_LIMITS,
-  }, {
-    requestDir,
-    onEvent: (event) => { if (event.type === "staged") files.set(event.path, event); },
-  });
+  const enabled = languages.flatMap((language) =>
+    language === "typescript" ? [language, "tsx"] : language === "javascript" ? [language, "jsx"] : [language]);
+  const seen = new Set<string>();
+  let run: Awaited<ReturnType<typeof runGraphEngine>>;
+  try {
+    run = await runGraphEngine(binary, {
+      mode: "stage",
+      root,
+      files: paths.map((file) => ({ path: file.relPath, size: file.size })),
+      ...(graphEngineHandlesEcmaScript(languages) ? {
+        configs: [...configs].map(([path, source]) => ({ path, source })),
+      } : {}),
+      languages: enabled,
+      limits: ENGINE_STAGE_LIMITS,
+    }, {
+      requestDir,
+      onEvent: (event) => {
+        if (event.type !== "staged" && event.type !== "file") return;
+        const source = requested.get(event.path);
+        if (!source || seen.has(event.path)) return;
+        seen.add(event.path);
+        // The engine read the path itself. A read that no longer matches
+        // discovery falls back to the exact bytes in Node's source spool.
+        if (event.type === "staged" && event.contentHash === source.contentHash) files.set(event.path, event);
+      },
+    });
+  } catch {
+    return fellBack("the engine job could not be started");
+  }
   if (run.exitCode !== 0 || !run.result) {
     // Codes only: the report crosses the candidate boundary, where no path may.
     return fellBack(`the engine stopped (${run.error?.code ?? `exit ${run.exitCode ?? run.signal}`})`);
   }
+  if (seen.size !== paths.length) return fellBack("the engine did not report every requested file");
   return {
     files,
-    report: { ...report, wallMs: run.result.usage.wallMs, peakRssMb: run.result.usage.peakRssMb },
+    report: {
+      languages, files: files.size, fallbackFiles: paths.length - files.size,
+      wallMs: run.result.usage.wallMs, peakRssMb: run.result.usage.peakRssMb,
+    },
   };
 }
 
@@ -1879,15 +1907,17 @@ function stageEngineFile(discovered: DiscoveredFile, staged: EngineStagedFile): 
   const sketches = new Map<string, { minhash: number[]; tokenCount: number }>();
   const nodes = staged.nodes.map(({ minhash, tokenCount, ...node }) => {
     if (minhash && tokenCount !== undefined) sketches.set(node.id, { minhash, tokenCount });
-    return { ...node, updatedAt: now } as unknown as GraphNode;
+    return { ...node, updatedAt: now };
   });
   const health = staged.health;
+  const family = graphEngineLanguageFamily(staged.language);
+  const extractor = family === "python" ? TREE_SITTER_EXTRACTOR_VERSION : TYPESCRIPT_COMPILER_EXTRACTOR_VERSION;
   return {
     discovered,
     record: {
       path: discovered.relPath,
       contentHash: discovered.contentHash,
-      language: staged.language as Language,
+      language: staged.language,
       size: discovered.size,
       modifiedAt: discovered.modifiedAt,
       indexedAt: now,
@@ -1897,12 +1927,12 @@ function stageEngineFile(discovered: DiscoveredFile, staged: EngineStagedFile): 
       diagnosticCount: health.diagnosticCount,
       missingCount: health.missingCount,
       errorCoverage: health.errorCoverage,
-      extractorVersion: TREE_SITTER_EXTRACTOR_VERSION + engineExtractorSuffix([staged.language]),
+      extractorVersion: extractor + engineExtractorSuffix([family]),
     },
     nodes,
-    edges: staged.edges as unknown as GraphEdge[],
-    references: staged.unresolved as unknown as UnresolvedRefRecord[],
-    imports: [],
+    edges: staged.edges,
+    references: staged.unresolved,
+    imports: staged.imports ?? [],
     sketches,
   };
 }
@@ -1918,12 +1948,15 @@ function demoteDanglingEngineEdges(files: StagedFile[]): void {
     file.edges = file.edges.filter((edge) => {
       if (ids.has(edge.target)) return true;
       file.references.push({
-        fromNodeId: edge.source, referenceName: edge.target, referenceKind: edge.kind as ReferenceKind,
+        fromNodeId: edge.source, referenceName: String(edge.metadata?.targetName ?? edge.target), referenceKind: edge.kind,
         filePath: file.record.path, language: file.record.language, line: edge.line, column: edge.column,
-        status: "unresolved", resolver: "engine-python", metadata: { reason: "target_changed_during_build" },
+        status: "unresolved", resolver: edge.resolutionMethod, metadata: { reason: "target_changed_during_build" },
       });
       return false;
     });
+    for (const binding of file.imports) {
+      if (binding.targetId && !ids.has(binding.targetId)) binding.targetId = undefined;
+    }
   }
 }
 
@@ -2976,8 +3009,7 @@ export const warmStaging = {
     stageCompilerFile(discovered, source, compilerFile),
   resolve: (root: string, files: StagedFile[], configSources: ReadonlyMap<string, string>, spool: GraphSourceSpool, corpus: WarmResolutionCorpus): void =>
     stageFrameworkAndFallbackResolution(root, files, configSources, spool, corpus),
-  fingerprints: (files: readonly StagedFile[], spool: GraphSourceSpool, stored?: Pick<ExtractionReuse, "fingerprints" | "records">) =>
-    stageFingerprints(files, spool, stored),
+  fingerprints: stageFingerprints,
   spool: (directory?: string): GraphSourceSpool => new GraphSourceSpool(directory),
   isCompilerPath: (path: string): boolean => COMPILER_LANGUAGES.has(detectLanguage(path)),
   /** Project files as a build's compiler reads them: contained, and absent over the per-file bound. */

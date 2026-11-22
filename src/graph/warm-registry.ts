@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { childProcessUsage, enableCompilerServerProbes } from "./process-stats.js";
 import { GRAPH_SERVER_CAP_MB } from "./sizing.js";
 import { readGraphState } from "./jobs.js";
+import { engineWarmDecline } from "./engine-languages.js";
 import type { WarmCheckout, WarmEditResult } from "./warm.js";
 
 export interface WarmRegistrySettings {
@@ -143,6 +144,13 @@ export class WarmRegistry {
 
   private async apply(root: string, projectId: string, paths: string[]): Promise<void> {
     const now = this.now();
+    const configured = engineWarmDecline();
+    if (configured) {
+      this.close(root, "cold");
+      this.host.log?.(`warm: ${root} stays cold: ${configured}`);
+      this.wait(root, projectId, now);
+      return;
+    }
     let entry = this.warm.get(root);
     if (!entry) {
       // A repository whose last full-rebuild check differed stays cold.

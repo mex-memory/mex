@@ -121,7 +121,7 @@ function printEngineReport(report: GraphRefreshResult["engine"]): void {
     return;
   }
   const usage = report.wallMs === undefined ? "" : ` in ${report.wallMs}ms, peak ${report.peakRssMb} MiB`;
-  const fallback = report.fallbackFiles > 0 ? `; ${report.fallbackFiles} changed during the build and were extracted as today` : "";
+  const fallback = report.fallbackFiles > 0 ? `; ${report.fallbackFiles} fell back to MEX's captured source` : "";
   console.log(`Rust graph engine built ${report.files} ${languages} file(s)${usage}${fallback}.`);
 }
 

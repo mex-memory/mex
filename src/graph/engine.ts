@@ -58,7 +58,7 @@ export interface GraphEngineReport {
   languages: string[];
   /** Files whose rows came from the engine. */
   files: number;
-  /** Files today's extractors built instead, because they changed while the engine read them. */
+  /** Files today's extractors built instead, because the engine did not return the discovered bytes. */
   fallbackFiles: number;
   /** Why today's extractors built every file instead, when they did. */
   fellBack?: string;
