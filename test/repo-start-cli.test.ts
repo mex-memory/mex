@@ -26,8 +26,8 @@ function fixture() {
   const exclude = join(root, ".git", "info", "exclude");
   return {
     base, root, env, exclude, home: join(base, ".mex"),
-    run: (args: string[] = [], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) =>
-      spawnSync(process.execPath, [cli, ...args], { cwd: options.cwd ?? root, env: { ...env, ...options.env }, encoding: "utf8", timeout: 20_000 }),
+    run: (args: string[] = [], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number } = {}) =>
+      spawnSync(process.execPath, [cli, ...args], { cwd: options.cwd ?? root, env: { ...env, ...options.env }, encoding: "utf8", timeout: options.timeout ?? 20_000 }),
     status: (cwd = root) => git(cwd, "status", "--porcelain", "--untracked-files=all"),
   };
 }
@@ -146,17 +146,18 @@ describe("bare mex in a repository", () => {
     expect(first.stdout).not.toContain("Done in");
     const projects = join(f.home, "projects");
     const facts = () => join(projects, readdirSync(projects)[0]!, "code-facts.json");
-    const killed = f.run(["jobs", "run"], { env: { [KILL_AT_VARIABLE]: "code-facts" } });
+    // `jobs run` also builds the code map setup queued after code facts, so it gets longer.
+    const killed = f.run(["jobs", "run"], { env: { [KILL_AT_VARIABLE]: "code-facts" }, timeout: 90_000 });
     expectKilled(killed);
     expect(existsSync(facts())).toBe(false);
-    const again = f.run(["jobs", "run"]);
+    const again = f.run(["jobs", "run"], { timeout: 90_000 });
     expect(again.status, again.stderr).toBe(0);
     const mined = JSON.parse(readFileSync(facts(), "utf8"));
     expect(mined).toMatchObject({ version: 1, skipped: null, commits_read: 5 });
     expect(mined.change_together).toContainEqual({ a: "schema.ts", b: "types.ts", confidence: 1, support: 4, kind: "related" });
     expect(leftovers(f)).toEqual([]);
     expect(f.status()).toBe("");
-  });
+  }, 200_000);
 
   it("stops waiting at its time cap and leaves the rest to the background, where it finishes", () => {
     const f = fixture();

@@ -2,7 +2,7 @@
  * Setup v2 on fixture repos (knowledge-09): the screen's states (small, large, no review
  * history, no git, monorepo), learn deeper never offered to an agent, a script or CI, and the
  * plain and rich screens writing the same answers, entries and rule files. No model, no
- * network: the code map is the stand-in kind where this build has no real one.
+ * network: the code map is the real build, and learn deeper is only offered, never run.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { dirname, join, relative, resolve } from "node:path";
 
 const base = mkdtempSync(join(tmpdir(), "mex-setup-v2-"));
 const hook = resolve("npm", `hook-${process.platform}-${process.arch}`, "bin", process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
-for (const [key, value] of Object.entries({ MEX_SETUP_STANDINS: "1", MEX_BACKGROUND: "0", MEX_INSTALL_AUTO: "0", MEX_OFFLINE: "1", MEX_TELEMETRY: "0",
+for (const [key, value] of Object.entries({ MEX_BACKGROUND: "0", MEX_INSTALL_AUTO: "0", MEX_OFFLINE: "1", MEX_TELEMETRY: "0",
   ...(existsSync(hook) ? { MEX_HOOK_BINARY: hook } : {}) })) vi.stubEnv(key, value);
 
 const { runRepoStart } = await import("../src/repo-start/command.js");
