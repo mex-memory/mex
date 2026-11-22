@@ -339,7 +339,10 @@ fn run_started(request: &Request) -> Result<JobCounts, JobError> {
         .root
         .canonicalize()
         .map_err(|e| JobError::request(format!("root: {e}")))?;
-    let cache = request.facts_cache.as_deref().and_then(FactsCache::open);
+    let cache = request
+        .facts_cache
+        .as_deref()
+        .and_then(|directory| FactsCache::open(directory, request.files.len()));
     let configs = read_configs(&root, &request.configs);
     if request.mode == "refresh" {
         return stage::refresh::write(&root, request, &configs, cache.as_ref());
@@ -545,17 +548,44 @@ pub(super) fn extract_files<'a>(
     let count = inputs.iter().filter(|input| input.is_ok()).count();
     if count != 0 {
         let next = AtomicUsize::new(0);
+        // Nearby paths often repeat the same strings and fingerprint tokens.
+        // Claim short runs of them when packing facts into compression blocks.
+        let claim = if cache.is_some() {
+            count.div_ceil(128).min(16)
+        } else {
+            1
+        };
         let threads = request
             .limits
             .threads
-            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+            .unwrap_or_else(|| {
+                let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+                // Bound the number of simultaneous compression workspaces.
+                if cache.is_some() {
+                    available.min(5)
+                } else {
+                    available
+                }
+            })
             .clamp(1, count);
         std::thread::scope(|scope| {
             let measure = timing::enabled();
+            let cache_writer = cache.map(|cache| {
+                let (sender, blocks) = mpsc::sync_channel(4);
+                let writer = scope.spawn(move || {
+                    if measure {
+                        timing::enable();
+                    }
+                    cache.write_blocks(blocks);
+                    timing::take()
+                });
+                (sender, writer)
+            });
             let mut workers = Vec::with_capacity(threads);
             let next = &next;
             let inputs = &inputs;
             for _ in 0..threads {
+                let sender = cache_writer.as_ref().map(|(sender, _)| sender.clone());
                 workers.push(scope.spawn(move || {
                     if measure {
                         timing::enable();
@@ -564,9 +594,16 @@ pub(super) fn extract_files<'a>(
                     let mut ecmascript = None;
                     let mut rust = None;
                     let mut csharp = None;
-                    let mut cache = cache.and_then(FactsCache::worker);
-                    while let Some(input) = inputs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                        if let Ok((file, adapter, result)) = input {
+                    let mut cache = cache
+                        .zip(sender)
+                        .and_then(|(cache, sender)| cache.worker(sender));
+                    loop {
+                        let start = next.fetch_add(claim, Ordering::Relaxed);
+                        if start >= inputs.len() {
+                            break;
+                        }
+                        let end = (start + claim).min(inputs.len());
+                        for (file, adapter, result) in inputs[start..end].iter().flatten() {
                             result.get_or_init(|| {
                                 let key = cache
                                     .as_ref()
@@ -611,6 +648,12 @@ pub(super) fn extract_files<'a>(
             }
             for worker in workers {
                 if let Some(totals) = worker.join().expect("extraction worker") {
+                    timing::merge(totals);
+                }
+            }
+            if let Some((sender, writer)) = cache_writer {
+                drop(sender);
+                if let Some(totals) = writer.join().expect("cache writer") {
                     timing::merge(totals);
                 }
             }
@@ -684,18 +727,18 @@ fn extract(
     root: &Path,
     file: &RequestFile,
     key: Option<&(&str, String)>,
-    cache: Option<&mut CacheWorker>,
+    mut cache: Option<&mut CacheWorker>,
     adapter: impl FnOnce(&str, &str, [u8; 32]) -> FileFacts,
 ) -> Result<Extracted, &'static str> {
     // Node captured these hashes under the maintenance lease. A standalone
     // job without that capture hashes the source before its cache lookup.
-    let cached = |cache: Option<&CacheWorker>, hash: &[u8; 32]| {
+    let cached = |cache: Option<&mut CacheWorker>, hash: &[u8; 32]| {
         let (language, version) = key?;
-        cache?.get(&file.path, language, version, hash)
+        cache?.reader.get(&file.path, language, version, hash)
     };
     if request.source_directory.is_some()
         && let Some(hash) = file.content_hash.as_deref().and_then(decode_hash)
-        && let Some(facts) = cached(cache.as_deref(), &hash)
+        && let Some(facts) = cached(cache.as_deref_mut(), &hash)
     {
         return Ok(Extracted {
             size: file.size,
@@ -707,14 +750,18 @@ fn extract(
         let canonical = request.source_path(root, file)?;
         read_source(&canonical, file)
     })?;
-    if let Some(facts) = cached(cache.as_deref(), &hash) {
+    if let Some(facts) = cached(cache.as_deref_mut(), &hash) {
         return Ok(Extracted {
             size,
             facts,
             reextracted: false,
         });
     }
-    let facts = timing::measure("worker.parseExtract", || adapter(&file.path, &text, hash));
+    let facts = timing::measure("worker.parseExtract", || {
+        let mut facts = adapter(&file.path, &text, hash);
+        facts.trim_extraction_capacity();
+        facts
+    });
     if let (Some(cache), Some((_, version))) = (cache, key) {
         cache.put(version, &facts);
     }
@@ -797,12 +844,13 @@ pub(super) fn read_source(
     if size > MAX_SOURCE_BYTES {
         return Err("too big");
     }
-    let text = String::from_utf8_lossy(&bytes);
-    let hash: [u8; 32] = if file.content_hash.is_some() {
-        Sha256::digest(text.as_bytes()).into()
-    } else {
-        Sha256::digest(&bytes).into()
-    };
+    let raw_hash = file
+        .content_hash
+        .is_none()
+        .then(|| Sha256::digest(&bytes).into());
+    let text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    let hash = raw_hash.unwrap_or_else(|| Sha256::digest(text.as_bytes()).into());
     if file
         .content_hash
         .as_ref()
@@ -810,7 +858,7 @@ pub(super) fn read_source(
     {
         return Err("source changed");
     }
-    Ok((text.into_owned(), size, hash))
+    Ok((text, size, hash))
 }
 
 pub(super) type ConfigSource<'a> = (&'a str, Cow<'a, str>);

@@ -128,7 +128,7 @@ fn reuse_resolution<'a>(
     if changed.is_empty() {
         return Ok(Some((changed, extract_files(root, request, &[], None))));
     }
-    let Some(cache_reader) = cache.and_then(FactsCache::worker) else {
+    let Some(mut cache_reader) = cache.and_then(FactsCache::reader) else {
         return Ok(None);
     };
     let extracted = extract_files(root, request, &changed, cache);

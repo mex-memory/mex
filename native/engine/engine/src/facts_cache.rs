@@ -2,24 +2,38 @@
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::Duration;
 
 use mex_graph_core::facts::{FACTS_VERSION, FileFacts};
 use mex_graph_core::timing::Timer;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use sha2::{Digest, Sha256};
 
-const MAX_BYTES: usize = 192 * 1024 * 1024;
-const MAX_ENTRY: usize = 4 * 1024 * 1024;
-const MAX_DECODED: usize = 32 * 1024 * 1024;
-const BATCH_BYTES: usize = 1024 * 1024;
-// Bump the filename when changing the encoding or the SQLite layout.
-const CACHE_FILE: &str = "facts-v1.db";
+const MIN_CAPACITY: usize = 64 * 1024 * 1024;
+const MAX_CAPACITY: usize = 256 * 1024 * 1024;
+// Reserve room for a corpus and revisions of its busiest files.
+const BYTES_PER_FILE: usize = 12 * 1024;
+const BLOCK_BYTES: usize = 3 * 1024 * 1024;
+const MAX_COMPRESSED: usize = 4 * 1024 * 1024;
+const MAX_ENCODED: usize = 32 * 1024 * 1024;
+const MAX_DECODED: usize = 64 * 1024 * 1024;
+// 320 MiB of database pages leaves room for the path index and page overhead.
+const MAX_PAGES: u32 = 81_920;
+// Bump the filename when changing the codec or the SQLite layout. The facts
+// version in the key also covers changes to the serialized Rust types.
+const CACHE_FILE: &str = "facts-v2.db";
+
+fn codec() -> impl bincode::config::Config {
+    bincode::config::standard().with_limit::<MAX_DECODED>()
+}
 
 pub struct FactsCache(PathBuf);
 
 impl FactsCache {
-    pub fn open(directory: &Path) -> Option<Self> {
+    pub fn open(directory: &Path, file_count: usize) -> Option<Self> {
         if !directory.is_absolute() {
             return None;
         }
@@ -43,23 +57,47 @@ impl FactsCache {
         if !fs::symlink_metadata(&cache.0).ok()?.is_file() {
             return None;
         }
-        let conn = cache.connect().ok()?;
-        conn.execute_batch(
-            "BEGIN IMMEDIATE;
+
+        let mut conn = cache.connect().ok()?;
+        conn.pragma_update(None, "page_size", 4096).ok()?;
+        conn.pragma_update(None, "journal_mode", "WAL").ok()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .ok()?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS blocks (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 checksum BLOB NOT NULL,
+                 payload BLOB NOT NULL
+             ) STRICT;
              CREATE TABLE IF NOT EXISTS facts (
-                 id INTEGER PRIMARY KEY,
                  path TEXT NOT NULL,
                  version TEXT NOT NULL,
                  hash BLOB NOT NULL,
-                 checksum BLOB NOT NULL,
-                 payload BLOB NOT NULL,
-                 UNIQUE(path, version, hash)
-             ) STRICT;
-             CREATE TABLE IF NOT EXISTS budget (bytes INTEGER NOT NULL) STRICT;
-             INSERT INTO budget SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM budget);
-             COMMIT;",
+                 block INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+                 offset INTEGER NOT NULL,
+                 size INTEGER NOT NULL,
+                 PRIMARY KEY(path, version, hash)
+             ) STRICT, WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS facts_block ON facts(block);
+             CREATE TABLE IF NOT EXISTS budget (
+                 id INTEGER PRIMARY KEY CHECK(id = 1),
+                 bytes INTEGER NOT NULL CHECK(bytes >= 0),
+                 capacity INTEGER NOT NULL
+             ) STRICT;",
         )
         .ok()?;
+        let capacity = file_count
+            .saturating_mul(BYTES_PER_FILE)
+            .clamp(MIN_CAPACITY, MAX_CAPACITY);
+        // Shared checkouts never shrink the budget estimated by a larger corpus.
+        tx.execute(
+            "INSERT INTO budget VALUES (1, 0, ?1)
+             ON CONFLICT(id) DO UPDATE SET capacity = excluded.capacity WHERE excluded.capacity > budget.capacity",
+            [capacity as i64],
+        )
+        .ok()?;
+        tx.commit().ok()?;
         Some(cache)
     }
 
@@ -69,20 +107,144 @@ impl FactsCache {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.busy_timeout(Duration::from_millis(200))?;
-        conn.execute_batch(
-            "PRAGMA cache_size = -1024;
-             PRAGMA synchronous = NORMAL;
-             PRAGMA max_page_count = 65536;",
-        )?;
         Ok(conn)
     }
 
-    pub fn worker(&self) -> Option<CacheWorker> {
-        Some(CacheWorker {
-            conn: self.connect().ok()?,
-            pending: Vec::new(),
-            bytes: 0,
+    pub fn reader(&self) -> Option<CacheReader> {
+        let conn = self.connect().ok()?;
+        conn.pragma_update(None, "cache_size", -1024).ok()?;
+        Some(CacheReader {
+            conn,
+            decoder: zstd::bulk::Decompressor::new().ok()?,
+            decoded: Vec::new(),
+            block: None,
         })
+    }
+
+    pub fn worker(&self, blocks: SyncSender<Block>) -> Option<CacheWorker> {
+        Some(CacheWorker {
+            reader: self.reader()?,
+            encoder: zstd::bulk::Compressor::new(11).ok()?,
+            encoded: Vec::new(),
+            entries: Vec::new(),
+            block: Vec::new(),
+            blocks,
+        })
+    }
+
+    pub fn write_blocks(&self, blocks: Receiver<Block>) {
+        if let Ok(first) = blocks.recv() {
+            // Contention, I/O failure and cancellation leave previously
+            // committed facts usable. The graph can always parse a missed file.
+            let _ = self.write_transaction(std::iter::once(first).chain(blocks));
+        }
+    }
+
+    fn write_transaction(&self, blocks: impl Iterator<Item = Block>) -> rusqlite::Result<()> {
+        let mut conn = self.connect()?;
+        conn.execute_batch(
+            "PRAGMA cache_size = -8192;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;",
+        )?;
+        conn.pragma_update(None, "max_page_count", MAX_PAGES)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (mut used, capacity) = tx.query_row(
+            "SELECT bytes, capacity FROM budget WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)? as usize,
+                    row.get::<_, u32>(1)? as usize,
+                ))
+            },
+        )?;
+        let capacity = capacity.clamp(MIN_CAPACITY, MAX_CAPACITY);
+        for block in blocks {
+            let _timer = Timer::start("worker.cacheWrite");
+            used = write_block(&tx, &block, used, capacity)?;
+        }
+        let _timer = Timer::start("worker.cacheWrite");
+        tx.execute("UPDATE budget SET bytes = ?1 WHERE id = 1", [used as i64])?;
+        tx.commit()?;
+        conn.close().map_err(|(_, error)| error)
+    }
+}
+
+pub struct CacheReader {
+    conn: Connection,
+    decoder: zstd::bulk::Decompressor<'static>,
+    decoded: Vec<u8>,
+    block: Option<i64>,
+}
+
+impl CacheReader {
+    pub fn get(
+        &mut self,
+        path: &str,
+        language: &str,
+        version: &str,
+        hash: &[u8; 32],
+    ) -> Option<FileFacts> {
+        let _timer = Timer::start("worker.cacheRead");
+        let (block, offset, size): (i64, u32, u32) = self
+            .conn
+            .prepare_cached("SELECT block, offset, size FROM facts WHERE path = ?1 AND version = ?2 AND hash = ?3")
+            .ok()?
+            .query_row(params![path, version, hash.as_slice()], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .optional()
+            .ok()??;
+        if self.block != Some(block) {
+            self.load_block(block)?;
+        }
+        let entry = self
+            .decoded
+            .get(offset as usize..offset.checked_add(size)? as usize)?;
+        let ((stored_version, facts), bytes): ((&str, FileFacts), _) =
+            bincode::borrow_decode_from_slice(entry, codec()).ok()?;
+        (bytes == entry.len()
+            && stored_version == version
+            && facts.facts_version == FACTS_VERSION
+            && facts.content_hash == *hash
+            && facts.path == path
+            && facts.language == language)
+            .then_some(facts)
+    }
+
+    fn load_block(&mut self, block: i64) -> Option<()> {
+        let (checksum, payload): ([u8; 32], Vec<u8>) = self
+            .conn
+            .prepare_cached(
+                "SELECT checksum, payload FROM blocks WHERE id = ?1
+                 AND length(checksum) = 32 AND length(payload) BETWEEN 1 AND ?2",
+            )
+            .ok()?
+            .query_row(params![block, MAX_COMPRESSED as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .ok()?;
+        if Sha256::digest(&payload).as_slice() != checksum {
+            return None;
+        }
+        let size = zstd::zstd_safe::get_frame_content_size(&payload).ok()??;
+        if size > MAX_ENCODED as u64 {
+            return None;
+        }
+        self.block = None;
+        self.decoded.clear();
+        self.decoded.try_reserve_exact(size as usize).ok()?;
+        if self
+            .decoder
+            .decompress_to_buffer(&payload, &mut self.decoded)
+            .ok()?
+            != size as usize
+        {
+            return None;
+        }
+        self.block = Some(block);
+        Some(())
     }
 }
 
@@ -90,184 +252,195 @@ struct Entry {
     path: String,
     version: String,
     hash: [u8; 32],
-    checksum: [u8; 32],
+    offset: usize,
+    size: usize,
+}
+
+pub struct Block {
+    entries: Vec<Entry>,
     payload: Vec<u8>,
 }
 
 pub struct CacheWorker {
-    conn: Connection,
-    pending: Vec<Entry>,
-    bytes: usize,
+    pub reader: CacheReader,
+    encoder: zstd::bulk::Compressor<'static>,
+    encoded: Vec<u8>,
+    entries: Vec<Entry>,
+    block: Vec<u8>,
+    blocks: SyncSender<Block>,
 }
 
 impl CacheWorker {
-    pub fn get(
-        &self,
-        path: &str,
-        language: &str,
-        version: &str,
-        hash: &[u8; 32],
-    ) -> Option<FileFacts> {
-        let _timer = Timer::start("worker.cacheRead");
-        let (checksum, payload): (Vec<u8>, Vec<u8>) = self
-            .conn
-            .prepare_cached(
-                "SELECT checksum, payload FROM facts WHERE path = ?1 AND version = ?2 AND hash = ?3
-                 AND length(checksum) = 32 AND length(payload) BETWEEN 5 AND ?4",
-            )
-            .ok()?
-            .query_row(
-                params![path, version, hash.as_slice(), MAX_ENTRY as i64],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .ok()??;
-        if Self::checksum(version, &payload).as_slice() != checksum {
-            return None;
-        }
-        let decoded_size = u32::from_le_bytes(payload[..4].try_into().ok()?) as usize;
-        if decoded_size > MAX_DECODED {
-            return None;
-        }
-        let decoded = lz4_flex::block::decompress(&payload[4..], decoded_size).ok()?;
-        let facts: FileFacts = serde_json::from_slice(&decoded).ok()?;
-        (facts.facts_version == FACTS_VERSION
-            && facts.content_hash == *hash
-            && facts.path == path
-            && facts.language == language)
-            .then_some(facts)
-    }
-
     pub fn put(&mut self, version: &str, facts: &FileFacts) {
         let timer = Timer::start("worker.cacheEncode");
-        let Ok(encoded) = serde_json::to_vec(facts) else {
-            return;
-        };
-        if encoded.len() > MAX_DECODED {
-            return;
-        }
-        let payload = lz4_flex::block::compress_prepend_size(&encoded);
-        if payload.len() > MAX_ENTRY {
+        self.encoded.clear();
+        if bincode::encode_into_std_write((version, facts), &mut self.encoded, codec()).is_err()
+            || self.encoded.len() > MAX_ENCODED
+        {
             return;
         }
-        self.bytes += payload.len();
-        self.pending.push(Entry {
+        drop(timer);
+        if self.block.len() + self.encoded.len() > BLOCK_BYTES {
+            self.flush();
+        }
+        self.entries.push(Entry {
             path: facts.path.clone(),
             version: version.to_owned(),
             hash: facts.content_hash,
-            checksum: Self::checksum(version, &payload),
-            payload,
+            offset: self.block.len(),
+            size: self.encoded.len(),
         });
-        drop(timer);
-        if self.bytes >= BATCH_BYTES {
+        self.block.extend_from_slice(&self.encoded);
+        if self.block.len() >= BLOCK_BYTES {
             self.flush();
         }
     }
 
     pub fn flush(&mut self) {
-        if !self.pending.is_empty() {
-            let _timer = Timer::start("worker.cacheWrite");
-            // An unavailable cache is a miss. A failed transaction leaves all
-            // previously committed entries available to other processes.
-            let _ = Self::write_batch(&mut self.conn, &self.pending, self.bytes);
-            self.pending.clear();
-            self.bytes = 0;
+        if self.entries.is_empty() {
+            return;
+        }
+        let timer = Timer::start("worker.cacheEncode");
+        let mut payload = Vec::with_capacity(
+            zstd::zstd_safe::compress_bound(self.block.len()).min(MAX_COMPRESSED),
+        );
+        let compressed = self.encoder.compress_to_buffer(&self.block, &mut payload);
+        self.block.clear();
+        let entries = std::mem::take(&mut self.entries);
+        if compressed.is_ok() && payload.len() <= MAX_COMPRESSED {
+            payload.shrink_to_fit();
+            drop(timer);
+            let _ = self.blocks.send(Block { entries, payload });
         }
     }
+}
 
-    fn checksum(version: &str, payload: &[u8]) -> [u8; 32] {
-        let mut hash = Sha256::new();
-        hash.update(version.as_bytes());
-        hash.update([0]);
-        hash.update(payload);
-        hash.finalize().into()
+fn write_block(
+    tx: &Transaction<'_>,
+    block: &Block,
+    mut used: usize,
+    capacity: usize,
+) -> rusqlite::Result<usize> {
+    tx.prepare_cached("INSERT INTO blocks(checksum, payload) VALUES (?1, ?2)")?
+        .execute(params![
+            Sha256::digest(&block.payload).as_slice(),
+            block.payload
+        ])?;
+    let id = tx.last_insert_rowid();
+    let mut insert =
+        tx.prepare_cached("INSERT OR REPLACE INTO facts VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
+    for entry in &block.entries {
+        insert.execute(params![
+            entry.path,
+            entry.version,
+            entry.hash.as_slice(),
+            id,
+            entry.offset as u32,
+            entry.size as u32,
+        ])?;
     }
-
-    fn write_batch(conn: &mut Connection, entries: &[Entry], bytes: usize) -> rusqlite::Result<()> {
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let mut used: usize = tx.query_row("SELECT bytes FROM budget", [], |row| {
-            Ok(row.get::<_, u32>(0)? as usize)
-        })?;
-        while used.saturating_add(bytes) > MAX_BYTES {
-            let boundary = "SELECT id FROM facts ORDER BY id LIMIT 512";
-            let evicted: usize = tx.query_row(
-                &format!(
-                    "SELECT coalesce(sum(length(payload)), 0) FROM facts WHERE id IN ({boundary})"
-                ),
-                [],
-                |row| Ok(row.get::<_, u32>(0)? as usize),
-            )?;
-            if evicted == 0 {
-                return Err(rusqlite::Error::InvalidQuery);
-            }
-            tx.execute(&format!("DELETE FROM facts WHERE id IN ({boundary})"), [])?;
-            used = used.saturating_sub(evicted);
-        }
-        {
-            let mut existing = tx.prepare_cached(
-                "SELECT length(payload) FROM facts WHERE path = ?1 AND version = ?2 AND hash = ?3",
-            )?;
-            let mut insert = tx.prepare_cached(
-                "INSERT OR REPLACE INTO facts(path, version, hash, checksum, payload) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for entry in entries {
-                let old: usize = existing
-                    .query_row(
-                        params![entry.path, entry.version, entry.hash.as_slice()],
-                        |row| Ok(row.get::<_, u32>(0)? as usize),
-                    )
-                    .optional()?
-                    .unwrap_or(0);
-                insert.execute(params![
-                    entry.path,
-                    entry.version,
-                    entry.hash.as_slice(),
-                    entry.checksum.as_slice(),
-                    entry.payload
-                ])?;
-                used = used.saturating_sub(old) + entry.payload.len();
-            }
-        }
-        tx.execute("UPDATE budget SET bytes = ?1", [used as i64])?;
-        tx.commit()
+    used += block.payload.len();
+    while used > capacity {
+        let (oldest, bytes) = tx.query_row(
+            "SELECT id, length(payload) FROM blocks ORDER BY id LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u32>(1)? as usize)),
+        )?;
+        tx.prepare_cached("DELETE FROM blocks WHERE id = ?1")?
+            .execute([oldest])?;
+        used = used.saturating_sub(bytes);
     }
+    Ok(used)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mex_graph_core::facts::{Call, CallForm, NONE, Receiver};
+    use std::sync::mpsc::sync_channel;
 
     #[test]
     fn cache_checks_adapter_version_hash_path_and_payload() {
         let directory =
             std::env::temp_dir().join(format!("mex-facts-cache-{}", std::process::id()));
-        let cache = FactsCache::open(&directory).unwrap();
-        let mut writer = cache.worker().unwrap();
+        let cache = FactsCache::open(&directory, 10_000).unwrap();
         let facts = FileFacts {
             facts_version: FACTS_VERSION,
             path: "src/app.py".into(),
             language: "python".into(),
             content_hash: [9; 32],
+            calls: vec![Call {
+                form: CallForm::Member,
+                name: "handle".into(),
+                receiver: Some(Receiver::CallResult {
+                    name: "create".into(),
+                    receiver: Some(Box::new(Receiver::Name { name: "app".into() })),
+                }),
+                scope: NONE,
+                caller: NONE,
+                range: Default::default(),
+                name_range: Default::default(),
+                text: "app.create().handle".into(),
+            }],
             ..FileFacts::default()
         };
-        writer.put("python-1", &facts);
-        writer.flush();
-        let reader = FactsCache::open(&directory).unwrap().worker().unwrap();
-        let get = |version, hash| reader.get(&facts.path, &facts.language, version, hash);
-        assert_eq!(get("python-1", &[9; 32]), Some(facts.clone()));
-        assert_eq!(get("python-2", &[9; 32]), None);
-        assert_eq!(get("python-1", &[8; 32]), None);
-        assert_eq!(reader.get("moved.py", "python", "python-1", &[9; 32]), None);
-        writer
+        let second = FileFacts {
+            path: "src/next.py".into(),
+            ..facts.clone()
+        };
+        let put = || {
+            let (sender, blocks) = sync_channel(1);
+            let mut writer = cache.worker(sender).unwrap();
+            writer.put("python-1", &facts);
+            writer.put("python-1", &second);
+            writer.flush();
+            drop(writer);
+            cache.write_blocks(blocks);
+        };
+        put();
+        let mut reader = FactsCache::open(&directory, 1).unwrap().reader().unwrap();
+        let capacity: u32 = reader
             .conn
-            .execute("UPDATE facts SET payload = zeroblob(length(payload))", [])
+            .query_row("SELECT capacity FROM budget", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(get("python-1", &[9; 32]), None);
-        writer.put("python-1", &facts);
-        writer.flush();
-        assert_eq!(get("python-1", &[9; 32]), Some(facts));
+        assert_eq!(capacity as usize, 10_000 * BYTES_PER_FILE);
+        assert_eq!(
+            reader.get(&facts.path, "python", "python-1", &[9; 32]),
+            Some(facts.clone())
+        );
+        assert_eq!(
+            reader.get(&second.path, "python", "python-1", &[9; 32]),
+            Some(second.clone())
+        );
+        assert_eq!(
+            reader.get(&facts.path, "python", "python-2", &[9; 32]),
+            None
+        );
+        assert_eq!(
+            reader.get(&facts.path, "python", "python-1", &[8; 32]),
+            None
+        );
+        assert_eq!(
+            reader.get(&facts.path, "typescript", "python-1", &[9; 32]),
+            None
+        );
+        assert_eq!(reader.get("moved.py", "python", "python-1", &[9; 32]), None);
+        reader
+            .conn
+            .execute("UPDATE blocks SET payload = zeroblob(length(payload))", [])
+            .unwrap();
         drop(reader);
-        drop(writer);
+        let mut reader = cache.reader().unwrap();
+        assert_eq!(
+            reader.get(&facts.path, "python", "python-1", &[9; 32]),
+            None
+        );
+        put();
+        assert_eq!(
+            reader.get(&facts.path, "python", "python-1", &[9; 32]),
+            Some(facts)
+        );
+        drop(reader);
         fs::remove_dir_all(directory).unwrap();
     }
 }

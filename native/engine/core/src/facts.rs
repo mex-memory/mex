@@ -14,6 +14,7 @@
 //! UTF-16 code units: the unit today's graph stores (web-tree-sitter indexes a
 //! JavaScript string), so spans read the same whichever engine wrote them.
 
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 pub mod ecmascript;
@@ -37,7 +38,7 @@ pub mod bounds {
 }
 
 /// A source range: bytes, then 0-based start line and column, end line and column.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub struct Range {
     pub start_byte: u32,
     pub end_byte: u32,
@@ -48,7 +49,7 @@ pub struct Range {
 }
 
 /// The node kinds today's graph stores (`NODE_KINDS` in `src/graph/types.ts`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     File,
@@ -106,7 +107,7 @@ impl Kind {
 }
 
 /// Everything one file contributes, before resolution.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct FileFacts {
     pub facts_version: u32,
     /// Repository-relative path with `/` separators.
@@ -128,8 +129,34 @@ pub struct FileFacts {
     pub syntax_references: Vec<SyntaxReference>,
 }
 
+impl FileFacts {
+    /// Extraction grows its arenas one entry at a time. Resolution retains
+    /// the entire corpus, so release the spare capacity before crossing over.
+    pub fn trim_extraction_capacity(&mut self) {
+        self.scopes.shrink_to_fit();
+        self.defs.shrink_to_fit();
+        self.imports.shrink_to_fit();
+        self.exports.shrink_to_fit();
+        self.calls.shrink_to_fit();
+        self.bindings.shrink_to_fit();
+        self.syntax_references.shrink_to_fit();
+        for def in &mut self.defs {
+            def.flags.shrink_to_fit();
+            def.decorators.shrink_to_fit();
+            def.type_parameters.shrink_to_fit();
+            def.heritage.shrink_to_fit();
+        }
+        for import in &mut self.imports {
+            import.bindings.shrink_to_fit();
+        }
+        if let Some(facts) = &mut self.ecmascript {
+            facts.trim_extraction_capacity();
+        }
+    }
+}
+
 /// A written symbol reference from an adapter with syntax-only resolution.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct SyntaxReference {
     pub from: usize,
     pub kind: ReferenceKind,
@@ -140,7 +167,7 @@ pub struct SyntaxReference {
     pub receiver_call: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceKind {
     Calls,
@@ -166,7 +193,7 @@ impl ReferenceKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeKind {
     Function,
@@ -179,7 +206,7 @@ pub enum ScopeKind {
 
 /// A lexical scope. Class scopes hold members; names bound there are not
 /// visible to nested functions (true in Python and in ECMAScript method bodies).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct Scope {
     pub kind: ScopeKind,
     pub parent: i32,
@@ -190,7 +217,7 @@ pub struct Scope {
 }
 
 /// A declaration, and the inputs of its node id.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct Def {
     pub kind: Kind,
     pub name: String,
@@ -231,13 +258,13 @@ pub struct Def {
 }
 
 /// A definition's sketch: 64 minima and the number of tokens behind them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub struct SketchFacts {
     pub minhash: Vec<u32>,
     pub token_count: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub struct Heritage {
     pub implements: bool,
     pub name: String,
@@ -245,7 +272,7 @@ pub struct Heritage {
 }
 
 /// One name an import binds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub struct ImportBinding {
     /// `default`, `*` or a symbol name.
     pub imported: String,
@@ -257,7 +284,7 @@ pub struct ImportBinding {
     pub type_only: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportForm {
     Es,
@@ -268,7 +295,7 @@ pub enum ImportForm {
     CSharpUsing,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct Import {
     pub form: ImportForm,
     /// The specifier as written, or Python's dotted module path.
@@ -280,7 +307,7 @@ pub struct Import {
     pub range: Range,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct Export {
     pub local: Option<String>,
     pub def: i32,
@@ -295,7 +322,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 /// What a call is made on: the evidence the resolver types receivers from.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Receiver {
     This,
@@ -325,7 +352,7 @@ pub enum Receiver {
     Other,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "snake_case")]
 pub enum CallForm {
     Ident,
@@ -335,7 +362,7 @@ pub enum CallForm {
     Other,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct Call {
     pub form: CallForm,
     /// The called name (identifier, member or constructor).
@@ -352,7 +379,7 @@ pub struct Call {
     pub text: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeBasis {
     Annotation,
@@ -363,7 +390,7 @@ pub enum TypeBasis {
 }
 
 /// A local name, for shadowing and receiver typing.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct Binding {
     pub name: String,
     pub scope: i32,
@@ -377,7 +404,7 @@ pub struct Binding {
 
 /// Something a framework resolver reads: a decorator, a route registration,
 /// a dependency-injection marker.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct FrameworkMarker {
     pub kind: String,
     pub name: String,
@@ -386,7 +413,7 @@ pub struct FrameworkMarker {
     pub range: Range,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 #[serde(rename_all = "snake_case")]
 pub enum ParseStatus {
     #[default]
@@ -395,7 +422,7 @@ pub enum ParseStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub struct Health {
     pub status: ParseStatus,
     pub error_count: u32,
@@ -406,7 +433,7 @@ pub struct Health {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Encode, Decode)]
 pub struct Diagnostic {
     pub code: String,
     pub range: Range,
