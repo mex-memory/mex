@@ -133,8 +133,6 @@ interface GraphEngineInternalHooks {
   }) => void;
   afterSourcesStaged?: () => void;
   afterExtraction?: () => void;
-  /** Called as a full extraction starts, with the previous cache payloads still held. */
-  beforeFullExtraction?: (retainedPayloads: number) => void;
   /** Final path/cancellation seam immediately before SQLite opens or creates the database. */
   beforeDatabaseOpen?: () => void;
   /** Final cancellation/fault seam before any publication continuity reads. */
@@ -919,18 +917,19 @@ async function stageCorpus(
       }]);
     }
 
-    internal.afterSourcesStaged?.();
-    const engine = await timeGraphPhaseAsync("stage.engine", () => stageWithGraphEngine(
-      root, discovered, graphEngineLanguages(), configSources,
-      internal.sourceSpoolDirectory, internal.engineFallbackReason,
-    ));
-    internal.afterExtraction?.();
     const reportParsed = (completed: number): void => internal.onBuildProgress?.({
       phase: "parse",
       completed,
       ...(discovered.length > 0 ? { total: discovered.length } : {}),
     });
     reportParsed(0);
+
+    internal.afterSourcesStaged?.();
+    const engine = await timeGraphPhaseAsync("stage.engine", () => stageWithGraphEngine(
+      root, discovered, graphEngineLanguages(), configSources,
+      internal.sourceSpoolDirectory, internal.engineFallbackReason,
+    ));
+    internal.afterExtraction?.();
 
     // Only Node's pre-resolution extractions are cached here. The engine
     // stages its own corpus as a unit, including cross-file resolution.
@@ -942,10 +941,7 @@ async function stageCorpus(
         new Map(discovered.filter((file) => !engine?.files.has(file.relPath))
           .map((file) => [file.relPath, file.contentHash])),
       ));
-    if ("reason" in plan) {
-      if (!("reason" in reuse)) reuse.stored.clear();
-      internal.beforeFullExtraction?.(0);
-    }
+    if ("reason" in plan && !("reason" in reuse)) reuse.stored.clear();
     const treeLanguages = [...new Set(discovered
       .filter((file) => !engine?.files.has(file.relPath))
       .map((file) => detectLanguage(file.relPath)))];

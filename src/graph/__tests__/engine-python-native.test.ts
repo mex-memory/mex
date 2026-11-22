@@ -89,8 +89,8 @@ describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's 
     const engine = repo();
     const todayBuild = await build(today);
     const engineBuild = await build(engine, "python");
-    expect(todayBuild.engine).toBeUndefined();
-    expect(engineBuild.engine).toMatchObject({ languages: ["python"], files: 6, fallbackFiles: 0 });
+    expect(todayBuild.engine).toMatchObject({ languages: ["typescript"], files: 1, fallbackFiles: 0 });
+    expect(engineBuild.engine).toMatchObject({ languages: ["python", "typescript"], files: 7, fallbackFiles: 0 });
     expect(engineBuild.engine?.fellBack).toBeUndefined();
 
     const before = rows(today);
@@ -113,18 +113,18 @@ describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's 
 
 describe("the engine flag", () => {
   it("folds the engine's languages into the extractor version", () => {
-    expect(corpusExtractorVersion({})).toBe(CORPUS_EXTRACTOR_VERSION);
+    expect(corpusExtractorVersion({})).toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-typescript-v1`);
     expect(corpusExtractorVersion({ [GRAPH_ENGINE_LANGUAGES_ENV]: "Python, cobol" }))
-      .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-python-v1`);
+      .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-python-typescript-v1`);
   });
 
   it("keeps today's extractors and says why when no engine can run", async () => {
     const today = repo();
     const fallback = repo();
-    await build(today);
     process.env[GRAPH_ENGINE_ENV] = join(fallback, "no-such-engine");
+    await build(today);
     const result = await build(fallback, "python");
-    expect(result.engine).toMatchObject({ languages: ["python"], files: 0, fellBack: "no mex-graph binary was found" });
+    expect(result.engine).toMatchObject({ languages: ["python", "typescript"], files: 0, fallbackFiles: 7, fellBack: "no mex-graph binary was found" });
     const before = rows(today);
     const after = rows(fallback);
     expect(after.nodes).toEqual(before.nodes);

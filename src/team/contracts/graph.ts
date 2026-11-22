@@ -1,4 +1,3 @@
-import type { GraphEngineFallback, GraphEngineReport } from "../../graph/engine.js";
 import type {
   CodeRef,
   Diagnostic,
@@ -48,6 +47,24 @@ export interface GraphSourceChanges {
   configChanged: boolean;
   grammarChanged: boolean;
 }
+
+/** What the Rust graph engine (OSS-73) built in one pass. */
+export interface GraphEngineReport {
+  /** The languages it was asked to build. */
+  languages: readonly string[];
+  /** Files whose rows came from the engine. */
+  files: number;
+  /** Files built by Node's tree-sitter extractors after an engine fallback. */
+  fallbackFiles: number;
+  /** Why the engine could not build any of the requested files. */
+  fellBack?: string;
+  /** The engine job's elapsed time and peak sampled memory. */
+  wallMs?: number;
+  peakRssMb?: number;
+}
+
+/** Published fallback coverage, independent of the job's runtime measurements. */
+export type GraphEngineFallback = Omit<GraphEngineReport, "wallMs" | "peakRssMb">;
 
 export interface GraphStatus {
   status: GraphStatusKind;

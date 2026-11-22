@@ -47,9 +47,8 @@ export function engineFileExtractorVersion(language: Language): string {
 export function graphEngineFallbackMessage(fallback: GraphEngineFallback): string {
   const files = `${fallback.fallbackFiles} file(s) (${fallback.languages.join(", ")})`;
   const reason = fallback.fellBack ?? "the engine skipped files or returned source hashes that differed from discovery";
-  return `Rust graph engine not used for ${files}: ${reason}. Node's tree-sitter extractors indexed those files.`;
+  return `Rust graph engine not used for ${files}: ${reason}. Node's tree-sitter extractors processed those files.`;
 }
-
 
 /** Persisted fallback reasons contain only owned messages and bounded engine codes. */
 export function isGraphEngineFallbackReason(reason: unknown): reason is string {
@@ -63,8 +62,8 @@ export function isGraphEngineFallbackReason(reason: unknown): reason is string {
       "the engine did not produce a candidate",
       "the engine returned an incompatible candidate",
     ].includes(reason)
-    || /^mex-graph version exited (?:-?\d+|SIG[A-Z]+|null)$/u.test(reason)
+    || /^mex-graph version exited (?:-?\d+|SIG[A-Z0-9]+|null)$/u.test(reason)
     || /^the engine speaks contract -?\d+, MEX needs \d+$/u.test(reason)
-    || /^the engine stopped \((?:graph_[a-z0-9_]{1,64}|exit \d+|SIG[A-Z]+|missing or invalid result)\)$/u.test(reason)
+    || /^the engine stopped \((?:graph_[a-z0-9_]{1,64}|exit \d+|SIG[A-Z0-9]+|missing or invalid result)\)$/u.test(reason)
   );
 }

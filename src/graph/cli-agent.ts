@@ -631,7 +631,7 @@ export function runGraphScope(
     // flow/fact capacity spill back into deferred source records.
     const plannedFlowRecords = trustworthyFlows.flatMap((flow) => {
       const planned = scopeFlowRecord(flow, nodeById, opts.maxFlowSteps);
-      // A flow is a chain of resolved edges, so drifted compiler inputs can
+      // A flow is a chain of resolved edges, so drifted module configuration inputs can
       // change where it goes even when every file in it is current. The label
       // belongs on the emitted record, not on the planning envelope that
       // carries it alongside its step count.
@@ -2411,7 +2411,7 @@ async function runFreshAgentSession(
 }
 
 /**
- * True when this session's structural facts describe compiler inputs that have
+ * True when this session's structural facts describe module configuration inputs that have
  * since changed.
  *
  * Definition and containment facts survive that — a symbol's file, range and
@@ -2508,15 +2508,10 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
   const incomplete = isParseDegraded(session);
   const sourceDrifted = isSourceDrifted(session);
   const reasonDiagnostic = drifted
-    ? diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
-      ?? diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED")
+    ? diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED")
     : sourceDrifted
       ? diagnostics.find((entry) => entry.code === "GRAPH_SOURCE_CORPUS_MISMATCH")
       : diagnostics.find((entry) => entry.code === "GRAPH_PARSE_DEGRADED");
-  const changedPaths = [...new Set(diagnostics
-    .filter((entry) => entry.code === "GRAPH_SEMANTIC_INPUT_CHANGED")
-    .map((entry) => (entry as { path?: unknown }).path)
-    .filter((path): path is string => typeof path === "string"))].sort();
   const recoveryCommand = diagnostics
     .flatMap((entry) => entry.remediation ?? [])
     .find((entry) => entry.command)?.command
@@ -2561,7 +2556,6 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
           excludedFileCount: excluded.length,
         }
       : {}),
-    ...(changedPaths.length > 0 ? { changedInputs: changedPaths } : {}),
     ...(recoveryCommand ? { recoveryCommand } : {}),
   }];
 }
@@ -2608,8 +2602,6 @@ function manifestUnavailable(write: (line: string) => void): void {
  */
 const CONFIG_DRIFT_DIAGNOSTIC_CODES = new Set([
   "GRAPH_BUILD_MANIFEST_CHANGED",
-  "GRAPH_SEMANTIC_INPUTS_CHANGED",
-  "GRAPH_SEMANTIC_INPUT_CHANGED",
 ]);
 
 function graphStatusUnavailable(

@@ -79,7 +79,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
       },
       ...coverageFields(coverage),
       ...(result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}),
-      ...((result.engine ?? result.status.engineFallback) ? { engine: result.engine ?? result.status.engineFallback } : {}),
+      ...(result.engine ? { engine: result.engine } : {}),
       ...(upgrade.upgraded > 0 ? { checksUpgraded: { entries: upgrade.upgraded, checks: upgrade.checks } } : {}),
     }, null, 2));
     return;
@@ -98,7 +98,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
   }
   printUnindexedSources(coverage);
   printSkippedSources(result.skipped);
-  printEngineReport(result.engine ?? result.status.engineFallback);
+  printEngineReport(result.engine);
 }
 
 function printEngineReport(report: GraphRefreshResult["engine"]): void {
@@ -198,7 +198,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
       + `across ${result.filesIndexed} files in ${result.durationMs}ms; status ${result.status.status}.`,
   );
   printSkippedSources(result.skipped);
-  printEngineReport(result.engine ?? result.status.engineFallback);
+  printEngineReport(result.engine);
   if (result.recoveryPath) {
     console.log(`Previous index retained for local recovery: ${result.recoveryPath}`);
   }
