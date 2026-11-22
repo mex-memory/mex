@@ -2392,15 +2392,13 @@ export interface NativeSourceObservation {
   utf8Size: number;
 }
 
-/** Capture one private source observation for a native maintenance run. */
-export function discoverGraphBuildSources(
-  root: string,
-  stage: (path: string, source: string, contentHash: string) => void,
-  previous?: ReadonlyMap<string, NativeSourceObservation>,
-): { files: Array<DiscoveredFile & NativeSourceObservation>; skipped: GraphSkippedSourceFile[]; assertUnchanged(): void } {
-  const paths = () => discoverGraphReadPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
+export function nativeGraphSourcePaths(root: string): string[] {
+  return discoverGraphReadPaths(GRAPH_SUPPORTED_SOURCE_GLOB, {
     ...GRAPH_CORPUS_GLOB_OPTIONS, cwd: root, ignore: graphCorpusIgnoreGlobs(root),
   }, GRAPH_CORPUS_LIMITS.maxSourceFiles).map(toPosix).filter(isSupportedSourceFile).sort();
+}
+
+function nativeSourceReader(root: string) {
   const canonicalRoot = realpathSync.native(root);
   const sourcePath = (path: string) => {
     const absolute = resolve(root, path);
@@ -2451,6 +2449,28 @@ export function discoverGraphBuildSources(
       return source;
     } finally { closeSync(fd); }
   };
+  return { stat, read };
+}
+
+/** Same contained exact-byte capture for a reported edit as for a refresh. */
+export function captureNativeGraphSource(root: string, path: string): DiscoveredFile & NativeSourceObservation {
+  const reader = nativeSourceReader(root);
+  const observed = reader.stat(path);
+  const source = reader.read(path, observed);
+  return {
+    relPath: path, size: Number(observed.before.size), modifiedAt: Number(observed.before.mtimeNs) / 1e6,
+    contentHash: sha256(source), identity: observed.identity, utf8Size: Buffer.byteLength(source, "utf8"),
+  };
+}
+
+/** Capture one private source observation for a native maintenance run. */
+export function discoverGraphBuildSources(
+  root: string,
+  stage: (path: string, source: string, contentHash: string) => void,
+  previous?: ReadonlyMap<string, NativeSourceObservation>,
+): { files: Array<DiscoveredFile & NativeSourceObservation>; skipped: GraphSkippedSourceFile[]; assertUnchanged(): void } {
+  const paths = () => nativeGraphSourcePaths(root);
+  const { stat, read } = nativeSourceReader(root);
   let listed: string[];
   try { listed = paths(); }
   catch (error) { throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]); }
@@ -2513,7 +2533,7 @@ export function discoverGraphBuildSources(
   };
 }
 
-function preciseSourceIdentity(stat: BigIntStats): string {
+export function preciseSourceIdentity(stat: BigIntStats): string {
   return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 }
 

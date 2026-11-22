@@ -14,7 +14,7 @@ import type { BuildResult } from "./engine.js";
 import { TYPESCRIPT_COMPILER_EXTRACTOR_VERSION } from "./extraction/compiler-version.js";
 import { detectLanguage } from "./extraction/grammars.js";
 import { discoverGraphConfigSources, graphManifestFromSources } from "./manifest.js";
-import { graphEngineBinary, graphEngineVersion, runGraphEngine, type GraphEngineBuildMetadata } from "./native-engine.js";
+import { graphEngineBinary, graphEngineVersion, runGraphEngine, type EngineRequestConfig, type EngineRequestFile, type GraphEngineBuildMetadata } from "./native-engine.js";
 import { computeSourceCorpusDigest, gitProvenanceChanged, readGraphGitProvenance } from "./snapshot.js";
 import { GraphSourceStagingError } from "./source-errors.js";
 import { graphLocation } from "./storage.js";
@@ -26,6 +26,21 @@ import { graphWalkObservations, restoreGraphWalkObservations } from "./source-me
 
 const MAX_WALK_BYTES = 4 * 1024 * 1024;
 
+export interface NativeGraphInputs {
+  files: NativeGraphFile[];
+  configs: EngineRequestConfig[];
+  buildMetadata: GraphEngineBuildMetadata;
+  sourceDirectory: string;
+  walkObservation?: string;
+}
+
+export interface NativeGraphFile extends EngineRequestFile {
+  contentHash: string;
+  size: number;
+  modifiedAt: number;
+  extractorVersion: string;
+}
+
 export interface NativeGraphRefresh {
   result: BuildResult;
   filesReextracted: number;
@@ -35,6 +50,7 @@ export interface NativeGraphRefresh {
 export interface NativeGraphBuild {
   build(candidate: string, options: GraphMaintenanceOptions): Promise<BuildResult>;
   refresh(candidate: string, options: GraphMaintenanceOptions, against: string): Promise<NativeGraphRefresh | undefined>;
+  editInputs(): NativeGraphInputs;
   observation: GraphMaintenanceInputs;
   readonly filesReextracted: number | undefined;
   assertInputsUnchanged(): void;
@@ -42,7 +58,7 @@ export interface NativeGraphBuild {
 }
 
 /** Select v5 only when the complete indexable corpus can use the engine. */
-export async function prepareNativeGraphBuild(root: string, base?: string, previous?: string): Promise<NativeGraphBuild | undefined> {
+export async function prepareNativeGraphBuild(root: string, base?: string, previous?: string, resident = false): Promise<NativeGraphBuild | undefined> {
   if (process.env.MEX_GRAPH_STORAGE !== "v5") return undefined;
   const languages = graphEngineLanguages();
   if (languages.length === 0) return undefined;
@@ -82,22 +98,19 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
       return bytes.length <= MAX_WALK_BYTES ? deflateRawSync(bytes, { level: 1 }).toString("hex") : undefined;
     });
     const manifest = graphManifestFromSources(root, configs, ENGINE_GRAPH_SCHEMA_VERSION);
-    const binary = graphEngineBinary();
-    if (!binary) throw new Error("Schema v5 requires a mex-graph binary. Set MEX_GRAPH_ENGINE to the compatible engine.");
-    const version = timeGraphPhase("native.version", () => graphEngineVersion(binary));
-    if ("problem" in version) throw new Error(`Schema v5 engine unavailable: ${version.problem}.`);
-
-    const enabled = languages.flatMap(language =>
-      language === "typescript" ? [language, "tsx"] : language === "javascript" ? [language, "jsx"] : [language]);
+    const binary = resident ? undefined : graphEngineBinary();
+    if (!resident) {
+      if (!binary) throw new Error("Schema v5 requires a mex-graph binary. Set MEX_GRAPH_ENGINE to the compatible engine.");
+      const version = timeGraphPhase("native.version", () => graphEngineVersion(binary));
+      if ("problem" in version) throw new Error(`Schema v5 engine unavailable: ${version.problem}.`);
+    }
+    const enabled = nativeEngineLanguageIds(languages);
     const files = corpus.files.map(file => {
-      const family = graphEngineLanguageFamily(detectLanguage(file.relPath));
-      const extractor = graphEngineHandlesEcmaScript([family])
-        ? TYPESCRIPT_COMPILER_EXTRACTOR_VERSION : TREE_SITTER_EXTRACTOR_VERSION;
       return {
         path: file.relPath, size: file.size, modifiedAt: file.modifiedAt,
         contentHash: file.contentHash, sourceIdentity: file.identity, utf8Size: file.utf8Size,
         ...(staged.has(file.relPath) ? { staged: spool.capturedName(file.relPath) } : {}),
-        extractorVersion: extractor + engineExtractorSuffix([family]),
+        extractorVersion: nativeFileExtractorVersion(file.relPath),
       };
     });
     const currentPaths = new Set(files.map(file => file.path));
@@ -131,20 +144,23 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
     };
     const factsCache = join(graphLocation(root).directory, "facts");
     let filesReextracted: number | undefined;
+    const editInputs = (): NativeGraphInputs => {
+      const coverage = timeGraphPhase("native.coverage", () => observed?.coverage ?? JSON.parse(captureGraphCoverage(root, V5_COVERAGE_CACHE_LIMITS)) as CoverageCache | null);
+      return {
+        files, configs: nativeEngineConfigs(languages, configs),
+        buildMetadata: { ...metadata, coverage: nativeCoverageMetadata(coverage) },
+        sourceDirectory: spool.directory, ...(walkObservation ? { walkObservation } : {}),
+      };
+    };
     const runCandidate = async (candidate: string, options: GraphMaintenanceOptions, refresh?: { base: string; changed: string[] }) => {
       const started = Date.now();
-      const coverage = timeGraphPhase("native.coverage", () => observed?.coverage ?? JSON.parse(captureGraphCoverage(root, V5_COVERAGE_CACHE_LIMITS)) as CoverageCache | null);
-      metadata.coverage = coverage
-        ? { policyHash: coveragePolicyHash(coverage.policy), ...coverage.histogram, directories: coverage.directories }
-        : null;
+      if (!binary) throw new Error("The resident capture has no one-shot engine.");
       const mode = refresh ? "refresh" : "build";
       const run = await timeGraphPhaseAsync(`native.${mode}`, () => runGraphEngine(binary, {
-        mode, root, files, languages: enabled, output: candidate, sourceDirectory: spool.directory, factsCache, observationRoot,
-        ...(walkObservation ? { walkObservation } : {}),
+        mode, root, languages: enabled, output: candidate, factsCache, observationRoot,
+        ...editInputs(),
         ...refresh,
-        ...(graphEngineHandlesEcmaScript(languages) ? { configs: [...configs].map(([path, source]) => ({ path, source })) } : {}),
         limits: { memoryMb: 2048, deadlineMs: 30 * 60_000 },
-        buildMetadata: metadata,
       }, {
         signal: options.signal,
         onEvent: event => {
@@ -185,6 +201,7 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
     };
     handedOff = true;
     return {
+      editInputs,
       get filesReextracted() { return filesReextracted; },
       async build(candidate, options) {
         return (await runCandidate(candidate, options))!.result;
@@ -220,6 +237,25 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
       spool.dispose();
     }
   }
+}
+
+export function nativeEngineLanguageIds(languages: readonly string[]): string[] {
+  return languages.flatMap(language => language === "typescript" ? [language, "tsx"] : language === "javascript" ? [language, "jsx"] : [language]);
+}
+
+export function nativeEngineConfigs(languages: readonly string[], configs: ReadonlyMap<string, string>): EngineRequestConfig[] {
+  return graphEngineHandlesEcmaScript(languages) ? [...configs].map(([path, source]) => ({ path, source })) : [];
+}
+
+export function nativeFileExtractorVersion(path: string): string {
+  const family = graphEngineLanguageFamily(detectLanguage(path));
+  const extractor = graphEngineHandlesEcmaScript([family])
+    ? TYPESCRIPT_COMPILER_EXTRACTOR_VERSION : TREE_SITTER_EXTRACTOR_VERSION;
+  return extractor + engineExtractorSuffix([family]);
+}
+
+export function nativeCoverageMetadata(coverage: CoverageCache | null): GraphEngineBuildMetadata["coverage"] {
+  return coverage ? { policyHash: coveragePolicyHash(coverage.policy), ...coverage.histogram, directories: coverage.directories } : null;
 }
 
 function refreshBaseHashes(file: string): Map<string, string> | undefined {

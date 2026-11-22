@@ -73,6 +73,26 @@ export interface WarmEditResult {
   phases: Record<string, number>;
 }
 
+export interface WarmGraphCheckout {
+  lastEditAt: number;
+  edit(paths: readonly string[]): Promise<WarmEditResult>;
+  close(): void;
+}
+
+/** Use the engine for its v5 publications and keep the compiler route for v4. */
+export async function openWarmCheckout(root: string): Promise<WarmGraphCheckout> {
+  if (process.env.MEX_GRAPH_STORAGE === "v5") {
+    const location = graphLocation(root);
+    const pointer = readGraphPointer(location);
+    if (pointer) {
+      const { NativeWarmCheckout } = await import("./native-warm.js");
+      const resident = await NativeWarmCheckout.open(location, pointer);
+      if (resident) return resident;
+    }
+  }
+  return WarmCheckout.open(root);
+}
+
 /** What one compiler file's stored capture says, kept for every corpus file. */
 interface FileFacts {
   projectId: string;
@@ -158,7 +178,7 @@ export class WarmCheckout {
     const base = join(location.directory, pointer.base);
     const opened = openSqlite(base, { immutable: true, readOnly: true });
     try {
-      if (hasV5GraphSchema(opened)) throw new Error("Schema v5 graphs use a normal graph refresh for edits.");
+      if (hasV5GraphSchema(opened)) throw new Error("Schema v5 graphs use the resident warm checkout.");
     } finally { opened.close(); }
     const working = graphTemporary(location);
     cloneGraph(base, working);

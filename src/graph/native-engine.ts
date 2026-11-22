@@ -41,24 +41,28 @@ export interface GraphEngineBuildMetadata {
   skipped: Array<{ path: string; reason: string }>;
 }
 
+export interface EngineRequestFile {
+  path: string;
+  size?: number;
+  modifiedAt?: number;
+  contentHash?: string;
+  staged?: string;
+  extractorVersion?: string;
+  sourceIdentity?: string;
+  utf8Size?: number;
+}
+
+export type EngineRequestConfig = string | { path: string; source: string };
+
 export interface EngineRequest {
   mode: "build" | "refresh" | "stage";
   root: string;
-  files: Array<{
-    path: string;
-    size?: number;
-    modifiedAt?: number;
-    contentHash?: string;
-    staged?: string;
-    extractorVersion?: string;
-    sourceIdentity?: string;
-    utf8Size?: number;
-  }>;
+  files: EngineRequestFile[];
   sourceDirectory?: string;
   observationRoot?: string;
   walkObservation?: string;
   buildMetadata?: GraphEngineBuildMetadata;
-  configs?: Array<string | { path: string; source: string }>;
+  configs?: EngineRequestConfig[];
   languages: string[];
   /** Ask stage to include framework rows when the binary supports them. */
   frameworks?: boolean;
@@ -148,6 +152,24 @@ function engineEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(keep.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]]));
 }
 
+export function writeEngineRequest(path: string, request: EngineRequest | (Omit<EngineRequest, "mode"> & {
+  mode: "serve"; overlay?: string;
+})): void {
+  writeFileSync(path, JSON.stringify({ contract: GRAPH_ENGINE_CONTRACT, ...request }), { mode: 0o600, flag: "wx" });
+}
+
+export function spawnGraphEngine(binary: string, mode: EngineRequest["mode"] | "serve", requestPath: string) {
+  return spawn(binary, [mode, "--request", requestPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    env: {
+      ...engineEnv(),
+      MEX_GRAPH_PHASE_TIMINGS: process.env.MEX_GRAPH_PHASE_TIMINGS,
+      ...phaseTimingsWorkerEnv(),
+    },
+  });
+}
+
 function removeCandidate(output: string): void {
   for (const suffix of ["", "-journal", "-wal", "-shm"]) rmSync(output + suffix, { force: true });
 }
@@ -166,17 +188,9 @@ export function runGraphEngine(
   const requestPath = request.output
     ? `${request.output}.request.json`
     : join(options.requestDir ?? tmpdir(), `mex-graph-request-${process.pid}-${randomBytes(6).toString("hex")}.json`);
-  writeFileSync(requestPath, JSON.stringify({ contract: GRAPH_ENGINE_CONTRACT, ...request }), { mode: 0o600, flag: "wx" });
+  writeEngineRequest(requestPath, request);
   return new Promise((resolvePromise) => {
-    const child = spawn(binary, [request.mode, "--request", requestPath], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      env: {
-        ...engineEnv(),
-        MEX_GRAPH_PHASE_TIMINGS: process.env.MEX_GRAPH_PHASE_TIMINGS,
-        ...phaseTimingsWorkerEnv(),
-      },
-    });
+    const child = spawnGraphEngine(binary, request.mode, requestPath);
     const run: EngineRun = { exitCode: null, signal: null };
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {

@@ -25,6 +25,7 @@ import {
   writeSync,
   type Stats,
 } from "node:fs";
+import { open as openFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   Diagnostic,
@@ -37,23 +38,25 @@ import type {
 } from "../team/contracts/graph.js";
 import { DB_SCHEMA_VERSION, openGraphDatabase, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, v5Rows } from "./db/v5.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphInvariants, inspectV5GraphSchema, v5Rows } from "./db/v5.js";
 import { GraphStore } from "./db/store.js";
 import { FingerprintStore, transferGroundingBaselines } from "./fingerprint-store.js";
 import { installGraphViews, overlayBase } from "./overlay.js";
-import { prepareNativeGraphBuild, type NativeGraphBuild, type NativeGraphRefresh } from "./native-build.js";
-import { auditRecordProvenInProcess, recordAuditedDatabase } from "./audit-record.js";
+import { prepareNativeGraphBuild, type NativeGraphBuild, type NativeGraphFile, type NativeGraphRefresh } from "./native-build.js";
+import type { GraphEngineBuildMetadata } from "./native-engine.js";
+import { auditRecordProvenInProcess, holdsAuditedBytes, recordAuditedDatabase } from "./audit-record.js";
 import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
 import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing, restoreGraphAliases } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
   inspectGraphStatus,
+  quickCheck,
   type GraphMaintenanceInputs,
 } from "./status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
-import { flushGraphPhaseTimings, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
+import { flushGraphPhaseTimings, recordGraphPhase, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 
 const HASH_CHUNK_BYTES = 1024 * 1024;
 
@@ -977,9 +980,138 @@ function acquireMaintenanceLock(paths: MaintenancePaths, _options: InternalMaint
   catch (error) { throw new GraphMaintenanceError((error as { code?: string }).code === "GRAPH_MAINTENANCE_LOCKED" ? "GRAPH_MAINTENANCE_LOCKED" : "GRAPH_MAINTENANCE_PATH_UNSAFE", errorMessage(error)); }
 }
 
+export interface WarmGraphArtifact {
+  path: string;
+  size: number;
+  digest: string;
+  assertCurrent(): void;
+}
+
+/** Bind a resident checkout once to the audited base and overlay byte identities. */
+export function pinWarmGraphArtifact(path: string, base?: WarmGraphArtifact): WarmGraphArtifact {
+  assertClearSidecars(path);
+  const canonical = realpathSync.native(path);
+  const before = lstatSync(path, { bigint: true });
+  const stat = lstatSync(path);
+  if (!before.isFile()) throw new Error("The published graph is not a regular file.");
+  const identity = captureDatabaseIdentity(path);
+  const artifact = holdWarmGraphArtifact(canonical, identity, before);
+  if (!holdsAuditedBytes(canonical, stat, base?.path)) {
+    const db = openSqlite(path, { readOnly: true, immutable: true });
+    try {
+      if (!hasV5GraphSchema(db) || overlayBase(db) !== (base && basename(base.path))) {
+        throw new Error("The published graph has the wrong base or schema.");
+      }
+      installGraphViews(db, path);
+      const problems = [...inspectV5GraphSchema(db), ...quickCheck(db), ...inspectV5GraphInvariants(db)];
+      if (problems.length) throw new Error(`Invalid published graph: ${problems.join(", ")}.`);
+    } finally { db.close(); }
+    base?.assertCurrent();
+  }
+  artifact.assertCurrent();
+  return artifact;
+}
+
+function holdWarmGraphArtifact(path: string, identity: DatabaseIdentity, stamp = lstatSync(path, { bigint: true })): WarmGraphArtifact {
+  return {
+    path, size: identity.size, digest: identity.digest,
+    assertCurrent() {
+      assertClearSidecars(path);
+      const now = lstatSync(path, { bigint: true });
+      if (!now.isFile() || now.ino !== stamp.ino || now.dev !== stamp.dev || now.size !== stamp.size
+        || now.mtimeNs !== stamp.mtimeNs || now.ctimeNs !== stamp.ctimeNs
+        || ((now.ino === 0n || now.ctimeNs % 1_000_000n === 0n) && captureDatabaseIdentityUntimed(path, undefined, false).digest !== identity.digest)) {
+        throw new Error("The published graph changed since the resident engine opened it.");
+      }
+    },
+  };
+}
+
+interface NativeWarmPublication {
+  location: GraphLocation;
+  base: WarmGraphArtifact;
+  previous: WarmGraphArtifact;
+  output: string;
+  result: { files: number; nodes: number; edges: number; shadowedFiles?: number | null };
+  expected: ReadonlyMap<string, NativeGraphFile>;
+  requiredShadows: ReadonlySet<string>;
+  metadata: GraphEngineBuildMetadata;
+  assertCurrent(): void;
+  verifyInputs(): Promise<boolean>;
+}
+
+/** Audit changed rows against the pinned base, then publish under the caller's writer lease. */
+export async function publishNativeWarmOverlay(input: NativeWarmPublication): Promise<{
+  artifact: WarmGraphArtifact; publishedAt: number;
+} | undefined> {
+  const { location, base, previous, output, result, expected, requiredShadows, metadata } = input;
+  input.assertCurrent();
+  timeGraphPhase("native.warm.continuity", () => restoreStandaloneContinuity(previous.path, output, true));
+  assertClearSidecars(output);
+  const identity = captureDatabaseIdentity(output);
+  const validating = performance.now();
+  const db = openSqlite(output, { readOnly: true, immutable: true });
+  try {
+    if (!hasV5GraphSchema(db) || overlayBase(db) !== basename(base.path)) throw new Error("The resident candidate has the wrong base or schema.");
+    installGraphViews(db, output);
+    const problems = [...inspectV5GraphSchema(db), ...quickCheck(db), ...inspectV5GraphInvariants(db)];
+    if (problems.length) throw new Error(`Invalid resident graph candidate: ${problems.join(", ")}.`);
+
+    const snapshot = db.prepare(`SELECT indexed_at AS indexedAt, indexed_branch AS indexedBranch,
+      lower(hex(indexed_head)) AS head, compiler_version AS compilerVersion, extractor_version AS extractorVersion,
+      resolver_version AS resolverVersion, lower(hex(grammar_hash)) AS grammarHash, lower(hex(config_hash)) AS configHash,
+      lower(hex(manifest_hash)) AS manifestHash, lower(hex(corpus_digest)) AS sourceCorpusDigest,
+      source_count AS sources FROM main.snapshot`).get() as Partial<GraphEngineBuildMetadata> & { head: string; sources: number };
+    if (!snapshot || snapshot.sources !== expected.size || result.files !== expected.size || (snapshot.head || null) !== metadata.indexedHead
+      || (["indexedAt", "indexedBranch", "compilerVersion", "extractorVersion", "resolverVersion", "grammarHash",
+        "configHash", "manifestHash", "sourceCorpusDigest"] as const).some(key => snapshot[key] !== metadata[key])) {
+      throw new Error("The resident graph candidate does not describe the observed checkout.");
+    }
+    const shadows = new Set<string>();
+    const files = db.prepare(`SELECT s.path, lower(hex(f.content_hash)) AS hash, f.size, f.extractor_version AS extractor
+      FROM main.shadow_files s LEFT JOIN main.files f USING(path)`).iterate() as Iterable<{
+      path: string; hash: string; size: number | null; extractor: string | null;
+    }>;
+    for (const row of files) {
+      const wanted = expected.get(row.path);
+      if (wanted ? row.hash !== wanted.contentHash || row.size !== wanted.size || row.extractor !== wanted.extractorVersion : row.size !== null) {
+        throw new Error("The resident overlay has an unexpected source row.");
+      }
+      shadows.add(row.path);
+    }
+    if (shadows.size !== result.shadowedFiles || [...requiredShadows].some(path => !shadows.has(path))) {
+      throw new Error("The resident overlay omitted a changed source.");
+    }
+  } finally { db.close(); }
+  recordGraphPhase("native.warm.validate", performance.now() - validating);
+  revalidateLiveDatabase(output, identity);
+  // The engine and the continuity writer both closed their transactions.
+  // Flush the sidecar-free candidate while the engine proves source stamps.
+  const synced = timeGraphPhaseAsync("native.warm.finalize", async () => {
+    const handle = await openFile(output, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    try { await handle.sync(); } finally { await handle.close(); }
+  });
+  const [verified, durable] = await Promise.allSettled([input.verifyInputs(), synced]);
+  if (durable.status === "rejected") throw durable.reason;
+  if (verified.status === "rejected") throw verified.reason;
+  if (!verified.value) return undefined;
+  input.assertCurrent();
+  assertClearSidecars(output);
+  revalidateLiveDatabase(output, identity);
+  const file = timeGraphPhase("native.warm.publish", () => publishGraphOverlay(location, output, basename(base.path), {
+    head: metadata.indexedHead, files: result.files, nodes: result.nodes, edges: result.edges,
+    build: { finishedAt: new Date().toISOString(), overlayFiles: result.shadowedFiles },
+  }));
+  const publishedAt = performance.now();
+  recordAuditedDatabase(realpathSync.native(file), identity.size, identity.digest, {
+    canonicalDbPath: base.path, size: base.size, digest: base.digest,
+  });
+  return { artifact: holdWarmGraphArtifact(file, identity), publishedAt };
+}
+
 /**
  * Record a graph file this process wrote and checked as audited, so readers
- * need not audit it again (the warm path publishes overlays this way). @internal
+ * need not audit it again (the compiler warm path publishes overlays this way). @internal
  */
 export function recordWrittenGraphAudited(path: string): void {
   const identity = captureDatabaseIdentity(path);
@@ -995,14 +1127,14 @@ function captureDatabaseIdentity(path: string): DatabaseIdentity {
  * that are hashed are also written to that descriptor, so the copy is bound
  * to the digest in one read.
  */
-function captureDatabaseIdentityUntimed(path: string, copyTo?: number): DatabaseIdentity {
+function captureDatabaseIdentityUntimed(path: string, copyTo?: number, useMemo = true): DatabaseIdentity {
   assertRegularNonSymlink(path, "graph database");
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const fd = openSync(path, constants.O_RDONLY | noFollow);
   try {
     const before = fstatSync(fd);
     // Bytes this operation already hashed with the identity unchanged since.
-    const remembered = copyTo === undefined ? recallDigest(path, before) : undefined;
+    const remembered = useMemo && copyTo === undefined ? recallDigest(path, before) : undefined;
     if (remembered !== undefined) {
       const pathNow = lstatSync(path);
       if (sameStatIdentity(before, pathNow) && !pathNow.isSymbolicLink()) {

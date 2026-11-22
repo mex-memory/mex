@@ -13,7 +13,7 @@ import { FingerprintStore } from "../fingerprint-store.js";
 import { rebuildGraph, refreshGraph, type GraphMaintenanceExecutionOptions } from "../maintenance.js";
 import { graphEngineBinary } from "../native-engine.js";
 import { currentGraphPath, graphLocation, readGraphPointer } from "../storage.js";
-import { WarmCheckout } from "../warm.js";
+import { openWarmCheckout } from "../warm.js";
 
 const engineBinary = graphEngineBinary();
 let scratch: string | undefined;
@@ -126,7 +126,7 @@ describe.skipIf(!engineBinary)("schema v5 with the Rust writer", () => {
     } finally { db.close(); }
 
     vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", undefined);
-    expect(() => WarmCheckout.open(root)).toThrow(/Schema v5 graphs use a normal graph refresh/);
+    await expect(openWarmCheckout(root)).rejects.toThrow(/selected engine languages/);
     vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "typescript,javascript");
     vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
     expect((await refreshGraph(root)).status.schemaVersion).toBe(4);

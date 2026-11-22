@@ -38,7 +38,7 @@ export class BackgroundGraph {
     (await this.warm()).collect(directory);
   }
 
-  /** Run the registry, which also queues cold refreshes for engine-backed edits. */
+  /** Run warm edits and queue refreshes for checkouts that cooled. */
   async run(now = Date.now()): Promise<void> {
     if (this.registry?.busy) await this.registry.run();
     if (now - this.lastChecks >= 60 * 60_000) {

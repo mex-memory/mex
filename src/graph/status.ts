@@ -2987,7 +2987,7 @@ function readSnapshot(raw: string | undefined): { snapshot?: GraphSnapshot; erro
     : { error: "graph_snapshot_v1 has invalid JSON, fields, or version." };
 }
 
-function quickCheck(db: SqliteDatabase, schema: "main" | "base" = "main"): string[] {
+export function quickCheck(db: SqliteDatabase, schema: "main" | "base" = "main"): string[] {
   const rows = db.prepare(`PRAGMA ${schema}.quick_check(100)`).all() as Array<Record<string, unknown>>;
   return rows.map((row) => String(row.quick_check ?? Object.values(row)[0] ?? ""))
     .filter((result) => result.toLowerCase() !== "ok");
