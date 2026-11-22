@@ -32,6 +32,7 @@ impl Checkout {
             json!({
                 "contract": CONTRACT_VERSION, "mode": mode, "root": self.0, "base": base,
                 "overlay": overlay, "output": base, "files": files, "languages": ["typescript"],
+                "configs": ["tsconfig.json"],
                 "factsCache": self.0.join("facts"),
                 "limits": {"memoryMb": 1024, "deadlineMs": 60000}
             })
@@ -214,4 +215,53 @@ fn starts_on_a_published_overlay_and_rejects_an_unsafe_edit() {
     );
     assert!(!output.exists());
     assert!(live.exists());
+}
+
+#[test]
+fn keeps_captured_config_until_an_edit_replaces_it() {
+    let checkout = Checkout::new("config");
+    let configuration = checkout.0.join("tsconfig.json");
+    std::fs::write(
+        &configuration,
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@leaf":["./leaf.ts"]}}}"#,
+    )
+    .unwrap();
+    let (base, files) = checkout.base();
+    let mut server = Server::start(&checkout.request("serve", &base, &files, None));
+    std::fs::write(&configuration, "{}").unwrap();
+    let caller = checkout.write(
+        "use.ts",
+        "import {leaf} from '@leaf'; export function use() { return leaf(); }\n",
+    );
+    let output = checkout.0.join("candidate.db");
+    assert_eq!(
+        server.send(json!({"type":"edit","id":1,"output":output,"files":[caller]}))["type"],
+        "result"
+    );
+    let call_kind: i64 = Connection::open(&base)
+        .unwrap()
+        .query_row(
+            "SELECT id FROM edge_kinds WHERE name = 'calls'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let has_call = || {
+        Connection::open(&output)
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM edges WHERE kind = ?1 AND target_name = 'leaf')",
+                [call_kind],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    };
+    assert!(has_call());
+    assert_eq!(
+        server.send(json!({"type":"discard","id":1}))["type"],
+        "discarded"
+    );
+    assert_eq!(server.send(json!({"type":"edit","id":2,"output":output,"files":[caller],"configs":["tsconfig.json"]}))["type"], "result");
+    assert!(!has_call());
+    assert_eq!(server.eof(), Some(0));
 }

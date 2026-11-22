@@ -81,6 +81,7 @@ impl Session {
     pub(crate) fn open(mut request: Request) -> Result<Self, JobError> {
         let _timer = Timer::start("resident.open");
         request.root = request.root.canonicalize().map_err(JobError::request_io)?;
+        request.configs = capture_configs(&request.root, &request.configs);
         let base_path = request.base.as_deref().expect("validated serve base");
         let base = refresh::open_base(base_path)?;
         let base_files = base.files().map_err(JobError::write)?;
@@ -213,7 +214,10 @@ impl Session {
             base: self.request.base.clone(),
             overlay: None,
             files,
-            configs: edit.configs.unwrap_or_else(|| self.request.configs.clone()),
+            configs: edit.configs.map_or_else(
+                || self.request.configs.clone(),
+                |configs| capture_configs(&self.request.root, &configs),
+            ),
             languages: self.request.languages.clone(),
             frameworks: true,
             output: Some(edit.output),
@@ -498,4 +502,14 @@ fn pack(facts: &FileFacts) -> Result<ResidentFacts, JobError> {
 
 fn sort_inputs(files: &mut [RequestFile]) {
     files.sort_unstable_by(|left, right| left.path.encode_utf16().cmp(right.path.encode_utf16()));
+}
+
+fn capture_configs(root: &Path, configs: &[RequestConfig]) -> Vec<RequestConfig> {
+    read_configs(root, configs)
+        .into_iter()
+        .map(|(path, source)| RequestConfig::Source {
+            path: path.into(),
+            source: source.into_owned(),
+        })
+        .collect()
 }
