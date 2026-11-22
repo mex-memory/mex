@@ -19,11 +19,11 @@ export const FIRST_BATCH_PROPOSALS = 10;
 
 const baseOutputAllowance = 2400;
 const anchorOutputPerRule = 192;
-const inputOverhead = 8192;
+export const inputOverhead = 8192;
 // All five measured best-only Codex replay calls reported the same cached
 // prefix. Reserve it separately from the prompt and uncached headroom so both
 // token ceilings and the model's cache-read price see it.
-const codexCacheRead = 12_288;
+export const codexCacheRead = 12_288;
 const iso = z.string().datetime({ offset: true });
 const slug = z.object({ host: z.enum(["github.com", "gitlab.com"]), slug: z.string() }).strict()
   .refine(value => repository(value.host, value.slug)?.slug === value.slug);

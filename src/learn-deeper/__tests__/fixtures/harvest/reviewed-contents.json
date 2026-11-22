@@ -1,0 +1,41 @@
+{
+  "commit": "dddddddddddddddddddddddddddddddddddddddd",
+  "headRepository": {
+    "nameWithOwner": "fern-fork/transports"
+  },
+  "reviews": [
+    {
+      "id": "PRRT_fixture1",
+      "shortHunk": "@@ -1,6 +1,6 @@\n export function changedEntry() {\n   const label = configuredName();\n-  return oldValue();\n+  return fallback(label);",
+      "contents": {
+        "type": "file",
+        "encoding": "base64",
+        "path": "src/changed.ts",
+        "size": 408,
+        "content": "ZXhwb3J0IGZ1bmN0aW9uIGNoYW5nZWRFbnRyeSgpIHsKICBjb25zdCBsYWJl\nbCA9IGNvbmZpZ3VyZWROYW1lKCk7CiAgcmV0dXJuIGZhbGxiYWNrKGxhYmVs\nKTsKICBhdWRpdENvbXBsZXRlKGxhYmVsKTsKICBjbGVhckV4cGlyZWQoKTsK\nfQovLyByZXZpZXdlZCB0YWlsIDEKLy8gcmV2aWV3ZWQgdGFpbCAyCi8vIHJl\ndmlld2VkIHRhaWwgMwovLyByZXZpZXdlZCB0YWlsIDQKLy8gcmV2aWV3ZWQg\ndGFpbCA1Ci8vIHJldmlld2VkIHRhaWwgNgovLyByZXZpZXdlZCB0YWlsIDcK\nLy8gcmV2aWV3ZWQgdGFpbCA4Ci8vIHJldmlld2VkIHRhaWwgOQovLyByZXZp\nZXdlZCB0YWlsIDEwCi8vIHJldmlld2VkIHRhaWwgMTEKLy8gcmV2aWV3ZWQg\ndGFpbCAxMgovLyByZXZpZXdlZCB0YWlsIDEzCi8vIHJldmlld2VkIHRhaWwg\nMTQK\n"
+      }
+    },
+    {
+      "id": "PRRT_fixture3",
+      "shortHunk": "@@ -1,6 +1,6 @@\n export function outdatedEntry() {\n   const label = outdatedName();\n-  return oldValue();\n+  return stable(label);",
+      "contents": {
+        "type": "file",
+        "encoding": "base64",
+        "path": "src/outdated.ts",
+        "size": 408,
+        "content": "ZXhwb3J0IGZ1bmN0aW9uIG91dGRhdGVkRW50cnkoKSB7CiAgY29uc3QgbGFi\nZWwgPSBvdXRkYXRlZE5hbWUoKTsKICByZXR1cm4gc3RhYmxlKGxhYmVsKTsK\nICBvdXRkYXRlZEF1ZGl0KGxhYmVsKTsKICBvdXRkYXRlZENsZWFudXAoKTsK\nfQovLyByZXZpZXdlZCB0YWlsIDEKLy8gcmV2aWV3ZWQgdGFpbCAyCi8vIHJl\ndmlld2VkIHRhaWwgMwovLyByZXZpZXdlZCB0YWlsIDQKLy8gcmV2aWV3ZWQg\ndGFpbCA1Ci8vIHJldmlld2VkIHRhaWwgNgovLyByZXZpZXdlZCB0YWlsIDcK\nLy8gcmV2aWV3ZWQgdGFpbCA4Ci8vIHJldmlld2VkIHRhaWwgOQovLyByZXZp\nZXdlZCB0YWlsIDEwCi8vIHJldmlld2VkIHRhaWwgMTEKLy8gcmV2aWV3ZWQg\ndGFpbCAxMgovLyByZXZpZXdlZCB0YWlsIDEzCi8vIHJldmlld2VkIHRhaWwg\nMTQK\n"
+      }
+    },
+    {
+      "id": "PRRT_fixture4",
+      "shortHunk": "@@ -1,6 +1,6 @@\n export function renamedEntry() {\n   const label = renamedName();\n-  return oldValue();\n+  return fallback(label);",
+      "contents": {
+        "type": "file",
+        "encoding": "base64",
+        "path": "src/old-name.ts",
+        "size": 406,
+        "content": "ZXhwb3J0IGZ1bmN0aW9uIHJlbmFtZWRFbnRyeSgpIHsKICBjb25zdCBsYWJl\nbCA9IHJlbmFtZWROYW1lKCk7CiAgcmV0dXJuIGZhbGxiYWNrKGxhYmVsKTsK\nICByZW5hbWVkQXVkaXQobGFiZWwpOwogIHJlbmFtZWRDbGVhbnVwKCk7Cn0K\nLy8gcmV2aWV3ZWQgdGFpbCAxCi8vIHJldmlld2VkIHRhaWwgMgovLyByZXZp\nZXdlZCB0YWlsIDMKLy8gcmV2aWV3ZWQgdGFpbCA0Ci8vIHJldmlld2VkIHRh\naWwgNQovLyByZXZpZXdlZCB0YWlsIDYKLy8gcmV2aWV3ZWQgdGFpbCA3Ci8v\nIHJldmlld2VkIHRhaWwgOAovLyByZXZpZXdlZCB0YWlsIDkKLy8gcmV2aWV3\nZWQgdGFpbCAxMAovLyByZXZpZXdlZCB0YWlsIDExCi8vIHJldmlld2VkIHRh\naWwgMTIKLy8gcmV2aWV3ZWQgdGFpbCAxMwovLyByZXZpZXdlZCB0YWlsIDE0\nCg==\n"
+      }
+    }
+  ]
+}
