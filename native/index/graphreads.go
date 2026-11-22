@@ -235,14 +235,13 @@ func (r *Reader) recentCodeCandidates(ctx context.Context, targets, files []stri
 		}
 		return rows.Err() == nil
 	}
+	whole := false
 	for _, target := range targets {
 		if !filepath.IsLocal(filepath.FromSlash(target)) {
 			continue
 		}
 		if target == "." {
-			if !query("1") {
-				return nil, false
-			}
+			whole = true // after the named files, and only if it fits
 			continue
 		}
 		dir := strings.TrimSuffix(target, "/")
@@ -256,6 +255,18 @@ func (r *Reader) recentCodeCandidates(ctx context.Context, targets, files []stri
 	}
 	for _, file := range files {
 		if filepath.IsLocal(filepath.FromSlash(file)) && !seen[file] && !query("path=?", file) {
+			return nil, false
+		}
+	}
+	// A command can name the whole checkout in passing (a bare "." or a
+	// root glob). On a large checkout that is past the cap: check what the
+	// command names more precisely instead of giving up on all of it.
+	if whole {
+		var total int
+		if err := r.db.QueryRowContext(ctx, "SELECT count(*) FROM paths WHERE "+codeFilesWhere).Scan(&total); err != nil {
+			return nil, false
+		}
+		if total <= MaxRecentCodeCandidates && !query("1") {
 			return nil, false
 		}
 	}

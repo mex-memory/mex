@@ -148,6 +148,11 @@ func TestRecentlyChangedCode(t *testing.T) {
 	} else if again, complete := find(t.Context(), map[string]int64{got[0].Path: got[0].Mtime}); !complete || len(again) != 0 {
 		t.Fatalf("versions already recorded: %v", again)
 	}
+	// The whole checkout named in passing is past the cap here: the named
+	// file is still checked (a live Codex script named "." and a folder).
+	if got, complete := ix.RecentlyChangedCode(t.Context(), []string{".", "src/recent.ts"}, nil, now.Add(-shellCatchWindow), now, maxShellChanged, nil); !complete || len(got) != 1 || got[0].Path != "src/recent.ts" {
+		t.Fatalf("whole checkout past the cap: %v, complete = %v", got, complete)
+	}
 	if got, complete := ix.RecentlyChangedCode(t.Context(), []string{"many/"}, nil, now.Add(-shellCatchWindow), now, maxShellChanged, nil); complete || len(got) != 0 {
 		t.Fatalf("over candidate cap: %v, complete = %v", got, complete)
 	}
