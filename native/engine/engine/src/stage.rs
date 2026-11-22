@@ -25,6 +25,7 @@ pub(super) fn write(
         extracted,
         root,
         configs,
+        true,
         |file| file.emit(&mut counts),
         |path, reason| {
             emit(&serde_json::json!({
@@ -46,6 +47,7 @@ fn project(
     extracted: &ExtractedFiles<'_>,
     root: &Path,
     configs: &[RequestConfig],
+    include_nodes: bool,
     mut file_ready: impl FnMut(StagedFile<'_>) -> Result<(), JobError>,
     mut skipped: impl FnMut(&str, &str) -> Result<(), JobError>,
 ) -> Result<(), JobError> {
@@ -67,12 +69,11 @@ fn project(
         let (index, size) = match *entry {
             ExtractedFile::Python { index, size } => (index, size),
             ExtractedFile::EcmaScript { index, size } => {
-                file_ready(
-                    ecmascript
-                        .as_ref()
-                        .expect("ECMAScript stage")
-                        .file(index, size),
-                )?;
+                file_ready(ecmascript.as_ref().expect("ECMAScript stage").file(
+                    index,
+                    size,
+                    include_nodes,
+                ))?;
                 continue;
             }
             ExtractedFile::Skipped { path, reason } => {
@@ -81,7 +82,7 @@ fn project(
             }
         };
         let facts = &extracted.facts[index];
-        let mut file = StagedFile::new(facts, size, &ids[index]);
+        let mut file = StagedFile::new(facts, size, &ids[index], include_nodes);
         while let Some(edge) = edges.next_if(|edge| edge.from.0 == index) {
             let source = node_id(&ids[index], edge.from.1);
             let target = node_id(&ids[edge.to.0], edge.to.1);
@@ -158,6 +159,18 @@ fn node_id(ids: &[Option<String>], index: usize) -> Option<&str> {
     ids.get(index).and_then(Option::as_deref)
 }
 
+fn declared_nodes<'a>(
+    facts: &'a FileFacts,
+    ids: &'a [Option<String>],
+) -> impl Iterator<Item = (&'a Def, &'a str, Option<&'a str>)> {
+    facts.defs.iter().zip(ids).filter_map(move |(def, id)| {
+        let parent = usize::try_from(def.parent)
+            .ok()
+            .and_then(|index| node_id(ids, index));
+        Some((def, id.as_deref()?, parent))
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StagedFile<'a> {
@@ -177,7 +190,12 @@ struct StagedFile<'a> {
 }
 
 impl<'a> StagedFile<'a> {
-    fn new(facts: &'a FileFacts, size: u64, ids: &'a [Option<String>]) -> Self {
+    fn new(
+        facts: &'a FileFacts,
+        size: u64,
+        ids: &'a [Option<String>],
+        include_nodes: bool,
+    ) -> Self {
         let mut file = Self {
             event_type: "staged",
             path: &facts.path,
@@ -192,19 +210,14 @@ impl<'a> StagedFile<'a> {
             imports: Vec::new(),
         };
         let compiler = facts.language != LANGUAGE;
-        for (def, id) in facts.defs.iter().zip(ids) {
-            let Some(id) = id.as_deref() else { continue };
-            let parent = usize::try_from(def.parent)
-                .ok()
-                .and_then(|index| node_id(ids, index));
-            let node = StagedNode::new(facts, def, id, parent);
+        for (def, id, parent) in declared_nodes(facts, ids) {
             if let Some(parent) = parent {
                 file.edges.push(StagedEdge {
                     source: parent,
                     target: id,
                     kind: "contains",
-                    line: node.start_line,
-                    column: compiler.then_some(node.start_column),
+                    line: def.range.start_line + 1,
+                    column: compiler.then_some(def.range.start_col),
                     provenance: if compiler {
                         "typescript-compiler"
                     } else {
@@ -220,7 +233,9 @@ impl<'a> StagedFile<'a> {
                         .then(|| [json!({ "declarationRole": def.declaration_role })]),
                 });
             }
-            file.nodes.push(node);
+            if include_nodes {
+                file.nodes.push(StagedNode::new(facts, def, id, parent));
+            }
         }
         file
     }

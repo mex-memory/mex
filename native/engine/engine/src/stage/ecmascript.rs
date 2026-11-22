@@ -54,9 +54,9 @@ impl<'a> Stage<'a> {
         }
     }
 
-    pub(super) fn file(&self, index: usize, size: u64) -> StagedFile<'_> {
+    pub(super) fn file(&self, index: usize, size: u64, include_nodes: bool) -> StagedFile<'_> {
         let facts = &self.facts[index];
-        let mut file = StagedFile::new(facts, size, &self.ids[index]);
+        let mut file = StagedFile::new(facts, size, &self.ids[index], include_nodes);
         file.edges
             .extend(self.edges[index].iter().filter_map(|edge| self.edge(edge)));
         for resolution in &self.imports[index] {

@@ -6,7 +6,7 @@ use std::path::Path;
 use mex_graph_core::store::{EdgeEvidence, EdgeRow, FileRow, NodeRow, UnresolvedRow, Writer};
 use serde_json::Value;
 
-use super::{StagedEdge, StagedFile, node_ids, project};
+use super::{StagedEdge, StagedFile, StagedNode, declared_nodes, node_ids, project};
 use crate::job::{ExtractedFile, ExtractedFiles, JobCounts, JobError, Request, emit, read_source};
 
 pub(crate) fn write(
@@ -20,6 +20,9 @@ pub(crate) fn write(
     let mut counts = JobCounts::default();
     let mut file_keys = HashMap::new();
     let mut node_keys = HashMap::new();
+    // Resolve the integer keys before writing relationships. Inserting edges
+    // ahead of nodes forces SQLite to find deferred references each time a
+    // target appears, while the secondary edge indexes are still absent.
     for (index, (entry, input)) in extracted.files.iter().zip(&request.files).enumerate() {
         if index.is_multiple_of(256) {
             progress("parse", index, request.files.len())?;
@@ -59,11 +62,21 @@ pub(crate) fn write(
             .map_err(write)?;
         file_keys.insert(facts.path.as_str(), file);
         counts.files += 1;
-        for id in node_ids(facts).into_iter().flatten() {
+        let ids = node_ids(facts);
+        for id in ids.iter().flatten() {
             counts.nodes += 1;
-            if node_keys.insert(id, counts.nodes as i64).is_some() {
+            if node_keys.insert(id.clone(), counts.nodes as i64).is_some() {
                 return Err(JobError::request("Duplicate public node id"));
             }
+        }
+        for (def, id, parent) in declared_nodes(facts, &ids) {
+            write_node(
+                &mut writer,
+                StagedNode::new(facts, def, id, parent),
+                file,
+                &node_keys,
+            )
+            .map_err(write)?;
         }
         if health.status == mex_graph_core::facts::ParseStatus::Failed {
             counts.coverage_gaps += 1;
@@ -102,9 +115,10 @@ pub(crate) fn write(
         extracted,
         root,
         &request.configs,
+        false,
         |file| {
             counts.edges +=
-                write_file_rows(&mut writer, &file, &file_keys, &node_keys).map_err(write)?;
+                write_relationships(&mut writer, &file, &file_keys, &node_keys).map_err(write)?;
             written += 1;
             if written.is_multiple_of(256) || written == counts.files {
                 progress("resolve", written, counts.files)?;
@@ -129,53 +143,60 @@ fn progress(phase: &str, done: usize, total: usize) -> Result<(), JobError> {
     emit(&serde_json::json!({ "type": "progress", "phase": phase, "done": done, "total": total }))
 }
 
-fn write_file_rows(
+fn write_node(
+    writer: &mut Writer,
+    node: StagedNode,
+    file_key: i64,
+    nodes: &HashMap<String, i64>,
+) -> Result<(), mex_graph_core::store::Error> {
+    let key = nodes[node.id];
+    let flags = u32::from(node.is_exported)
+        | u32::from(node.is_async.unwrap_or(false)) << 1
+        | u32::from(node.is_static.unwrap_or(false)) << 2
+        | u32::from(node.is_abstract.unwrap_or(false)) << 3
+        | u32::from(node.is_default_export) << 4;
+    writer.add_node(&NodeRow {
+        key,
+        public_id: node.id,
+        kind: node.kind.as_str(),
+        file: file_key,
+        parent: node.container_id.map(|id| nodes[id]),
+        name: node.name,
+        qualified_name: node.qualified_name,
+        span: [
+            node.start_line,
+            node.start_column,
+            node.end_line,
+            node.end_column,
+        ],
+        signature: node.signature,
+        flags,
+        body_hash: node.body_hash.as_deref(),
+        docstring: node.docstring,
+        visibility: node.visibility,
+        return_type: node.return_type,
+        decorators: node.decorators,
+        type_parameters: node.type_parameters,
+    })?;
+    if let (Some(minhash), Some(token_count), Some(_)) =
+        (node.minhash, node.token_count, &node.body_hash)
+    {
+        let packed: Vec<u8> = minhash
+            .iter()
+            .flat_map(|value| value.to_be_bytes())
+            .collect();
+        writer.add_fingerprint(key, &packed, token_count)?;
+    }
+    Ok(())
+}
+
+fn write_relationships(
     writer: &mut Writer,
     file: &StagedFile,
     files: &HashMap<&str, i64>,
     nodes: &HashMap<String, i64>,
 ) -> Result<usize, mex_graph_core::store::Error> {
     let file_key = files[file.path];
-    for node in &file.nodes {
-        let key = nodes[node.id];
-        let flags = u32::from(node.is_exported)
-            | u32::from(node.is_async.unwrap_or(false)) << 1
-            | u32::from(node.is_static.unwrap_or(false)) << 2
-            | u32::from(node.is_abstract.unwrap_or(false)) << 3
-            | u32::from(node.is_default_export) << 4;
-        writer.add_node(&NodeRow {
-            key,
-            public_id: node.id,
-            kind: node.kind.as_str(),
-            file: file_key,
-            parent: node.container_id.map(|id| nodes[id]),
-            name: node.name,
-            qualified_name: node.qualified_name,
-            span: [
-                node.start_line,
-                node.start_column,
-                node.end_line,
-                node.end_column,
-            ],
-            signature: node.signature,
-            flags,
-            body_hash: node.body_hash.as_deref(),
-            docstring: node.docstring,
-            visibility: node.visibility,
-            return_type: node.return_type,
-            decorators: node.decorators,
-            type_parameters: node.type_parameters,
-        })?;
-        if let (Some(minhash), Some(token_count), Some(_)) =
-            (node.minhash, node.token_count, &node.body_hash)
-        {
-            let packed: Vec<u8> = minhash
-                .iter()
-                .flat_map(|value| value.to_be_bytes())
-                .collect();
-            writer.add_fingerprint(key, &packed, token_count)?;
-        }
-    }
     let mut edges = 0;
     for edge in &file.edges {
         let (evidence, site_file) = edge_evidence(edge, files, file_key);
