@@ -1,4 +1,4 @@
-// Score a hand-written v5 graph and SCIP answer key.
+// Score hand-written graphs and a SCIP answer key.
 // Run with node scripts/graph-engine-bench/accuracy.selftest.mjs.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -39,8 +39,8 @@ try {
   ` });
 
   const accuracy = fileURLToPath(new URL("accuracy.mjs", import.meta.url));
-  const score = () => {
-    const { precision, recall } = JSON.parse(execFileSync(process.execPath, [accuracy, root, graphDb, scipPath]));
+  const score = (db = graphDb) => {
+    const { precision, recall } = JSON.parse(execFileSync(process.execPath, [accuracy, root, db, scipPath]));
     return { precision, recall };
   };
   const correct = score();
@@ -51,6 +51,21 @@ try {
   const corrupt = score();
   assert.deepEqual(corrupt, { precision: 0, recall: 0 });
   console.log("v5 corrupt edge", JSON.stringify(corrupt));
+
+  const v4 = join(root, "v4.db");
+  writeFileSync(join(root, "site.py"), "\n\n\n\nwire(callee)\n");
+  execFileSync("sqlite3", ["-bail", v4], { input: `
+    CREATE TABLE nodes(id, kind, name, file_path, start_line, end_line, container_id);
+    CREATE TABLE edges(source, target, kind, line, col, provenance, evidence);
+    INSERT INTO nodes VALUES ('callee', 'function', 'callee', 'app.py', 1, 2, NULL),
+                             ('caller', 'function', 'caller', 'app.py', 4, 5, NULL);
+    INSERT INTO edges VALUES ('caller', 'callee', 'calls', 5, 11, 'typescript-compiler', NULL),
+      ('callee', 'caller', 'calls', 5, 11, 'callback-synthesis',
+       '[{"wiringSite":{"filePath":"site.py","line":5,"column":5}}]');
+  ` });
+  const withCallback = score(v4);
+  assert.deepEqual(withCallback, { precision: 1, recall: 1 });
+  console.log("v4 callback with its own site", JSON.stringify(withCallback));
 
   writeFileSync(join(root, "forms.ts"), [
     'import { f as invoke } from "./lib";',

@@ -37,7 +37,21 @@ const sql = (q) => JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", `fi
 
 function loadV4() {
   const nodes = sql("SELECT id, kind, name, file_path AS file, start_line AS sl, end_line AS el, container_id AS parent FROM nodes WHERE kind <> 'file'");
-  const edges = sql("SELECT e.kind, e.line, e.col, e.target, s.file_path AS file FROM edges e JOIN nodes s ON s.id = e.source WHERE e.kind IN ('calls','instantiates') AND e.line IS NOT NULL AND e.col IS NOT NULL");
+  const hasEvidence = sql("SELECT 1 FROM pragma_table_info('edges') WHERE name = 'evidence'").length > 0;
+  const evidence = hasEvidence ? "CASE WHEN e.provenance = 'callback-synthesis' THEN e.evidence END" : "NULL";
+  const edges = sql(`
+    SELECT e.kind, e.line, e.col, e.target, s.file_path AS file, ${evidence} AS evidence
+    FROM edges e JOIN nodes s ON s.id = e.source
+    WHERE e.kind IN ('calls','instantiates') AND e.line IS NOT NULL AND e.col IS NOT NULL
+  `).flatMap(({ evidence, ...edge }) => {
+    // A synthesized edge belongs to the callee. Its site is where the
+    // argument was supplied, which may be in a different file.
+    const sites = (evidence ? JSON.parse(evidence) : []).map((entry) => entry.wiringSite)
+      .filter((site) => typeof site?.filePath === "string" && Number.isInteger(site.line) && Number.isInteger(site.column));
+    return sites.length
+      ? sites.map((site) => ({ ...edge, file: site.filePath, line: site.line, col: site.column }))
+      : [edge];
+  });
   return { nodes, edges };
 }
 
