@@ -165,11 +165,12 @@ impl Resolver<'_> {
                 Err(reason) => failure = reason,
             }
         }
-        // An unreadable star may supply a conflicting name. An explicit
-        // export above has precedence, but among stars uniqueness is required.
-        if failure != "export_missing" {
-            return Err(failure);
-        }
+        // As in TypeScript, a star whose module can't be read contributes no
+        // names, so a name the readable stars supply once still resolves. A
+        // generated module missing from the checkout (for example TypeScript's
+        // `diagnosticInformationMap.generated.ts`) would otherwise hide every
+        // name of its barrel. Without a winner, the unreadable star's reason
+        // explains the miss better than `export_missing`.
         winner.ok_or(failure)
     }
 

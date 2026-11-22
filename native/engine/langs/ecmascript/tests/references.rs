@@ -500,3 +500,29 @@ overloaded(ready); quoted(ready);\n",
     );
     assert!(graph.calls(0).contains(&(5, "app.ts", "overloaded")));
 }
+
+#[test]
+fn a_star_export_of_a_missing_module_does_not_hide_the_barrel() {
+    // As in TypeScript: the unreadable star contributes nothing, a name from
+    // one readable star resolves, and a name from two readable stars stays
+    // ambiguous.
+    let graph = Graph::new(&[
+        (
+            "utils.ts",
+            "export function helper() {}\nexport function twice() {}",
+        ),
+        ("more.ts", "export function twice() {}"),
+        (
+            "barrel.ts",
+            "export * from './utils';\nexport * from './more';\nexport * from './generated';",
+        ),
+        (
+            "app.ts",
+            "import { helper, twice, gone } from './barrel';\nhelper();\ntwice();\ngone();",
+        ),
+    ]);
+    let app = graph.files.iter().position(|f| f.path == "app.ts").unwrap();
+    assert_eq!(graph.calls(app), vec![(2, "utils.ts", "helper")]);
+    assert_eq!(graph.reason(app, 3, "twice"), Some("ambiguous_export"));
+    assert_eq!(graph.reason(app, 4, "gone"), Some("module_not_found"));
+}
