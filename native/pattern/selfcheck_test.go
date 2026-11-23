@@ -169,3 +169,23 @@ func TestStructuralSpans(t *testing.T) {
 		t.Errorf("literal spans %v", lit)
 	}
 }
+
+// One ordinary word is not evidence of a reviewed mistake. An identifier,
+// a field or a call still is, including when the call's last word is ordinary.
+func TestSelfCheckPlainEnglish(t *testing.T) {
+	objected := "provider._constraints = load()\nthis.getLayoutUsecase.execute(\nmsg = \"invalid projects\"\nstatus = \"rejected\"\nimport moment from 'moment'\n"
+	fixed := "provider.constraints = load()\nthis.getLayoutUsecase.run(\nmsg = \"packages\"\nimport { format } from 'date-fns'\n"
+	verdict := func(pattern string) Verdict {
+		return SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: pattern, Objected: objected, Fixed: fixed}, Area{})
+	}
+	for _, pattern := range []string{"invalid", "projects", "rejected"} {
+		if v := verdict(pattern); v.Keep || !strings.Contains(v.Reason, "common word") {
+			t.Errorf("%q kept (%s)", pattern, v.Reason)
+		}
+	}
+	for _, pattern := range []string{"provider._constraints", "this.getLayoutUsecase.execute(", "moment", "from 'moment'"} {
+		if v := verdict(pattern); !v.Keep {
+			t.Errorf("%q dropped: %s", pattern, v.Reason)
+		}
+	}
+}

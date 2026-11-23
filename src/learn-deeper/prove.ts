@@ -8,6 +8,7 @@
  *   own "ok" example, and not already common in its area at HEAD. One counter-example is enough to reject.
  *   A team lesson seen in 2+ PRs keeps a pattern that is common at HEAD, labelled as a migration in
  *   progress: the speed bump fires only on edits that add an occurrence.
+ *   A pattern that is only one common English word, with no identifier in it, is not evidence.
  * - History replay, at $0: later commits on the default branch that added the anti-pattern anyway are
  *   counted; a lesson the team didn't follow loses its pattern (one PR) or starts unticked (2+ PRs).
  * - Scopes, symbols and the fix range are checked against today's tree and the evidence.

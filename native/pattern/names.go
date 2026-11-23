@@ -24,6 +24,20 @@ var keywords = setOf(`
 	TODO FIXME
 `)
 
+// commonEnglish are ordinary words. One of them, with no identifier beside it,
+// occurs in edits that are not the mistake a reviewer pointed at.
+var commonEnglish = setOf(`
+	invalid project projects package packages rejected reject
+	error errors message messages value values name names type types
+	file files path paths data result results request response
+	user users option options default version change changes
+	string object function class method config command
+	output input status state item items list text line lines
+	code test tests info warning note notes
+	available matching environment conflict conflicts
+	current previous new old true false none null
+`)
+
 func setOf(s string) map[string]bool {
 	out := map[string]bool{}
 	for _, w := range strings.Fields(s) {
@@ -141,10 +155,44 @@ func nameCheck(p, code string) string {
 	local := declaredNames(code)
 	for _, w := range own {
 		if !local[w] {
-			return ""
+			return plainEnglish(p, own)
 		}
 	}
 	return "it names only " + strings.Join(own, ", ") + ", declared in the reviewed code itself"
+}
+
+// plainEnglish rejects a pattern whose only distinctive word is an ordinary
+// word and that names no identifier: no field, call, private name or camelCase.
+// `provider._constraints` and `this.getLayoutUsecase.execute(` stay.
+func plainEnglish(p string, own []string) string {
+	if len(own) != 1 || codeShaped(p) || own[0] != strings.ToLower(own[0]) || !commonEnglish[own[0]] {
+		return ""
+	}
+	return "it names only " + own[0] + ", a common word, not an identifier"
+}
+
+func codeShaped(p string) bool {
+	if strings.ContainsAny(p, "._(") {
+		return true
+	}
+	for _, w := range patternWords(p) {
+		if strings.Contains(w, "_") {
+			return true
+		}
+		lower, upper := false, false
+		for _, r := range w {
+			switch {
+			case r >= 'a' && r <= 'z':
+				lower = true
+			case r >= 'A' && r <= 'Z':
+				upper = true
+			}
+		}
+		if lower && upper {
+			return true
+		}
+	}
+	return false
 }
 
 // anchorRegions are the byte ranges of code's lines that the review comment
