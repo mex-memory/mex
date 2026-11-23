@@ -18,7 +18,8 @@ func CurrentInputsHash(checkout, directory, project string, item *entries.Item) 
 		return "", false
 	}
 	defer ev.Close()
-	defer ev.useURLRecords(directory, project)()
+	closeRecords, _ := ev.useURLRecords(directory, project, false)
+	defer closeRecords()
 	ev.files.maxBytes = judgement.MaxEvidenceFileBytes
 	checks := make([]Check, 0, len(item.Entry.Checks))
 	needsIndex := false

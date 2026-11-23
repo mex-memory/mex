@@ -12,10 +12,13 @@ import { expand } from "./store.js";
 import { stageUpkeep } from "./upkeep.js";
 import { noteProbe } from "./what.js";
 
-const ReasonKind = z.enum(["contradicted", "outdated", "wrong-scope", "noisy", "other"]);
+const ReasonKind = z.enum(["contradicted", "rejected-by-ci", "not-applicable", "other"]);
+const StoredReasonKind = z.enum([...ReasonKind.options, "outdated", "wrong-scope", "noisy"]);
 const Report = z.object({ version: z.literal(1), type: z.literal("agent-report"), reason: z.string().min(1).max(400), kind: ReasonKind,
   entry_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/u), invocation: z.string().uuid(), file: z.string().max(360).optional() }).strict();
 type Reason = Pick<z.infer<typeof Report>, "kind" | "reason" | "file">;
+const StoredReport = Report.extend({ kind: StoredReasonKind });
+type StoredReason = Pick<z.infer<typeof StoredReport>, "kind" | "reason" | "file">;
 
 export function parseWrongReason(raw: string, checkout: string, report = true): Reason {
   const value = raw.trim();
@@ -35,9 +38,10 @@ export function parseWrongReason(raw: string, checkout: string, report = true): 
   }
   if (!report) return { kind: "other", reason: raw };
   const cleaned = stripHidden(value).replace(/\s+/gu, " ");
-  if (!cleaned || Buffer.byteLength(cleaned) > 400) throw new KnowledgeError("INVALID_ENTRY", "Give a reason of 400 bytes or fewer.");
+  if (!cleaned) throw new KnowledgeError("INVALID_ENTRY", "Use contradicted <file:line>, rejected-by-ci, not-applicable, or free text.");
+  if (Buffer.byteLength(cleaned) > 400) throw new KnowledgeError("INVALID_ENTRY", "Give a reason of 400 bytes or fewer.");
   assertNoSecrets(cleaned);
-  const kind = ReasonKind.safeParse(cleaned === "not-applicable" ? "wrong-scope" : cleaned);
+  const kind = ReasonKind.safeParse(cleaned === "wrong-scope" ? "not-applicable" : cleaned);
   return { kind: kind.success ? kind.data : "other", reason: cleaned };
 }
 
@@ -70,8 +74,8 @@ export async function reportWrong(id: string, reason: Reason, options: Knowledge
   return jobId;
 }
 
-export function agentReports(home: string, project: string, checkout: string): Map<string, Reason> {
-  const reports = new Map<string, Reason>(), hooks = openHooksReadOnly({ home });
+export function agentReports(home: string, project: string, checkout: string): Map<string, StoredReason> {
+  const reports = new Map<string, StoredReason>(), hooks = openHooksReadOnly({ home });
   try {
     if (!hooks || hooks.diagnostic) return reports;
     const rows = hooks.all<{ entry_id: string; detail: string }>(`SELECT d.entry_id,f.detail FROM followups f JOIN deliveries d ON d.id=f.delivery_id
@@ -79,7 +83,7 @@ export function agentReports(home: string, project: string, checkout: string): M
       ORDER BY f.id DESC LIMIT 5000`, project, checkout);
     for (const row of rows) {
       try {
-        const parsed = Report.safeParse(JSON.parse(row.detail));
+        const parsed = StoredReport.safeParse(JSON.parse(row.detail));
         if (!parsed.success) continue;
         const { kind, reason, file, entry_hash } = parsed.data;
         const key = `${row.entry_id}:${entry_hash}`;

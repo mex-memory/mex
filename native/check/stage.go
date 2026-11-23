@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,6 +26,9 @@ type VerdictStore interface {
 
 // StageOptions say what the free stage looks at.
 type StageOptions struct {
+	// Explicit is a check someone asked for, not a live hook: it waits longer for
+	// the record, and fails rather than call evidence it couldn't read absent.
+	Explicit        bool
 	Checkout        string
 	ProjectID       string
 	MexHome         string
@@ -109,7 +113,8 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		return report, err
 	}
 	defer ev.Close()
-	defer ev.useURLRecords(opts.RecordDirectory, opts.ProjectID)()
+	closeRecords, urlFailed := ev.useURLRecords(opts.RecordDirectory, opts.ProjectID, opts.Explicit)
+	defer closeRecords()
 	asOf := ""
 	if opts.RecordDirectory != "" && opts.ProjectID != "" {
 		if ix, err := index.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout); err == nil {
@@ -138,7 +143,14 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		now = time.Now()
 	}
 	checkedAt := now.UTC().Format(time.RFC3339)
-	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+	var ruleChanges *rulechange.Snapshot
+	if opts.Explicit {
+		if ruleChanges, err = rulechange.ReadForEvaluation(opts.RecordDirectory, opts.ProjectID, opts.Checkout); err != nil {
+			return report, fmt.Errorf("read rule-change evidence: %w", err)
+		}
+	} else {
+		ruleChanges = rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+	}
 	var judged *judgement.Reader
 	judgedTried := opts.TeamOnly
 	defer func() { judged.Close() }()
@@ -201,7 +213,13 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		if eligible {
 			if !judgedTried {
 				judgedTried = true
-				judged = judgement.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+				if opts.Explicit {
+					if judged, err = judgement.OpenForEvaluation(opts.RecordDirectory, opts.ProjectID, opts.Checkout); err != nil {
+						return report, fmt.Errorf("read judge confirmations: %w", err)
+					}
+				} else {
+					judged = judgement.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+				}
 			}
 			inputs, modelHeld = judged.CacheKey(l.Entry.ID, l.Hash, evaluationHash)
 		}
@@ -245,6 +263,9 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		if v, ok := cached[l.Entry.ID]; ok && (v.Verdict == Held) != (res.Verdict == Held) {
 			report.Flipped = append(report.Flipped, l.Entry.ID)
 		}
+	}
+	if err := urlFailed(); err != nil {
+		return report, fmt.Errorf("read linked-source observations: %w", err)
 	}
 	if opts.Store == nil {
 		return report, nil

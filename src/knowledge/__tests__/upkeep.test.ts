@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,12 +11,14 @@ import { refreshRuleChanges } from "../../judge/rule-change.js";
 import { openHooksReadOnly, openRecord } from "../../record/index.js";
 import { reviewQueue } from "../../review/queue.js";
 import { AGENT_VARIABLES } from "../../repo-start/caller.js";
-import { parseWrongReason } from "../agent-report.js";
+import { agentReports, parseWrongReason } from "../agent-report.js";
 import { buildKnowledgeCommands } from "../cli.js";
 import { parseEntry, serializeEntry, type KnowledgeEntry } from "../entry.js";
+import { recordVerified } from "../gate.js";
 import { tickLearned, untickLearned } from "../mutations.js";
 import { CAPS, renderNative, type NativeFormat } from "../native-render.js";
 import { upkeepAction, upkeepScan } from "../upkeep.js";
+import { noteProbe } from "../what.js";
 import { entry } from "./fixtures.js";
 
 let scratch: string, writer: ReturnType<typeof openRecord>, project: string, checkout: string, notes: string;
@@ -52,7 +55,7 @@ beforeEach(() => {
   git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture");
   vi.stubEnv("MEX_HOME", join(scratch, "home"));
   vi.stubEnv("MEX_BACKGROUND", "1");
-  for (const key of AGENT_VARIABLES) vi.stubEnv(key, undefined);
+  for (const key of [...AGENT_VARIABLES, "MEX_SESSION_ID"]) vi.stubEnv(key, undefined);
   writer = openRecord({ projectPath: repo, create: true });
   const registered = writer.checkout(repo)!;
   project = registered.project_id; checkout = registered.path;
@@ -65,11 +68,16 @@ afterEach(() => {
 });
 
 it("parses typed and free-text reasons and validates the exact checkout line", () => {
+  const help = buildKnowledgeCommands().find(cmd => cmd.name() === "wrong")!.helpInformation();
+  for (const reason of ["contradicted <file:line>", "rejected-by-ci", "not-applicable", "free text"]) {
+    expect(help).toContain(reason);
+    expect(() => parseWrongReason(" ", checkout)).toThrow(reason);
+  }
   expect(parseWrongReason("contradicted src/logger.ts:2", checkout)).toEqual({ kind: "contradicted", reason: "contradicted src/logger.ts:2", file: "src/logger.ts" });
   for (const reason of ["contradicted", "contradicted src/logger.ts:3", "contradicted ../missing:1", "contradicted src/logger.ts:0"]) {
     expect(() => parseWrongReason(reason, checkout)).toThrow("with a line in this checkout");
   }
-  for (const [reason, kind] of [["outdated", "outdated"], ["wrong-scope", "wrong-scope"], ["noisy", "noisy"], ["rejected-by-ci", "other"], ["not-applicable", "wrong-scope"], ["The convention has changed.", "other"]]) {
+  for (const [reason, kind] of [["outdated", "other"], ["wrong-scope", "not-applicable"], ["noisy", "other"], ["rejected-by-ci", "rejected-by-ci"], ["not-applicable", "not-applicable"], ["The convention has changed.", "other"]]) {
     expect(parseWrongReason(reason!, checkout)).toEqual({ reason, kind });
   }
 });
@@ -97,12 +105,102 @@ it("reports through the real probe from an agent shell and retires only from a p
   } finally { db.close(); }
   expect(reviewQueue(options()).items[0]).toMatchObject({ upkeep: "report", reason: expect.stringContaining("contradicted src/logger.ts:1") });
   const request = { checkout, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory };
-  await refreshRuleChanges(writer, project, checkout, await evaluate(request), await position(checkout));
+  const { snapshot } = await refreshRuleChanges(writer, project, checkout, await evaluate(request), await position(checkout));
+  expect(snapshot.entries).toMatchObject([{ id: item.id, reasons: [expect.stringContaining("src/logger.ts:1")] }]);
   expect((await evaluate(request)).items?.[0]).toMatchObject({ verdict: "changed", rule_evidence: [expect.stringContaining("src/logger.ts:1")] });
   vi.stubEnv("CODEX_THREAD_ID", undefined);
   await wrong().parseAsync([item.id, "rejected-by-ci", "--json"], { from: "user" });
   expect(JSON.parse(log.mock.lastCall![0])).toMatchObject({ ok: true, status: "retired" });
   expect(writer.setting(project, `knowledge.retired.${item.id}`)).toContain("rejected-by-ci");
+});
+
+it("round-trips the canonical reason kinds and keeps historical kinds readable", async () => {
+  vi.stubEnv("CODEX_THREAD_ID", "fixture-session");
+  vi.spyOn(process, "cwd").mockReturnValue(checkout);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const reasons = [["rejected-by-ci", "rejected-by-ci"], ["not-applicable", "not-applicable"], ["wrong-scope", "not-applicable"]] as const;
+  for (const [index, [reason, kind]] of reasons.entries()) {
+    const item = save(learned(`mx_reason${index}`));
+    const wrong = buildKnowledgeCommands().find(cmd => cmd.name() === "wrong")!;
+    await wrong.parseAsync([item.id, reason, "--json"], { from: "user" });
+    expect(JSON.parse(log.mock.lastCall![0])).toMatchObject({ ok: true, kind, reason });
+    expect(agentReports(writer.location.home, project, checkout).get(`${item.id}:${item.entry_hash}`)).toMatchObject({ kind, reason });
+  }
+  for (const [index, kind] of ["outdated", "wrong-scope", "noisy"].entries()) {
+    const item = save(learned(`mx_oldkind${index}`));
+    const invocation = randomUUID();
+    const legacy = { version: 1, type: "agent-report", kind, reason: kind, entry_hash: item.entry_hash, invocation };
+    expect(noteProbe(item.id, "wrong", options(), legacy)).toBe(true);
+    expect(agentReports(writer.location.home, project, checkout).get(`${item.id}:${item.entry_hash}`)).toMatchObject({ kind, reason: kind });
+  }
+});
+
+it("returns a clear failure and queues nothing when the native report cannot be saved", async () => {
+  const item = save(learned("mx_upkeep1"));
+  vi.stubEnv("MEX_HOOK_BINARY", join(scratch, "missing-hook"));
+  vi.stubEnv("CODEX_THREAD_ID", "fixture-session");
+  vi.spyOn(process, "cwd").mockReturnValue(checkout);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const wrong = buildKnowledgeCommands().find(cmd => cmd.name() === "wrong")!;
+  await wrong.parseAsync([item.id, "rejected-by-ci", "--json"], { from: "user" });
+  expect(JSON.parse(log.mock.lastCall![0])).toEqual({ ok: false, error: {
+    code: "STORE_UNAVAILABLE", message: "MEX could not save the agent report. Try again.",
+  } });
+  expect(process.exitCode).toBe(1);
+  expect(reviewQueue(options()).items).toEqual([]);
+  expect(writer.db.prepare("SELECT id FROM jobs WHERE project_id=? AND kind='judge'").all(project)).toEqual([]);
+});
+
+it.each(AGENT_VARIABLES)("proposes a correction and queues a judge from %s", async marker => {
+  const item = save(learned("mx_upkeep1"));
+  vi.stubEnv(marker, "fixture-session");
+  vi.spyOn(process, "cwd").mockReturnValue(checkout);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const wrong = buildKnowledgeCommands().find(cmd => cmd.name() === "wrong")!;
+  await wrong.parseAsync([item.id, "The workflow changed.", "--json"], { from: "user" });
+  const result = JSON.parse(log.mock.lastCall![0]);
+  expect(result).toMatchObject({ ok: true, id: item.id, status: "proposed", kind: "other" });
+  expect(writer.db.prepare("SELECT kind,state FROM jobs WHERE id=?").get(result.job)).toMatchObject({ kind: "judge", state: "queued" });
+  expect(reviewQueue(options()).items).toMatchObject([{ upkeep: "report", entry: { mex: { id: item.id } } }]);
+  expect(writer.setting(project, `knowledge.retired.${item.id}`)).toBeUndefined();
+  expect(hash(readFileSync(item.path, "utf8"))).toBe(item.entry_hash);
+});
+
+it("records a report about an undelivered rule without creating a delivery", async () => {
+  const item = save(learned("mx_upkeep1"));
+  vi.stubEnv("CODEX_THREAD_ID", "fixture-session");
+  vi.spyOn(process, "cwd").mockReturnValue(checkout);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const wrong = buildKnowledgeCommands().find(cmd => cmd.name() === "wrong")!;
+  expect(openHooksReadOnly()).toBeUndefined();
+  await wrong.parseAsync([item.id, "The workflow changed.", "--json"], { from: "user" });
+  expect(JSON.parse(log.mock.lastCall![0])).toMatchObject({ ok: true, status: "proposed" });
+  const hooks = openHooksReadOnly()!;
+  try {
+    expect(hooks.all(`SELECT d.moment,d.action,f.kind FROM deliveries d LEFT JOIN followups f ON f.delivery_id=d.id`))
+      .toEqual([{ moment: "agent-report", action: "control", kind: "wrong" }]);
+  } finally { hooks.close(); }
+});
+
+it("counts two reports on the same revision once in Review and judge evidence", async () => {
+  const item = save(learned("mx_upkeep1"));
+  vi.stubEnv("CODEX_THREAD_ID", "fixture-session");
+  vi.spyOn(process, "cwd").mockReturnValue(checkout);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const report = async (reason: string) => {
+    const wrong = buildKnowledgeCommands().find(cmd => cmd.name() === "wrong")!;
+    await wrong.parseAsync([item.id, reason, "--json"], { from: "user" });
+    const result = JSON.parse(log.mock.lastCall![0]);
+    expect(result).toMatchObject({ ok: true, status: "proposed" });
+    return result.job;
+  };
+  const first = await report("The workflow changed.");
+  expect(await report("contradicted src/logger.ts:1")).toBe(first);
+  expect(reviewQueue(options()).items).toMatchObject([{ upkeep: "report", reason: expect.stringContaining("contradicted src/logger.ts:1") }]);
+  expect(agentReports(writer.location.home, project, checkout)).toEqual(new Map([
+    [`${item.id}:${item.entry_hash}`, { kind: "contradicted", reason: "contradicted src/logger.ts:1", file: "src/logger.ts" }],
+  ]));
+  expect(writer.db.prepare("SELECT id FROM jobs WHERE project_id=? AND kind='judge'").all(project)).toEqual([{ id: first }]);
 });
 
 it("keeps the report instruction inside the byte cap of every rule-file renderer", () => {
@@ -159,4 +257,15 @@ it("sends only an unrenewed unanchored rule to Review and clears its age after a
   upkeepScan(writer, project, checkout, [unanchored, anchored], at + 3000);
   expect(reviewQueue(options(), at + 3000).items).toEqual([]);
   expect(JSON.parse(writer.setting(project, `knowledge.verified.${unanchored.id}`)!)).toMatchObject({ how: "person" });
+});
+
+it("ages an unanchored rule 90 days after its recorded follow", () => {
+  const item = save(learned("mx_age001"));
+  const followed = Date.parse("2026-10-25T00:00:00Z");
+  const expires = followed + 90 * 86_400_000;
+  recordVerified(writer, project, item.id, "followed", new Date(followed));
+  upkeepScan(writer, project, checkout, [item], expires - 1);
+  expect(reviewQueue(options(), expires - 1).items).toEqual([]);
+  upkeepScan(writer, project, checkout, [item], expires);
+  expect(reviewQueue(options(), expires).items).toMatchObject([{ upkeep: "age", entry: { mex: { id: item.id } } }]);
 });
