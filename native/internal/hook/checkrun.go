@@ -82,7 +82,7 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 	case "evaluate":
 		opts := check.StageOptions{
 			Checkout: req.Checkout, ProjectID: req.ProjectID, MexHome: req.MexHome,
-			RecordDirectory: req.RecordDirectory, Force: true, TeamOnly: req.TeamOnly,
+			RecordDirectory: req.RecordDirectory, Force: true, TeamOnly: req.TeamOnly, Explicit: true,
 		}
 		if req.Store && req.RecordDirectory != "" && req.ProjectID != "" {
 			if hooks, err := localrecord.OpenHooks(hooksLocation(home{mex: req.MexHome}, req.RecordDirectory)); err == nil {

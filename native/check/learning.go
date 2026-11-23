@@ -2,7 +2,9 @@ package check
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -90,7 +92,8 @@ func CandidateVerdict(checkout, directory, project string, ix Index, entry *entr
 		return Unknown, false
 	}
 	defer ev.Close()
-	defer ev.useURLRecords(directory, project)()
+	closeRecords, _ := ev.useURLRecords(directory, project, false)
+	defer closeRecords()
 	ev.UseIndex(ix)
 	result := ev.Evaluate(e)
 	for _, c := range result.Checks {
@@ -294,10 +297,17 @@ type urlObservation struct {
 
 // Open the record only when a URL check is evaluated, then use a consistent
 // observation for cache identity and evaluation within this stage.
-func (ev *Evaluator) useURLRecords(directory, project string) func() {
+// An explicit check gets its own read budget, and failed reports a record it
+// couldn't read; a live hook treats that as no observation.
+func (ev *Evaluator) useURLRecords(directory, project string, explicit bool) (closeRecords func(), failed func() error) {
 	var db *localrecord.Reader
+	var readErr error
 	if directory == "" || project == "" {
-		return func() {}
+		return func() {}, func() error { return nil }
+	}
+	openRecord := localrecord.OpenRecord
+	if explicit {
+		openRecord = localrecord.OpenEvaluationRecord
 	}
 	tried := false
 	cache := make(map[string]urlObservation)
@@ -306,7 +316,7 @@ func (ev *Evaluator) useURLRecords(directory, project string) func() {
 			tried = true
 			path := filepath.Join(directory, "record.db")
 			if safefile.Regular(path) {
-				db, _ = localrecord.OpenRecord(localrecord.Location{Record: path, Directory: directory})
+				db, readErr = openRecord(localrecord.Location{Record: path, Directory: directory})
 			}
 		}
 		if db == nil {
@@ -315,7 +325,10 @@ func (ev *Evaluator) useURLRecords(directory, project string) func() {
 		key := "learning.deep.url." + strings.TrimPrefix(hashBytes([]byte(url+"\n"+capturedHash)), "sha256:")
 		row, seen := cache[key]
 		if !seen {
-			raw, _, _ := db.BoundedSetting(project, key, 512)
+			raw, _, err := db.BoundedSetting(project, key, 512)
+			if err != nil {
+				readErr = err
+			}
 			if json.Unmarshal([]byte(raw), &row) != nil {
 				row = urlObservation{}
 			}
@@ -327,10 +340,15 @@ func (ev *Evaluator) useURLRecords(directory, project string) func() {
 		return row, row.State != ""
 	}
 	return func() {
-		if db != nil {
-			_ = db.Close()
+			if db != nil {
+				_ = db.Close()
+			}
+		}, func() error {
+			if !explicit || errors.Is(readErr, os.ErrNotExist) {
+				return nil
+			}
+			return readErr
 		}
-	}
 }
 
 func (ev *Evaluator) urlCheck(c Check) CheckResult {

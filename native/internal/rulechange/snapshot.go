@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -44,28 +45,43 @@ type Snapshot struct {
 	byID        map[string]*Signal
 }
 
+// Read is the live hook's read: a record it can't read in time is no evidence.
 func Read(directory, project, checkout string) *Snapshot {
+	snapshot, _ := read(directory, project, checkout, record.OpenRecord)
+	return snapshot
+}
+
+// ReadForEvaluation is an explicit check's read. A record it can't read is an
+// error: treating it as no evidence would report a wrong verdict as a result.
+func ReadForEvaluation(directory, project, checkout string) (*Snapshot, error) {
+	return read(directory, project, checkout, record.OpenEvaluationRecord)
+}
+
+func read(directory, project, checkout string, open func(record.Location) (*record.Reader, error)) (*Snapshot, error) {
 	if directory == "" || project == "" || !safefile.Regular(filepath.Join(directory, "record.db")) {
-		return nil
+		return nil, nil
 	}
-	r, err := record.OpenRecord(record.Location{Directory: directory, Record: filepath.Join(directory, "record.db")})
+	r, err := open(record.Location{Directory: directory, Record: filepath.Join(directory, "record.db")})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // MEX isn't set up here: there is no evidence to read
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer r.Close()
 	raw, ok, err := r.BoundedSetting(project, "rule-change."+place.ShortHash(checkout), 512<<10)
 	if err != nil || !ok {
-		return nil
+		return nil, err
 	}
 	var s Snapshot
 	if json.Unmarshal([]byte(raw), &s) != nil || s.Version != 1 || s.Checkout != checkout || len(s.Entries) > 10_000 {
-		return nil
+		return nil, nil
 	}
 	at, ok := gitstate.Read(checkout)
 	if !ok || at != s.Position {
-		return nil
+		return nil, nil
 	}
-	return &s
+	return &s, nil
 }
 
 func digest(data []byte) string {

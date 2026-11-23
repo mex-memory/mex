@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -51,19 +52,33 @@ type Reader struct {
 const MaxEvidenceFileBytes = 64 << 10
 
 func Open(directory, project, checkout string) *Reader {
+	r, _ := open(directory, project, checkout, record.OpenRecord)
+	return r
+}
+
+// OpenForEvaluation is an explicit check's reader: a record it can't read is
+// an error, not a missing confirmation.
+func OpenForEvaluation(directory, project, checkout string) (*Reader, error) {
+	return open(directory, project, checkout, record.OpenEvaluationRecord)
+}
+
+func open(directory, project, checkout string, openRecord func(record.Location) (*record.Reader, error)) (*Reader, error) {
 	if directory == "" || project == "" || !safefile.Regular(filepath.Join(directory, "record.db")) {
-		return nil
+		return nil, nil
 	}
-	db, err := record.OpenRecord(record.Location{Record: filepath.Join(directory, "record.db"), Directory: directory})
+	db, err := openRecord(record.Location{Record: filepath.Join(directory, "record.db"), Directory: directory})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	root, err := os.OpenRoot(checkout)
 	if err != nil {
 		db.Close()
-		return nil
+		return nil, err
 	}
-	return &Reader{db: db, root: root, project: project, checkout: checkout, files: map[string]string{}}
+	return &Reader{db: db, root: root, project: project, checkout: checkout, files: map[string]string{}}, nil
 }
 func (r *Reader) Close() {
 	if r != nil {
