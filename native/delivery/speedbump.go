@@ -72,6 +72,8 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		return contract.Reply{}
 	}
 	defer h.Close()
+	noise := noiseReader{directory: env.RecordDirectory}
+	defer noise.close()
 	epoch, _, err := h.CurrentEpoch(ev.SessionID, ev.AgentID)
 	if err != nil {
 		return contract.Reply{}
@@ -104,6 +106,9 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 			continue
 		}
 		seen[id] = true
+		if b.item.Entry.Learned() && noise.suppressed(b.project, id) {
+			continue
+		}
 		v, ok, err := h.VerdictOf(b.project, b.check, id)
 		if err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) {
 			continue // a rule the code no longer supports never stops an edit

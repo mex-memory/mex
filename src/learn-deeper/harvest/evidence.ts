@@ -6,6 +6,10 @@ import type { Candidate } from "./types.js";
 
 export const TEXT_BYTES = 4096;
 export const PR_BYTES = 1536;
+
+export function evidenceDigest(bodies: string[]): string {
+  return sourceDigest(bodies.join("\n\n"));
+}
 const privateMarker = /<\s*\/?\s*private\b/iu;
 const guideline = /(?:https?:\/\/[^\s)>\]]+|\]\([^\s)]+\))/giu;
 const generalising = /\b(?:always|never|we don['’]t|in this repo(?:sitory)?|instead use|conventions?|prefer\b[^\n.!?]{1,100}\bover)\b/iu;

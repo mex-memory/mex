@@ -548,6 +548,8 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 		}
 	} else {
 		hintGates := map[string]func(*entries.Item) bool{}
+		noise := noiseReader{directory: env.RecordDirectory}
+		defer noise.close()
 		for _, v := range views(ev, env.Resolve) {
 			g := get(v.project, v.checkout)
 			if g == nil {
@@ -566,7 +568,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				hintGates[g.project] = gate
 			}
 			g.views = append(g.views, v)
-			found := moments(v, g.snap, gate)
+			found := moments(v, g.snap, gate, noise.suppressed)
 			if len(found) > 0 && g.firstRel == "" {
 				g.firstRel = v.rel
 			}

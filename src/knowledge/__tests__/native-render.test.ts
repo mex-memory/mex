@@ -26,7 +26,7 @@ describe("rendering native rule files", () => {
   it("says under every title that existing code takes precedence", () => {
     for (const format of Object.keys(CAPS) as (keyof typeof CAPS)[]) for (const area of ["", "apps/api"]) {
       const out = renderNative(format, area, [team("mx_api001", "Validate request bodies with zod.")]);
-      expect(out.text).toMatch(/^# MEX rules(?: for apps\/api)?\n\nExisting code takes precedence over these notes\.\n\n- /mu);
+      expect(out.text).toMatch(/^# MEX rules(?: for apps\/api)?\n\nExisting code takes precedence over these notes\.\nReport a wrong rule with `mex wrong <id> "<reason>"`\.\n\n- /mu);
     }
   });
 

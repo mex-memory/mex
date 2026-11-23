@@ -7,6 +7,7 @@ import { containedDirectory } from "../knowledge/files.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import type { EnqueueOptions, EnqueueResult } from "../record/jobs.js";
 import { LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
+import { NETWORK_KIND, networkProofPrefix } from "./network-proof.js";
 
 export const WEEKLY_KIND = "learn-deeper-weekly";
 export const SCHEDULE = "learning.deep.weekly";
@@ -106,6 +107,14 @@ export function queueDueWeekly(writer: RecordWriter, queue: (writer: RecordWrite
     const checkout = writer.checkout(parsed.data.checkout);
     if (checkout?.path !== parsed.data.checkout || checkout.project_id !== row.scope || !checkoutOn(checkout, now)
       || !automaticWorkEnabled(writer, row.scope, now)) continue;
+    const networkDue = "learning.deep.network.queued";
+    if (parsed.data.origin.host === "github.com" && writer.setting(row.scope, networkDue) !== String(row.due)
+      && writer.db.prepare("SELECT 1 FROM settings WHERE scope=? AND key GLOB ? LIMIT 1").get(row.scope, `${networkProofPrefix}*`)
+      && weeklySchedule(writer, row.scope) === row.value) {
+      queue(writer, { kind: NETWORK_KIND, projectId: row.scope, params: parsed.data });
+      writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+        .run(row.scope, networkDue, String(row.due));
+    }
     if (writer.db.prepare("SELECT 1 FROM jobs WHERE project_id=? AND kind IN (?,?) AND state NOT IN ('done','done with gaps','failed','cancelled') LIMIT 1")
       .get(row.scope, LEARN_KIND, WEEKLY_KIND)) continue;
     // If a worker finished between the scan and enqueue, let the new schedule win.

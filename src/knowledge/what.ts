@@ -113,20 +113,22 @@ export function what(options: KnowledgeOptions, session = ""): SessionSummary {
 }
 
 /** Best effort, explicit action only. Go remains the sole hooks.db writer. */
-export function noteProbe(id: string, kind: "opened" | "wrong", options: KnowledgeOptions): void {
+export function noteProbe(id: string, kind: "opened" | "wrong", options: KnowledgeOptions,
+  detail?: { invocation: string }): boolean {
   try {
     const binary = rankBinary();
     if (!binary) {
-      return;
+      return false;
     }
     const p = knowledgeProject(options);
-    spawnSync(binary, ["--probe"], {
+    const result = spawnSync(binary, ["--probe"], {
       input: JSON.stringify({
         entry: id,
         kind,
         session: process.env.MEX_SESSION_ID ?? "",
         project: p.projectId,
-        checkout: p.root
+        checkout: p.root,
+        ...(detail ? { detail, invocation: detail.invocation } : {}),
       }),
       encoding: "utf8",
       windowsHide: true,
@@ -137,5 +139,6 @@ export function noteProbe(id: string, kind: "opened" | "wrong", options: Knowled
         MEX_BACKGROUND: "1"
       }
     });
-  } catch {/* Feedback must never turn a successful knowledge read into an error. */}
+    return result.status === 0 && JSON.parse(result.stdout).ok === true;
+  } catch { return false; }
 }

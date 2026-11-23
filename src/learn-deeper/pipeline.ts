@@ -30,6 +30,7 @@ import { applyDocQuota, clusterLessons, type Cluster, type EarlierLearned, type 
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
 import { harvestBatch } from "./harvest/index.js";
+import { networkGroups, networkProofKey, readNetworkGroups } from "./network-proof.js";
 import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harvest/types.js";
 import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
 import { gitHistory, proveEntry, type ProofContext, type ProofResult } from "./prove.js";
@@ -349,11 +350,12 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
             reviewers: (cluster.reviewerKeys ?? []).slice(-256) };
           set.run(project, noteKey(item.entry.mex.id), makeNoteProof(plan, serializeEntry(item.entry), refs, day, support));
           saveSourceReads(gate, project, plan, refs);
-          // Per-comment node ids and hashes, for the weekly network pass (job E1 reads this row).
-          const nodesKey = `learning.deep.nodes.${item.entryId}`;
-          const oldNodes = JSON.parse(gate.setting(project, nodesKey) ?? "[]") as Array<{ id: string; hash: string; link: string }>;
-          const found = members.flatMap(candidate => candidate.nodeIds.map(id => ({ id, hash: candidate.commentHashes?.[id] ?? candidate.hash, link: candidate.link })));
-          set.run(project, nodesKey, JSON.stringify([...new Map([...oldNodes, ...found].map(node => [node.id, node])).values()].slice(-32)));
+          // The node group behind each URL check, for the weekly network pass. A check whose evidence came from an
+          // earlier run keeps the group that run stored.
+          const stored = readNetworkGroups(gate.setting(project, networkProofKey(item.entryId)) ?? "[]");
+          const groups = networkGroups(item.entry, members).map(group => group.complete ? group
+            : stored.find(old => old.url === group.url && old.hash === group.hash) ?? group);
+          set.run(project, networkProofKey(item.entry.mex.id), JSON.stringify(groups));
         }
 
         // The review list's rows: no source text, only what the person decides on. Kept after the run's cleanup.

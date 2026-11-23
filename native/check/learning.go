@@ -288,7 +288,6 @@ func (ev *Evaluator) untilCheck(c Check) CheckResult {
 }
 
 type urlObservation struct {
-	Hash  string `json:"hash"`
 	State string `json:"state"`
 	At    string `json:"at"`
 }
@@ -301,8 +300,8 @@ func (ev *Evaluator) useURLRecords(directory, project string) func() {
 		return func() {}
 	}
 	tried := false
-	cache := make(map[string]string)
-	ev.urlSource = func(url string) (string, bool) {
+	cache := make(map[string]urlObservation)
+	ev.urlSource = func(url, capturedHash string) (urlObservation, bool) {
 		if !tried {
 			tried = true
 			path := filepath.Join(directory, "record.db")
@@ -311,15 +310,21 @@ func (ev *Evaluator) useURLRecords(directory, project string) func() {
 			}
 		}
 		if db == nil {
-			return "", false
+			return urlObservation{}, false
 		}
-		raw, seen := cache[url]
+		key := "learning.deep.url." + strings.TrimPrefix(hashBytes([]byte(url+"\n"+capturedHash)), "sha256:")
+		row, seen := cache[key]
 		if !seen {
-			key := "learning.deep.url." + strings.TrimPrefix(hashBytes([]byte(url)), "sha256:")
-			raw, _, _ = db.BoundedSetting(project, key, 512)
-			cache[url] = raw
+			raw, _, _ := db.BoundedSetting(project, key, 512)
+			if json.Unmarshal([]byte(raw), &row) != nil {
+				row = urlObservation{}
+			}
+			if _, err := time.Parse(time.RFC3339Nano, row.At); err != nil {
+				row = urlObservation{}
+			}
+			cache[key] = row
 		}
-		return raw, raw != ""
+		return row, row.State != ""
 	}
 	return func() {
 		if db != nil {
@@ -330,22 +335,15 @@ func (ev *Evaluator) useURLRecords(directory, project string) func() {
 
 func (ev *Evaluator) urlCheck(c Check) CheckResult {
 	if ev.urlSource != nil {
-		if raw, ok := ev.urlSource(str(c.Target, "url")); ok {
-			var row urlObservation
-			if json.Unmarshal([]byte(raw), &row) == nil && hashPattern().MatchString(row.Hash) {
-				if _, err := time.Parse(time.RFC3339Nano, row.At); err == nil {
-					switch row.State {
-					case "same", "edited":
-						// An edited observation challenges the old hash. A
-						// renewed baseline already includes that version.
-						if row.Hash == str(c.Saw, "hash") {
-							return CheckResult{Status: Pass, Now: row.Hash}
-						}
-						return CheckResult{Status: Fail, Reason: "the linked source was edited", Now: row.Hash}
-					case "gone":
-						return CheckResult{Status: Gone, Reason: "the linked source no longer exists"}
-					}
-				}
+		captured := str(c.Saw, "hash")
+		if row, ok := ev.urlSource(str(c.Target, "url"), captured); ok {
+			switch row.State {
+			case "same":
+				return CheckResult{Status: Pass, Now: captured}
+			case "edited":
+				return CheckResult{Status: Fail, Reason: "the linked source was edited"}
+			case "deleted":
+				return CheckResult{Status: Gone, Reason: "the linked source no longer exists"}
 			}
 		}
 	}

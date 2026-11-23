@@ -1,0 +1,9 @@
+{
+  "bodies": {
+    "PR_fixture": "Keep request IDs in log records.",
+    "IC_fixture": "The closed change removed request IDs.",
+    "PRRC_edited": "Use the new request logger.",
+    "PRRC_deleted": null
+  },
+  "denied": { "data": { "nodes": [null] }, "errors": [{ "type": "FORBIDDEN", "path": ["nodes", 0] }] }
+}

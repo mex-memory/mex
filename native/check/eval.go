@@ -73,7 +73,7 @@ type Evaluator struct {
 	graph Graph
 	// behind caches whether the index predates the checkout's HEAD: 0 unread, 1 no, 2 yes.
 	behind    int
-	urlSource func(url string) (string, bool)
+	urlSource func(url, capturedHash string) (urlObservation, bool)
 }
 
 // NewEvaluator opens a checkout for reading. Reads never leave it.

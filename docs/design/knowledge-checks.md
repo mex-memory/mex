@@ -30,7 +30,11 @@ The worst outcome wins: broken, then changed, then unknown, then held.
 | scope | The file index's count of files matching `glob` | At least one file matches; none is gone |
 | quote | A doc passage (`exact`, with `prefix` and `suffix` to tell repeats apart) in `file` | The passage is still there, whitespace aside. A reworded passage fails and makes the entry changed whatever the role; a removed one is gone |
 | until | The version at a JSON Pointer in a JSON or YAML file | It is below `version` (numeric by dot parts, a leading `v` ignored, pre-releases below the release) |
-| source (URL) | The weekly network pass's record for the URL | The comment is unchanged; edited fails, deleted is gone, no record falls back to the floor |
+| source (URL) | The weekly network pass's record for the URL and captured hash | The evidence is unchanged; edited fails, deleted is gone, no record falls back to the floor |
+
+The network pass stores a project setting at `learning.deep.url.<sha256(url + "\n" + capturedHash)>`.
+The key uses lowercase hex and the captured hash includes its `sha256:` prefix. Each value holds `{state, at}`.
+The state is `same`, `edited` or `deleted`, and `at` is an ISO timestamp.
 
 Section and source hashes are `sha256:` of the text with every whitespace run
 collapsed to one space and trimmed, so re-wrapping isn't a change. The

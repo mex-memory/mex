@@ -16,6 +16,7 @@ import type { Candidate, ForgeSource, HarvestBatch, HarvestCursor, HarvestDeps, 
 export type { Candidate, CandidateKind, HarvestBatch, HarvestCursor, HarvestDeps, HarvestOptions, HarvestPlan, Region } from "./types.js";
 export { DEFAULT_HARVEST_BUDGET, estimateHarvest, forecastCounts } from "./estimate.js";
 export { corroborateReviewFamiliarity } from "./familiarity.js";
+export { evidenceDigest } from "./evidence.js";
 
 const FORGE_PER_BATCH = 4;
 const LOCAL_PER_BATCH = 2;

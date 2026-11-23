@@ -182,7 +182,7 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		inputs := ev.inputsHash(l, asOf)
 		var signal *rulechange.Signal
 		learned := item.Learned
-		if policySignal(l.Entry.Kind, l.Level, learned) {
+		if l.Level != Hint {
 			signal = ruleChanges.For(l.Entry.ID, l.Hash)
 			if signal != nil {
 				item.RuleEvidence = signal.Reasons
@@ -362,8 +362,13 @@ func (ev *Evaluator) inputsHash(l Loaded, asOf string) string {
 			lines = append(lines, "index behind HEAD")
 		}
 		if url := str(c.Target, "url"); c.Kind == "source" && url != "" && ev.urlSource != nil {
-			raw, _ := ev.urlSource(url)
-			lines = append(lines, "url "+url+" "+hashBytes([]byte(raw)))
+			captured := str(c.Saw, "hash")
+			row, _ := ev.urlSource(url, captured)
+			lines = append(lines, "url "+url+" "+captured+" "+row.State)
+			if row.State == "edited" {
+				// Another observation may be a different edit to the same baseline.
+				lines = append(lines, "url observed "+row.At)
+			}
 		}
 	}
 	sort.Strings(lines)

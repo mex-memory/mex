@@ -146,7 +146,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   }
   for (const scope of proof.scope) checks.push({ kind: "scope", role: "complete", target: { glob: scope } } as ProposedCheck);
   const reviews = members.filter(candidate => candidate.link.startsWith("https://github.com/") && pullLink(candidate));
-  for (const candidate of [...new Map(reviews.map(candidate => [candidate.link, candidate])).values()].slice(0, ROUTE_LIMITS.sourceChecks)) {
+  for (const candidate of [...new Map(reviews.map(candidate => [`${candidate.link}\n${candidate.hash}`, candidate])).values()].slice(0, ROUTE_LIMITS.sourceChecks)) {
     checks.push({ kind: "source", role: "supporting", target: { url: candidate.link }, saw: { hash: candidate.hash } } as ProposedCheck);
   }
   const docs = members.filter(candidate => candidate.kind === "doc" || candidate.kind === "adr");

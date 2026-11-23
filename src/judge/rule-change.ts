@@ -6,6 +6,8 @@ import { globPrefix, globToRegExp } from "../file-index/glob.js";
 import { isLearnedEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import type { NativeReport } from "../knowledge/check.js";
 import type { CheckResult } from "../knowledge/check.js";
+import { agentReports } from "../knowledge/agent-report.js";
+import { upkeepScan } from "../knowledge/upkeep.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { absolutePath, realPath, shortHash } from "../record/project.js";
 import { git, hash, position, readCandidate, readSource, samePosition, type Position } from "./evidence.js";
@@ -144,11 +146,13 @@ function overrides(writer: RecordWriter, projectId: string): Map<string, { peopl
 export async function refreshRuleChanges(writer: RecordWriter, projectId: string, checkout: string, report: NativeReport, at: Position, canPublish: ()=>boolean = ()=>true): Promise<{ snapshot: RuleSnapshot; limited: boolean; more: boolean; stopped?: true }> {
   const snapshot: RuleSnapshot = { version: 1, checkout, position: at, entries: [] };
   const loaded: Loaded[] = [], seen = new Set<string>(), duplicates = new Set<string>();
+  const reports = agentReports(writer.location.home, projectId, checkout);
   if ((report.items?.length ?? 0)>10_000) throw new Error("Rule evidence exceeds the entry limit");
   for(const item of report.items ?? []) { if(seen.has(item.id)) duplicates.add(item.id); seen.add(item.id); }
   const items=(report.items ?? []).filter(item=> {
     const learned = (item as typeof item & { learned?: boolean }).learned || /^mx_deep[a-f0-9]{32}$/u.test(item.id);
-    return (item.level==="team" && policyKind(item.kind) || item.level==="personal" && learned && (policyKind(item.kind) || item.kind==="procedure")
+    const reported = reports.has(`${item.id}:${item.entry_hash}`);
+    return ((item.level === "team" || item.level === "personal") && reported || item.level==="team" && policyKind(item.kind) || item.level==="personal" && learned && (policyKind(item.kind) || item.kind==="procedure")
       || item.level==="team" && learned && item.kind==="procedure") && item.status==="active"
       && !duplicates.has(item.id) && !writer.setting(projectId,`knowledge.retired.${item.id}`);
   }).sort((a,b)=>a.id.localeCompare(b.id));
@@ -172,7 +176,7 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
   for (const item of ordered) {
     const found = readCandidate(item, checkout, writer.location.home, projectId);
     if (!found || item.entry_hash !== hash(found.content)) continue;
-    if (item.level === "personal" && !isLearnedEntry(found.entry.mex)) continue;
+    if (item.level === "personal" && !isLearnedEntry(found.entry.mex) && !reports.has(`${item.id}:${item.entry_hash}`)) continue;
     if ((bytes += Buffer.byteLength(found.content)) > RULE_CHANGE_LIMITS.bytes) break;
     loaded.push({ ...found, path: item.path, level: item.level, verdict: item.verdict, inputs: report.results?.find(r=>r.entry_id===item.id)?.inputs });
   }
@@ -186,6 +190,8 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
     scanned++;scannedIds.add(item.id);
     const rule=rules.get(item.id); if(!rule) {limited=true;continue;}
     const entry = rule.entry, reasons: string[] = [];
+    const agentReport = reports.get(`${item.id}:${item.entry_hash}`);
+    if (agentReport) reasons.push(`An agent reported this rule wrong: ${agentReport.reason}`);
     const pattern = migration(checkout,entry,report.results?.find(r=>r.entry_id===entry.mex.id)?.checks ?? [],budget);
     if (pattern) reasons.push("In scope, the anti-pattern count rose and the required-pattern count fell");
     if (at.branch && titleChangesRule(entry, at.branch.slice("refs/heads/".length))) reasons.push("The current branch names this subject and an explicit rule change");
@@ -215,6 +221,12 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
     }
     const newer = eligible.find(other => other.level === "team" && other.verdict === "held" && other.entry.mex.checks.length > 0 && contradicts(entry, other.entry));
     const files = pattern?.files ?? [], directories = pattern?.directories ?? [];
+    if (agentReport?.file && files.length < RULE_CHANGE_LIMITS.files && !files.some(file => file.path === agentReport.file)) {
+      try {
+        const text = readSource(checkout, agentReport.file);
+        if (text !== null) files.push({ path: agentReport.file, hash: hash(text) });
+      } catch { /* The reason remains useful after the named file moves. */ }
+    }
     if (newer) {
       const path = relative(checkout, newer.path).split("\\").join("/");
       try {
@@ -232,7 +244,7 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
     }
     const count = repeated.get(`${entry.mex.id}:${hash(rule.content)}`);
     if (count && (count.people.size >= 2 || count.sessions.size >= 3)) reasons.push("The speed bump was deliberately overridden by at least two people or in at least three sessions");
-    if (reasons.length) snapshot.entries.push({ id: entry.mex.id, entry_hash: hash(rule.content), reasons, files:files.sort(comparePath), directories:directories.sort(comparePath) });
+    if (reasons.length) snapshot.entries.push({ id: entry.mex.id, entry_hash: hash(rule.content), reasons: reasons.slice(0, 5), files:files.sort(comparePath), directories:directories.sort(comparePath) });
   }
   const nativeById=new Map(items.map(item=>[item.id,item]));
   snapshot.entries.push(...(previous?.entries ?? []).filter(signal=>!scannedIds.has(signal.id) && nativeById.get(signal.id)?.entry_hash===signal.entry_hash));
@@ -242,8 +254,18 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
   writer.db.exec("BEGIN IMMEDIATE");
   try {
     if(!canPublish()) { writer.db.exec("COMMIT"); return {snapshot:{...snapshot,entries:[]},limited:false,more:false,stopped:true}; }
+    upkeepScan(writer, projectId, checkout, page.flatMap(item => {
+      const rule = rules.get(item.id);
+      return scannedIds.has(item.id) && rule && item.entry_hash && (item.level === "personal" || item.level === "team")
+        ? [{ ...item, entry_hash: item.entry_hash, level: item.level, entry: rule.entry }] : [];
+    }));
     const active: RuleSignal[]=[];
     for (const signal of snapshot.entries) {
+      if (signal.reasons.length === 1 && reports.has(`${signal.id}:${signal.entry_hash}`)) {
+        // The CLI already wrote this proposal with the report's reason.
+        active.push(signal);
+        continue;
+      }
       const proposal=JSON.stringify({checkout,position:at,...signal});
       const id = `rule-change.${shortHash(proposal)}`;
       const current=writer.db.prepare("SELECT state FROM review WHERE id=? AND project_id=?").get(id,projectId);

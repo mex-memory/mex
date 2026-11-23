@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { RecordWriter } from "../record/index.js";
 import { enqueueJob } from "../record/jobs.js";
-import { readTeamCoverage, type TeamCoverage } from "./coverage.js";
+import { readTeamCoverage, teamRetired, type TeamCoverage } from "./coverage.js";
 import { ForgeClient, object, SourceError } from "./forge.js";
 import { PinnedTree } from "./git.js";
 import { hosts } from "./hosts.js";
@@ -11,7 +11,7 @@ import type { WeeklySchedule } from "./weekly-schedule.js";
 import { harvestClient } from "./pipeline.js";
 import { planHarvest, type HarvestCursor } from "./harvest/index.js";
 import { propose } from "../knowledge/gate.js";
-import { claimHash } from "../knowledge/state.js";
+import { snapshotNotes } from "../knowledge/personal-store.js";
 import type { BatchContext } from "../record/jobs.js";
 import { noteKey } from "./coverage.js";
 
@@ -56,15 +56,19 @@ export async function planWeekly(client: ForgeClient, schedule: WeeklySchedule, 
     pulls: [], docs: [], gaps: harvest.gaps.slice(0, 12), estimate: Math.max(1, harvest.estimate), ceiling: Math.max(1, harvest.ceiling), harvest });
 }
 
-/** Carry over the legacy sweep by claim. The team may have deleted the rule before manifests existed. */
+/**
+ * Retire the person's copies of rules the team retired on the default branch: by id, by the stable source both were
+ * learned from, or by claim (the team may have deleted the rule before manifests existed).
+ */
 export async function sweepWeeklyRetirements({ writer, job }: BatchContext, plan: LearningPlan, team: TeamCoverage): Promise<void> {
-  if (!team.retired.size) return;
+  if (!team.retired.size && !team.retiredIds.size && !team.retiredEvidence.size) return;
   const swept = new Set<string>();
+  const notes = snapshotNotes(writer, job.project_id!).files;
   await propose([], {
     projectPath: plan.checkout, home: writer.location.home,
     sweep: { producer: "learn-deeper",
       includes(entry) {
-        const retired = team.retired.has(claimHash(entry.text));
+        const retired = teamRetired(team, entry, notes.get(entry.mex.id), writer.setting(job.project_id!, noteKey(entry.mex.id)));
         if (retired) swept.add(entry.mex.id);
         return retired;
       },

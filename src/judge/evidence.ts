@@ -179,7 +179,7 @@ export async function position(checkout: string): Promise<Position> {
 export function samePosition(a: Position, b: Position): boolean { return a.branch === b.branch && a.head === b.head; }
 
 /** Check every parent of native-supplied paths, including personal storage. */
-export function readCandidate(item: NativeItem, checkout: string, home: string, projectId: string): { content: string; entry: KnowledgeEntry } | undefined {
+export function readCandidate<T extends Pick<NativeItem, "level" | "path" | "id">>(item: T, checkout: string, home: string, projectId: string): { content: string; entry: KnowledgeEntry } | undefined {
   const base = item.level === "team" ? containedDirectory(checkout, [".mex", "learned"])
     : item.level === "personal" ? containedDirectory(home, ["projects", projectId, "notes"]) : undefined;
   if (!base) return undefined;

@@ -163,18 +163,14 @@ func TestURLSourceObservations(t *testing.T) {
 		state, verdict string
 		status         Status
 	}{
-		{"same", Held, Pass}, {"edited", Changed, Fail}, {"gone", Changed, Gone}, {"", Unknown, Floor},
+		{"same", Held, Pass}, {"edited", Changed, Fail}, {"deleted", Changed, Gone}, {"", Unknown, Floor},
 	} {
 		t.Run(tc.state, func(t *testing.T) {
-			ev.urlSource = func(got string) (string, bool) {
-				if got != url {
-					t.Fatalf("asked for %s", got)
+			ev.urlSource = func(got, captured string) (urlObservation, bool) {
+				if got != url || captured != hash {
+					t.Fatalf("asked for %s with %s", got, captured)
 				}
-				current := hash
-				if tc.state == "edited" {
-					current = hashBytes([]byte("edited source"))
-				}
-				return fmt.Sprintf(`{"hash":%q,"state":%q,"at":"2026-11-23T00:00:00Z"}`, current, tc.state), tc.state != ""
+				return urlObservation{State: tc.state, At: "2026-11-23T00:00:00Z"}, tc.state != ""
 			}
 			r := ev.Evaluate(&Entry{Status: "active", Checks: []Check{c}})
 			if r.Verdict != tc.verdict || r.Checks[0].Status != tc.status {
