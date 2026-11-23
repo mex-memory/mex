@@ -33,6 +33,7 @@ type Context = BatchContext<unknown, Checkpoint>;
 interface Dependencies {
   model: typeof runModel;
   client: (plan: Pick<LearningPlan, "checkout" | "origin">) => Promise<ForgeClient>;
+  firstRules?: number;
   now: () => number;
   next: (now: number) => number;
 }
@@ -194,7 +195,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         }
         const gaps = new Set(state.gaps);
         const out = await runPipelineBatch({ context, plan: plan as LearningPlan & { harvest: HarvestPlan }, state: v2,
-          deps: { model: deps.model, now: deps.now, client: client && harvestClient(client, plan.source), tree }, weekly: !!weekly, gaps });
+          deps: { model: deps.model, now: deps.now, client: client && harvestClient(client, plan.source), tree, firstRules: deps.firstRules }, weekly: !!weekly, gaps });
         if (!weekly && recordedModelSpend(writer, job.id) > plan.ceiling) gaps.add("The last model batch reported more tokens than the approved ceiling.");
         const next: Checkpoint = { ...state, retryAt: undefined, v2: out.state, gaps: [...gaps].slice(0, 24), finish: out.done,
           home: out.done ? writer.location.home : undefined };

@@ -9,7 +9,7 @@ export const DEFAULT_HARVEST_BUDGET = 320_000;
 // text plus IDs and routes. 64 output tokens cover the short structured result.
 const TRIAGE_PER_CANDIDATE = 240 + 64;
 // Pack short triage records in roughly a 12k-token prompt.
-const TRIAGE_BATCH = 48;
+export const TRIAGE_BATCH = 48;
 // The first run is a forecast: roughly a quarter survive triage, with about
 // two observations per cluster. Round up so a sparse run can still write one.
 const CANDIDATES_PER_CLUSTER = 8;
@@ -47,7 +47,7 @@ export function estimateHarvest(counts: CandidateCounts, agent: HarvestOptions["
 export const emptyHarvestEvidence: HarvestEvidenceSize = { candidates: 0, triageTokens: 0, writerTokens: 0, largestWriterTokens: 0 };
 
 function evidenceTokens(parts: Array<string | undefined>): number {
-  return Math.ceil(parts.reduce((bytes, part) => bytes + Buffer.byteLength(part ?? "", "utf8"), 0) / 3);
+  return Math.ceil(parts.reduce((bytes, part) => bytes + Buffer.byteLength(part ?? "", "utf8"), 0) / BYTES_PER_TOKEN);
 }
 
 export function addHarvestEvidence(size: HarvestEvidenceSize, candidate: Pick<Candidate, "text" | "prText" | "code" | "related">):
@@ -60,9 +60,10 @@ HarvestEvidenceSize {
 }
 
 // Triage receives only candidate prose, plus an ID and room for its structured reply.
-const TRIAGE_METADATA = 32;
+export const TRIAGE_METADATA = 32;
 const TRIAGE_REPLY = 64;
-const TRIAGE_INPUT_LIMIT = 12_000;
+export const TRIAGE_INPUT_LIMIT = 12_000;
+export const BYTES_PER_TOKEN = 3;
 // The writer also sees PR context and code. Forecast the same quarter surviving
 // triage as the consent quote, while reserving at least one full evidence item.
 const WRITTEN_SHARE = 4;

@@ -33,6 +33,7 @@ import { applyDocQuota, clusterLessons, matchEarlier, type Cluster, type Earlier
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
 import { procedureProposal, procedureSamples, type ProcedureSample } from "./procedures.js";
+import { BYTES_PER_TOKEN, TRIAGE_BATCH, TRIAGE_INPUT_LIMIT, TRIAGE_METADATA } from "./harvest/estimate.js";
 import { harvestBatch } from "./harvest/index.js";
 import { networkGroups, networkProofKey, readNetworkGroups } from "./network-proof.js";
 import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harvest/types.js";
@@ -44,11 +45,13 @@ import { packClusters, parseWriter, repairPrompt, writerPrompt, type WriterConte
 import type { WriterModel } from "./entries.js";
 
 export const PIPELINE_LIMITS = {
-  /** Candidates per stored chunk, and so per triage call. */
-  chunkCandidates: 32,
-  chunkBytes: 48 << 10,
+  /** Candidates per stored chunk, and so per triage call: what the quote counted on. */
+  chunkCandidates: TRIAGE_BATCH,
+  chunkBytes: TRIAGE_INPUT_LIMIT * BYTES_PER_TOKEN,
   /** First rules early: strong candidates written right after the first triage call. */
   earlyRules: 5,
+  /** Strong candidates worth a triage call of their own before the first chunk is full. */
+  firstRules: 3,
   /** Files staged for the native matcher's area check and the gate's observations. */
   stagedFiles: 2000,
 } as const;
@@ -96,6 +99,8 @@ export interface PipelineDeps {
   /** Forge access for the harvest; undefined for local-only runs. */
   client?: HarvestDeps["client"];
   tree: PinnedTree;
+  /** Strong candidates that start the first rules, when not the usual number. */
+  firstRules?: number;
 }
 export interface PipelineInput {
   context: Context;
@@ -160,7 +165,7 @@ export function chunkCandidates(candidates: readonly Candidate[]): Candidate[][]
   const chunks: Candidate[][] = [];
   let current: Candidate[] = [], bytes = 0;
   for (const candidate of candidates) {
-    const size = Buffer.byteLength(candidate.text) + 256;
+    const size = Buffer.byteLength(candidate.text) + TRIAGE_METADATA * BYTES_PER_TOKEN;
     if (current.length && (current.length >= PIPELINE_LIMITS.chunkCandidates || bytes + size > PIPELINE_LIMITS.chunkBytes)) {
       chunks.push(current); current = []; bytes = 0;
     }
@@ -171,9 +176,10 @@ export function chunkCandidates(candidates: readonly Candidate[]): Candidate[][]
 }
 
 /** One model call under the run's consent: the approved ceiling, or weekly's automatic allowance. */
-async function call(input: PipelineInput, name: string, prompt: string, role: "cheap" | "best", rules: number): Promise<{ text: string; model: WriterModel; tokens: number }> {
+interface Reply { text: string; model: WriterModel; tokens: number; lost?: true }
+async function call(input: PipelineInput, name: string, prompt: string, role: "cheap" | "best", rules: number): Promise<Reply> {
   const { context, plan, deps, weekly } = input;
-  const saved = load<{ text: string; model: WriterModel; tokens: number; lost?: true }>(context, `reply.${name}`);
+  const saved = load<Reply>(context, `reply.${name}`);
   if (saved) {
     if (saved.lost) input.gaps.add("A paid model reply could not be recovered after an interruption.");
     return saved;
@@ -185,7 +191,7 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
     .get(job.id, started.lastBatch)) {
     // The runner recorded the charge but died before saving the answer.
     input.gaps.add("A paid model reply could not be recovered after an interruption.");
-    const reply = { text: "", lost: true, model: { id: "unknown", version: "unknown" }, tokens: Math.max(0, recordedModelSpend(writer, job.id) - started.spent) };
+    const reply: Reply = { text: "", lost: true, model: { id: "unknown", version: "unknown" }, tokens: Math.max(0, recordedModelSpend(writer, job.id) - started.spent) };
     save(context, `reply.${name}`, reply);
     return reply;
   }
@@ -204,12 +210,21 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
       ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
     });
     const { writerModel } = await import("./job.js");
-    const reply = { text: output.text, model: writerModel(output), tokens: Math.max(0, recordedModelSpend(writer, job.id) - spent) };
+    const reply: Reply = { text: output.text, model: writerModel(output), tokens: Math.max(0, recordedModelSpend(writer, job.id) - spent) };
     save(context, `reply.${name}`, reply);
     return reply;
   });
   if (!reply) throw new Error("The model could not start in its private workspace.");
   return reply;
+}
+
+/** One more try at an answer that couldn't be read, when the allowance covers it. Nothing waits for it. */
+async function retry(...[input, name, prompt, role, rules]: Parameters<typeof call>): Promise<Reply | undefined> {
+  try { return await call(input, name, prompt, role, rules); }
+  catch (error) {
+    if (!(error instanceof ModelWaitError && error.reason === "cap")) throw error;
+    return undefined;
+  }
 }
 
 type PriorLesson = EarlierLearned & { refused: boolean; waiting: boolean };
@@ -331,10 +346,18 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   add(counts, "cluster.near-refused", near.size);
   const writerContext: WriterContext = { linters: linters(deps.tree),
     refused: new Map([...near].map(([cluster, entries]) => [cluster, entries.map(entry => entry.claim ?? entry.text)])) };
-  const first = await call(input, `${name}.write`, writerPrompt(clusters, writerContext), "best", clusters.length);
+  let first = await call(input, `${name}.write`, writerPrompt(clusters, writerContext), "best", clusters.length);
   add(counts, "tokens.write", first.tokens);
   const byKey = new Map(clusters.map(cluster => [cluster.key, cluster]));
-  const parsed = parseWriter(first.text, clusters);
+  let parsed = parseWriter(first.text, clusters);
+  if (parsed.response !== "valid" && !first.lost) {
+    const again = await retry(input, `${name}.write.again`, writerPrompt(clusters, writerContext), "best", clusters.length);
+    if (again) {
+      add(counts, "tokens.write", again.tokens);
+      parsed = parseWriter(again.text, clusters);
+      first = again;
+    }
+  }
   if (parsed.response !== "valid") input.gaps.add("A model batch returned no readable entries.");
   for (const item of parsed.rejected) add(counts, `writer-rejected.${item.reason}`);
   const areas = [...new Set(clusters.flatMap(cluster => [...cluster.files, ...cluster.members.flatMap(m => m.candidate.changedPaths ?? [])]))];
@@ -691,7 +714,13 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       for (const gap of batch.gaps) input.gaps.add(gap);
       const current = await currentCandidates(input, batch.candidates);
       const candidates = input.weekly ? await unreadCandidates(input, current) : current;
-      for (const chunk of chunkCandidates(candidates)) save(context, `cand.${state.chunks++}`, chunk);
+      // A batch reads a few sources. They join the last chunk while nobody has sorted it: every call has a fixed cost.
+      const open = state.chunks > state.triaged ? state.chunks - 1 : state.chunks;
+      const fresh = new Set(candidates.map(candidate => candidate.id));
+      const waiting = open < state.chunks ? (load<Candidate[]>(context, `cand.${open}`) ?? []).filter(candidate => !fresh.has(candidate.id)) : [];
+      const chunks = chunkCandidates([...waiting, ...candidates]);
+      chunks.forEach((chunk, i) => save(context, `cand.${open + i}`, chunk));
+      state.chunks = open + chunks.length;
       for (const candidate of batch.candidates) add(state.counts, `harvested.${candidate.kind}`);
       add(state.counts, "covered-sources", current.length - candidates.length);
       add(state.counts, "historical-docs", batch.candidates.length - current.length);
@@ -701,7 +730,8 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       }
       state.cursor = batch.cursor;
       state.harvestDone = batch.done;
-      if (!state.early && state.chunks) state.phase = "triage";
+      const strong = chunks.flat().filter(candidate => candidate.signal === "strong").length;
+      if (!state.early && (state.chunks > 1 || strong >= (deps.firstRules ?? PIPELINE_LIMITS.firstRules))) state.phase = "triage";
       else if (batch.done) state.phase = state.triaged < state.chunks ? "triage" : state.chunks ? "cluster" : "finish";
       return { state, done: false, progress: `${state.chunks} chunks of sources read`, results: 0 };
     }
@@ -712,6 +742,18 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       const reply = await call(input, `triage.${state.triaged}`, triagePrompt(candidates), "cheap", 0);
       add(state.counts, "tokens.triage", reply.tokens);
       const outcome = parseTriage(reply.text, candidates);
+      if (outcome.missing.length && !reply.lost) {
+        // What the reply left out, or all of an unreadable one, is asked for once more. The cursor is already past it.
+        const left = candidates.filter(candidate => outcome.missing.includes(candidate.id));
+        const again = await retry(input, `triage.${state.triaged}.again`, triagePrompt(left), "cheap", 0);
+        if (again) {
+          add(state.counts, "tokens.triage", again.tokens);
+          const second = parseTriage(again.text, left);
+          outcome.results.push(...second.results);
+          outcome.missing = second.missing;
+          if (second.response === "valid") outcome.response = "valid";
+        }
+      }
       if (outcome.response !== "valid") input.gaps.add("A triage batch returned no readable answer.");
       save(context, `triage.${state.triaged}`, outcome.results);
       const { kept, dropped } = triageCounts(outcome.results);

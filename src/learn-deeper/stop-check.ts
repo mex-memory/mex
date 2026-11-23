@@ -22,6 +22,7 @@ import { shortHash } from "../record/project.js";
 import { command, PinnedTree, repoPath, revision } from "./git.js";
 import { promptEstimate } from "./plan.js";
 import { sessionsActive } from "./weekly-schedule.js";
+import { replyJson } from "./reply.js";
 
 export const STOP_CHECK = "learn-stop-check";
 const PENDING = "learn-stop-pending";
@@ -143,7 +144,7 @@ async function diffFor(request: Request, head: string, paths: string[]) {
 
 export function stopCheckFlags(raw: string, rulePaths: ReadonlyMap<string, string[]>, lines: ReadonlyMap<string, string>): Flag[] {
   let answer;
-  try { answer = replySchema.parse(JSON.parse(raw)); } catch { return []; }
+  try { answer = replySchema.parse(replyJson(raw)); } catch { return []; }
   const out: Flag[] = [];
   for (const { id, verdict, line } of answer.rules) {
     const place = /^(.*):(\d+)$/u.exec(line);

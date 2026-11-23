@@ -6,6 +6,7 @@
  */
 import { z } from "zod";
 import type { Candidate } from "./harvest/types.js";
+import { replyJson } from "./reply.js";
 
 export const TRIAGE_CATEGORIES = ["correctness", "placement", "api-use", "tests", "build-ci", "security", "performance",
   "process", "readability", "one-off", "question-status"] as const;
@@ -58,8 +59,8 @@ ${triageInput(candidates)}`;
 /** Parse a triage reply. A kept item in a dropped category is dropped: the category list is the policy. */
 export function parseTriage(text: string, candidates: readonly Candidate[]): TriageOutcome {
   const ids = new Set(candidates.map(candidate => candidate.id));
-  let raw: unknown;
-  try { raw = JSON.parse(text); } catch { return { results: [], missing: [...ids], response: "invalid-json" }; }
+  const raw = replyJson(text);
+  if (raw === undefined) return { results: [], missing: [...ids], response: "invalid-json" };
   const parsed = envelope.safeParse(raw);
   if (!parsed.success) return { results: [], missing: [...ids], response: "invalid-envelope" };
   const results = new Map<string, TriageResult>();

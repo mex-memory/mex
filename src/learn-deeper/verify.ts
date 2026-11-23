@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { ModelAgent, runModel } from "../model-runner/index.js";
+import { replyJson } from "./reply.js";
 
 export const VERIFY_TURNS = 8;
 export const VERIFY_TIMEOUT_MS = 2 * 60_000;
@@ -31,9 +32,7 @@ Answer only with JSON: {"verdict":"keep|drop|rewrite","evidence":["path:line", .
 
 /** Evidence must name files that exist in the checkout; an answer citing nothing real is not an answer. */
 export function parseVerify(text: string, root: string): VerifyAnswer | undefined {
-  let raw: unknown;
-  try { raw = JSON.parse(text.trim().replace(/^```(?:json)?\s*|\s*```$/gu, "")); } catch { return undefined; }
-  const parsed = Answer.safeParse(raw);
+  const parsed = Answer.safeParse(replyJson(text));
   if (!parsed.success) return undefined;
   const evidence = parsed.data.evidence.filter(item => {
     const path = item.replace(/:\d+(?:-\d+)?$/u, "");

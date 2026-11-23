@@ -10,6 +10,7 @@ import { z } from "zod";
 import { ENTRY_KINDS, KNOWLEDGE_LIMITS } from "../knowledge/entry.js";
 import { writerMembers, type Cluster, type Triaged } from "./cluster.js";
 import type { Region } from "./harvest/types.js";
+import { replyJson } from "./reply.js";
 
 export const ROUTES = ["code-rule", "process-rule", "decision", "ruled-out", "pitfall", "procedure"] as const;
 export type Route = typeof ROUTES[number];
@@ -139,8 +140,8 @@ const ROUTE_KINDS: Record<Route, ReadonlySet<string>> = {
 
 export function parseWriter(text: string, clusters: readonly Cluster[]): WriterOutcome {
   const keys = new Set(clusters.map(cluster => cluster.key));
-  let raw: unknown;
-  try { raw = JSON.parse(text); } catch { return { entries: [], rejected: [], response: "invalid-json" }; }
+  const raw = replyJson(text);
+  if (raw === undefined) return { entries: [], rejected: [], response: "invalid-json" };
   const parsed = envelope.safeParse(raw);
   if (!parsed.success) return { entries: [], rejected: [], response: "invalid-envelope" };
   const entries: WriterEntry[] = [], rejected: WriterOutcome["rejected"] = [], seen = new Set<string>();

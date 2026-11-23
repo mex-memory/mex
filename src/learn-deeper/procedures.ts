@@ -10,6 +10,7 @@ import type { WriterModel } from "./entries.js";
 import { command, type PinnedTree } from "./git.js";
 import { promptEstimate, type LearningPlan } from "./plan.js";
 import { cleanSourceText } from "./source.js";
+import { replyJson } from "./reply.js";
 
 const limit = 5;
 const promptBytes = 4096;
@@ -91,7 +92,7 @@ const answer = z.object({ name: line(100), steps: z.array(line(140)).min(2).max(
 
 export function procedureProposal(sample: ProcedureSample, raw: string, model: WriterModel, plan: LearningPlan): Proposal | undefined {
   let parsed;
-  try { parsed = answer.parse(JSON.parse(raw)); } catch { return undefined; }
+  try { parsed = answer.parse(raw.trim() === "null" ? null : replyJson(raw)); } catch { return undefined; }
   if (!parsed) return undefined;
   const path = sample.paths.find(path => !isTestPath(path))!;
   return { producer: "learn-deeper", key: JSON.stringify([plan.origin, "procedure", sample.roles]),

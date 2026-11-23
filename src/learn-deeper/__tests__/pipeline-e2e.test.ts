@@ -177,7 +177,7 @@ it.each([
         scope: gap !== "none" && !repair ? ["src/**"] : [path], ...(!repeat || noisy ? { when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
           fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } } : {}) }] });
     });
-    registerJobKind(createLearnKind({ model, client: async () => forge.client }));
+    registerJobKind(createLearnKind({ model, client: async () => forge.client, firstRules: 1 }));
     const row = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
     const owner = ownerId("foreground");
     await runOneBatch(writer, owner, { only: new Set([job.id]) }); // harvest
@@ -239,7 +239,9 @@ it.each([
   } finally { writer.close(); }
 }, 120_000);
 
-it("writes a review that backs nothing as its own lesson, and leaves the rule it was grouped with alone", async () => {
+it.each(["plain", "fenced and incomplete", "unreadable twice"])("writes a review that backs nothing as its own lesson, and leaves the rule it was grouped with alone (%s replies)", async replies => {
+  const sorted: string[][] = [];
+  let written = 0;
   await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
   const writer = openRecord();
   try {
@@ -256,8 +258,15 @@ it("writes a review that backs nothing as its own lesson, and leaves the rule it
     const model = vi.fn<typeof runModel>(async request => {
       if (request.purpose === "learn-deeper-filter") {
         const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
-        return reply({ results: items.map(({ id }) => ({ id, keep: id === candidateId || id === repeatedId, category: "api-use", lesson: claim })) });
+        sorted.push(items.map(item => item.id));
+        const answer = { results: items.map(({ id }) => ({ id, keep: id === candidateId || id === repeatedId, category: "api-use", lesson: claim })) };
+        if (replies === "plain") return reply(answer);
+        if (replies === "unreadable twice") return { ...reply({}), text: "I can't help with that." };
+        // The first answer leaves one item out, and both come in a fence with a sentence before it.
+        if (sorted.length === 1) answer.results = answer.results.filter(({ id }) => id !== repeatedId);
+        return { ...reply({}), text: "Here you go:\n```json\n" + JSON.stringify(answer) + "\n```" };
       }
+      if (replies !== "plain" && written++ === 0) return { ...reply({}), text: "{\"entries\": [" };
       const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
       // Grouped together, the writer rests the rule on the first review only. Alone, the second says something else.
       const alone = request.prompt.includes(repeatedId) && !request.prompt.includes(candidateId);
@@ -270,9 +279,21 @@ it("writes a review that backs nothing as its own lesson, and leaves the rule it
     for (let i = 0; i < 12 && row().state === "queued"; i++) await runOneBatch(writer, ownerId("foreground"), { only: new Set([job.id]) });
     expect(row().state, row().reason ?? "").toMatch(/^done/u);
     const counts = JSON.parse(row().checkpoint!).v2.counts;
+    if (replies === "unreadable twice") {
+      // Asked once more, then given up with a gap. Nothing is written on a guess, and nothing is asked a third time.
+      expect([sorted.length, written]).toEqual([2, 0]);
+      expect(JSON.parse(row().checkpoint!).gaps).toContain("A triage batch returned no readable answer.");
+      return;
+    }
+    // What was left out is asked for again, alone. The unreadable writer reply is asked for again once.
+    if (replies !== "plain") expect(sorted[1]).toEqual([repeatedId]);
+    expect(JSON.parse(row().checkpoint!).gaps.filter((gap: string) => /readable/u.test(gap))).toEqual([]);
     const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
     expect(learned.map(entry => entry.mex.one_line).sort()).toEqual([claim, other].sort());
     expect(counts).toMatchObject({ "cluster.unbacked": 1 });
+    // Two changes came in two batches and were sorted in one call.
+    expect(forge.fetch.mock.calls.filter(([, init]) => String(init?.body).includes("HarvestChanges"))).toHaveLength(2);
+    expect(sorted).toHaveLength(replies === "plain" ? 1 : 2);
     // The Decisions trial counts every description read: one change has one, without a Decisions section.
     expect([counts["trial.pr.followed"] ?? 0, counts["trial.pr.ignored"]]).toEqual([0, 1]);
     // Neither rule may claim the other's review.
