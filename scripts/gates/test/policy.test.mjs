@@ -17,9 +17,9 @@ test('beta.1 requires its features and preserves visibly not-built later gates',
   assert.deepEqual(GATES.filter((gate) => required(gate, 'beta.1')).map((gate) => gate.id), ['knowledge', 'hook-timing', 'upgrade']);
   const report = await beta();
   assert.equal(releaseReady(report), true);
-  assert.equal(report.gates.length, 7);
-  assert.deepEqual(report.gates.filter((gate) => !gate.required).map((gate) => gate.status), Array(4).fill('not-built'));
-  assert.match(table(report), /Graph quality\s+later\s+not built/);
+  assert.equal(report.gates.length, 4);
+  assert.deepEqual(report.gates.filter((gate) => !gate.required).map((gate) => gate.status), ['not-built']);
+  assert.match(table(report), /Saved-session replay\s+later\s+not built/);
   assert.equal(releaseReady(await runGates({ root: '.', release: 'beta.2', source, adapters })), false);
   assert.ok(GATES.every((gate) => required(gate, 'final')));
 });
@@ -64,7 +64,7 @@ test('empty, skipped, malformed and private evidence cannot pass or leak', async
   const report = await beta();
   assert.equal(validReport({ ...report, extra: 'PRIVATE' }), false);
   const forged = structuredClone(report);
-  delete forged.gates[5].timings;
+  delete forged.gates.find((gate) => gate.id === 'hook-timing').timings;
   assert.equal(validReport(forged), false);
 });
 

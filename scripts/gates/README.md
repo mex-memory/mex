@@ -1,6 +1,6 @@
 # Release gates
 
-`npm run gates` runs the seven free gates and prints one table. A passing
+`npm run gates` runs the free gates and prints one table. A passing
 check requires real, nonempty evidence. There are no model calls or paid runs.
 
 ```
@@ -13,12 +13,14 @@ The release profile follows the features included in that release:
 | Gate | beta.1 | beta.2 and final |
 | --- | --- | --- |
 | Knowledge bench | required | required |
-| Graph quality | later | required |
-| Compiler call graph | later | required |
 | Saved-session replay | later | required |
-| Overlay equals fresh build | later | required |
 | Hook timing | required | required |
 | Three-repo upgrade | required | required |
+
+Graph accuracy, the compiler call graph, and "an overlay matches a fresh
+build" are not rows here. Graph-04 measured the first two
+(`docs/design/graph-engine-baseline.md`). The suite checks the third
+(`src/graph/__tests__/languages-storage.test.ts`).
 
 Later adapters remain visibly **not built** until implemented. Missing
 required adapters block release. An implemented gate that fails blocks every
@@ -34,8 +36,7 @@ Where present, the counters-active timing test is included too.
 An environment variable cannot raise the budget or enable cached test results.
 
 The knowledge bench (`knowledge.mjs`), saved-session replay (`replay.mjs`),
-and three-repo upgrade (`upgrade.mjs`) are live. Graph quality, compiler call
-graph, and overlay are **not built**.
+and three-repo upgrade (`upgrade.mjs`) are live.
 Supplied historical reports can describe an older release; a current pass
 requires the live product checks on the release commit.
 
