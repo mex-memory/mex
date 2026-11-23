@@ -140,7 +140,7 @@ func plantShellEditGraph(t *testing.T, recordDirectory, root string, callers []s
 	g := open(base)
 	execSQL(g, `CREATE TABLE files(path TEXT PRIMARY KEY, content_hash TEXT);
 CREATE TABLE nodes(id TEXT PRIMARY KEY, name TEXT, file_path TEXT, start_line INT, end_line INT, kind TEXT, is_exported INT, signature TEXT, body_hash TEXT, container_id TEXT);
-CREATE TABLE edges(source TEXT, target TEXT, kind TEXT, line INT);
+CREATE TABLE edges(source TEXT, target TEXT, kind TEXT, line INT, resolution_method TEXT);
 CREATE TABLE unresolved_refs(reference_name TEXT, from_node_id TEXT, status TEXT, reference_kind TEXT, candidates TEXT, line INT);`)
 	execSQL(g, `INSERT INTO nodes VALUES('area', 'area', 'area.ts', 1, 5, 'function', 1, '', '', NULL)`)
 	ix := open("c-1.db")
@@ -157,7 +157,7 @@ CREATE TABLE unresolved_refs(reference_name TEXT, from_node_id TEXT, status TEXT
 		id := strconv.Itoa(i)
 		execSQL(g, `INSERT INTO files VALUES(?, ?)`, rel, hash)
 		execSQL(g, `INSERT INTO nodes VALUES(?, 'caller', ?, 2, 4, 'function', 0, '', '', NULL)`, id, rel)
-		execSQL(g, `INSERT INTO edges VALUES(?, 'area', 'calls', 3)`, id)
+		execSQL(g, `INSERT INTO edges VALUES(?, 'area', 'calls', 3, 'explicit-import')`, id)
 	}
 	ix.Close()
 	g.Close()
