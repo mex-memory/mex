@@ -116,7 +116,7 @@ export function repairPrompt(items: readonly RepairItem[], context: WriterContex
   return `${writerPrompt(items.map(item => item.cluster), context)}
 Your earlier entries for these clusters failed verification against the evidence and the code:
 ${JSON.stringify(items.map(item => ({ cluster: item.cluster.key, entry: item.entry, failures: item.failures })))}
-Return corrected entries for these clusters only. Fix a quote, narrow a scope, or replace a pattern with one that matches the "before" code and not the "after" code. Remove what you can't support. Return {"entries":[]} if none can be corrected.`;
+Return corrected entries for these clusters only. Fix unsupported quotes and patterns that fail contrast. For a pattern common at HEAD, use the reported occurrence and file counts to narrow its scope to the area the evidence actually governs. The new scope will be checked again. If no narrower scope fits the evidence, remove the failing pattern and keep the supported lesson as prose. Return {"entries":[]} if none can be corrected.`;
 }
 
 export interface WriterOutcome {

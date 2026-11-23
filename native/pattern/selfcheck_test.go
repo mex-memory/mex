@@ -45,24 +45,39 @@ func TestSelfCheck(t *testing.T) {
 			t.Errorf("%s: no reason", c.name)
 		}
 	}
-	// One other use in a three-file package is not the area's normal code.
-	v := SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"}, Area{"console.log(1)", "a", "b"})
-	if !v.Keep || v.Files != 3 || v.Matched != 1 {
-		t.Fatalf("share, small package: %+v", v)
-	}
-	big := Area{"console.log(1)", "console.log(2)", "console.log(3)"}
-	for len(big) < 10 {
-		big = append(big, "x")
-	}
-	v = SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"}, big)
-	if v.Keep || v.Matched != 3 || !strings.Contains(v.Reason, "3 of the area's 10 files") {
-		t.Fatalf("share, common in the area: %+v", v)
-	}
-	for len(big) < 20 {
-		big = append(big, "y")
-	}
-	if v = SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"}, big); !v.Keep {
-		t.Fatalf("share, 3 of 20 files is rare: %+v", v)
+}
+
+func TestSelfCheckAreaFrequency(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		files, occurrences int
+		matched            int
+		common             bool
+		counts             string
+	}{
+		{"three occurrences", 20, 3, 1, false, "3 occurrences in 1 of 20 scoped files"},
+		{"four in one file", 20, 4, 1, true, "4 occurrences in 1 of 20 scoped files"},
+		{"above one percent", 150, 2, 2, true, "2 occurrences in 2 of 150 scoped files"},
+		{"exactly one percent", 200, 2, 2, false, "2 occurrences in 2 of 200 scoped files"},
+		{"one leftover file", 20, 1, 1, false, "1 occurrence in 1 of 20 scoped files"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			area := make(Area, tc.files)
+			for i := 0; i < tc.matched; i++ {
+				area[i] = "console.log(1)\n"
+			}
+			area[0] += strings.Repeat("console.log(2)\n", tc.occurrences-tc.matched)
+			for _, c := range []Candidate{
+				{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"},
+				{Type: "rejected", Match: "structural", Pattern: "console.log($X)", Objected: "console.log(x)", Fixed: "log(x)"},
+			} {
+				v := SelfCheck(c, area)
+				if v.Keep == tc.common || v.Common != tc.common || v.Files != tc.files || v.Matched != tc.matched ||
+					v.Occurrences != tc.occurrences || !strings.Contains(v.Reason, tc.counts) {
+					t.Errorf("%s: %+v", c.Match, v)
+				}
+			}
+		})
 	}
 }
 

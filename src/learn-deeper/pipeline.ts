@@ -427,26 +427,34 @@ async function withProofContext<T>(input: PipelineInput, entries: readonly Write
   run: (context: ProofContext, checked: Pick<ProofContext["check"], "checkTree" | "checkIndex">) => Promise<T>): Promise<T> {
   const { deps, context } = input;
   const { globToRegExp } = await import("../file-index/glob.js");
-  const scopes = [...new Set(entries.flatMap(entry => entry.scope))].flatMap(glob => { try { return [globToRegExp(glob)]; } catch { return []; } });
+  const { discoverFiles } = await import("../file-index/discover.js");
+  const scopeGlobs = [...new Set(entries.flatMap(entry => entry.scope))];
+  const scopes = scopeGlobs.flatMap(glob => { try { return [globToRegExp(glob)]; } catch { return []; } });
   const folders = areas.map(path => path.split("/").slice(0, -1).join("/")).filter(Boolean);
-  const needed = new Set([...areas, ...entries.flatMap(entry => [entry.symbol?.file, entry.lint?.config, entry.until?.file])]);
-  const wanted: string[] = [];
+  // Keep an exact repair scope readable even if the original glob reaches the staging cap.
+  const wanted = new Set([...scopeGlobs, ...areas, ...entries.flatMap(entry => [entry.symbol?.file, entry.lint?.config, entry.until?.file])]
+    .filter((path): path is string => path !== undefined && deps.tree.has(path)));
   for (const path of deps.tree.paths()) {
-    if (needed.has(path) || scopes.some(re => re.test(path)) || folders.some(folder => path.startsWith(folder + "/")) || /(?:^|\/)(?:package\.json|AGENTS\.md|CLAUDE\.md)$/u.test(path)) wanted.push(path);
-    if (wanted.length >= PIPELINE_LIMITS.stagedFiles) { input.gaps.add("Some scopes were too large to stage in full for checking."); break; }
+    if (wanted.has(path)) continue;
+    if (scopes.some(re => re.test(path)) || folders.some(folder => path.startsWith(folder + "/")) || /(?:^|\/)(?:package\.json|AGENTS\.md|CLAUDE\.md)$/u.test(path)) {
+      if (wanted.size >= PIPELINE_LIMITS.stagedFiles) { input.gaps.add("Some scopes were too large to stage in full for checking."); break; }
+      wanted.add(path);
+    }
   }
   const literals = entries.flatMap(entry => [...entry.when.filter(w => w.match === "literal").map(w => w.pattern)]);
-  return deps.tree.withCheckTree(context.writer.location.home, context.job.id, wanted, async (checkTree, _staged, unreadRules) => {
+  return deps.tree.withPatternCheckTree(context.writer.location.home, context.job.id, [...wanted], PIPELINE_LIMITS.stagedFiles, async (checkTree, _staged, unreadRules, coverage) => {
     if (unreadRules.length) input.gaps.add("Some rule files could not be read for duplicate checks.");
     const recordDirectory = join(checkTree, ".mex");
     const projectId = "f-" + shortHash(checkTree);
     mkdirSync(indexDirectory(recordDirectory, projectId), { recursive: true });
     registerLiterals(recordDirectory, projectId, literals);
+    const discovered = await discoverFiles(checkTree);
     await buildIndex({ root: checkTree, projectId, recordDirectory, workers: 0 });
     const checked = { checkTree, checkIndex: { projectId, recordDirectory } };
     // The fix literals the proof picks are registered as they are found; the index recounts on the next build,
     // so register them up front from every draft's fix range too.
-    return run({ tree: deps.tree, check: { projectPath: checkTree, ...checked }, history: gitHistory(deps.tree) }, checked);
+    const patternStage = { binary: coverage.binary, readable: new Set(discovered.paths.filter(path => coverage.readable.has(path))) };
+    return run({ tree: deps.tree, check: { projectPath: checkTree, ...checked }, patternStage, history: gitHistory(deps.tree) }, checked);
   }) as Promise<T>;
 }
 

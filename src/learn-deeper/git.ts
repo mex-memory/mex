@@ -1,17 +1,26 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { looksBinary } from "../file-index/classify.js";
 import { backgroundEnvironment } from "../filter/environment.js";
 import { containedDirectory } from "../knowledge/files.js";
+import { stripHidden } from "../knowledge/gates.js";
 import { ruleFormat } from "../knowledge/rule-files.js";
+import { safePath } from "./harvest/evidence.js";
 import { repositoryFromRemote, type Repository } from "./source.js";
 
+const FILE_READ_MS = 2500;
+
+function commandEnvironment(): NodeJS.ProcessEnv {
+  return { ...backgroundEnvironment(), GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0",
+    GCM_INTERACTIVE: "never", GIT_ASKPASS: "", SSH_ASKPASS: "", GIT_TERMINAL_PROMPT: "0" };
+}
+
 export async function command(root: string, executable: string, args: string[], input?: string, limit = 64 << 10,
-  timeout = 2500): Promise<string | undefined> {
+  timeout = FILE_READ_MS): Promise<string | undefined> {
   return new Promise(resolve => {
     const child = execFile(executable, args, { cwd: root, encoding: "utf8", timeout, maxBuffer: limit,
-      windowsHide: true, env: { ...backgroundEnvironment(), GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0",
-        GCM_INTERACTIVE: "never", GIT_ASKPASS: "", SSH_ASKPASS: "", GIT_TERMINAL_PROMPT: "0" },
+      windowsHide: true, env: commandEnvironment(),
     }, (error, stdout) => resolve(error ? undefined : stdout));
     child.stdin?.on("error", () => { /* process failure is reported by execFile */ });
     child.stdin?.end(input);
@@ -43,6 +52,14 @@ const RULE_FILE_BYTES = 1 << 20;
 const RULE_READ_MS = 10_000;
 const STAGED_FILES = 512;
 const STAGED_BYTES = 12 << 20;
+// Match the native --pattern-check reader's per-file limit.
+const PATTERN_FILE_BYTES = 512 << 10;
+const PRIVATE_MARKER = /<\s*\/?\s*private\b/iu;
+
+export interface PatternStage {
+  readable: ReadonlySet<string>;
+  binary: ReadonlySet<string>;
+}
 
 function knowledgePath(path: string): boolean {
   return repoPath(path) && /\.mdx?$/iu.test(path)
@@ -139,6 +156,24 @@ export class PinnedTree {
     return content?.includes("\0") ? undefined : content;
   }
 
+  private async readPatternBlob(path: string, ruleFile: boolean): Promise<Buffer | "binary" | undefined> {
+    const blob = this.blobs.get(path);
+    if (!blob || !safePath(path)) return undefined;
+    return new Promise(resolve => {
+      execFile("git", ["cat-file", "blob", blob], { cwd: this.root, encoding: "buffer",
+        maxBuffer: ruleFile ? RULE_FILE_BYTES : PATTERN_FILE_BYTES,
+        timeout: ruleFile ? RULE_READ_MS : FILE_READ_MS, windowsHide: true, env: commandEnvironment() }, (error, bytes) => {
+        // On overflow execFile retains the bounded prefix. A positive binary
+        // classification is sufficient even when the rest couldn't be read.
+        if (error && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return resolve(undefined);
+        if (looksBinary(bytes) || (!error && bytes.includes(0))) return resolve("binary");
+        // These bytes stay in the local check tree. The evidence pipeline
+        // screens any excerpt separately before sending it to a model.
+        resolve(error || PRIVATE_MARKER.test(stripHidden(bytes.toString("utf8"))) ? undefined : bytes);
+      });
+    });
+  }
+
   async lastChanged(path: string): Promise<string | undefined> {
     if (!this.has(path)) return undefined;
     const date = (await command(this.root, "git", ["--literal-pathspecs", "log", "-1", "--format=%cI", this.head, "--", path]))?.trim();
@@ -165,6 +200,18 @@ export class PinnedTree {
    */
   async withCheckTree<T>(home: string, jobId: string, paths: readonly string[],
     run: (checkout: string, files: ReadonlySet<string>, unreadRules: readonly string[]) => Promise<T>): Promise<T> {
+    return this.stageCheckTree(home, jobId, paths, (checkout, files, unreadRules) => run(checkout, files, unreadRules));
+  }
+
+  /** Use the native reader's limits for pattern proof without changing other staging callers. */
+  async withPatternCheckTree<T>(home: string, jobId: string, paths: readonly string[], maxFiles: number,
+    run: (checkout: string, files: ReadonlySet<string>, unreadRules: readonly string[], coverage: PatternStage) => Promise<T>): Promise<T> {
+    return this.stageCheckTree(home, jobId, paths, run, maxFiles);
+  }
+
+  private async stageCheckTree<T>(home: string, jobId: string, paths: readonly string[],
+    run: (checkout: string, files: ReadonlySet<string>, unreadRules: readonly string[], coverage: PatternStage) => Promise<T>,
+    patternMaxFiles?: number): Promise<T> {
     const rules = [...this.paths()].filter(path => ruleFormat(path));
     const references = [...this.paths()].filter(path =>
       /(?:^|\/)(?:package\.json|pnpm-workspace\.yaml|pyproject\.toml|setup\.cfg|tox\.ini|Cargo\.toml|GNUmakefile|Makefile|(?:build|settings)\.gradle(?:\.kts)?|gradlew)$/iu.test(path)
@@ -173,21 +220,31 @@ export class PinnedTree {
     const ruleSet = new Set(rules);
     return this.withScratch(home, jobId, async dir => {
       const staged = new Set<string>();
-      const files = [...new Set([...rules, ...paths, ...references])].slice(0, STAGED_FILES);
+      const readable = new Set<string>(), binary = new Set<string>();
+      const files = [...new Set([...rules, ...paths, ...references])].slice(0, patternMaxFiles ?? STAGED_FILES);
       let bytes = 0;
       for (let offset = 0; offset < files.length && bytes < STAGED_BYTES; offset += 8) {
         const chunk = files.slice(offset, offset + 8);
-        const bodies = await Promise.all(chunk.map(path => ruleSet.has(path)
-          ? this.readBlob(this.blobs.get(path), RULE_FILE_BYTES, RULE_READ_MS) : this.read(path)));
+        const bodies = await Promise.all(chunk.map(async path => {
+          if (patternMaxFiles !== undefined) {
+            const body = await this.readPatternBlob(path, ruleSet.has(path));
+            if (body === "binary") binary.add(path);
+            else return body;
+          } else if (ruleSet.has(path)) return this.readBlob(this.blobs.get(path), RULE_FILE_BYTES, RULE_READ_MS);
+          else return this.read(path);
+        }));
         for (const [i, path] of chunk.entries()) {
           const body = bodies[i];
-          if (body === undefined || bytes + Buffer.byteLength(body) > STAGED_BYTES) continue;
+          if (body === undefined) continue;
+          const size = Buffer.byteLength(body);
+          if (bytes + size > STAGED_BYTES) continue;
           await stage(dir, path, body);
           staged.add(path);
-          bytes += Buffer.byteLength(body);
+          if (patternMaxFiles !== undefined && size <= PATTERN_FILE_BYTES) readable.add(path);
+          bytes += size;
         }
       }
-      return run(dir, staged, rules.filter(path => !staged.has(path)));
+      return run(dir, staged, rules.filter(path => !staged.has(path)), { readable, binary });
     });
   }
 
@@ -203,7 +260,7 @@ export class PinnedTree {
   }
 }
 
-async function stage(dir: string, path: string, content: string): Promise<void> {
+async function stage(dir: string, path: string, content: string | Buffer): Promise<void> {
   const file = join(dir, path);
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await writeFile(file, content, { flag: "wx", mode: 0o600 });

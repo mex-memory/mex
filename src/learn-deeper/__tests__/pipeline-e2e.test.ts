@@ -13,6 +13,7 @@ import { ownerId, registerJobKind, runOneBatch, type JobRow } from "../../record
 import { ZERO } from "../../record/usage.js";
 import { runRepoStart } from "../../repo-start/command.js";
 import { ForgeClient } from "../forge.js";
+import { PinnedTree } from "../git.js";
 import { planHarvest } from "../harvest/index.js";
 import { createLearnKind } from "../job.js";
 import { LEARN_KIND, Plan } from "../plan.js";
@@ -101,7 +102,33 @@ function recordedForge() {
 
 const reply = (value: unknown) => ({ text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } });
 
-it("harvests a recorded review, stops an edit with the team's fix, and withholds the rule when the fix is gone", async () => {
+it.each([
+  { area: "quiet scope", gap: "none" },
+  { area: "40 HEAD occurrences in large text alongside binary data", gap: "common" },
+  { area: "unread oversized and private files, then scope repair", gap: "unread" },
+])("learns from a recorded review and stops an edit before the fix is gone ($area)", async ({ gap }) => {
+  const noisy = gap === "common";
+  const unread = gap === "unread";
+  let head = mergedHead;
+  if (gap !== "none") {
+    vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-14T10:00:00Z");
+    if (noisy) {
+      // A text file with a binary-looking extension still counts, even after 96 KiB.
+      writeFileSync(join(repo, "src", "legacy.exe"), "// padding\n".repeat(12_000) + "fallback('legacy');\n".repeat(40));
+      // A file with a code extension can be binary even when it exceeds the native limit.
+      writeFileSync(join(repo, "src", "archive.ts"), Buffer.alloc(600 << 10));
+    } else {
+      writeFileSync(join(repo, "src", "oversize.ts"), "//" + "x".repeat(512 << 10));
+      writeFileSync(join(repo, "src", "private.ts"), "// <private>Withheld fixture text</private>\nfallback('private');\n");
+    }
+    head = commit("Keep the existing legacy callers", "2026-11-14T10:00:00Z");
+  }
+  if (noisy) {
+    const tree = (await PinnedTree.open(repo, head))!;
+    await tree.withCheckTree(fixture, "c".repeat(36), ["src/legacy.exe"], async (_checkout, files) => {
+      expect(files.has("src/legacy.exe")).toBe(false);
+    });
+  }
   await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
   const writer = openRecord();
   try {
@@ -112,12 +139,13 @@ it("harvests a recorded review, stops an edit with the team's fix, and withholds
     await index();
     const forge = recordedForge();
     const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
-    const harvest = await planHarvest({ checkout, head: mergedHead, source: origin, agent: "codex", ...window }, { client: forge.client });
-    const plan = Plan.parse({ checkout, head: mergedHead, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
+    const harvest = await planHarvest({ checkout, head, source: origin, agent: "codex", ...window }, { client: forge.client });
+    const plan = Plan.parse({ checkout, head, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
       ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
     const job = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan }).job;
     const model = vi.fn<typeof runModel>(async request => {
       expect(request.prompt).not.toMatch(/Fern Example|Cedar Example/u);
+      expect(request.prompt).not.toContain("Withheld fixture text");
       if (request.purpose === "learn-deeper-filter") {
         expect(request.prompt).not.toContain("return fallback(label);");
         const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
@@ -127,9 +155,20 @@ it("harvests a recorded review, stops an edit with the team's fix, and withholds
       expect(request.prompt).toContain("3|   return fallback(label);");
       expect(request.prompt).toContain("3|   return stable(label);");
       const repeat = request.prompt.includes(repeatedId);
+      const repair = request.prompt.includes("Your earlier entries for these clusters failed verification");
+      if (repair) {
+        expect(gap !== "none" && !repeat).toBe(true);
+        if (noisy) expect(request.prompt).toContain("40 occurrences in 1 of 2 scoped files");
+        if (unread) {
+          expect(request.prompt).toContain("Could not read 2 scoped files");
+          expect(request.prompt).toContain("src/oversize.ts");
+          expect(request.prompt).toContain("src/private.ts");
+        }
+        expect(request.prompt).toContain("Narrow the scope");
+      }
       return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim,
         clauses: [{ text: claim, quotes: [{ id: repeat ? repeatedId : candidateId, quote: "Prefer the stable adapter over the fallback." }] }],
-        scope: [path], ...(!repeat ? { when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
+        scope: gap !== "none" && !repair ? ["src/**"] : [path], ...(!repeat || noisy ? { when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
           fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } } : {}) }] });
     });
     registerJobKind(createLearnKind({ model, client: async () => forge.client }));
@@ -143,11 +182,17 @@ it("harvests a recorded review, stops an edit with the team's fix, and withholds
     expect(JSON.parse(row().checkpoint!).v2.phase).toBe("harvest");
     const [early] = reviewRows(writer, project, job.id);
     expect(early).toMatchObject({ support: 1, reviewers: 1, proven: true });
+    const firstRule = parseEntry(snapshotNotes(writer, project).files.get(early!.entryId)!);
+    expect(firstRule.mex.scope).toEqual([path]);
+    expect(firstRule.mex.checks).toContainEqual(expect.objectContaining({
+      kind: "pattern", target: expect.objectContaining({ pattern: "fallback(", expect: "at-most" }), saw: { count: 0 },
+    }));
     expect(forge.fetch.mock.calls.some(([, init]) => String(init?.body).includes("p0:pullRequest(number:40)"))).toBe(false);
     for (let i = 0; i < 8 && row().state === "queued"; i++) await runOneBatch(writer, owner, { only: new Set([job.id]) });
     const done = row();
     expect(done.state, String(done.reason)).toMatch(/^done/u);
-    expect(model).toHaveBeenCalledTimes(4);
+    expect(model).toHaveBeenCalledTimes(gap !== "none" ? 5 : 4);
+    expect(model.mock.calls.filter(([request]) => request.prompt.includes("Your earlier entries for these clusters failed verification"))).toHaveLength(gap !== "none" ? 1 : 0);
     expect(JSON.parse(done.checkpoint!).v2.counts).toMatchObject({ "harvested.review-thread": 2, "triage-kept": 2, saved: 2 });
     const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
     expect(learned).toHaveLength(1);
@@ -155,6 +200,13 @@ it("harvests a recorded review, stops an edit with the team's fix, and withholds
     expect(rule.mex.id).toBe(early!.entryId);
     expect(rule.mex.status).toBe("active");
     expect(rule.mex.when).toEqual([{ type: "anti", match: "literal", pattern: "fallback(" }]);
+    if (noisy) {
+      expect(rule.mex.scope).toEqual(["src/**"]);
+      expect(rule.mex.source.label).toContain("migration in progress");
+      expect(rule.mex.checks).toContainEqual(expect.objectContaining({
+        kind: "pattern", target: expect.objectContaining({ pattern: "fallback(", expect: "at-most" }), saw: { count: 40 },
+      }));
+    }
     expect(rule.mex.fix).toMatchObject({ snippet: "  return stable(label);", path, lines: "3-3" });
     expect(rule.mex.checks.map(check => `${check.kind}:${check.role}`)).toEqual(expect.arrayContaining(["fixture:complete", "pattern:complete", "scope:complete", "source:supporting"]));
     expect(rule.mex.source.quote).toBe("Prefer the stable adapter over the fallback.");

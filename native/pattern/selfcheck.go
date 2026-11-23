@@ -1,17 +1,15 @@
 package pattern
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-// MaxAreaShare is the largest share of an area's files an anti or rejected
-// pattern may already appear in. A pattern found in more of them describes
-// the area's normal code, not the mistake a reviewer objected to. The plan
-// sets "a share" without a number; this is the starting value.
-const MaxAreaShare = 0.20
-
-// MinAreaMatches: below this many files a pattern is never the area's normal
-// code. In a package of three or four files one other use is over 20%, and
-// on the review set that rule dropped good patterns and nothing else.
-const MinAreaMatches = 3
+const (
+	MaxAreaOccurrences = 3
+	MaxAreaShare       = 0.01
+	MinAreaMatches     = 2 // One leftover file alone does not establish a norm.
+)
 
 // Candidate is a `when:` pattern proposed for an entry, with the review it
 // came from: the code the reviewer objected to and the code after the fix.
@@ -29,10 +27,12 @@ type Candidate struct {
 // Verdict says whether a candidate pattern is kept. A dropped pattern
 // leaves the entry on its path scope alone.
 type Verdict struct {
-	Keep    bool   `json:"keep"`
-	Reason  string `json:"reason"`
-	Files   int    `json:"files"`   // area files read
-	Matched int    `json:"matched"` // of those, files the pattern occurs in
+	Keep        bool   `json:"keep"`
+	Reason      string `json:"reason"`
+	Common      bool   `json:"common"`      // contrast passed, but the pattern is common in scope
+	Files       int    `json:"files"`       // area files read
+	Matched     int    `json:"matched"`     // of those, files the pattern occurs in
+	Occurrences int    `json:"occurrences"` // non-overlapping matches in those files
 }
 
 // Area is the code of an area, file by file; nil means it couldn't be read.
@@ -40,10 +40,10 @@ type Area []string
 
 // SelfCheck runs the $0 self-check on one candidate (plan sheet 31).
 func SelfCheck(c Candidate, area Area) Verdict {
-	matches, err := Matcher(c.Match, c.Pattern)
 	if c.Type == "creates" {
 		return Verdict{Keep: true, Reason: "a file-path glob, not code"}
 	}
+	matches, count, err := compileMatchers(c.Match, c.Pattern)
 	if err != nil {
 		return Verdict{Reason: "the pattern doesn't compile"}
 	}
@@ -78,37 +78,51 @@ func SelfCheck(c Candidate, area Area) Verdict {
 		return Verdict{Reason: "unknown pattern type"}
 	}
 	if area == nil {
-		return Verdict{Reason: "the area's files couldn't be read, so its share is unknown"}
+		return Verdict{Reason: "the full scope couldn't be read, so its frequency is unknown"}
 	}
 	v := Verdict{Files: len(area)}
 	for _, code := range area {
-		if matches(code) {
+		if n := count(code); n > 0 {
 			v.Matched++
+			v.Occurrences += n
 		}
 	}
-	if v.Matched >= MinAreaMatches && float64(v.Matched) > MaxAreaShare*float64(v.Files) {
-		v.Reason = fmt.Sprintf("already in %d of the area's %d files", v.Matched, v.Files)
-		return v
+	v.Common = v.Occurrences > MaxAreaOccurrences ||
+		(v.Matched >= MinAreaMatches && float64(v.Matched) > MaxAreaShare*float64(v.Files))
+	unit := "occurrences"
+	if v.Occurrences == 1 {
+		unit = "occurrence"
 	}
-	v.Keep, v.Reason = true, "matches the objected code only, and is rare in the area"
+	counts := fmt.Sprintf("%d %s in %d of %d scoped files", v.Occurrences, unit, v.Matched, v.Files)
+	if v.Common {
+		v.Reason = "common at HEAD (" + counts + ")"
+	} else {
+		v.Keep = true
+		v.Reason = "matches the reviewed code only and is rare at HEAD (" + counts + ")"
+	}
 	return v
 }
 
 // Matcher returns a function reporting whether one pattern occurs in code.
 func Matcher(match, p string) (func(string) bool, error) {
+	matches, _, err := compileMatchers(match, p)
+	return matches, err
+}
+
+func compileMatchers(match, p string) (matches func(string) bool, count func(string) int, err error) {
 	switch match {
 	case "literal":
 		if p == "" {
-			return nil, ErrPattern
+			return nil, nil, ErrPattern
 		}
-		l := NewLiteral([]string{p})
-		return func(code string) bool { return code != "" && l.Scan(code)[0] }, nil
+		return func(code string) bool { return strings.Contains(code, p) },
+			func(code string) int { return strings.Count(code, p) }, nil
 	case "structural":
 		s, err := CompileStructural(p)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return s.Match, nil
+		return s.Match, func(code string) int { return len(s.Spans(code)) }, nil
 	}
-	return nil, ErrPattern
+	return nil, nil, ErrPattern
 }
