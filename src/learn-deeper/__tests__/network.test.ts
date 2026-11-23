@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { evaluate } from "../../judge/native.js";
 import { entry } from "../../knowledge/__tests__/fixtures.js";
 import { serializeEntry, type EntryCheck } from "../../knowledge/entry.js";
@@ -33,7 +34,17 @@ function check(url: string, hash: string): EntryCheck {
   return { kind: "source", role: "supporting", target: { url }, saw: { hash }, files: {} };
 }
 
+// The evaluator is the native binary; build it from this tree, as CI has no installed one.
+let built: string, binary: string;
+beforeAll(() => {
+  built = realpathSync(mkdtempSync(join(tmpdir(), "mex-net-hook-")));
+  binary = join(built, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+  execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
+}, 300_000);
+afterAll(() => rmSync(built, { recursive: true, force: true }));
+
 it("writes captured-hash rows from recorded nodes and the native evaluator holds, changes, or reports Gone", async () => {
+  vi.stubEnv("MEX_HOOK_BINARY", binary);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mex-net-")));
   const checkout = join(root, "repo"), home = join(root, "home");
   mkdirSync(checkout);

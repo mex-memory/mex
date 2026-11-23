@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { hash, position } from "../../judge/evidence.js";
 import { evaluate } from "../../judge/native.js";
 import { refreshRuleChanges } from "../../judge/rule-change.js";
@@ -31,7 +31,17 @@ function save(entry: KnowledgeEntry) {
   return { id: entry.mex.id, entry, level: "personal" as const, path, entry_hash: hash(raw) };
 }
 
+// The probe and the evaluator are the native binary; build it from this tree, as CI has no installed one.
+let built: string, binary: string;
+beforeAll(() => {
+  built = realpathSync(mkdtempSync(join(tmpdir(), "mex-upkeep-hook-")));
+  binary = join(built, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+  execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
+}, 300_000);
+afterAll(() => rmSync(built, { recursive: true, force: true }));
+
 beforeEach(() => {
+  vi.stubEnv("MEX_HOOK_BINARY", binary);
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "mex-upkeep-")));
   const repo = join(scratch, "repo");
   mkdirSync(join(repo, "src"), { recursive: true });
