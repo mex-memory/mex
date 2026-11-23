@@ -239,6 +239,47 @@ it.each([
   } finally { writer.close(); }
 }, 120_000);
 
+it("writes a review that backs nothing as its own lesson, and leaves the rule it was grouped with alone", async () => {
+  await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
+  const writer = openRecord();
+  try {
+    const { path: checkout, project_id: project } = writer.checkout(realpathSync(repo))!;
+    writer.db.prepare("UPDATE checkouts SET state='on' WHERE path=?").run(checkout);
+    await buildIndex({ root: checkout, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
+    const forge = recordedForge();
+    const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
+    const harvest = await planHarvest({ checkout, head: mergedHead, source: origin, agent: "codex", ...window }, { client: forge.client });
+    const plan = Plan.parse({ checkout, head: mergedHead, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
+      ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
+    const other = "Name the adapter's caller in the label.";
+    const model = vi.fn<typeof runModel>(async request => {
+      if (request.purpose === "learn-deeper-filter") {
+        const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
+        return reply({ results: items.map(({ id }) => ({ id, keep: id === candidateId || id === repeatedId, category: "api-use", lesson: claim })) });
+      }
+      const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
+      // Grouped together, the writer rests the rule on the first review only. Alone, the second says something else.
+      const alone = request.prompt.includes(repeatedId) && !request.prompt.includes(candidateId);
+      return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim: alone ? other : claim, scope: [path],
+        clauses: [{ text: alone ? other : claim, quotes: [{ id: alone ? repeatedId : candidateId, quote: "Prefer the stable adapter over the fallback." }] }] }] });
+    });
+    const { job } = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan });
+    registerJobKind(createLearnKind({ model, client: async () => forge.client }));
+    const row = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
+    for (let i = 0; i < 12 && row().state === "queued"; i++) await runOneBatch(writer, ownerId("foreground"), { only: new Set([job.id]) });
+    expect(row().state, row().reason ?? "").toMatch(/^done/u);
+    const counts = JSON.parse(row().checkpoint!).v2.counts;
+    const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
+    expect(learned.map(entry => entry.mex.one_line).sort()).toEqual([claim, other].sort());
+    expect(counts).toMatchObject({ "cluster.unbacked": 1 });
+    // Neither rule may claim the other's review.
+    expect(reviewRows(writer, project, job.id).map(item => [item.claim, item.support]).sort()).toEqual([[claim, 1], [other, 1]].sort());
+    // Saved raw rows are gone, and the leftover was written once.
+    expect(model.mock.calls.filter(([request]) => request.purpose === LEARN_KIND && request.prompt.includes(repeatedId) && !request.prompt.includes(candidateId))).toHaveLength(1);
+    expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE ?").get(`learning.deep.v2.${job.id}.%`)?.n).toBe(0);
+  } finally { writer.close(); }
+}, 120_000);
+
 it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", "forget, then a different lesson", "forget, then the same trigger"] as const)("honors %s when a different PR teaches something", async decision => {
   await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
   const writer = openRecord();
@@ -354,7 +395,6 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", 
       expect(after).toEqual(before);
       expect(parseEntry(new Map(after).get(id)!).mex.status).toBe(
         decision === "forget" ? "retired" : decision === "legacy forget" ? "active" : "proposed");
-      if (decision === "legacy forget") return;
 
       const hook = (event: string, payload: Record<string, unknown>) => execFileSync(binary, ["claude-code", event], {
         encoding: "utf8", timeout: 20_000, input: JSON.stringify({ session_id: "after-review", cwd: checkout, hook_event_name: event, ...payload }),
