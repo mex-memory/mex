@@ -185,6 +185,19 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
   const repeated = overrides(writer, projectId), budget = { bytes: 0, work: 0, deadline: Date.now()+30_000, limited: false };
   const scannedIds=new Set<string>();
   let scanned=0;
+  // One listing for the page. A team file git is not tracking has no committed
+  // revision, so it does not get its own log process.
+  const teamPaths = [...new Set(page.flatMap(item => {
+    const rule = rules.get(item.id);
+    if (!rule || rule.level !== "team") return [];
+    const path = relative(checkout, rule.path).split("\\").join("/");
+    return path && !path.startsWith("../") ? [path] : [];
+  }))];
+  let tracked: Set<string> | undefined;
+  if (teamPaths.length) {
+    const listed = await git(checkout, ["-c", "core.quotepath=off", "ls-files", "-z", "--", ...teamPaths]);
+    if (listed !== undefined) tracked = new Set(listed.split("\0").filter(Boolean));
+  }
   for (const item of page) {
     if (Date.now()>budget.deadline) break;
     scanned++;scannedIds.add(item.id);
@@ -200,7 +213,8 @@ export async function refreshRuleChanges(writer: RecordWriter, projectId: string
     let history:string[]=[];
     if (rule.level === "team") {
       const path=relative(checkout,rule.path).split("\\").join("/");
-      const commit=(await git(checkout,["log","-1","--format=%H","--",path]))?.trim();
+      const commit = tracked?.has(path) === false ? undefined
+        : (await git(checkout,["log","-1","--format=%H","--",path]))?.trim();
       if (commit && /^[a-f0-9]{40,64}$/u.test(commit)) {
         const text=await git(checkout,["show",`${commit}:${path}`],64<<10);
         if (text!==undefined && hash(text)===hash(rule.content)) history=(await git(checkout,["log","-32","--format=%H%x00%cI%x00%P%x00%s%x00%b%x00",`${commit}..HEAD`],128<<10))?.split("\0") ?? [];
