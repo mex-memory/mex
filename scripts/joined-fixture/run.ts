@@ -7,8 +7,8 @@ import { propose, type Proposal } from "../../src/knowledge/gate.js";
 import { openHooksReadOnly, openRecordReadOnly } from "../../src/record/index.js";
 import { checkAccepted, checkCard as cardCheck, checkKept, checkProbe, checkReceipt, checkSetupJobs, requireJoin, type Receipt, type SetupJob } from "./joins.js";
 
-// TODO: Enable both required graph read checks when graph reads merge.
-const GRAPH_READS_MERGED = false;
+// Graph reads shipped in graph-03. Both joins are required.
+const GRAPH_READS_MERGED = true;
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const cli = join(repo, "dist", "cli.js");
 const binary = resolve(process.env.MEX_HOOK_BINARY || join(repo, "native", ".scratch", process.platform === "win32" ? "mex-hook.exe" : "mex-hook"));
@@ -84,11 +84,24 @@ function readProject(): string {
   } finally { record?.close(); }
 }
 
-function searchPayload(agent: Agent, session: string) {
+function searchPayload(agent: Agent, session: string, noisy = false) {
   const common = { session_id: session, cwd: checkout, hook_event_name: "PostToolUse" };
   // Keep the checked-in recordings' tool shapes and use fixture paths and results.
   // Codex 0.165 records plain command output, so the payload has no exit header.
-  const result = `${file}:1:${signature}`;
+  // A graph card is sent only beside a noisy search: hits in 3 or more files,
+  // as real lines. Claude's object result is one JSON line, which does not count.
+  const hits = noisy
+    ? `\n${caller}:2:export const widget = ${symbol}();\nsrc/again.ts:1:export const spare = ${symbol}();`
+    : "";
+  const line = `${file}:1:${signature}`;
+  if (noisy) {
+    const text = `${line}${hits}`;
+    return agent === "claude-code"
+      ? { ...common, tool_name: "Grep", tool_input: { pattern: symbol, path: checkout, output_mode: "content", "-n": true }, tool_response: text }
+      : { ...common, turn_id: `turn-${session}`, tool_use_id: `exec-${session}`, tool_name: "Bash",
+        tool_input: { command: `rg -n "function ${symbol}" src` }, tool_response: text };
+  }
+  const result = line;
   return agent === "claude-code"
     ? { ...common, tool_name: "Grep", tool_input: { pattern: symbol, path: checkout, output_mode: "content", "-n": true },
       tool_response: { mode: "content", numFiles: 0, filenames: [], content: result, numLines: 1, totalLines: 1 } }
@@ -102,8 +115,8 @@ function hook(agent: Agent, event: string, payload: object, capture = false) {
   return reply.hookSpecificOutput?.additionalContext ?? "";
 }
 
-function replay(agent: Agent, session: string, capture = false): string {
-  return hook(agent, "PostToolUse", searchPayload(agent, session), capture);
+function replay(agent: Agent, session: string, capture = false, noisy = false): string {
+  return hook(agent, "PostToolUse", searchPayload(agent, session, noisy), capture);
 }
 
 // The Sessions API can read this ledger through the same read-only record port.
@@ -133,8 +146,9 @@ async function main() {
     }
     writeFileSync(join(checkout, file), source(oldBody));
     writeFileSync(join(checkout, caller), `import { ${symbol} } from "./widget.js";\nexport const widget = ${symbol}();\n`);
+    writeFileSync(join(checkout, "src", "again.ts"), `import { ${symbol} } from "./widget.js";\nexport const spare = ${symbol}();\n`);
     run("git", ["init", "--quiet", "--template="]);
-    run("git", ["add", "--", file, caller]);
+    run("git", ["add", "--", file, caller, "src/again.ts"]);
     run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Create fixture"]);
     mex();
     checkSetupJobs(readSetupJobs(), ["file-index", "code-facts"]);
@@ -150,7 +164,11 @@ async function main() {
   await step("join 2→3 semantic graph", () => {
     const graph = json("graph", "--json");
     const status = json("graph", "status", "--json");
-    requireJoin(graph.nodesCreated > 0 && graph.edgesCreated > 0 && status.status === "fresh", `the semantic graph has no fresh nodes and edges (${status.status})`);
+    const defined = mex("graph", "query", "where-defined", symbol);
+    // Setup's graph-build job often finishes first, so this command reports
+    // an unchanged fresh graph rather than a new node count.
+    requireJoin(status.status === "fresh" && (graph.nodesCreated > 0 || graph.operation === "unchanged") && defined.includes(file) && defined.includes(symbol),
+      `the semantic graph has no fresh definition of ${symbol} (${status.status}, ${graph.operation}, nodes ${graph.nodesCreated}): ${defined.trim()}`);
   });
 
   const entry = await step("join 3→4 producer gate and store", async () => {
@@ -194,7 +212,7 @@ async function main() {
       mex("config", "set", "delivery.surface.graph-card", "on", "--project");
       for (const agent of agents) {
         const session = `joined-${agent}-graph`;
-        const context = replay(agent, session);
+        const context = replay(agent, session, false, true);
         checkCard(context, agent, "graph-card", caller);
         checkReceipt(context, readReceipts(project, session), agent, "graph-card");
       }
