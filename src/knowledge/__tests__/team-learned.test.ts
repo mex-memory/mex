@@ -5,7 +5,7 @@ import type { References } from "../references.js";
 import { teamEntry } from "../team.js";
 
 const refs = (links: string[] = []): References => ({
-  root: ".", commands: new Set(), links: new Set(links), scripts: new Set(), packageScripts: new Map(), truncated: false,
+  root: ".", commands: new Set(), links: new Set(links), scripts: new Set(), packageScripts: new Map(), truncated: false, gaps: [],
 } as References);
 
 const hash = `sha256:${"a".repeat(64)}`;

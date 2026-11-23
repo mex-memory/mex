@@ -8,7 +8,7 @@
  *   own "ok" example, and not already common in its area at HEAD. One counter-example is enough to reject.
  *   A team lesson seen in 2+ PRs keeps a pattern that is common at HEAD, labelled as a migration in
  *   progress: the speed bump fires only on edits that add an occurrence.
- *   A pattern that is only one common English word, with no identifier in it, is not evidence.
+ *   A pattern that is one plain word is not evidence unless that word names a symbol declared in the reviewed code.
  * - History replay, at $0: later commits on the default branch that added the anti-pattern anyway are
  *   counted; a lesson the team didn't follow loses its pattern (one PR) or starts unticked (2+ PRs).
  * - Scopes, symbols and the fix range are checked against today's tree and the evidence.
@@ -80,6 +80,8 @@ export interface ProofContext {
   patterns?: typeof checkPatterns;
   /** Read the default branch's later history; tests pass a fake. */
   history?: (paths: readonly string[], since: string) => Promise<string | undefined>;
+  /** Unreadable repo files found while collecting commands and links. */
+  gaps?: Set<string>;
 }
 
 /** Every text a member's quotes may come from: its prose, PR text and the code regions it carries. */
@@ -451,6 +453,9 @@ function referencesOf(context: ProofContext): References {
   // The repository the gate will read. The staged copy is a partial tree the
   // pattern check deletes as soon as the proof returns, so it is the wrong place
   // to look up this repo's scripts and links.
-  if (!refs) referenceCache.set(context, refs = references(context.tree.root));
+  if (!refs) {
+    referenceCache.set(context, refs = references(context.tree.root));
+    for (const gap of refs.gaps) context.gaps?.add(gap);
+  }
   return refs;
 }

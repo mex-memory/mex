@@ -208,18 +208,22 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         const tree = await PinnedTree.open(plan.checkout, plan.head);
         if (!tree) return finishGap("The approved Git revision is no longer readable in this checkout.");
         const v2 = state.v2 ?? initialState(savedCursor(writer, project));
+        let active = plan;
         if (v2.phase === "harvest") {
-          client = await deps.client(plan);
-          if (client.anonymous && (weekly || (plan.harvest as unknown as HarvestPlan).inventory?.bands.length)) throw new SourceError("login");
-          const access = await hosts[plan.origin.host].access(client);
-          if (!isDeepStrictEqual(access.source, plan.source) || access.visibility !== plan.visibility) {
-            return finishGap("Source access changed. Run mex learn for a new quote.");
+          client = await deps.client(active);
+          if (client.anonymous && (weekly || (active.harvest as unknown as HarvestPlan).inventory?.bands.length)) throw new SourceError("login");
+          const access = await hosts[active.origin.host].access(client);
+          const renamed = client.renamed;
+          if (!isDeepStrictEqual(access.source, active.source) || access.visibility !== active.visibility) {
+            if (renamed && isDeepStrictEqual(access.source, renamed) && access.visibility === active.visibility && renamed.host === active.origin.host) {
+              active = { ...active, source: access.source, origin: { ...active.origin, slug: access.source.slug } };
+            } else return finishGap("Source access changed. Run mex learn for a new quote.");
           }
         }
         const gaps = new Set(state.gaps);
-        const out = await runPipelineBatch({ context, plan: plan as LearningPlan & { harvest: HarvestPlan }, state: v2,
-          deps: { model: deps.model, now: deps.now, client: client && harvestClient(client, plan.source), tree, firstRules: deps.firstRules }, weekly: !!weekly, gaps });
-        if (!weekly && recordedModelSpend(writer, job.id) > plan.ceiling) gaps.add("The last model batch reported more tokens than the approved ceiling.");
+        const out = await runPipelineBatch({ context, plan: active as LearningPlan & { harvest: HarvestPlan }, state: v2,
+          deps: { model: deps.model, now: deps.now, client: client && harvestClient(client, active.source), tree, firstRules: deps.firstRules }, weekly: !!weekly, gaps });
+        if (!weekly && recordedModelSpend(writer, job.id) > active.ceiling) gaps.add("The last model batch reported more tokens than the approved ceiling.");
         // A learned pattern has no count until the index is built with it. The first rules don't wait for the rest.
         if (out.results && !job.results || out.done && job.results + out.results > 0) {
           try { await queuePatternRecount(writer, project, plan.checkout); }
@@ -240,6 +244,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
             return finishGap(why);
           }
         }
+        if (error instanceof SourceError && error.problem === "moved") return finishGap(error.message);
         const wait = waitOn(error, state, deps.now());
         if (wait) return wait;
         throw error;

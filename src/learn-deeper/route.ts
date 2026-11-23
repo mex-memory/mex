@@ -65,15 +65,18 @@ export function keptQuote(proof: ProofResult): { quote: string; text: string } |
   return undefined;
 }
 
+function counted(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 function label(cluster: Cluster): string {
-  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
   if (cluster.source === "docs") {
     const path = primary(cluster).path ?? "the docs";
     return `Learned from ${path}`.slice(0, 80);
   }
-  if (cluster.source === "history") return `Learned from ${plural(cluster.support, "past fix")}`;
-  const people = cluster.reviewers ? `, ${plural(cluster.reviewers, "maintainer")}` : "";
-  return `Learned from ${plural(Math.max(1, cluster.pulls.length), "PR")}${people}`;
+  if (cluster.source === "history") return `Learned from ${counted(cluster.support, "past fix", "past fixes")}`;
+  const people = cluster.reviewers ? `, ${counted(cluster.reviewers, "maintainer", "maintainers")}` : "";
+  return `Learned from ${counted(Math.max(1, cluster.pulls.length), "PR", "PRs")}${people}`;
 }
 
 function quoteChecks(proof: ProofResult, docs: Candidate[], complete: boolean): ProposedCheck[] {

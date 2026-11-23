@@ -170,22 +170,26 @@ func TestStructuralSpans(t *testing.T) {
 	}
 }
 
-// One ordinary word is not evidence of a reviewed mistake. An identifier,
-// a field or a call still is, including when the call's last word is ordinary.
-func TestSelfCheckPlainEnglish(t *testing.T) {
-	objected := "provider._constraints = load()\nthis.getLayoutUsecase.execute(\nmsg = \"invalid projects\"\nstatus = \"rejected\"\nimport moment from 'moment'\n"
-	fixed := "provider.constraints = load()\nthis.getLayoutUsecase.run(\nmsg = \"packages\"\nimport { format } from 'date-fns'\n"
+// One plain word is not evidence unless the reviewed code declares it.
+// A field, a dotted name or a call still is.
+func TestSelfCheckPlainWord(t *testing.T) {
+	objected := "provider._constraints = load()\nthis.getLayoutUsecase.execute(\nkinds.USER\ninvalid\nprojects\nrejected\nmiddle\nimport moment from 'moment'\n"
+	fixed := "provider.constraints = load()\nthis.getLayoutUsecase.run(\nkinds.ADMIN\nmsg = \"packages\"\nimport { format } from 'date-fns'\n"
 	verdict := func(pattern string) Verdict {
 		return SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: pattern, Objected: objected, Fixed: fixed}, Area{})
 	}
-	for _, pattern := range []string{"invalid", "projects", "rejected"} {
-		if v := verdict(pattern); v.Keep || !strings.Contains(v.Reason, "common word") {
+	for _, pattern := range []string{"invalid", "projects", "rejected", "middle"} {
+		if v := verdict(pattern); v.Keep || !strings.Contains(v.Reason, "not a symbol declared") {
 			t.Errorf("%q kept (%s)", pattern, v.Reason)
 		}
 	}
-	for _, pattern := range []string{"provider._constraints", "this.getLayoutUsecase.execute(", "moment", "from 'moment'"} {
+	for _, pattern := range []string{"provider._constraints", "kinds.USER", "this.getLayoutUsecase.execute(", "moment", "from 'moment'"} {
 		if v := verdict(pattern); !v.Keep {
 			t.Errorf("%q dropped: %s", pattern, v.Reason)
 		}
+	}
+	declared := "func middle() {}\n" + objected
+	if v := SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "middle", Objected: declared, Fixed: fixed}, Area{}); !v.Keep {
+		t.Errorf("declared middle dropped: %s", v.Reason)
 	}
 }

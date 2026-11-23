@@ -8,10 +8,12 @@ const PAGE_SIZE = 12;
 const PULLS_PER_REQUEST = 4;
 
 export async function githubRepository(client: ForgeClient): Promise<RepositoryAccess> {
+  const before = client.redirectCount();
   const metadata = object((await client.get(`/repos/${client.repo.slug}`))?.value);
   const original = metadata?.fork === true ? object(metadata.source) : metadata;
   const source = typeof original?.full_name === "string" && repository("github.com", original.full_name);
   if (!source || typeof original?.private !== "boolean" || typeof metadata?.private !== "boolean") throw new SourceError("unavailable");
+  if (client.redirectCount() > before && source.slug.toLowerCase() !== client.repo.slug.toLowerCase()) client.renamed = source;
   return { source, visibility: metadata.private || original.private ? "private" : "public" };
 }
 

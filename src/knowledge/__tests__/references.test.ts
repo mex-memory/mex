@@ -76,6 +76,28 @@ describe("knowledge references", () => {
     expect(commandExists("make check", source)).toBe(true);
   });
 
+  it("reads anchors in a workflow and records an alias bomb as a gap", () => {
+    write(".github/workflows/release.yml", [
+      "jobs:",
+      "  publish:",
+      "    steps:",
+      "      - uses: actions/checkout@v4",
+      "        with: &checkout",
+      "          fetch-depth: 0",
+      "      - uses: actions/checkout@v4",
+      "        with: *checkout",
+      "      - run: cargo publish",
+    ].join("\n"));
+    write(".github/workflows/ok.yml", "jobs:\n  t:\n    steps:\n      - run: make check\n");
+    const aliases = Array.from({ length: 101 }, () => "*a").join(", ");
+    write(".github/workflows/bomb.yml", `a: &a 1\nbomb: [${aliases}]\n`);
+    const source = references(root);
+    expect(commandExists("cargo publish", source)).toBe(true);
+    expect(commandExists("make check", source)).toBe(true);
+    expect(source.gaps).toEqual([".github/workflows/bomb.yml could not be read."]);
+    expect(source.truncated).toBe(false);
+  });
+
   it("still refuses linked sources", () => {
     write("real/guide.md", "`make all`");
     mkdirSync(join(root, "docs"));

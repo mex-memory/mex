@@ -746,7 +746,7 @@ async function withProofContext<T>(input: PipelineInput, entries: readonly Write
     // The fix literals the proof picks are registered as they are found; the index recounts on the next build,
     // so register them up front from every draft's fix range too.
     const patternStage = { binary: coverage.binary, readable: new Set(discovered.paths.filter(path => coverage.readable.has(path))) };
-    return run({ tree: deps.tree, check: { projectPath: checkTree, ...checked }, patternStage, history: gitHistory(deps.tree) }, checked);
+    return run({ tree: deps.tree, check: { projectPath: checkTree, ...checked }, patternStage, history: gitHistory(deps.tree), gaps: input.gaps }, checked);
   }) as Promise<T>;
 }
 

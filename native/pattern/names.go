@@ -24,20 +24,6 @@ var keywords = setOf(`
 	TODO FIXME
 `)
 
-// commonEnglish are ordinary words. One of them, with no identifier beside it,
-// occurs in edits that are not the mistake a reviewer pointed at.
-var commonEnglish = setOf(`
-	invalid project projects package packages rejected reject
-	error errors message messages value values name names type types
-	file files path paths data result results request response
-	user users option options default version change changes
-	string object function class method config command
-	output input status state item items list text line lines
-	code test tests info warning note notes
-	available matching environment conflict conflicts
-	current previous new old true false none null
-`)
-
 func setOf(s string) map[string]bool {
 	out := map[string]bool{}
 	for _, w := range strings.Fields(s) {
@@ -152,47 +138,85 @@ func nameCheck(p, code string) string {
 	if len(own) == 0 {
 		return "it names no word of its own, only keywords and short names"
 	}
+	// A plain word is evidence only when the reviewed code declares it as a
+	// function, type or import. A local the change made for itself is not.
+	if word, plain := plainWord(p); plain && namedSymbol(word, code) {
+		return ""
+	}
 	local := declaredNames(code)
 	for _, w := range own {
 		if !local[w] {
-			return plainEnglish(p, own)
+			if _, plain := plainWord(p); plain && len(own) == 1 {
+				return "it is only the word " + own[0] + ", not a symbol declared in the reviewed code"
+			}
+			return ""
 		}
 	}
 	return "it names only " + strings.Join(own, ", ") + ", declared in the reviewed code itself"
 }
 
-// plainEnglish rejects a pattern whose only distinctive word is an ordinary
-// word and that names no identifier: no field, call, private name or camelCase.
-// `provider._constraints` and `this.getLayoutUsecase.execute(` stay.
-func plainEnglish(p string, own []string) string {
-	if len(own) != 1 || codeShaped(p) || own[0] != strings.ToLower(own[0]) || !commonEnglish[own[0]] {
-		return ""
+// plainWord is one word of letters with no inner capital. A dot, underscore,
+// parenthesis, digit or camelCase hump is a code shape and stays eligible.
+func plainWord(p string) (string, bool) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", false
 	}
-	return "it names only " + own[0] + ", a common word, not an identifier"
+	for i, r := range p {
+		if r < 'A' || (r > 'Z' && r < 'a') || r > 'z' {
+			return "", false
+		}
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			return "", false
+		}
+	}
+	return p, true
 }
 
-func codeShaped(p string) bool {
-	if strings.ContainsAny(p, "._(") {
-		return true
-	}
-	for _, w := range patternWords(p) {
-		if strings.Contains(w, "_") {
+var (
+	declaredSymbol = regexp.MustCompile(`(?m)(?:\bfunc\s+(?:\([^)\n]*\)\s*)?|\b(?:function|fn|def|class|struct|interface|trait|enum)\s+|\btype\s+)([A-Za-z_][A-Za-z0-9_]*)`)
+	importDefault  = regexp.MustCompile(`(?m)\bimport\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\b`)
+	importNamed    = regexp.MustCompile(`\bimport\s*(?:type\s*)?\{([^}]*)\}`)
+	importPython   = regexp.MustCompile(`(?m)^\s*(?:import|from\s+\S+\s+import)\s+([^\n#]+)`)
+)
+
+func namedSymbol(name, code string) bool {
+	for _, m := range declaredSymbol.FindAllStringSubmatch(code, -1) {
+		if m[1] == name {
 			return true
 		}
-		lower, upper := false, false
-		for _, r := range w {
-			switch {
-			case r >= 'a' && r <= 'z':
-				lower = true
-			case r >= 'A' && r <= 'Z':
-				upper = true
-			}
+	}
+	for _, m := range importDefault.FindAllStringSubmatch(code, -1) {
+		if m[1] == name {
+			return true
 		}
-		if lower && upper {
+	}
+	for _, m := range importNamed.FindAllStringSubmatch(code, -1) {
+		if binding(m[1])[name] {
+			return true
+		}
+	}
+	for _, m := range importPython.FindAllStringSubmatch(code, -1) {
+		if binding(m[1])[name] {
 			return true
 		}
 	}
 	return false
+}
+
+// binding is the name a list actually introduces: `format as fmt` binds fmt.
+func binding(list string) map[string]bool {
+	out := map[string]bool{}
+	for _, part := range strings.Split(list, ",") {
+		part = strings.TrimSpace(part)
+		if i := strings.LastIndex(part, " as "); i >= 0 {
+			part = strings.TrimSpace(part[i+4:])
+		}
+		if w := wordRun.FindString(part); w != "" {
+			out[w] = true
+		}
+	}
+	return out
 }
 
 var scopedCall = regexp.MustCompile(`(?:^|\s)(?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*\s*\(`)

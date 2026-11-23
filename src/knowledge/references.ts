@@ -16,6 +16,8 @@ export interface References {
   packageScripts: Map<string, Set<string>>;
   /** A discovery bound was reached; anything not collected stays unverified. */
   truncated: boolean;
+  /** Repo files MEX only reads and could not parse. They do not abort the caller. */
+  gaps: string[];
   /**
    * Exact commands the capture journal saw pass here. Only the producer gate
    * sets this, for fail-pass proposals, from their own journal evidence.
@@ -55,8 +57,19 @@ class Full extends Error {}
  * link is treated as unverified and removed, so truncation can only make the
  * gates stricter. Redirected or linked sources still fail.
  */
+/** Anchors in a workflow or repo config are ordinary YAML. An alias bomb stops at this count. */
+const REPO_YAML_ALIASES = 100;
+
+function repoYaml(text: string): { value: unknown; unreadable: boolean } {
+  try {
+    const doc = parseDocument(text, { uniqueKeys: true });
+    if (doc.errors.length || doc.warnings.length) return { value: undefined, unreadable: false };
+    return { value: doc.toJS({ maxAliasCount: REPO_YAML_ALIASES }), unreadable: false };
+  } catch { return { value: undefined, unreadable: true }; }
+}
+
 export function references(root: string): References {
-  const result: References = { root, commands: new Set(), links: new Set(), scripts: new Set(), packageScripts: new Map(), truncated: false };
+  const result: References = { root, commands: new Set(), links: new Set(), scripts: new Set(), packageScripts: new Map(), truncated: false, gaps: [] };
   let entries = 0, visited = 0, bytes = 0;
   const full = (): never => { result.truncated = true; throw new Full(); };
   const childrenOf = (path: string) => {
@@ -130,8 +143,9 @@ export function references(root: string): References {
     const patterns = listed.filter((p): p is string => typeof p === "string");
     const pnpm = read("pnpm-workspace.yaml");
     if (pnpm !== undefined) {
-      const doc = parseDocument(pnpm, { uniqueKeys: true });
-      const packages = doc.errors.length ? undefined : (doc.toJS({ maxAliasCount: 0 }) as { packages?: unknown } | null)?.packages;
+      const parsed = repoYaml(pnpm);
+      if (parsed.unreadable) result.gaps.push("pnpm-workspace.yaml could not be read.");
+      const packages = (parsed.value as { packages?: unknown } | null)?.packages;
       if (Array.isArray(packages)) patterns.push(...packages.filter((p): p is string => typeof p === "string"));
     }
     return [...new Set(patterns)];
@@ -158,10 +172,10 @@ export function references(root: string): References {
         for (const match of text.matchAll(/`([^`\n]+)`/gu)) addRuns(match[1]);
         for (const match of text.matchAll(/```[^\n]*\n([\s\S]*?)```/gu)) addRuns(match[1]);
       } else {
-        const doc = parseDocument(text, { uniqueKeys: true });
-        if (doc.errors.length || doc.warnings.length) continue;
-        const data = doc.toJS({ maxAliasCount: 0 });
-        for (const job of Object.values(data?.jobs ?? {}) as Array<{ steps?: Array<{ run?: unknown }> }>) {
+        const parsed = repoYaml(text);
+        if (parsed.unreadable) { result.gaps.push(`${name} could not be read.`); continue; }
+        const data = parsed.value as { jobs?: Record<string, { steps?: Array<{ run?: unknown }> }> } | null;
+        for (const job of Object.values(data?.jobs ?? {})) {
           for (const step of job?.steps ?? []) addRuns(step?.run);
         }
       }

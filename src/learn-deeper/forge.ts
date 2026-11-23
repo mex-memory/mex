@@ -8,11 +8,12 @@ const MAX_RESPONSE = 2 << 20;
 const MAX_TOKEN_LENGTH = 4096;
 export const MAX_REVIEW_FILES = 8;
 
-export type FetchProblem = "login" | "offline" | "rate-limit" | "unavailable";
+export type FetchProblem = "login" | "offline" | "rate-limit" | "unavailable" | "moved";
 export class SourceError extends Error {
   constructor(readonly problem: FetchProblem, readonly retryAt?: number) {
     super({ login: "Sign in to the source host before learning can continue.", offline: "The source host could not be reached.",
-      "rate-limit": "The source host's request limit needs to reset.", unavailable: "The source host returned incomplete repository data." }[problem]);
+      "rate-limit": "The source host's request limit needs to reset.", unavailable: "The source host returned incomplete repository data.",
+      moved: "The repository moved." }[problem]);
   }
 }
 
@@ -79,12 +80,19 @@ export async function hostToken(root: string, repo: Repository, env = process.en
 
 export interface Page { value: unknown; more: boolean; }
 
-/** Only fixed HTTPS origins. No redirects or provider text in errors or job records. */
+const MAX_API_REDIRECTS = 3;
+
+/** Only fixed HTTPS origins. A same-host API redirect is followed a few times. Anything else is a moved repository, with no location in the error. */
 export class ForgeClient {
   private nextRequest = 0;
+  private redirects = 0;
+  /** Set when a same-host redirect resolved this name to a different repository slug. */
+  renamed?: Repository;
   readonly anonymous: boolean;
   constructor(readonly repo: Repository, private readonly token?: string, private readonly request = fetch,
     private readonly anonymousDelayMs = 1100) { this.anonymous = !token; }
+
+  redirectCount(): number { return this.redirects; }
 
   async get(path: string, optional = false): Promise<Page | undefined> {
     return this.read(path, optional);
@@ -109,9 +117,22 @@ export class ForgeClient {
       : { Accept: "application/json" };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    let response: Response;
-    try { response = await this.request(base + path, { headers, ...(body === undefined ? {} : { method: "POST", body }), redirect: "error", signal: AbortSignal.timeout(8000) }); }
-    catch { throw new SourceError("offline"); }
+    const api = new URL(base);
+    let url = base + path;
+    let response!: Response;
+    for (let followed = 0; ; ) {
+      try { response = await this.request(url, { headers, ...(body === undefined ? {} : { method: "POST", body }), redirect: "manual", signal: AbortSignal.timeout(8000) }); }
+      catch { throw new SourceError("offline"); }
+      if (response.status < 300 || response.status >= 400) break;
+      const location = response.headers.get("location");
+      await response.body?.cancel().catch(() => undefined);
+      let next: URL;
+      try { next = new URL(location ?? "", url); } catch { throw new SourceError("moved"); }
+      if (body !== undefined || !location || next.protocol !== "https:" || next.host !== api.host || followed >= MAX_API_REDIRECTS) throw new SourceError("moved");
+      followed++;
+      this.redirects++;
+      url = next.toString();
+    }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       const retry = Number(response.headers.get("retry-after"));

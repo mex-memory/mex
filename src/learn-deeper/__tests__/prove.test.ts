@@ -360,6 +360,30 @@ describe("proving a learned rule", () => {
       .toMatch(/without a strong signal/u);
   });
 
+  it("says past fix and past fixes, and maintainers when more than one person reviewed", async () => {
+    const lesson = "Evict one key, never the whole cache, on a hot path.";
+    const cause = (sha: string): Candidate => ({
+      ...thread(1, "src/cache/lru.ts"), id: `git:cause:${sha}`, kind: "cause-commit", pull: undefined, reviewers: [],
+      link: `https://github.com/acme/app/commit/${sha}`, text: lesson,
+    });
+    const prose = (cluster: Cluster) => draft(cluster, { when: [], fix: undefined, claim: lesson, clauses: [{
+      text: lesson, quotes: cluster.members.map(member => ({ id: member.candidate.id, quote: lesson })),
+    }] });
+    const plan = { host: "github.com", slug: "acme/app" }, model = { id: "best", version: "test" };
+    const labelOf = async (cluster: Cluster) => {
+      const routed = routeEntry(await proveEntry(prose(cluster), cluster, context()), plan, model);
+      return "dropped" in routed ? routed.dropped : routed.proposal.label;
+    };
+    expect(await labelOf(clusterOf([cause("a".repeat(40))], lesson))).toBe("Learned from 1 past fix");
+    expect(await labelOf(clusterOf([cause("a".repeat(40)), cause("b".repeat(40))], lesson))).toBe("Learned from 2 past fixes");
+    const reviewed = clusterOf([
+      thread(3, "packages/api/src/users.ts", { reviewers: ["r1"] }),
+      thread(40, "packages/api/src/orders.ts", { reviewers: ["r2"] }),
+    ]);
+    const reviewedRouted = routeEntry(await proveEntry(draft(reviewed, { when: [], fix: undefined }), reviewed, context()), plan, model);
+    expect("dropped" in reviewedRouted ? reviewedRouted.dropped : reviewedRouted.proposal.label).toBe("Learned from 2 PRs, 2 maintainers");
+  });
+
   it("drops a ruled-out lesson without a maintainer's contrastive reason", async () => {
     const closed = thread(12, "packages/api/src/users.ts", { kind: "closed-pr", text: "The repo has one logger." });
     const cluster = clusterOf([closed], "Don't add a second logger package.");
