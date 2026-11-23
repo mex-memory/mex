@@ -35,7 +35,7 @@
  */
 
 import { currentGraphPath } from "../../graph/storage.js";
-import { describe, it, expect, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,6 +74,10 @@ export function normalizeCase(value: string): string {
 const EDITED = SOURCE.replace("const maximum = 255;", "const maximum = 128;");
 
 const roots: string[] = [];
+
+// These fixtures write to the schema v4 backing tables.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 afterEach(() => {
   for (const root of roots.splice(0)) {

@@ -1,7 +1,8 @@
 import type { GroundedSource, GroundingBaseline, GroundingSubject } from "./grounding.js";
 import { assertFingerprint, bandHashInts, decodeMinhash, encodeMinhash, indexedInLsh } from "./fingerprint.js";
-import { BANDS, K, ROWS } from "./config.js";
+import { BANDS, K, MIN_TOKENS, ROWS } from "./config.js";
 import type { Fingerprint } from "./reconcile.js";
+import { parseV5PublicId, readsV5Graph, v5NodeKey, v5Rows } from "./db/v5.js";
 import type { SQLInputValue } from "node:sqlite";
 
 export interface SqliteDatabase {
@@ -9,6 +10,7 @@ export interface SqliteDatabase {
     run(...params: SQLInputValue[]): unknown;
     get(...params: SQLInputValue[]): unknown;
     all(...params: SQLInputValue[]): unknown[];
+    iterate?(...params: SQLInputValue[]): IterableIterator<unknown>;
   };
   exec(sql: string): void;
 }
@@ -48,6 +50,16 @@ export interface StoredFingerprint {
 
 /** The fingerprints of every node one file owns, as currently stored. @internal */
 export function readFileFingerprints(db: SqliteDatabase, filePath: string): StoredFingerprint[] {
+  if (readsV5Graph(db)) {
+    const rows = db.prepare(
+      `SELECT n.id AS node_id, f.node AS ref, f.minhash, f.token_count
+       FROM temp.nodes n JOIN ${v5Rows(db, "fingerprints")} f ON f.node = n.node_key WHERE n.file_path = ?`,
+    ).all(filePath) as Array<V5FingerprintRow & { node_id: string }>;
+    const neighbours = v5FingerprintNeighbours(db);
+    return rows.map(row => ({
+      nodeId: row.node_id, ref: BigInt(row.ref), fingerprint: decodeV5Fingerprint(row, neighbours),
+    }));
+  }
   const rows = db.prepare(
     `SELECT CAST(f.ref AS TEXT) AS ref, f.node_id, f.minhash, f.neighbors, f.token_count
      FROM nodes n JOIN node_fingerprints f ON f.node_id = n.id
@@ -143,11 +155,51 @@ export class FingerprintStore {
   }
 
   get(nodeId: string): Fingerprint | null {
+    if (readsV5Graph(this.db)) {
+      const id = parseV5PublicId(nodeId);
+      if (!id) return null;
+      const row = this.db.prepare(
+        `SELECT ref, minhash, token_count FROM temp.node_fingerprints WHERE ref = coalesce(
+          (SELECT n.id FROM ${v5Rows(this.db, "nodes")} n JOIN ${v5Rows(this.db, "node_kinds")} k ON k.id = n.kind
+           JOIN ${v5Rows(this.db, "fingerprints")} f ON f.node = n.id WHERE n.public_id = ? AND k.name = ?),
+          (SELECT node_key FROM temp.node_aliases WHERE alias_digest = ? AND alias_kind = ?)
+        )`,
+      ).get(id.digest, id.kind, id.digest, id.kind) as V5FingerprintRow | undefined;
+      return row ? decodeV5Fingerprint(row, v5FingerprintNeighbours(this.db)) : null;
+    }
     const row = fingerprintReadStatement(this.db).get(nodeId, nodeId) as FingerprintRow | undefined;
     return row ? decodeRow(row) : null;
   }
 
+  /** Inspect the prior node's sketch by key before reading its neighbours. */
+  getV5AliasFingerprint(nodeKey: number, nodeId: string): Fingerprint | undefined {
+    const row = this.db.prepare(`SELECT node AS ref, minhash, token_count
+      FROM ${v5Rows(this.db, "fingerprints")} WHERE node = ?`).get(nodeKey) as V5FingerprintRow | undefined;
+    if (row) return row.token_count >= MIN_TOKENS ? decodeV5Fingerprint(row, v5FingerprintNeighbours(this.db)) : undefined;
+    const id = parseV5PublicId(nodeId);
+    if (id && this.db.prepare("SELECT 1 FROM main.aliases WHERE old_public_id = ?").get(id.digest)) {
+      return this.get(nodeId) ?? undefined;
+    }
+    return undefined;
+  }
+
   lookup(fingerprint: Fingerprint): Array<{ nodeId: string; fingerprint: Fingerprint }> {
+    if (readsV5Graph(this.db)) {
+      const bytes = encodeMinhash(fingerprint.minhash);
+      const neighbours = v5FingerprintNeighbours(this.db);
+      const matches: Array<{ nodeId: string; fingerprint: Fingerprint }> = [];
+      const scan = this.db.prepare(
+        "SELECT ref, node_id, minhash, token_count FROM temp.node_fingerprints",
+      );
+      for (const row of scan.iterate!() as Iterable<V5FingerprintRow & { node_id: string }>) {
+        // Reproduce the old LSH admission rule directly on the 32 bands of
+        // two minhash values each. Only admit and decode matching rows.
+        if (sharesMinhashBand(bytes, row.minhash)) {
+          matches.push({ nodeId: row.node_id, fingerprint: decodeV5Fingerprint(row, neighbours) });
+        }
+      }
+      return matches.sort((left, right) => left.nodeId < right.nodeId ? -1 : left.nodeId > right.nodeId ? 1 : 0);
+    }
     const candidates = new Set<string>();
     const lookup = this.db.prepare(
       `SELECT fingerprints.node_id AS node_id
@@ -188,6 +240,22 @@ export class FingerprintStore {
    */
   neighborhood(neighbors: readonly string[], minShared: number, limit: number): string[] {
     if (neighbors.length < minShared) return [];
+    if (readsV5Graph(this.db)) {
+      const ids = [...new Set(neighbors.map(id => v5NodeKey(this.db, id)).filter((key): key is number => key !== undefined))];
+      if (ids.length < minShared) return [];
+      const keys = JSON.stringify(ids);
+      const rows = this.db.prepare(
+        `SELECT n.id AS node_id FROM (
+           SELECT target AS node, source AS neighbour FROM ${v5Rows(this.db, "edges")}
+           WHERE kind = (SELECT id FROM ${v5Rows(this.db, "edge_kinds")} WHERE name = 'calls') AND source IN (SELECT value FROM json_each(?))
+           UNION
+           SELECT source, target FROM ${v5Rows(this.db, "edges")}
+           WHERE kind = (SELECT id FROM ${v5Rows(this.db, "edge_kinds")} WHERE name = 'calls') AND target IN (SELECT value FROM json_each(?))
+         ) edge JOIN temp.nodes n ON n.node_key = edge.node
+         GROUP BY edge.node HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC, n.id LIMIT ?`,
+      ).all(keys, keys, minShared, limit) as Array<{ node_id: string }>;
+      return rows.map((row) => row.node_id);
+    }
     const ids = JSON.stringify(neighbors);
     const rows = this.db.prepare(
       `SELECT node_id FROM (
@@ -204,7 +272,12 @@ export class FingerprintStore {
 
   /** A current node's body hash, or null when the node or its body hash is absent. */
   bodyHash(nodeId: string): string | null {
-    const row = this.db.prepare("SELECT body_hash FROM nodes WHERE id = ?").get(nodeId) as
+    const native = readsV5Graph(this.db);
+    const key = native ? v5NodeKey(this.db, nodeId) : nodeId;
+    if (key === undefined) return null;
+    const row = this.db.prepare(native
+      ? "SELECT body_hash FROM temp.nodes WHERE node_key = ?"
+      : "SELECT body_hash FROM nodes WHERE id = ?").get(key) as
       { body_hash: string | null } | undefined;
     return row?.body_hash ?? null;
   }
@@ -235,6 +308,12 @@ export class FingerprintStore {
 
   /** Any recorded baseline body whose hash is `bodyHash`, whichever subject recorded it. */
   sourceByBodyHash(bodyHash: string): string | null {
+    if (readsV5Graph(this.db)) {
+      if (!/^[0-9a-f]{64}$/u.test(bodyHash)) return null;
+      const row = this.db.prepare("SELECT source FROM main._mex_grounded_source WHERE body_hash = ? LIMIT 1")
+        .get(Buffer.from(bodyHash, "hex")) as { source: string } | undefined;
+      return row?.source ?? null;
+    }
     const row = this.db.prepare(
       "SELECT source FROM _mex_grounded_source WHERE body_hash = ? LIMIT 1",
     ).get(bodyHash) as { source: string } | undefined;
@@ -252,6 +331,19 @@ export class FingerprintStore {
   }
 
   saveBaseline(baseline: GroundingBaseline): void {
+    if (readsV5Graph(this.db)) {
+      const node = parseV5PublicId(baseline.nodeId);
+      if (!node || !/^[0-9a-f]{64}$/u.test(baseline.bodyHash)) throw new Error("Invalid grounding baseline identity.");
+      this.db.prepare(
+        `INSERT INTO main._mex_grounded_source
+         (subject_kind, subject_id, node_kind, public_id, source, body_hash, fingerprint)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(subject_kind, subject_id, public_id) DO UPDATE SET source=excluded.source,
+           body_hash=excluded.body_hash, fingerprint=excluded.fingerprint`,
+      ).run(baseline.subject.kind, baseline.subject.id, node.kind, node.digest, baseline.source,
+        Buffer.from(baseline.bodyHash, "hex"), baseline.fingerprint);
+      return;
+    }
     this.db.prepare(
       `INSERT INTO _mex_grounded_source
        (subject_kind, subject_id, node_id, source, body_hash, fingerprint) VALUES (?, ?, ?, ?, ?, ?)
@@ -268,6 +360,13 @@ export class FingerprintStore {
   }
 
   deleteBaseline(subject: GroundingSubject, nodeId: string): void {
+    if (readsV5Graph(this.db)) {
+      const node = parseV5PublicId(nodeId);
+      if (node) this.db.prepare(
+        "DELETE FROM main._mex_grounded_source WHERE subject_kind = ? AND subject_id = ? AND node_kind = ? AND public_id = ?",
+      ).run(subject.kind, subject.id, node.kind, node.digest);
+      return;
+    }
     this.db.prepare(
       "DELETE FROM _mex_grounded_source WHERE subject_kind = ? AND subject_id = ? AND node_id = ?",
     ).run(subject.kind, subject.id, nodeId);
@@ -382,6 +481,48 @@ function fingerprintReadStatement(db: SqliteDatabase): ReturnType<SqliteDatabase
   );
   fingerprintReadStatements.set(db, statement);
   return statement;
+}
+
+/** Copy historical baselines under the maintenance lease, independent of current node IDs. */
+export function transferGroundingBaselines(source: SqliteDatabase, destination: FingerprintStore): void {
+  const rows = source.prepare(
+    "SELECT subject_kind, subject_id, node_id, source, body_hash, fingerprint FROM _mex_grounded_source",
+  );
+  for (const row of rows.iterate!() as Iterable<BaselineRow>) destination.saveBaseline(decodeBaseline(row));
+}
+
+interface V5FingerprintRow {
+  ref: number;
+  minhash: Uint8Array;
+  token_count: number;
+}
+
+function v5FingerprintNeighbours(db: SqliteDatabase): ReturnType<SqliteDatabase["prepare"]> {
+  return db.prepare(
+    `SELECT k.name || ':' || lower(hex(n.public_id)) AS id
+     FROM ${v5Rows(db, "fingerprint_neighbours")} f JOIN ${v5Rows(db, "nodes")} n ON n.id = f.neighbour
+     JOIN ${v5Rows(db, "node_kinds")} k ON k.id = n.kind WHERE f.node = ? ORDER BY id`,
+  );
+}
+
+function decodeV5Fingerprint(row: V5FingerprintRow, neighbours: ReturnType<SqliteDatabase["prepare"]>): Fingerprint {
+  const fingerprint = {
+    minhash: decodeMinhash(row.minhash),
+    neighbors: (neighbours.all(row.ref) as Array<{ id: string }>).map(({ id }) => id),
+    tokenCount: row.token_count,
+  };
+  assertFingerprint(fingerprint);
+  return fingerprint;
+}
+
+function sharesMinhashBand(query: Buffer, candidate: Uint8Array): boolean {
+  if (candidate.byteLength !== query.byteLength) return false;
+  const stored = Buffer.from(candidate.buffer, candidate.byteOffset, candidate.byteLength);
+  for (let band = 0; band < query.length; band += ROWS * 4) {
+    if (stored.readUInt32BE(band) === query.readUInt32BE(band)
+      && stored.readUInt32BE(band + 4) === query.readUInt32BE(band + 4)) return true;
+  }
+  return false;
 }
 
 interface BaselineRow {

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { GRAPH_CORPUS_LIMITS } from "./corpus-policy.js";
+import { isGraphEngineFallbackReason } from "./engine-languages.js";
+import type { GraphEngineFallback } from "./engine.js";
+import type { GraphEngineRuntime } from "../team/contracts/graph.js";
 
 export const GRAPH_SNAPSHOT_METADATA_KEY = "graph_snapshot_v1" as const;
 export const GRAPH_SNAPSHOT_VERSION = 1 as const;
-export const GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS = GRAPH_CORPUS_LIMITS.maxSemanticInputFiles;
-export const GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUT_PATH_LENGTH = 4_096 as const;
 
 export type GraphSnapshotParseStatus = "ok" | "partial" | "failed";
 
@@ -24,7 +24,6 @@ export interface GraphSnapshot {
   indexedBranch: string | null;
   indexedHead: string | null;
   schemaVersion: number;
-  compilerVersion: string;
   extractorVersion: string;
   resolverVersion: string;
   grammarHash: string;
@@ -32,14 +31,10 @@ export interface GraphSnapshot {
   manifestHash: string;
   sourceCorpusDigest: string;
   sourceCount: number;
-  semanticInputs: GraphSnapshotSemanticInput[];
+  engineFallback?: GraphEngineFallback;
+  engineRuntime?: GraphEngineRuntime;
+  nativeEngineUnavailable?: string;
   parseHealth: GraphSnapshotParseHealth;
-}
-
-export interface GraphSnapshotSemanticInput {
-  path: string;
-  /** Exact UTF-8 hash, or null when the compiler observed that the path was absent. */
-  contentHash: string | null;
 }
 
 export interface GraphSnapshotSource {
@@ -59,14 +54,15 @@ export interface CreateGraphSnapshotInput {
   indexedAt: string;
   git: GraphGitProvenance;
   schemaVersion: number;
-  compilerVersion: string;
   extractorVersion: string;
   resolverVersion: string;
   grammarHash: string;
   configHash: string;
   manifestHash: string;
   sources: readonly GraphSnapshotSource[];
-  semanticInputs?: readonly GraphSnapshotSemanticInput[];
+  engineFallback?: GraphEngineFallback;
+  engineRuntime?: GraphEngineRuntime;
+  nativeEngineUnavailable?: string;
 }
 
 /** Hash only stable corpus identity: sorted repository path and exact content hash. */
@@ -83,11 +79,6 @@ export function computeSourceCorpusDigest(
 
 export function createGraphSnapshot(input: CreateGraphSnapshotInput): GraphSnapshot {
   const parseHealth = countParseHealth(input.sources);
-  const sourcePaths = new Set(input.sources.map((source) => source.path));
-  const semanticInputs = canonicalSemanticInputs(input.semanticInputs ?? []);
-  if (semanticInputs.some((entry) => sourcePaths.has(entry.path))) {
-    throw new Error("Graph semantic inputs must not duplicate supported source paths.");
-  }
   return {
     version: GRAPH_SNAPSHOT_VERSION,
     indexedAt: input.indexedAt,
@@ -95,7 +86,6 @@ export function createGraphSnapshot(input: CreateGraphSnapshotInput): GraphSnaps
     indexedBranch: input.git.branch,
     indexedHead: input.git.head,
     schemaVersion: input.schemaVersion,
-    compilerVersion: input.compilerVersion,
     extractorVersion: input.extractorVersion,
     resolverVersion: input.resolverVersion,
     grammarHash: input.grammarHash,
@@ -103,7 +93,9 @@ export function createGraphSnapshot(input: CreateGraphSnapshotInput): GraphSnaps
     manifestHash: input.manifestHash,
     sourceCorpusDigest: computeSourceCorpusDigest(input.sources),
     sourceCount: input.sources.length,
-    semanticInputs,
+    ...(input.engineFallback ? { engineFallback: input.engineFallback } : {}),
+    ...(input.engineRuntime ? { engineRuntime: input.engineRuntime } : {}),
+    ...(input.nativeEngineUnavailable ? { nativeEngineUnavailable: input.nativeEngineUnavailable } : {}),
     parseHealth,
   };
 }
@@ -117,7 +109,6 @@ export function serializeGraphSnapshot(snapshot: GraphSnapshot): string {
     indexedBranch: snapshot.indexedBranch,
     indexedHead: snapshot.indexedHead,
     schemaVersion: snapshot.schemaVersion,
-    compilerVersion: snapshot.compilerVersion,
     extractorVersion: snapshot.extractorVersion,
     resolverVersion: snapshot.resolverVersion,
     grammarHash: snapshot.grammarHash,
@@ -125,7 +116,9 @@ export function serializeGraphSnapshot(snapshot: GraphSnapshot): string {
     manifestHash: snapshot.manifestHash,
     sourceCorpusDigest: snapshot.sourceCorpusDigest,
     sourceCount: snapshot.sourceCount,
-    semanticInputs: canonicalSemanticInputs(snapshot.semanticInputs),
+    ...(snapshot.engineFallback ? { engineFallback: snapshot.engineFallback } : {}),
+    ...(snapshot.engineRuntime ? { engineRuntime: snapshot.engineRuntime } : {}),
+    ...(snapshot.nativeEngineUnavailable ? { nativeEngineUnavailable: snapshot.nativeEngineUnavailable } : {}),
     parseHealth: {
       total: snapshot.parseHealth.total,
       ok: snapshot.parseHealth.ok,
@@ -148,24 +141,26 @@ export function parseGraphSnapshot(value: string | null | undefined): GraphSnaps
   if (!isIsoTimestamp(parsed.indexedAt) || !isIsoTimestamp(parsed.lastSuccessfulIndexAt)) return null;
   if (!isNullableString(parsed.indexedBranch) || !isNullableString(parsed.indexedHead)) return null;
   if (!isNonNegativeInteger(parsed.schemaVersion)) return null;
-  if (!isNonEmptyString(parsed.compilerVersion)
-    || !isNonEmptyString(parsed.extractorVersion)
+  if (!isNonEmptyString(parsed.extractorVersion)
     || !isNonEmptyString(parsed.resolverVersion)) return null;
   if (!isDigest(parsed.grammarHash)
     || !isDigest(parsed.configHash)
     || !isDigest(parsed.manifestHash)
     || !isDigest(parsed.sourceCorpusDigest)) return null;
   if (!isNonNegativeInteger(parsed.sourceCount)
-    || !Array.isArray(parsed.semanticInputs)
     || !isRecord(parsed.parseHealth)) return null;
-  const semanticInputs = parseSemanticInputs(parsed.semanticInputs);
-  if (!semanticInputs) return null;
+  const engineFallback = parseEngineFallback(parsed.engineFallback);
+  if (parsed.engineFallback !== undefined && !engineFallback) return null;
+  const { engineRuntime, nativeEngineUnavailable } = parsed;
+  if (engineRuntime != null && engineRuntime !== "native" && engineRuntime !== "wasi" && engineRuntime !== "node") return null;
+  if (nativeEngineUnavailable != null && (engineRuntime !== "wasi" || !isGraphEngineFallbackReason(nativeEngineUnavailable))) return null;
   const { total, ok, partial, failed } = parsed.parseHealth;
   if (!isNonNegativeInteger(total)
     || !isNonNegativeInteger(ok)
     || !isNonNegativeInteger(partial)
     || !isNonNegativeInteger(failed)) return null;
-  if (total !== parsed.sourceCount || ok + partial + failed !== total) return null;
+  if (total !== parsed.sourceCount || ok + partial + failed !== total
+    || (engineFallback && engineFallback.files + engineFallback.fallbackFiles > total)) return null;
 
   return {
     version: GRAPH_SNAPSHOT_VERSION,
@@ -174,7 +169,6 @@ export function parseGraphSnapshot(value: string | null | undefined): GraphSnaps
     indexedBranch: parsed.indexedBranch,
     indexedHead: parsed.indexedHead,
     schemaVersion: parsed.schemaVersion,
-    compilerVersion: parsed.compilerVersion,
     extractorVersion: parsed.extractorVersion,
     resolverVersion: parsed.resolverVersion,
     grammarHash: parsed.grammarHash,
@@ -182,7 +176,9 @@ export function parseGraphSnapshot(value: string | null | undefined): GraphSnaps
     manifestHash: parsed.manifestHash,
     sourceCorpusDigest: parsed.sourceCorpusDigest,
     sourceCount: parsed.sourceCount,
-    semanticInputs,
+    ...(engineFallback ? { engineFallback } : {}),
+    ...(engineRuntime ? { engineRuntime } : {}),
+    ...(typeof nativeEngineUnavailable === "string" ? { nativeEngineUnavailable } : {}),
     parseHealth: { total, ok, partial, failed },
   };
 }
@@ -278,51 +274,15 @@ function isIsoTimestamp(value: unknown): value is string {
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-function canonicalSemanticInputs(
-  inputs: readonly GraphSnapshotSemanticInput[],
-): GraphSnapshotSemanticInput[] {
-  if (inputs.length > GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS) {
-    throw new Error(`Graph semantic input provenance exceeds the ${GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS}-path safety cap.`);
+function parseEngineFallback(value: unknown): GraphEngineFallback | undefined {
+  if (!isRecord(value)) return undefined;
+  const { languages, files, fallbackFiles, fellBack } = value;
+  if (!Array.isArray(languages) || languages.length === 0 || languages.length > 5
+    || languages.some(language => !["javascript", "typescript", "python", "rust", "csharp"].includes(language))
+    || new Set(languages).size !== languages.length
+    || !isNonNegativeInteger(files) || !isNonNegativeInteger(fallbackFiles) || fallbackFiles === 0
+    || (fellBack !== undefined && !isGraphEngineFallbackReason(fellBack))) {
+    return undefined;
   }
-  const sorted = inputs
-    .map(({ path, contentHash }) => ({ path, contentHash }))
-    .sort((left, right) => compareText(left.path, right.path));
-  for (let index = 0; index < sorted.length; index += 1) {
-    const entry = sorted[index]!;
-    if (!isSafeRelativePath(entry.path) || !isNullableDigest(entry.contentHash)) {
-      throw new Error("Graph semantic input provenance contains an invalid path or digest.");
-    }
-    if (index > 0 && sorted[index - 1]!.path === entry.path) {
-      throw new Error(`Graph semantic input provenance contains duplicate path ${entry.path}.`);
-    }
-  }
-  return sorted;
-}
-
-function parseSemanticInputs(value: readonly unknown[]): GraphSnapshotSemanticInput[] | null {
-  if (value.length > GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS) return null;
-  const inputs: GraphSnapshotSemanticInput[] = [];
-  let previousPath: string | undefined;
-  for (const entry of value) {
-    if (!isRecord(entry) || !isSafeRelativePath(entry.path) || !isNullableDigest(entry.contentHash)) return null;
-    if (previousPath !== undefined && compareText(previousPath, entry.path) >= 0) return null;
-    inputs.push({ path: entry.path, contentHash: entry.contentHash });
-    previousPath = entry.path;
-  }
-  return inputs;
-}
-
-function isSafeRelativePath(value: unknown): value is string {
-  if (typeof value !== "string"
-    || value.length === 0
-    || value.length > GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUT_PATH_LENGTH
-    || value.includes("\\")
-    || value.includes("\0")) return false;
-  if (value.startsWith("/") || /^[A-Za-z]:\//u.test(value)) return false;
-  const parts = value.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-
-function isNullableDigest(value: unknown): value is string | null {
-  return value === null || isDigest(value);
+  return { languages, files, fallbackFiles, ...(fellBack === undefined ? {} : { fellBack }) };
 }

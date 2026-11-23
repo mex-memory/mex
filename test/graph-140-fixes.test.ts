@@ -1,6 +1,5 @@
 // Regression coverage for the issue #140 fix set:
-//  1. a crashing TypeScript program (TS-internal assertion) must not abort the
-//     whole graph build — affected files fall back to tree-sitter extraction;
+//  1. tree-sitter fallback preserves duplicate declarations and a usable graph;
 //  2. `mex check` opens the graph read-only: no staging, no store writes, and
 //     staleness is reported instead of silently rebuilt;
 //  3. `mex graph repair` validates the published graph and publishes a repaired copy.
@@ -10,7 +9,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MexConfig } from "../src/types.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
 import { openSqlite } from "../src/graph/db/sqlite.js";
@@ -45,31 +44,31 @@ export function calculateCheckoutTotal(items: number[]): number {
   };
 }
 
+// These fixtures exercise the writable v4 layout.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) {
     try { rmSync(root, { recursive: true, force: true }); } catch { /* Windows file locks */ }
   }
 });
 
-describe("compiler program-crash isolation (#140 follow-up)", () => {
-  it("completes the build via tree-sitter when every TS program creation asserts", async () => {
+describe("tree-sitter fallback (#140 follow-up)", () => {
+  it("completes the build and disambiguates duplicate declarations", async () => {
     const { root } = fixture("mex-140-isolation-");
     // Hostile-fixture shape from the TypeScript repo: duplicate same-identity
     // declarations in one file must ordinal-disambiguate, not abort staging.
     writeFileSync(join(root, "src", "dupes.ts"),
       "export function duplicated(): number { return 1; }\n"
       + "export function duplicated(): number { return 2; }\n");
-    // A managed engine publishes through the maintenance path, which has no
-    // compiler seam, so this build writes to a store of its own.
+    vi.stubEnv("MEX_GRAPH_ENGINE", join(root, "missing-mex-graph.wasm"));
     const store = mkdtempSync(join(tmpdir(), "mex-140-isolation-store-"));
     roots.push(store);
     const dbPath = join(store, "graph.db");
     const engine = createGraphEngine({
       rootDir: root,
       dbPath,
-      compilerExtraction: {
-        programFactory: () => { throw new Error("Debug Failure. False expression."); },
-      },
     });
     const result = await engine.build();
     engine.close();

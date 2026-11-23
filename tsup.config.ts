@@ -15,7 +15,7 @@ export default defineConfig([
     outDir: "dist",
     clean: true,
     // Split so modules reached only through dynamic import() — the Ink TUI,
-    // React, the TypeScript compiler — stay in their own chunks. With one
+    // and React — stay in their own chunks. With one
     // bundle, esbuild hoists every external import to the top of cli.js and
     // each command, even --version, paid to load them.
     splitting: true,

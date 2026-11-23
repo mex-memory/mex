@@ -13,10 +13,7 @@ import {
   graphCorpusPolicyHash,
   isPerFileCorpusLimitError,
   readConfiguredGraphIgnoreGlobs,
-  addGraphCompilerSourceBytes,
   addGraphCorpusBytes,
-  addGraphSemanticInput,
-  createGraphSemanticInputLedger,
   discoverBoundedGraphPaths,
 } from "../corpus-policy.js";
 
@@ -61,38 +58,6 @@ describe("graph corpus policy", () => {
       1,
       "source",
     )).toThrow(GraphCorpusLimitError);
-    expect(() => addGraphCompilerSourceBytes(
-      GRAPH_CORPUS_LIMITS.maxCompilerSourceBytes,
-      1,
-    )).toThrow("maxCompilerSourceBytes");
-  });
-
-  it("shares hard path and byte ceilings for indirect compiler inputs", () => {
-    const byteLedger = createGraphSemanticInputLedger();
-    const fullFiles = GRAPH_CORPUS_LIMITS.maxSemanticInputBytes
-      / GRAPH_CORPUS_LIMITS.maxSourceFileBytes;
-    for (let index = 0; index < fullFiles; index += 1) {
-      addGraphSemanticInput(
-        byteLedger,
-        `config/${index}.json`,
-        GRAPH_CORPUS_LIMITS.maxSourceFileBytes,
-      );
-    }
-    expect(() => addGraphSemanticInput(byteLedger, "config/next.json", 1))
-      .toThrow("maxSemanticInputBytes");
-
-    const pathLedger = createGraphSemanticInputLedger();
-    for (let index = 0; index < GRAPH_CORPUS_LIMITS.maxSemanticInputFiles; index += 1) {
-      addGraphSemanticInput(pathLedger, `missing/${index}.json`, null);
-    }
-    expect(() => addGraphSemanticInput(pathLedger, "missing/overflow.json", null))
-      .toThrow("maxSemanticInputFiles");
-
-    const coveredProbeLedger = createGraphSemanticInputLedger();
-    for (let index = 0; index <= GRAPH_CORPUS_LIMITS.maxSemanticInputFiles; index += 1) {
-      addGraphSemanticInput(coveredProbeLedger, `missing/${index}.ts`, null, false);
-    }
-    expect(coveredProbeLedger.semanticPaths.size).toBe(0);
   });
 });
 

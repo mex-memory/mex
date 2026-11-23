@@ -88,8 +88,8 @@ describe("setup batch applies and graph freshness", () => {
     expect(await applier.apply(batch(root, "alpha"), { opIdPrefix: "setup_alpha_", files: ["context/alpha.md"] })).toMatchObject({ kind: "applied" });
     expect(freshness.changed).toBe(false);
     // Another writer touches the database (here: a no-op write transaction that still rewrites the file).
-    const { openGraphDatabase } = await import("../src/graph/db/database.js");
-    const db = openGraphDatabase(currentGraphPath(root));
+    const { openSqlite } = await import("../src/graph/db/sqlite.js");
+    const db = openSqlite(currentGraphPath(root));
     db.exec("CREATE TABLE IF NOT EXISTS setup_probe (x); DROP TABLE setup_probe;");
     db.close();
     expect(await applier.apply(batch(root, "beta"), { opIdPrefix: "setup_beta_", files: ["context/beta.md"] })).toMatchObject({ kind: "applied" });

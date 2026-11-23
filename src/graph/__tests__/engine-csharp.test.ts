@@ -2,7 +2,7 @@ import { currentGraphPath } from "../storage.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openSqlite } from "../db/sqlite.js";
 import { createGraphEngine } from "../engine-impl.js";
 import type { GraphEngine } from "../engine.js";
@@ -11,6 +11,8 @@ let root: string;
 let engine: GraphEngine;
 
 beforeAll(async () => {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
+  vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "javascript,typescript");
   root = mkdtempSync(join(tmpdir(), "mex-csharp-graph-"));
   writeFileSync(join(root, "sample.cs"), `
 namespace Example;
@@ -81,6 +83,7 @@ class NoUsing : Sink { void Go() { Sink.Emit(); } }
 });
 
 afterAll(() => {
+  vi.unstubAllEnvs();
   engine?.close();
   if (root) rmSync(root, { recursive: true, force: true });
 });

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MexPortError } from "../../team/contracts/shared.js";
 import {
   createRepositoryGraphPort,
@@ -24,6 +24,10 @@ import { loadFreshGraphReadSession } from "../read-session.js";
 import { GraphMaintenanceError } from "../maintenance.js";
 
 const roots: string[] = [];
+
+// These fixtures edit the v4 tables directly.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

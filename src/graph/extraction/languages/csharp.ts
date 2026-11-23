@@ -3,8 +3,7 @@
 // ============================================================================
 //
 // Modeled on the reference tree-sitter walker in `./python.ts` (Track A/B
-// pattern, not the TypeScript compiler-based path in `../compiler.ts` — C# has
-// no equivalent compiler-service integration here).
+// pattern).
 //
 // Grammar facts below were verified against `tree-sitter-c-sharp@0.23.5`'s
 // published `src/node-types.json`, not guessed. Two structural quirks that

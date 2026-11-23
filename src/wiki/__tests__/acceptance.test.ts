@@ -168,7 +168,7 @@ async function buildGraph(project: Project): Promise<void> {
 function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: ReturnType<typeof openGraphDatabase>) => T): T {
   const dbPath = currentGraphPath(project.root);
   const engine = createGraphEngine({ rootDir: project.root });
-  const db = openGraphDatabase(dbPath);
+  const db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
   try {
     return body(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db), db);
   } finally {
@@ -180,7 +180,7 @@ function withGraph<T>(project: Project, body: (graph: GroundingGraph, db: Return
 function nodeIdOf(project: Project, name: string): string {
   const dbPath = currentGraphPath(project.root);
   const engine = createGraphEngine({ rootDir: project.root });
-  const db = openGraphDatabase(dbPath);
+  const db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
   try {
     const graph = createSynthesisGraph(engine, db);
     const found = graph.nodesInFile("src/auth.ts").find((node) => graph.describeNode(node.id)?.name === name);

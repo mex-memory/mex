@@ -1,0 +1,6 @@
+import library
+
+class Runner:
+    def start(self):
+        run()
+        missing()

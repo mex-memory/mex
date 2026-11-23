@@ -58,6 +58,10 @@ skills/mex-statechart/scripts/runtime.mjs
 
 # Built by scripts/build-hook-binaries.mjs
 npm/hook-*/bin/
+npm/graph-*/bin/
 
 # Checkout-local hook builds and offline replay scratch.
 /native/.scratch/
+
+# The Rust graph engine build output.
+/native/engine/target/

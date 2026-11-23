@@ -1330,6 +1330,7 @@ The worker drains the durable queue.
       schemaVersion: 2,
       extractorVersion: "extractor-1",
       grammarVersion: "grammar-1",
+      engineMemoryLimitMb: 1024,
       parseHealth: {
         total: 2,
         ok: 1,
@@ -1350,6 +1351,10 @@ The worker drains the durable queue.
         grammarChanged: false,
       },
       diagnostics: [{
+        code: "GRAPH_ENGINE_MEMORY_LIMIT",
+        severity: "warning" as const,
+        message: "private detail /Users/alice/project",
+      }, {
         code: "GRAPH_INDEX_BRANCH_CHANGED",
         severity: "warning" as const,
         message: "private detail /Users/alice/project",
@@ -1466,6 +1471,11 @@ The worker drains the durable queue.
     expect(graphHealth).toMatchObject({
       status: "degraded",
       repairJobKind: "graph_refresh",
+      diagnostics: expect.arrayContaining([{
+        code: "GRAPH_ENGINE_MEMORY_LIMIT",
+        severity: "warning",
+        message: "The Rust graph engine needed more memory than its 1024 MiB cap.",
+      }]),
       graph: {
         indexStatus: "stale",
         allowedJobKinds: ["graph_refresh"],

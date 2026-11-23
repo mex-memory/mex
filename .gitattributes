@@ -38,3 +38,11 @@ native/**/testdata/** text eol=lf
 
 # The delivery replay golden pins the exact LF JSON produced by its writer.
 scripts/delivery-replay/golden.json text eol=lf
+
+# Generated or vendored graph-engine files. GitHub collapses them in diffs and
+# leaves them out of language stats. The Rust grammar is tree-sitter-rust
+# 0.20.4's generated parser, vendored to match the Node path's WASM grammar.
+native/engine/langs/rust/grammar/** linguist-vendored linguist-generated
+native/engine/langs/ecmascript/src/scanner_tables.inc.rs linguist-generated
+native/engine/langs/ecmascript/tests/scanner-vectors.json linguist-generated
+docs/design/graph-engine-baseline.json linguist-generated

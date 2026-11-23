@@ -50,9 +50,8 @@ export function resolveRealPathAsync(path: string): Promise<string> {
  *
  * A re-resolved path is compared against the one a file was opened by, to
  * prove the name still leads where it did. On Windows those two strings can
- * differ in case alone — `realpathSync` preserves the casing it was handed,
- * and a path that reached us through the TypeScript compiler host arrives
- * lowercased — while naming the identical file on a case-insensitive volume.
+ * differ in case alone when `realpathSync` preserves the spelling of a path
+ * that names the same file on a case-insensitive volume.
  * Comparing them as bytes rejected a file whose device, inode, size and
  * timestamps all matched, and one such file failed an entire repository's
  * build.

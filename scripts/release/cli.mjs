@@ -22,7 +22,7 @@ try {
     if (process.env.GITHUB_SHA && commit !== process.env.GITHUB_SHA) throw new Error('Checkout does not match the release commit');
     const plan = makePlan({ event: process.env.GITHUB_EVENT_NAME, refType: process.env.GITHUB_REF_TYPE, refName: process.env.GITHUB_REF_NAME,
       dryRun: process.env.RELEASE_DRY_RUN !== 'false', requireGates: process.env.RELEASE_REQUIRE_GATES !== 'false', version, commit,
-      platformVersions: packagesFor(version).slice(0, 6).map((entry) => JSON.parse(readFileSync(resolve(root, entry.directory, 'package.json'))).version) });
+      platformVersions: packagesFor(version).filter((entry) => entry.target).map((entry) => JSON.parse(readFileSync(resolve(root, entry.directory, 'package.json'))).version) });
     if (!plan.dryRun && git(['rev-parse', `refs/tags/${plan.tag}^{commit}`]) !== commit) throw new Error('Real releases require an existing version tag on this commit');
     output('json', JSON.stringify(plan)); output('dry_run', plan.dryRun); output('require_gates', plan.requireGates); output('release', plan.release);
     summary(`${plan.dryRun ? 'DRY RUN' : 'REAL RELEASE'} ${plan.version} at ${commit} to npmjs.org, dist-tag ${plan.distTag}.\nPublish order:\n` + plan.packages.map((entry, i) => `${i + 1}. ${entry.name}@${plan.version}`).join('\n'));

@@ -30,6 +30,8 @@ export interface GraphState {
   /** "off" after a full rebuild differed from the incremental graph. */
   warm: "on" | "off";
   checkedAt: string;
+  /** The storage schema that was checked. Older records describe v4. */
+  schemaVersion?: 4 | 5;
   /** The checkout the last check built, and the files that differed. */
   checkout?: string;
   differing?: string[];

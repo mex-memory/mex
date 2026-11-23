@@ -4,30 +4,30 @@
  *
  * Reads the checkout's `.gitignore` files (each applies below its own folder)
  * and `.git/info/exclude`. A rule file is parsed once and reused while its
- * size and modification time are unchanged. The user's global excludes file
+ * file identity is unchanged. The user's global excludes file
  * is not read; the file index, which lists files through Git, does honour it.
  */
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import ignore, { type Ignore } from "ignore";
 
-interface Parsed { size: number; mtimeMs: number; rules: Ignore }
+interface Parsed { identity: string; rules: Ignore }
 const parsed = new Map<string, Parsed>();
 
 function rulesIn(file: string): Ignore | undefined {
-  let size: number, mtimeMs: number;
+  let identity: string;
   try {
-    const stats = statSync(file);
+    const stats = statSync(file, { bigint: true });
     if (!stats.isFile()) return undefined;
-    ({ size, mtimeMs } = stats);
+    identity = `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
   } catch { return undefined; }
   const previous = parsed.get(file);
-  if (previous && previous.size === size && previous.mtimeMs === mtimeMs) return previous.rules;
+  if (previous?.identity === identity) return previous.rules;
   let text: string;
   try { text = readFileSync(file, "utf8"); } catch { return undefined; }
   const rules = ignore().add(text);
   if (parsed.size > 4096) parsed.clear();
-  parsed.set(file, { size, mtimeMs, rules });
+  parsed.set(file, { identity, rules });
   return rules;
 }
 

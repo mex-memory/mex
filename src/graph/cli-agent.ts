@@ -1,3 +1,4 @@
+import { ENGINE_GRAPH_SCHEMA_VERSION, readsV5Graph, v5NodeKey, v5Rows } from "./db/v5.js";
 import { currentGraphPath } from "./storage.js";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -11,7 +12,7 @@ import {
   coverageFields, coverageReportable, hasGraphCoverageCache, readGraphCoverageObservation,
   type GraphCoverageObservation,
 } from "./coverage.js";
-import type { GraphEdge, GraphNode } from "./types.js";
+import { BASIC_RESOLUTION, type GraphEdge, type GraphNode } from "./types.js";
 import {
   compactFact, groupByFile, planFileSource, readNodeSource, selectScope, sourceHash, splitSourceLines,
   type CompactFact, type DetailLevel, type RankedScopeFile, type ScopedCandidate, type SourceRange,
@@ -278,6 +279,17 @@ export function runGraphQuery(
       }
     }
 
+    const potential: Array<{ node: GraphNode; row: UnresolvedCallSite }> = [];
+    if (relation === "who-calls" && readsV5Graph(session.db)) {
+      const withCallers = new Set(pairs.map(pair => pair.targetId));
+      for (const node of nodes) {
+        if (withCallers.has(node.id)) continue;
+        const remaining = opts.maxNodes + 1 - potential.length;
+        if (remaining === 0) break;
+        for (const row of potentialCallSites(session.db, node, remaining)) potential.push({ node, row });
+      }
+    }
+
     const targetsById = new Map(nodes.map((node) => [node.id, node]));
     const { kept: shownPairs, omitted: omittedTestNodes } = relation === "where-defined"
       ? { kept: pairs, omitted: 0 }
@@ -310,11 +322,20 @@ export function runGraphQuery(
       entries.push({ record, node: pair.node });
     }
 
+    const unresolved: Rec[] = [];
+    for (const { node, row } of potential) {
+      const record = unresolvedCallRecord(row, node.id, session);
+      if (unresolved.length + entries.length >= opts.maxNodes || !ledger.tryAdd(record)) {
+        truncated = true;
+        break;
+      }
+      unresolved.push(record);
+    }
     const sourceRecords = planSource(session, ledger, entries.map((e) => e.node), rootDir, opts);
 
     emitAll(write, meta, [
       ...configDriftRecords(session),
-      ...entries.map((e) => e.record), ...sourceRecords,
+      ...entries.map((e) => e.record), ...unresolved, ...sourceRecords,
     ]);
     write(JSON.stringify(summaryRecord(ctx, {
       matchedNodes: pairs.length,
@@ -322,6 +343,11 @@ export function runGraphQuery(
       returnedEdges: 0,
       truncated,
       omittedTestNodes,
+      ...(potential.length ? {
+        status: "partial",
+        evidenceStrength: entries.length ? "moderate" : "weak",
+        warnings: ["Unresolved call sites may call one or more of the queried symbols."],
+      } : {}),
       suggestedNextCommands: [
         ...(entries.length > 0 && opts.detail !== "source" ? [`mex graph get ${entries[0]!.node.id} --detail source`] : []),
         ...testsCommand,
@@ -605,7 +631,7 @@ export function runGraphScope(
     // flow/fact capacity spill back into deferred source records.
     const plannedFlowRecords = trustworthyFlows.flatMap((flow) => {
       const planned = scopeFlowRecord(flow, nodeById, opts.maxFlowSteps);
-      // A flow is a chain of resolved edges, so drifted compiler inputs can
+      // A flow is a chain of resolved edges, so drifted module configuration inputs can
       // change where it goes even when every file in it is current. The label
       // belongs on the emitted record, not on the planning envelope that
       // carries it alongside its step count.
@@ -2307,7 +2333,7 @@ function runScopeAgentSession(
     const opened = openImmutableGraphReadSessionSync(rootDir, dbPath);
     session = { ...opened };
     const stored = storedManifestIdentity(session.db);
-    const current = graphManifest(resolve(rootDir));
+    const current = graphManifest(resolve(rootDir), readsV5Graph(session.db) ? ENGINE_GRAPH_SCHEMA_VERSION : undefined);
     if (stored.manifestHash !== current.manifestHash) {
       if (!graphManifestDiffersOnlyByConfig(current, stored.manifestHash, stored.configHash)) {
         manifestUnavailable(write);
@@ -2385,7 +2411,7 @@ async function runFreshAgentSession(
 }
 
 /**
- * True when this session's structural facts describe compiler inputs that have
+ * True when this session's structural facts describe module configuration inputs that have
  * since changed.
  *
  * Definition and containment facts survive that — a symbol's file, range and
@@ -2482,15 +2508,10 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
   const incomplete = isParseDegraded(session);
   const sourceDrifted = isSourceDrifted(session);
   const reasonDiagnostic = drifted
-    ? diagnostics.find((entry) => entry.code === "GRAPH_SEMANTIC_INPUTS_CHANGED")
-      ?? diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED")
+    ? diagnostics.find((entry) => entry.code === "GRAPH_BUILD_MANIFEST_CHANGED")
     : sourceDrifted
       ? diagnostics.find((entry) => entry.code === "GRAPH_SOURCE_CORPUS_MISMATCH")
       : diagnostics.find((entry) => entry.code === "GRAPH_PARSE_DEGRADED");
-  const changedPaths = [...new Set(diagnostics
-    .filter((entry) => entry.code === "GRAPH_SEMANTIC_INPUT_CHANGED")
-    .map((entry) => (entry as { path?: unknown }).path)
-    .filter((path): path is string => typeof path === "string"))].sort();
   const recoveryCommand = diagnostics
     .flatMap((entry) => entry.remediation ?? [])
     .find((entry) => entry.command)?.command
@@ -2535,7 +2556,6 @@ function configDriftRecords(session: AgentGraphSession): Rec[] {
           excludedFileCount: excluded.length,
         }
       : {}),
-    ...(changedPaths.length > 0 ? { changedInputs: changedPaths } : {}),
     ...(recoveryCommand ? { recoveryCommand } : {}),
   }];
 }
@@ -2582,8 +2602,6 @@ function manifestUnavailable(write: (line: string) => void): void {
  */
 const CONFIG_DRIFT_DIAGNOSTIC_CODES = new Set([
   "GRAPH_BUILD_MANIFEST_CHANGED",
-  "GRAPH_SEMANTIC_INPUTS_CHANGED",
-  "GRAPH_SEMANTIC_INPUT_CHANGED",
 ]);
 
 function graphStatusUnavailable(
@@ -2592,12 +2610,14 @@ function graphStatusUnavailable(
   validation?: GraphReadValidation,
   configDriftTolerated = false,
 ): void {
+  const diagnostics = status.diagnostics.filter((entry) =>
+    entry.code !== "GRAPH_ENGINE_FALLBACK" && entry.code !== "GRAPH_ENGINE_WASI");
   const blocking = configDriftTolerated
-    ? status.diagnostics.filter((entry) => !CONFIG_DRIFT_DIAGNOSTIC_CODES.has(entry.code))
-    : status.diagnostics;
+    ? diagnostics.filter((entry) => !CONFIG_DRIFT_DIAGNOSTIC_CODES.has(entry.code))
+    : diagnostics;
   // Fall back to the full list only when config drift was the whole story and
   // something else — a race, a mid-read change — still refused the read.
-  const candidates = blocking.length > 0 ? blocking : status.diagnostics;
+  const candidates = blocking.length > 0 ? blocking : diagnostics;
   const diagnostic = validation?.code
     ? status.diagnostics.find((entry) => entry.code === validation.code)
     : [...candidates].reverse().find((entry) => entry.severity !== "info")
@@ -2705,9 +2725,10 @@ function relatedCallNodes(
   queried: GraphNode,
   relation: Exclude<QueryRelation, "where-defined">,
 ): Array<{ node: GraphNode; callLine?: number }> {
-  const typed = relation === "who-calls"
+  const typed = (relation === "who-calls"
     ? (graph.getIncoming?.(queried.id, ["calls"]) ?? [])
-    : (graph.getOutgoing?.(queried.id, ["calls"]) ?? []);
+    : (graph.getOutgoing?.(queried.id, ["calls"]) ?? []))
+    .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION);
   if (typed.length > 0) {
     const firstCallLine = new Map<string, number>();
     for (const { node, edge } of typed) {
@@ -2789,6 +2810,7 @@ function transitiveCallNeighbors(
 function firstCallLine(graph: GraphEngine, callerId: string, calleeId: string): number | undefined {
   let first: number | undefined;
   for (const { node, edge } of graph.getOutgoing?.(callerId, ["calls"]) ?? []) {
+    if (edge.resolutionMethod === BASIC_RESOLUTION) continue;
     if (node.id === calleeId && edge.line !== undefined) first = Math.min(edge.line, first ?? edge.line);
   }
   return first;
@@ -2826,6 +2848,7 @@ interface UnresolvedCallSite {
   from_node_id: string;
   receiver: string | null;
   qualifier: string | null;
+  candidate_id?: string | null;
 }
 
 /**
@@ -2859,25 +2882,7 @@ function emitUnresolvedCallers(
   const records: Rec[] = [];
   let truncated = matched > rows.length;
   for (const row of rows) {
-    // A distinct record type, never `type: "result"`. An agent must not be
-    // able to mistake an unbound name for a resolved graph edge.
-    const record: Rec = {
-      type: "unresolved-reference",
-      relation: "who-calls",
-      target,
-      name: row.reference_name,
-      referenceKind: row.reference_kind,
-      resolution: row.status,
-      file: row.file_path,
-      line: row.line,
-      col: row.col,
-      fromNode: row.from_node_id,
-      ...(row.receiver === null ? {} : { receiver: row.receiver }),
-      ...(row.qualifier === null ? {} : { qualifier: row.qualifier }),
-      // An unresolved reference is a resolution outcome, so drifted compiler
-      // inputs are the most likely reason this row exists at all.
-      ...(isConfigDrifted(session) ? { stale: true } : {}),
-    };
+    const record = unresolvedCallRecord(row, target, session);
     if (!ctx.ledger.tryAdd(record)) { truncated = true; break; }
     records.push(record);
   }
@@ -2903,12 +2908,71 @@ function emitUnresolvedCallers(
   return true;
 }
 
+function unresolvedCallRecord(row: UnresolvedCallSite, target: string, session: AgentGraphSession): Rec {
+  return {
+    type: "unresolved-reference",
+    relation: "who-calls",
+    target,
+    name: row.reference_name,
+    referenceKind: row.reference_kind,
+    resolution: row.status,
+    file: row.file_path,
+    line: row.line,
+    col: row.col,
+    fromNode: row.from_node_id,
+    ...(row.receiver === null ? {} : { receiver: row.receiver }),
+    ...(row.qualifier === null ? {} : { qualifier: row.qualifier }),
+    ...(row.candidate_id ? { candidate: row.candidate_id } : {}),
+    ...(isConfigDrifted(session) ? { stale: true } : {}),
+  };
+}
+
+/** An empty caller result is evidence only for this exact symbol. */
+function potentialCallSites(db: SqliteDatabase, node: GraphNode, limit: number): UnresolvedCallSite[] {
+  const key = v5NodeKey(db, node.id);
+  if (key === undefined) return [];
+  return db.prepare(
+    `SELECT reference_name, reference_kind, status, file_path, line, col,
+            from_node_id, receiver, qualifier, candidate_id
+     FROM temp.unresolved_refs WHERE id IN (
+       SELECT id FROM ${v5Rows(db, "unresolved_calls")} WHERE name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?)
+       UNION
+       SELECT id FROM ${v5Rows(db, "unresolved_calls")} WHERE candidate = ?
+     ) ORDER BY file_path, line, col, from_node_id LIMIT ?`,
+  ).all(node.name, key, limit) as UnresolvedCallSite[];
+}
+
+// Keep the legacy exact written-spelling lookup indexed. Symbol-level checks
+// use the called name instead, so obj["method"] can still be a caller of method.
+const v5UnresolvedSpelling = (db: SqliteDatabase) => `id IN (
+  SELECT id FROM ${v5Rows(db, "unresolved_calls")}
+    WHERE name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?) AND written_name IS NULL
+  UNION ALL
+  SELECT id FROM ${v5Rows(db, "unresolved_calls")}
+    WHERE written_name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?)
+  UNION ALL
+  SELECT -id FROM ${v5Rows(db, "unresolved_other")} WHERE name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?)
+)`;
+
+function unresolvedCallFilter(db: SqliteDatabase, name: string): { where: string; args: string[] } {
+  if (readsV5Graph(db)) return { where: v5UnresolvedSpelling(db), args: [name, name, name] };
+  const dot = name.lastIndexOf(".");
+  if (dot > 0) {
+    // A member's separate receiver can still satisfy a qualified query.
+    return {
+      where: "status <> 'resolved' AND (reference_name = ? OR (reference_name = ? AND receiver = ? AND reference_kind = 'calls'))",
+      args: [name, name.slice(dot + 1), name.slice(0, dot)],
+    };
+  }
+  return { where: "reference_name = ? AND status <> 'resolved'", args: [name] };
+}
+
 /** Total matching call sites, so the summary can report what it capped. */
 function unresolvedCallSiteCount(db: SqliteDatabase, name: string): number {
+  const { where, args } = unresolvedCallFilter(db, name);
   const row = db.prepare(
-    `SELECT COUNT(*) AS total FROM unresolved_refs
-      WHERE reference_name = ? AND status <> 'resolved'`,
-  ).get(name) as { total?: unknown } | undefined;
+    `SELECT COUNT(*) AS total FROM unresolved_refs WHERE ${where}`,
+  ).get(...args) as { total?: unknown } | undefined;
   return typeof row?.total === "number" ? row.total : 0;
 }
 
@@ -2918,14 +2982,16 @@ function unresolvedCallSites(
   name: string,
   limit: number,
 ): UnresolvedCallSite[] {
+  const native = readsV5Graph(db);
+  const { where, args } = unresolvedCallFilter(db, name);
   return db.prepare(
     `SELECT reference_name, reference_kind, status, file_path, line, col,
-            from_node_id, receiver, qualifier
+            from_node_id, receiver, qualifier${native ? ", candidate_id" : ""}
        FROM unresolved_refs
-      WHERE reference_name = ? AND status <> 'resolved'
+      WHERE ${where}
       ORDER BY file_path, line, col, from_node_id
       LIMIT ?`,
-  ).all(name, Math.max(0, limit)) as UnresolvedCallSite[];
+  ).all(...args, Math.max(0, limit)) as UnresolvedCallSite[];
 }
 
 /**

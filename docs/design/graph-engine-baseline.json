@@ -1,0 +1,1382 @@
+{
+  "django": {
+    "085": {
+      "runs": 2,
+      "failed": 0,
+      "files": 2937,
+      "nodes": 62548,
+      "edges": 105910,
+      "buildS": 24.96,
+      "cpuS": 29.81,
+      "peakMb": 965,
+      "diskMb": 266.921875,
+      "bytesPerNode": 4475,
+      "refreshS": 8.679,
+      "refreshPeakMb": 1018,
+      "topTables": [
+        [
+          "unresolved_refs",
+          30.4
+        ],
+        [
+          "nodes",
+          27.4
+        ],
+        [
+          "lsh_buckets",
+          20.1
+        ],
+        [
+          "node_fingerprints",
+          20
+        ],
+        [
+          "edges",
+          17
+        ],
+        [
+          "file_extraction_cache",
+          14.9
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9239,
+        "recall": 0.6157,
+        "recallConcrete": 0.6157,
+        "sites": 12730,
+        "interfaceSites": 0,
+        "edgesJudged": 8488,
+        "edgesTotal": 32605,
+        "wrong": 646
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 2,
+      "failed": 0,
+      "files": 2934,
+      "nodes": 61260,
+      "edges": 102830,
+      "buildS": 26.045,
+      "cpuS": 29.01,
+      "peakMb": 1041,
+      "diskMb": 256.8828125,
+      "bytesPerNode": 4397,
+      "refreshS": 7.379,
+      "refreshPeakMb": 929,
+      "topTables": [
+        [
+          "unresolved_refs",
+          29
+        ],
+        [
+          "nodes",
+          26.3
+        ],
+        [
+          "node_fingerprints",
+          19.6
+        ],
+        [
+          "lsh_buckets",
+          19.5
+        ],
+        [
+          "edges",
+          15.4
+        ],
+        [
+          "file_extraction_cache",
+          14
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9239,
+        "recall": 0.6157,
+        "recallConcrete": 0.6157,
+        "sites": 12730,
+        "interfaceSites": 0,
+        "edgesJudged": 8488,
+        "edgesTotal": 31793,
+        "wrong": 646
+      },
+      "errors": []
+    },
+    "engine": {
+      "runs": 2,
+      "failed": 0,
+      "files": 2824,
+      "nodes": 59406,
+      "edges": 143906,
+      "buildS": 1.334,
+      "cpuS": 6.43,
+      "peakMb": 276,
+      "diskMb": 36.796875,
+      "bytesPerNode": 650,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          16
+        ],
+        [
+          "nodes",
+          9.5
+        ],
+        [
+          "edges",
+          4
+        ],
+        [
+          "edges_target",
+          2.3
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          1.6
+        ],
+        [
+          "nodes_name",
+          1.4
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9927,
+        "recall": 0.9293,
+        "recallConcrete": 0.9293,
+        "sites": 12730,
+        "interfaceSites": 0,
+        "edgesJudged": 11917,
+        "edgesTotal": 68665,
+        "wrong": 87
+      },
+      "errors": []
+    }
+  },
+  "express": {
+    "085": {
+      "runs": 1,
+      "failed": 0,
+      "files": 141,
+      "nodes": 3484,
+      "edges": 5140,
+      "buildS": 2.116,
+      "cpuS": 3.88,
+      "peakMb": 500,
+      "diskMb": 15.80859375,
+      "bytesPerNode": 4758,
+      "refreshS": 1.233,
+      "refreshPeakMb": 455,
+      "topTables": [
+        [
+          "unresolved_refs",
+          2.8
+        ],
+        [
+          "nodes",
+          1.7
+        ],
+        [
+          "edges",
+          1.5
+        ],
+        [
+          "lsh_buckets",
+          1.2
+        ],
+        [
+          "node_fingerprints",
+          1.1
+        ],
+        [
+          "file_extraction_cache",
+          1
+        ]
+      ],
+      "accuracy": {
+        "precision": 1,
+        "recall": 1,
+        "recallConcrete": 1,
+        "sites": 280,
+        "interfaceSites": 0,
+        "edgesJudged": 389,
+        "edgesTotal": 1126,
+        "wrong": 0
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 1,
+      "failed": 0,
+      "files": 141,
+      "nodes": 3496,
+      "edges": 5218,
+      "buildS": 1.974,
+      "cpuS": 2.75,
+      "peakMb": 485,
+      "diskMb": 15.53515625,
+      "bytesPerNode": 4660,
+      "refreshS": 1.343,
+      "refreshPeakMb": 497,
+      "topTables": [
+        [
+          "unresolved_refs",
+          2.8
+        ],
+        [
+          "nodes",
+          1.6
+        ],
+        [
+          "edges",
+          1.5
+        ],
+        [
+          "lsh_buckets",
+          1.2
+        ],
+        [
+          "node_fingerprints",
+          1.1
+        ],
+        [
+          "file_extraction_cache",
+          0.8
+        ]
+      ],
+      "accuracy": {
+        "precision": 1,
+        "recall": 0.9929,
+        "recallConcrete": 0.9929,
+        "sites": 280,
+        "interfaceSites": 0,
+        "edgesJudged": 400,
+        "edgesTotal": 1117,
+        "wrong": 0
+      },
+      "errors": []
+    }
+  },
+  "fastapi": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 1122,
+      "nodes": 10220,
+      "edges": 13098,
+      "buildS": 4.575,
+      "cpuS": 6.03,
+      "peakMb": 556,
+      "diskMb": 35.2109375,
+      "bytesPerNode": 3613,
+      "refreshS": 2.422,
+      "refreshPeakMb": 471,
+      "topTables": [
+        [
+          "nodes",
+          4.7
+        ],
+        [
+          "file_extraction_cache",
+          2.5
+        ],
+        [
+          "unresolved_refs",
+          2.5
+        ],
+        [
+          "node_fingerprints",
+          2.5
+        ],
+        [
+          "lsh_buckets",
+          2.1
+        ],
+        [
+          "edges",
+          2.1
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9844,
+        "recall": 0.2286,
+        "recallConcrete": 0.2286,
+        "sites": 4406,
+        "interfaceSites": 0,
+        "edgesJudged": 1023,
+        "edgesTotal": 1102,
+        "wrong": 16
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 1122,
+      "nodes": 10220,
+      "edges": 13098,
+      "buildS": 4.696,
+      "cpuS": 5.83,
+      "peakMb": 549,
+      "diskMb": 35.20703125,
+      "bytesPerNode": 3612,
+      "refreshS": 2.117,
+      "refreshPeakMb": 480,
+      "topTables": [
+        [
+          "nodes",
+          4.7
+        ],
+        [
+          "file_extraction_cache",
+          2.5
+        ],
+        [
+          "unresolved_refs",
+          2.5
+        ],
+        [
+          "node_fingerprints",
+          2.5
+        ],
+        [
+          "lsh_buckets",
+          2.1
+        ],
+        [
+          "edges",
+          2.1
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9844,
+        "recall": 0.2286,
+        "recallConcrete": 0.2286,
+        "sites": 4406,
+        "interfaceSites": 0,
+        "edgesJudged": 1023,
+        "edgesTotal": 1102,
+        "wrong": 16
+      },
+      "errors": []
+    },
+    "engine": {
+      "runs": 3,
+      "failed": 0,
+      "files": 1118,
+      "nodes": 8919,
+      "edges": 12514,
+      "buildS": 0.239,
+      "cpuS": 1.18,
+      "peakMb": 54,
+      "diskMb": 5.234375,
+      "bytesPerNode": 615,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          2.1
+        ],
+        [
+          "nodes",
+          1.6
+        ],
+        [
+          "edges",
+          0.3
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          0.2
+        ],
+        [
+          "nodes_name",
+          0.2
+        ],
+        [
+          "edges_target",
+          0.2
+        ]
+      ],
+      "accuracy": {
+        "precision": 1,
+        "recall": 0.7079,
+        "recallConcrete": 0.7079,
+        "sites": 4406,
+        "interfaceSites": 0,
+        "edgesJudged": 3119,
+        "edgesTotal": 3129,
+        "wrong": 0
+      },
+      "errors": []
+    }
+  },
+  "fd": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 25,
+      "nodes": 724,
+      "edges": 1063,
+      "buildS": 0.844,
+      "cpuS": 1.15,
+      "peakMb": 351,
+      "diskMb": 3.4921875,
+      "bytesPerNode": 5058,
+      "refreshS": 0.631,
+      "refreshPeakMb": 347,
+      "topTables": [
+        [
+          "unresolved_refs",
+          0.5
+        ],
+        [
+          "source_chunks",
+          0.3
+        ],
+        [
+          "nodes",
+          0.2
+        ],
+        [
+          "source_chunks_fts_data",
+          0.2
+        ],
+        [
+          "node_fingerprints",
+          0.2
+        ],
+        [
+          "lsh_buckets",
+          0.2
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 25,
+      "nodes": 724,
+      "edges": 1063,
+      "buildS": 0.915,
+      "cpuS": 1.26,
+      "peakMb": 364,
+      "diskMb": 3.49609375,
+      "bytesPerNode": 5063,
+      "refreshS": 0.666,
+      "refreshPeakMb": 335,
+      "topTables": [
+        [
+          "unresolved_refs",
+          0.5
+        ],
+        [
+          "source_chunks",
+          0.3
+        ],
+        [
+          "nodes",
+          0.2
+        ],
+        [
+          "source_chunks_fts_data",
+          0.2
+        ],
+        [
+          "node_fingerprints",
+          0.2
+        ],
+        [
+          "lsh_buckets",
+          0.2
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    }
+  },
+  "flask": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 83,
+      "nodes": 2198,
+      "edges": 2810,
+      "buildS": 1.268,
+      "cpuS": 1.63,
+      "peakMb": 361,
+      "diskMb": 7.51953125,
+      "bytesPerNode": 3587,
+      "refreshS": 0.804,
+      "refreshPeakMb": 346,
+      "topTables": [
+        [
+          "nodes",
+          0.9
+        ],
+        [
+          "unresolved_refs",
+          0.7
+        ],
+        [
+          "node_fingerprints",
+          0.6
+        ],
+        [
+          "lsh_buckets",
+          0.5
+        ],
+        [
+          "file_extraction_cache",
+          0.4
+        ],
+        [
+          "source_chunks",
+          0.4
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.8558,
+        "recall": 0.2221,
+        "recallConcrete": 0.2221,
+        "sites": 1202,
+        "interfaceSites": 0,
+        "edgesJudged": 312,
+        "edgesTotal": 336,
+        "wrong": 45
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 83,
+      "nodes": 2198,
+      "edges": 2810,
+      "buildS": 1.379,
+      "cpuS": 1.77,
+      "peakMb": 370,
+      "diskMb": 7.5234375,
+      "bytesPerNode": 3589,
+      "refreshS": 0.828,
+      "refreshPeakMb": 349,
+      "topTables": [
+        [
+          "nodes",
+          0.9
+        ],
+        [
+          "unresolved_refs",
+          0.7
+        ],
+        [
+          "node_fingerprints",
+          0.6
+        ],
+        [
+          "lsh_buckets",
+          0.5
+        ],
+        [
+          "file_extraction_cache",
+          0.4
+        ],
+        [
+          "source_chunks",
+          0.4
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.8558,
+        "recall": 0.2221,
+        "recallConcrete": 0.2221,
+        "sites": 1202,
+        "interfaceSites": 0,
+        "edgesJudged": 312,
+        "edgesTotal": 336,
+        "wrong": 45
+      },
+      "errors": []
+    },
+    "engine": {
+      "runs": 3,
+      "failed": 0,
+      "files": 83,
+      "nodes": 1908,
+      "edges": 3114,
+      "buildS": 0.055,
+      "cpuS": 0.26,
+      "peakMb": 0,
+      "diskMb": 1.30859375,
+      "bytesPerNode": 719,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          0.5
+        ],
+        [
+          "nodes",
+          0.4
+        ],
+        [
+          "edges",
+          0.1
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          0.1
+        ],
+        [
+          "edges_target",
+          0.1
+        ],
+        [
+          "nodes_name",
+          0
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.998,
+        "recall": 0.8386,
+        "recallConcrete": 0.8386,
+        "sites": 1202,
+        "interfaceSites": 0,
+        "edgesJudged": 1010,
+        "edgesTotal": 1020,
+        "wrong": 2
+      },
+      "errors": []
+    }
+  },
+  "hono": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 454,
+      "nodes": 15516,
+      "edges": 34515,
+      "buildS": 9.518,
+      "cpuS": 17.34,
+      "peakMb": 1164,
+      "diskMb": 73.28125,
+      "bytesPerNode": 4952,
+      "refreshS": 3.919,
+      "refreshPeakMb": 903,
+      "topTables": [
+        [
+          "edges",
+          9.7
+        ],
+        [
+          "unresolved_refs",
+          8.8
+        ],
+        [
+          "nodes",
+          8.6
+        ],
+        [
+          "node_fingerprints",
+          5.5
+        ],
+        [
+          "file_extraction_cache",
+          4.4
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          4
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9998,
+        "recall": 0.8244,
+        "recallConcrete": 0.9757,
+        "sites": 2677,
+        "interfaceSites": 417,
+        "edgesJudged": 11635,
+        "edgesTotal": 12516,
+        "wrong": 2
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 454,
+      "nodes": 15516,
+      "edges": 34653,
+      "buildS": 7.659,
+      "cpuS": 9.76,
+      "peakMb": 985,
+      "diskMb": 69.96484375,
+      "bytesPerNode": 4728,
+      "refreshS": 2.707,
+      "refreshPeakMb": 802,
+      "topTables": [
+        [
+          "edges",
+          9.8
+        ],
+        [
+          "unresolved_refs",
+          8.8
+        ],
+        [
+          "nodes",
+          7
+        ],
+        [
+          "node_fingerprints",
+          5.5
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          4.1
+        ],
+        [
+          "lsh_buckets",
+          3.9
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9998,
+        "recall": 0.839,
+        "recallConcrete": 0.9929,
+        "sites": 2677,
+        "interfaceSites": 417,
+        "edgesJudged": 11769,
+        "edgesTotal": 12654,
+        "wrong": 2
+      },
+      "errors": []
+    }
+  },
+  "httpx": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 60,
+      "nodes": 1485,
+      "edges": 2173,
+      "buildS": 1.178,
+      "cpuS": 1.48,
+      "peakMb": 346,
+      "diskMb": 6.23046875,
+      "bytesPerNode": 4399,
+      "refreshS": 0.751,
+      "refreshPeakMb": 356,
+      "topTables": [
+        [
+          "nodes",
+          0.7
+        ],
+        [
+          "unresolved_refs",
+          0.6
+        ],
+        [
+          "lsh_buckets",
+          0.6
+        ],
+        [
+          "node_fingerprints",
+          0.5
+        ],
+        [
+          "source_chunks",
+          0.4
+        ],
+        [
+          "file_extraction_cache",
+          0.3
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.8937,
+        "recall": 0.3298,
+        "recallConcrete": 0.3298,
+        "sites": 1504,
+        "interfaceSites": 0,
+        "edgesJudged": 555,
+        "edgesTotal": 570,
+        "wrong": 59
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 60,
+      "nodes": 1485,
+      "edges": 2173,
+      "buildS": 1.282,
+      "cpuS": 1.62,
+      "peakMb": 355,
+      "diskMb": 6.234375,
+      "bytesPerNode": 4402,
+      "refreshS": 0.778,
+      "refreshPeakMb": 359,
+      "topTables": [
+        [
+          "nodes",
+          0.7
+        ],
+        [
+          "unresolved_refs",
+          0.6
+        ],
+        [
+          "lsh_buckets",
+          0.6
+        ],
+        [
+          "node_fingerprints",
+          0.5
+        ],
+        [
+          "source_chunks",
+          0.4
+        ],
+        [
+          "file_extraction_cache",
+          0.3
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.8937,
+        "recall": 0.3298,
+        "recallConcrete": 0.3298,
+        "sites": 1504,
+        "interfaceSites": 0,
+        "edgesJudged": 555,
+        "edgesTotal": 570,
+        "wrong": 59
+      },
+      "errors": []
+    },
+    "engine": {
+      "runs": 3,
+      "failed": 0,
+      "files": 60,
+      "nodes": 1485,
+      "edges": 3463,
+      "buildS": 0.049,
+      "cpuS": 0.27,
+      "peakMb": 0,
+      "diskMb": 1.05078125,
+      "bytesPerNode": 742,
+      "refreshS": null,
+      "refreshPeakMb": null,
+      "topTables": [
+        [
+          "fingerprints",
+          0.4
+        ],
+        [
+          "nodes",
+          0.3
+        ],
+        [
+          "edges",
+          0.1
+        ],
+        [
+          "edges_target",
+          0.1
+        ],
+        [
+          "sqlite_autoindex_nodes_1",
+          0
+        ],
+        [
+          "nodes_name",
+          0
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9976,
+        "recall": 0.8291,
+        "recallConcrete": 0.8291,
+        "sites": 1504,
+        "interfaceSites": 0,
+        "edgesJudged": 1250,
+        "edgesTotal": 1849,
+        "wrong": 3
+      },
+      "errors": []
+    }
+  },
+  "nest": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 2054,
+      "nodes": 26329,
+      "edges": 52026,
+      "buildS": 14.706,
+      "cpuS": 24.9,
+      "peakMb": 1327,
+      "diskMb": 130.38671875,
+      "bytesPerNode": 5193,
+      "refreshS": 7.323,
+      "refreshPeakMb": 1111,
+      "topTables": [
+        [
+          "edges",
+          15.7
+        ],
+        [
+          "unresolved_refs",
+          15.6
+        ],
+        [
+          "nodes",
+          14
+        ],
+        [
+          "file_extraction_cache",
+          9.6
+        ],
+        [
+          "node_fingerprints",
+          8.3
+        ],
+        [
+          "lsh_buckets",
+          7.3
+        ]
+      ],
+      "accuracy": {
+        "precision": 1,
+        "recall": 0.94,
+        "recallConcrete": 0.9701,
+        "sites": 8918,
+        "interfaceSites": 289,
+        "edgesJudged": 10513,
+        "edgesTotal": 13087,
+        "wrong": 0
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 2054,
+      "nodes": 26329,
+      "edges": 50114,
+      "buildS": 14.492,
+      "cpuS": 19.32,
+      "peakMb": 1147,
+      "diskMb": 127.69140625,
+      "bytesPerNode": 5085,
+      "refreshS": 5.468,
+      "refreshPeakMb": 1052,
+      "topTables": [
+        [
+          "unresolved_refs",
+          16.1
+        ],
+        [
+          "edges",
+          15.1
+        ],
+        [
+          "nodes",
+          13.4
+        ],
+        [
+          "file_extraction_cache",
+          8.7
+        ],
+        [
+          "node_fingerprints",
+          8.3
+        ],
+        [
+          "lsh_buckets",
+          7.4
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9993,
+        "recall": 0.9415,
+        "recallConcrete": 0.9715,
+        "sites": 8918,
+        "interfaceSites": 289,
+        "edgesJudged": 10538,
+        "edgesTotal": 13125,
+        "wrong": 7
+      },
+      "errors": []
+    }
+  },
+  "novu": {
+    "085": {
+      "runs": 1,
+      "failed": 0,
+      "files": 9856,
+      "nodes": 161731,
+      "edges": 325998,
+      "buildS": 86.296,
+      "cpuS": 132.61,
+      "peakMb": 3246,
+      "diskMb": 814,
+      "bytesPerNode": 5278,
+      "refreshS": 25.422,
+      "refreshPeakMb": 2618,
+      "topTables": [
+        [
+          "edges",
+          95.4
+        ],
+        [
+          "nodes",
+          91.7
+        ],
+        [
+          "unresolved_refs",
+          79.9
+        ],
+        [
+          "file_extraction_cache",
+          59.6
+        ],
+        [
+          "node_fingerprints",
+          51.5
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          38
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    },
+    "next2": {
+      "runs": 1,
+      "failed": 0,
+      "files": 9856,
+      "nodes": 161735,
+      "edges": 326065,
+      "buildS": 77.11,
+      "cpuS": 89.61,
+      "peakMb": 2553,
+      "diskMb": 788.13671875,
+      "bytesPerNode": 5110,
+      "refreshS": 23.288,
+      "refreshPeakMb": 2235,
+      "topTables": [
+        [
+          "edges",
+          95.5
+        ],
+        [
+          "nodes",
+          82.9
+        ],
+        [
+          "unresolved_refs",
+          79.9
+        ],
+        [
+          "file_extraction_cache",
+          51.6
+        ],
+        [
+          "node_fingerprints",
+          51.5
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          38
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    }
+  },
+  "ripgrep": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 100,
+      "nodes": 4424,
+      "edges": 6653,
+      "buildS": 2.36,
+      "cpuS": 2.9,
+      "peakMb": 464,
+      "diskMb": 20.62890625,
+      "bytesPerNode": 4889,
+      "refreshS": 1.012,
+      "refreshPeakMb": 404,
+      "topTables": [
+        [
+          "unresolved_refs",
+          3.2
+        ],
+        [
+          "source_chunks",
+          1.9
+        ],
+        [
+          "nodes",
+          1.9
+        ],
+        [
+          "source_chunks_fts_data",
+          1.4
+        ],
+        [
+          "node_fingerprints",
+          1.3
+        ],
+        [
+          "idx_unresolved_from_name",
+          1.2
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 100,
+      "nodes": 4424,
+      "edges": 6653,
+      "buildS": 2.565,
+      "cpuS": 3.18,
+      "peakMb": 453,
+      "diskMb": 20.6328125,
+      "bytesPerNode": 4890,
+      "refreshS": 1.025,
+      "refreshPeakMb": 411,
+      "topTables": [
+        [
+          "unresolved_refs",
+          3.2
+        ],
+        [
+          "source_chunks",
+          1.9
+        ],
+        [
+          "nodes",
+          1.9
+        ],
+        [
+          "source_chunks_fts_data",
+          1.4
+        ],
+        [
+          "node_fingerprints",
+          1.3
+        ],
+        [
+          "idx_unresolved_from_name",
+          1.2
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    }
+  },
+  "tsc": {
+    "085": {
+      "runs": 2,
+      "failed": 0,
+      "files": 700,
+      "nodes": 47377,
+      "edges": 105108,
+      "buildS": 23.66,
+      "cpuS": 33.34,
+      "peakMb": 1499,
+      "diskMb": 208.33203125,
+      "bytesPerNode": 4611,
+      "refreshS": 5.568,
+      "refreshPeakMb": 1177,
+      "topTables": [
+        [
+          "edges",
+          27
+        ],
+        [
+          "nodes",
+          24.2
+        ],
+        [
+          "source_chunks",
+          18.1
+        ],
+        [
+          "node_fingerprints",
+          16
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          12.4
+        ],
+        [
+          "unresolved_refs",
+          12
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    },
+    "next2": {
+      "runs": 2,
+      "failed": 0,
+      "files": 701,
+      "nodes": 56600,
+      "edges": 199585,
+      "buildS": 24.997,
+      "cpuS": 29.62,
+      "peakMb": 1696,
+      "diskMb": 287.69921875,
+      "bytesPerNode": 5330,
+      "refreshS": 7.272,
+      "refreshPeakMb": 1490,
+      "topTables": [
+        [
+          "edges",
+          57.2
+        ],
+        [
+          "nodes",
+          28.9
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          23.6
+        ],
+        [
+          "node_fingerprints",
+          21.8
+        ],
+        [
+          "source_chunks",
+          21.4
+        ],
+        [
+          "file_extraction_cache",
+          14.4
+        ]
+      ],
+      "accuracy": null,
+      "errors": []
+    }
+  },
+  "zod": {
+    "085": {
+      "runs": 3,
+      "failed": 0,
+      "files": 520,
+      "nodes": 16121,
+      "edges": 48670,
+      "buildS": 12.856,
+      "cpuS": 24.62,
+      "peakMb": 1529,
+      "diskMb": 90.75390625,
+      "bytesPerNode": 5903,
+      "refreshS": 3.573,
+      "refreshPeakMb": 880,
+      "topTables": [
+        [
+          "unresolved_refs",
+          12.9
+        ],
+        [
+          "edges",
+          12.8
+        ],
+        [
+          "nodes",
+          9.4
+        ],
+        [
+          "node_fingerprints",
+          6
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          5.7
+        ],
+        [
+          "file_extraction_cache",
+          5.1
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9962,
+        "recall": 0.6261,
+        "recallConcrete": 0.9875,
+        "sites": 16866,
+        "interfaceSites": 6262,
+        "edgesJudged": 12778,
+        "edgesTotal": 19976,
+        "wrong": 48
+      },
+      "errors": []
+    },
+    "next2": {
+      "runs": 3,
+      "failed": 0,
+      "files": 520,
+      "nodes": 16121,
+      "edges": 48271,
+      "buildS": 8.399,
+      "cpuS": 10.64,
+      "peakMb": 1045,
+      "diskMb": 85.3828125,
+      "bytesPerNode": 5554,
+      "refreshS": 2.592,
+      "refreshPeakMb": 721,
+      "topTables": [
+        [
+          "unresolved_refs",
+          12.9
+        ],
+        [
+          "edges",
+          12.7
+        ],
+        [
+          "nodes",
+          6.9
+        ],
+        [
+          "node_fingerprints",
+          6
+        ],
+        [
+          "idx_edges_semantic_callsite",
+          5.7
+        ],
+        [
+          "file_extraction_cache",
+          4.3
+        ]
+      ],
+      "accuracy": {
+        "precision": 0.9962,
+        "recall": 0.6261,
+        "recallConcrete": 0.9875,
+        "sites": 16866,
+        "interfaceSites": 6262,
+        "edgesJudged": 12778,
+        "edgesTotal": 19976,
+        "wrong": 48
+      },
+      "errors": []
+    }
+  }
+}

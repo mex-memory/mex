@@ -1,4 +1,4 @@
-import { installGraphViews } from "./overlay.js";
+import { attachedV5Base, installGraphViews, v5BaseIsCurrent } from "./overlay.js";
 import { currentGraphPath, isPublishedGraph, withGraphStorageContext } from "./storage.js";
 import { absolutePath } from "../record/project.js";
 import { createHash } from "node:crypto";
@@ -179,9 +179,10 @@ export function openImmutableGraphReadSessionSync(
         sidecarMessage("before immutable readers opened", sidecarsBeforeOpen),
       );
     }
-    pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
+    pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true, overlayPath: canonicalDbPath });
     installGraphViews(pendingDb, canonicalDbPath);
     const sharedDb = pendingDb;
+    const base = attachedV5Base(sharedDb);
     graph = createGraphReadEngine(sharedDb, projectRoot);
     pendingDb = null;
     const validation = validateReadPath(
@@ -190,6 +191,7 @@ export function openImmutableGraphReadSessionSync(
       canonicalDbPath,
       databaseIdentityBefore,
       inspectSidecars,
+      base,
     );
     if (!validation.valid) throw new GraphReadSessionError(validation.code!, validation.message!);
 
@@ -213,7 +215,7 @@ export function openImmutableGraphReadSessionSync(
       readIndexedSource,
       validate: () => open
         ? sourceValidation
-          ?? validateReadPath(projectRoot, dbPath, canonicalDbPath, databaseIdentityBefore, inspectSidecars)
+          ?? validateReadPath(projectRoot, dbPath, canonicalDbPath, databaseIdentityBefore, inspectSidecars, base)
         : {
             valid: false,
             code: "GRAPH_INDEX_READER_OPEN_FAILED",
@@ -296,10 +298,14 @@ export async function openImmutableGraphReadSession(
         sidecarMessage("before immutable readers opened", sidecarsBeforeOpen),
       );
     }
-    pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true });
+    pendingDb = openGraphDatabase(boundFile.databasePath, { readOnly: true, immutable: true, overlayPath: canonicalDbPath });
     installGraphViews(pendingDb, canonicalDbPath);
     await options.afterDatabaseOpen?.(pendingDb);
     const sharedDb = pendingDb;
+    const base = attachedV5Base(sharedDb);
+    if (expected && expected.baseIdentity !== base?.identity) {
+      throw new GraphReadSessionError("GRAPH_INDEX_READER_DATABASE_CHANGED", "The overlay base changed after freshness inspection.");
+    }
     graph = createGraphReadEngine(sharedDb, projectRoot);
     pendingDb = null;
 
@@ -310,6 +316,7 @@ export async function openImmutableGraphReadSession(
         canonicalDbPath,
         databaseIdentityBefore,
         inspectSidecars,
+        base,
       );
       if (!validation.valid) throw new GraphReadSessionError(validation.code!, validation.message!);
     }
@@ -334,7 +341,7 @@ export async function openImmutableGraphReadSession(
       readIndexedSource,
       validate: () => open
         ? sourceValidation
-          ?? validateReadPath(projectRoot, dbPath, canonicalDbPath, databaseIdentityBefore, inspectSidecars)
+          ?? validateReadPath(projectRoot, dbPath, canonicalDbPath, databaseIdentityBefore, inspectSidecars, base)
         : {
             valid: false,
             code: "GRAPH_INDEX_READER_OPEN_FAILED",
@@ -477,6 +484,7 @@ async function loadFreshGraphReadSessionInContext(projectRoot: string, options: 
           auditedDatabase: {
             canonicalDbPath: freshObservation.canonicalDbPath,
             databaseIdentity: freshObservation.databaseIdentity,
+            ...(freshObservation.baseIdentity ? { baseIdentity: freshObservation.baseIdentity } : {}),
           },
         }));
         // Output is committed under the class it was labelled with. A store
@@ -646,6 +654,7 @@ function validateReadPath(
   canonicalDbPath: string,
   expectedIdentity: string,
   inspectSidecars: typeof inspectGraphSidecars,
+  base?: ReturnType<typeof attachedV5Base>,
 ): GraphReadValidation {
   try {
     if (resolveContainedGraphDatabasePath(projectRoot, requestedDbPath) !== canonicalDbPath) {
@@ -663,7 +672,7 @@ function validateReadPath(
         message: sidecarMessage("while graph-derived output was being prepared", sidecars),
       };
     }
-    if (readDatabaseIdentity(canonicalDbPath) !== expectedIdentity) {
+    if (readDatabaseIdentity(canonicalDbPath) !== expectedIdentity || !v5BaseIsCurrent(base)) {
       return {
         valid: false,
         code: "GRAPH_INDEX_READER_DATABASE_CHANGED",
@@ -882,6 +891,7 @@ function sameObservation(
 ): boolean {
   return left.canonicalDbPath === right.canonicalDbPath
     && left.databaseIdentity === right.databaseIdentity
+    && left.baseIdentity === right.baseIdentity
     && left.snapshotRaw === right.snapshotRaw
     && left.snapshotHash === right.snapshotHash;
 }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { BuildResult } from "./engine.js";
+import { GRAPH_ENGINE_MAX_MEMORY_MB } from "./sizing.js";
 
 /** Private process boundary. Never serialize graph rows, source, or raw errors. */
 export const GRAPH_CANDIDATE_MESSAGE_BYTES = 1024 * 1024;
@@ -10,6 +11,7 @@ const identity = z.object({ realPath: text, dev: z.string().regex(/^\d+$/u), ino
 export const graphCandidateRequest = z.object({
   version: z.literal(1),
   operation: z.enum(["refresh", "rebuild"]),
+  engineFallbackReason: z.string().min(1).max(200).optional(),
   projectRoot: text,
   candidatePath: text,
   workspace: text,
@@ -40,15 +42,17 @@ const buildResult = z.object({
     observedBytes: count.optional(),
     message: text,
   }).strict()).max(20_000).optional(),
-  declinedInputs: z.array(z.object({
-    filePath: text,
-    reason: z.literal("outside-project-corpus"),
-    message: text,
-  }).strict()).max(20_000).optional(),
-  typescript: z.object({
-    compiler: z.string().max(400),
-    projects: z.record(z.string().max(4_096), z.string().max(200)),
-    notes: z.array(z.object({ project: z.string().max(4_096), note: z.string().max(2_000) }).strict()).max(20_000),
+  // Language ids, counts and a reason built from codes; no path or raw engine message.
+  engine: z.object({
+    languages: z.array(z.string().max(40)).max(32),
+    files: count,
+    fallbackFiles: count,
+    fellBack: z.string().max(200).optional(),
+    runtime: z.enum(["native", "wasi", "node"]).optional(),
+    nativeUnavailable: z.string().max(200).optional(),
+    wallMs: count.optional(),
+    peakRssMb: count.optional(),
+    cpuMs: count.optional(),
   }).strict().optional(),
   // Fixed-vocabulary reasons and counts only; no path crosses this boundary.
   refresh: z.object({
@@ -62,12 +66,11 @@ const buildResult = z.object({
   }).strict().optional(),
 }).strict() satisfies z.ZodType<BuildResult>;
 
-/** CPU time and peak memory of the candidate process and its compiler servers, for the usage log. */
+/** CPU time and peak memory of the candidate process for the usage log. */
 const candidateUsage = z.object({
   cpuMs: count,
   peakRssMb: count,
-  serverCpuMs: count.optional(),
-  serverPeakRssMb: count.optional(),
+  enginePeakRssMb: count.optional(),
 }).strict();
 export type GraphCandidateUsage = z.infer<typeof candidateUsage>;
 
@@ -75,7 +78,12 @@ export const graphCandidateMessage = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready") }).strict(),
   z.object({ type: z.literal("progress"), progress: graphCandidateProgress }).strict(),
   z.object({ type: z.literal("complete"), result: buildResult, usage: candidateUsage.optional() }).strict(),
-  z.object({ type: z.literal("failed"), category: z.enum(["compatibility", "staging", "failed"]) }).strict(),
+  z.object({
+    type: z.literal("failed"),
+    category: z.enum(["compatibility", "staging", "failed"]),
+    usage: candidateUsage.optional(),
+    engineMemoryLimitMb: count.positive().max(GRAPH_ENGINE_MAX_MEMORY_MB).optional(),
+  }).strict(),
 ]);
 export type GraphCandidateMessage = z.infer<typeof graphCandidateMessage>;
 

@@ -29,13 +29,13 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createGraphEngine } from "../../../graph/index.js";
-import { openSqlite } from "../../../graph/db/sqlite.js";
+import { openGraphDatabase } from "../../../graph/db/database.js";
 import { runGraphScope, type AgentCommandDeps } from "../../../graph/cli-agent.js";
 import type { GraphEngine } from "../../../graph/engine.js";
 
 let root: string;
 let engine: GraphEngine;
-let db: ReturnType<typeof openSqlite>;
+let db: ReturnType<typeof openGraphDatabase>;
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "mex-scope-wiki-"));
@@ -47,7 +47,7 @@ beforeAll(async () => {
   );
   engine = createGraphEngine({ rootDir: root });
   await engine.build(root);
-  db = openSqlite(currentGraphPath(root));
+  db = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
 }, 120000);
 
 afterAll(() => {

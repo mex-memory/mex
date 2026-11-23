@@ -19,6 +19,9 @@
 
 import type { EdgeKind, GraphEdge, GraphNode, NodeKind, Language } from "./types.js";
 import { NotImplementedError } from "./errors.js";
+import type { GraphCoverage } from "./read-coverage.js";
+import type { GraphEngineReport } from "../team/contracts/graph.js";
+export type { GraphEngineFallback, GraphEngineReport } from "../team/contracts/graph.js";
 
 // ----------------------------------------------------------------------------
 // Value types
@@ -42,16 +45,6 @@ export interface SkippedSourceFile {
   message: string;
 }
 
-/** Summary of a build/sync pass — for the `mex graph` CLI. */
-export interface GraphTypeScriptReport {
-  /** The compiler chosen for the repository, for example `tsrs 0.25.0`. */
-  compiler: string;
-  /** Projects by the compiler that built them. */
-  projects: Record<string, string>;
-  /** Per project, in plain words: a fallback and its reason, or a translated tsconfig. */
-  notes: Array<{ project: string; note: string }>;
-}
-
 export interface BuildResult {
   filesIndexed: number;
   nodesCreated: number;
@@ -68,19 +61,8 @@ export interface BuildResult {
    * how well they parsed, and a skipped file is in none of those buckets.
    */
   skipped?: SkippedSourceFile[];
-  /**
-   * Compiler config inputs outside the project corpus that were declined.
-   *
-   * Distinct from `skipped`: no source file is missing from the graph, but the
-   * affected project's type resolution is less complete than it looks.
-   */
-  declinedInputs?: DeclinedCompilerInput[];
-  /**
-   * Which compiler built the TypeScript/JavaScript graph, and every project
-   * that was built differently or whose tsconfig was translated, with why.
-   * Absent when the corpus has no TypeScript or JavaScript.
-   */
-  typescript?: GraphTypeScriptReport;
+  /** What the Rust graph engine built or why staging fell back. */
+  engine?: GraphEngineReport;
   /** How a refresh did its work (issue #209). Absent from a clean build. */
   refresh?: GraphRefreshReport;
 }
@@ -102,13 +84,6 @@ export interface GraphRefreshReport extends GraphPublicationReport {
   /** Indexed files added, modified or deleted since the stored graph. */
   filesChanged: number;
   filesReextracted: number;
-}
-
-/** A compiler input the containment policy declined to read. */
-export interface DeclinedCompilerInput {
-  filePath: string;
-  reason: "outside-project-corpus";
-  message: string;
 }
 
 /** Options for {@link GraphEngine.searchNodes}. */
@@ -157,7 +132,7 @@ export interface SourceChunkMatch {
  * layered on top (Track B) and are NOT part of this surface.
  */
 export interface GraphEngine {
-  coverageFor(path: string): { indexed: true } | { indexed: false; reason: string };
+  coverageFor(path: string): GraphCoverage;
   /**
    * Build/rebuild the whole graph for the repo into `.mex/`. Deterministic.
    * Runs in `mex setup` for fresh installs and on `mex graph`. Async: lazy-loads
@@ -188,10 +163,10 @@ export interface GraphEngine {
    */
   getNode(id: string): GraphNode | null;
 
-  /** Nodes with an incoming `calls` edge to `id` (its callers). Synchronous. */
+  /** Resolved callers of `id`. Synchronous. */
   getCallers(id: string): GraphNode[];
 
-  /** Nodes with an outgoing `calls` edge from `id` (its callees). Synchronous. */
+  /** Resolved callees of `id`. Synchronous. */
   getCallees(id: string): GraphNode[];
 
   /** Incoming relationships of any requested kinds, preserving edge metadata. */

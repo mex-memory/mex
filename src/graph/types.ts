@@ -109,6 +109,9 @@ export const LANGUAGES = [
 
 export type Language = (typeof LANGUAGES)[number];
 
+/** Name-only references emitted by a config-only native adapter. */
+export const BASIC_RESOLUTION = "basic";
+
 // ----------------------------------------------------------------------------
 // Persisted row shapes (decoded from `src/graph/schema.sql`)
 // ----------------------------------------------------------------------------

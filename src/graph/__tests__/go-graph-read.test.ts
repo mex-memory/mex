@@ -13,7 +13,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openRecord } from "../../record/index.js";
 import { buildIndex } from "../../file-index/build.js";
 import { runGraph, runGraphRefresh } from "../cli-graph.js";
-import { graphLocation, readGraphPointer } from "../storage.js";
+import { graphLocation, openCurrentGraph, readGraphPointer } from "../storage.js";
+import { GraphStore } from "../db/store.js";
 import { askGraph, renderGraphAnswer } from "../cli-read.js";
 import { recordCheck } from "../../knowledge/check.js";
 import { parseEntry, serializeEntry, validateEntry, type EntryCheck } from "../../knowledge/entry.js";
@@ -68,6 +69,7 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
   beforeAll(async () => {
     root = mkdtempSync(join(tmpdir(), "mex-graph-read-"));
     vi.stubEnv("MEX_HOME", join(root, "home"));
+    vi.stubEnv("MEX_GRAPH_STORAGE", undefined);
     checkout = join(root, "repo");
     mkdirSync(join(checkout, "src"), { recursive: true });
     mkdirSync(join(checkout, "test"), { recursive: true });
@@ -77,6 +79,12 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     writeFileSync(join(checkout, "src", "use.ts"), USE);
     writeFileSync(join(checkout, "test", "shapes.test.ts"), TEST);
     await runGraph({ root: checkout, json: true });
+    const published = openCurrentGraph(checkout)!;
+    try {
+      expect(published.prepare("PRAGMA main.user_version").get()).toMatchObject({
+        user_version: 5,
+      });
+    } finally { published.close(); }
     // The file index marks test files and re-checks changed ones, as in a real checkout.
     const writer = openRecord({ projectPath: checkout });
     projectId = writer.checkout(checkout)!.project_id;
@@ -185,22 +193,34 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     expect(ask("callers", "doesNotExist").verdict).toBe("missing");
   });
 
-  it("upgrades a note's file-hash check to a fingerprint of the definition it names", () => {
+  it("upgrades a note's file-hash and legacy checks to fingerprints of the named definitions", () => {
     const options = { projectPath: checkout, env: { ...process.env, MEX_HOOK_BINARY: hook } };
     const source = recordCheck(hook, { checkout, project_id: projectId, record_directory: records, kind: "source", role: "supporting", target: { file: "src/shapes.ts" } }) as EntryCheck;
+    const legacy: EntryCheck = { kind: "legacy-grounding", role: "supporting",
+      target: { node: ask("callers", "twice").symbol!.id, file: "src/shapes.ts" }, saw: { fingerprint: "mh:1:ab" }, files: {} };
     const id = "mx_upgrade01";
     const entry = validateEntry({
       mex: { id, kind: "fact", scope: ["src/**"], source: { type: "observed", ref: "test" }, evidence: "observed",
-        one_line: "`area` is the circle area.", checks: [source], status: "active", created: "2026-11-20" },
+        one_line: "`area` is the circle area.", checks: [source, legacy], status: "active", created: "2026-11-20" },
       text: "`area` returns the area of a circle; `unit` calls it with radius 1.",
     });
     const notes = containedDirectory(home, ["projects", projectId, "notes"], true)!;
-    createEntryFile(notes, id, serializeEntry(entry));
+    const content = serializeEntry(entry);
+    createEntryFile(notes, id, content);
+
+    const read = vi.spyOn(GraphStore.prototype, "getNodesByFile").mockImplementationOnce(() => {
+      throw new Error("cannot read graph definitions");
+    });
+    try {
+      expect(upgradeEntryChecks(options)).toMatchObject({ upgraded: 0, skipped: "graph-read-failed" });
+      expect(readEntryFile(join(notes, `${id}.md`))).toBe(content);
+    } finally { read.mockRestore(); }
 
     const report = upgradeEntryChecks(options);
-    expect(report).toMatchObject({ upgraded: 1, checks: 1, fingerprints: 2 });
+    expect(report).toEqual({ upgraded: 1, checks: 2, fingerprints: 3 });
     const after = parseEntry(readEntryFile(join(notes, `${id}.md`))!);
-    expect(after.mex.checks.map((check) => `${check.kind}:${"symbol" in check.target ? check.target.symbol : ""}`).sort()).toEqual(["symbol:area", "symbol:unit"]);
+    expect(after.mex.checks.map((check) => `${check.kind}:${"symbol" in check.target ? check.target.symbol : ""}`).sort())
+      .toEqual(["symbol:area", "symbol:twice", "symbol:unit"]);
     expect(after.text).toBe(entry.text);
     // Nothing more to do the second time.
     expect(upgradeEntryChecks(options).upgraded).toBe(0);
@@ -226,18 +246,21 @@ describe.skipIf(!enabled)("graph reads in Go", () => {
     expect(none.saw.count).toBe(0);
   });
 
-  it("reads through an overlay: the edited file's rows replace the base's", async () => {
+  it("reads through an overlay with an edited file and a deleted file", async () => {
     writeFileSync(join(checkout, "src", "use.ts"), `${USE}\nexport function again(): number {\n  return area(3);\n}\n`);
+    rmSync(join(checkout, "test", "shapes.test.ts"));
     try {
       await runGraphRefresh({ root: checkout, json: true });
       await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
       expect(readGraphPointer(graphLocation(checkout))?.overlay).toMatch(/^graph-o-/);
       const callers = ask("callers", "area").sites!.map((site) => site.in.name);
       expect(callers).toEqual(expect.arrayContaining(["again", "report", "unit"]));
+      expect(callers).not.toContain("checksArea");
       // Each caller once: base rows of the shadowed file are not read as well.
       expect(callers.filter((name) => name === "report")).toHaveLength(1);
     } finally {
       writeFileSync(join(checkout, "src", "use.ts"), USE);
+      writeFileSync(join(checkout, "test", "shapes.test.ts"), TEST);
       await buildIndex({ root: checkout, projectId, recordDirectory: records, workers: 0 });
     }
   }, 120_000);

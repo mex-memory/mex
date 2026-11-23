@@ -22,7 +22,7 @@ import {
 import { rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { graphRemediationCommand } from "../../reporter.js";
 import { DB_SCHEMA_VERSION } from "../db/database.js";
 import { openSqlite } from "../db/sqlite.js";
@@ -73,6 +73,10 @@ describe("scoped source freshness", () => {
     expect((await inspect(root)).status).toBe(scoped.status);
   });
 });
+
+// These fixtures edit the v4 tables directly.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -1354,175 +1358,6 @@ describe("inspectGraphStatus", () => {
     }));
     expect(executableRemediations(status)).toEqual([]);
     expect(graphRemediationCommand(status)).toBeUndefined();
-  });
-
-  it("tracks exact compiler semantic-input content, disappearance, and negative probes", async () => {
-    const root = temporaryRoot("mex-graph-semantic-inputs-");
-    const basePath = join(root, "config", "base.json");
-    const missingPath = join(root, "config", "optional.json");
-    const base = JSON.stringify({ compilerOptions: { strict: true } });
-    source(root, "src/a.ts", "export const a: number = 1;\n");
-    source(root, "config/base.json", base);
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./config/base.json",
-      references: [{ path: "./config/optional.json" }],
-      include: ["src/**/*.ts"],
-    }));
-    const dbPath = await build(root);
-    const snapshot = readSnapshot(dbPath);
-
-    expect(snapshot.semanticInputs).toContainEqual({
-      path: "config/base.json",
-      contentHash: createHash("sha256").update(base).digest("hex"),
-    });
-    expect(snapshot.semanticInputs).toContainEqual({
-      path: "config/optional.json",
-      contentHash: null,
-    });
-    expect((await inspect(root)).status).toBe("fresh");
-
-    const changedBase = JSON.stringify({ compilerOptions: { strict: false } });
-    writeFileSync(basePath, changedBase);
-    const changed = await inspect(root);
-    expect(changed.status).toBe("stale");
-    expect(changed.changes).toMatchObject({ total: 0, configChanged: true });
-    expect(changed.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_CHANGED",
-      path: "config/base.json",
-      message: expect.stringContaining("changed"),
-    }));
-    expect(executableRemediations(changed)).toContain("mex graph refresh");
-
-    writeFileSync(basePath, base);
-    expect((await inspect(root)).status).toBe("fresh");
-    unlinkSync(basePath);
-    const disappeared = await inspect(root);
-    expect(disappeared.status).toBe("stale");
-    expect(disappeared.changes).toMatchObject({ total: 0, configChanged: true });
-    expect(disappeared.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_CHANGED",
-      path: "config/base.json",
-      message: expect.stringContaining("disappeared"),
-    }));
-    expect(executableRemediations(disappeared)).toContain("mex graph refresh");
-
-    writeFileSync(basePath, base);
-    source(root, "config/optional.json", JSON.stringify({ compilerOptions: { noEmit: true } }));
-    const appeared = await inspect(root);
-    expect(appeared.status).toBe("stale");
-    expect(appeared.changes).toMatchObject({ total: 0, configChanged: true });
-    expect(appeared.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_CHANGED",
-      path: "config/optional.json",
-      message: expect.stringContaining("appeared"),
-    }));
-    expect(executableRemediations(appeared)).toContain("mex graph refresh");
-    expect(statSync(missingPath).isFile()).toBe(true);
-  });
-
-  it("refuses escaped semantic-input targets without recommending a build that must fail", async () => {
-    const root = temporaryRoot("mex-graph-contained-semantic-");
-    const externalRoot = temporaryRoot("mex-graph-external-semantic-");
-    source(root, "src/a.ts", "export const a: number = 1;\n");
-    source(root, "config/base.json", JSON.stringify({ compilerOptions: { strict: true } }));
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./config/base.json",
-      include: ["src/**/*.ts"],
-    }));
-    source(externalRoot, "base.json", JSON.stringify({ compilerOptions: { strict: false } }));
-    await build(root);
-    unlinkSync(join(root, "config", "base.json"));
-    symlinkSync(join(externalRoot, "base.json"), join(root, "config", "base.json"));
-
-    const readPaths: string[] = [];
-    const status = await inspectGraphStatus({
-      projectRoot: root,
-      now: NOW,
-      internal: {
-        afterSemanticInputRead(path) {
-          readPaths.push(path);
-        },
-      },
-    });
-
-    expect(status.status).toBe("stale");
-    expect(status.changes).toMatchObject({ total: 0, configChanged: true });
-    expect(status.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_PATH_OUTSIDE_PROJECT",
-      path: "config/base.json",
-    }));
-    expect(status.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_INSPECTION_INCOMPLETE",
-    }));
-    expect(readPaths).not.toContain("config/base.json");
-    expect(executableRemediations(status)).toEqual([]);
-  });
-
-  it("does not treat a negative semantic probe below an escaped ancestor as safely absent", async () => {
-    const root = temporaryRoot("mex-graph-negative-probe-escape-");
-    const externalRoot = temporaryRoot("mex-graph-negative-probe-external-");
-    source(root, "src/a.ts", "export const a: number = 1;\n");
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      references: [{ path: "./probes/optional.json" }],
-      include: ["src/**/*.ts"],
-    }));
-    const dbPath = await build(root);
-    expect(readSnapshot(dbPath).semanticInputs).toContainEqual({
-      path: "probes/optional.json",
-      contentHash: null,
-    });
-    mkdirSync(join(externalRoot, "probes"), { recursive: true });
-    symlinkSync(join(externalRoot, "probes"), join(root, "probes"));
-
-    const status = await inspect(root);
-
-    expect(status.status).toBe("stale");
-    expect(status.changes).toMatchObject({ total: 0, configChanged: true });
-    expect(status.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_PATH_OUTSIDE_PROJECT",
-      path: "probes/optional.json",
-    }));
-    expect(status.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_INSPECTION_INCOMPLETE",
-    }));
-    expect(executableRemediations(status)).toEqual([]);
-  });
-
-  // Windows denies rename of an open file; the bound-file Windows test covers that protection.
-  it.skipIf(process.platform === "win32")("never emits fresh when a semantic-input path is atomically replaced after it is read", async () => {
-    const root = temporaryRoot("mex-graph-semantic-race-");
-    const basePath = join(root, "config", "base.json");
-    source(root, "src/a.ts", "export const a: number = 1;\n");
-    source(root, "config/base.json", JSON.stringify({ compilerOptions: { strict: true } }));
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./config/base.json",
-      include: ["src/**/*.ts"],
-    }));
-    await build(root);
-    const replacement = join(root, "config", "base.json.next");
-    writeFileSync(replacement, JSON.stringify({ compilerOptions: { strict: false } }));
-    let replaced = false;
-
-    const status = await inspectGraphStatus({
-      projectRoot: root,
-      now: NOW,
-      internal: {
-        afterSemanticInputRead(path, pass) {
-          if (!replaced && pass === "validation" && path === "config/base.json") {
-            replaced = true;
-            renameSync(replacement, basePath);
-          }
-        },
-      },
-    });
-
-    expect(replaced).toBe(true);
-    expect(status.status).toBe("stale");
-    expect(status.changes).toMatchObject({ total: 0, configChanged: true });
-    expect(status.diagnostics).toContainEqual(expect.objectContaining({
-      code: "GRAPH_SEMANTIC_INPUT_CHANGED",
-      path: "config/base.json",
-    }));
   });
 
   it("reports config/manifest drift without treating non-source HEAD movement as stale", async () => {

@@ -132,20 +132,9 @@ export const GRAPH_CORPUS_GLOB_OPTIONS = Object.freeze({
 export const GRAPH_CORPUS_LIMITS = Object.freeze({
   maxSourceFiles: 20_000,
   // The largest hand-written sources run to about 3 MB (TypeScript's
-  // checker.ts is 3.1 MB). A file over the bound is skipped and reported, and
-  // the compiler treats it as absent.
+  // checker.ts is 3.1 MB). A file over the bound is skipped and reported.
   maxSourceFileBytes: 4 * 1024 * 1024,
   maxSourceBytes: 512 * 1024 * 1024,
-  // The TypeScript compiler must see its TS/JS project as one semantic unit.
-  // Keep that unavoidable in-memory batch substantially below the full,
-  // disk-spooled multi-language corpus ceiling.
-  maxCompilerSourceBytes: 128 * 1024 * 1024,
-  // Compiler-only project inputs (for example extended configs and ambient
-  // declarations) are retained by TypeScript for the duration of extraction.
-  // Bound that indirect cache independently from the staged source batch.
-  maxCompilerInputPaths: 20_000,
-  maxSemanticInputFiles: 1_024,
-  maxSemanticInputBytes: 64 * 1024 * 1024,
   // Inspectors reject an implausibly amplified disposable SQLite index before
   // opening it or materializing any persisted values.
   maxIndexBytes: 2 * 1024 * 1024 * 1024,
@@ -247,67 +236,6 @@ export function addGraphCorpusBytes(
     throw new GraphCorpusLimitError(kind === "source" ? "maxSourceBytes" : "maxConfigBytes");
   }
   return next;
-}
-
-/** Bound the one source working set that cannot be streamed file-by-file. */
-export function addGraphCompilerSourceBytes(total: number, fileBytes: number): number {
-  if (!Number.isSafeInteger(fileBytes) || fileBytes < 0
-    || fileBytes > GRAPH_CORPUS_LIMITS.maxSourceFileBytes) {
-    throw new GraphCorpusLimitError(
-      "maxSourceFileBytes",
-      Number.isSafeInteger(fileBytes) ? fileBytes : undefined,
-    );
-  }
-  const next = total + fileBytes;
-  if (!Number.isSafeInteger(next) || next > GRAPH_CORPUS_LIMITS.maxCompilerSourceBytes) {
-    throw new GraphCorpusLimitError("maxCompilerSourceBytes");
-  }
-  return next;
-}
-
-export interface GraphSemanticInputLedger {
-  readonly paths: Set<string>;
-  readonly semanticPaths: Set<string>;
-  bytes: number;
-}
-
-export function createGraphSemanticInputLedger(): GraphSemanticInputLedger {
-  return { paths: new Set(), semanticPaths: new Set(), bytes: 0 };
-}
-
-/**
- * Account one distinct compiler-only project input before TypeScript retains
- * it. Every missing probe counts toward the broader cache ceiling; callers can
- * exclude policy-covered misses from the tighter persisted-provenance count.
- */
-export function addGraphSemanticInput(
-  ledger: GraphSemanticInputLedger,
-  path: string,
-  fileBytes: number | null,
-  recordsSemanticInput = true,
-): void {
-  if (ledger.paths.has(path)) return;
-  if (ledger.paths.size >= GRAPH_CORPUS_LIMITS.maxCompilerInputPaths) {
-    throw new GraphCorpusLimitError("maxCompilerInputPaths");
-  }
-  if (recordsSemanticInput
-    && ledger.semanticPaths.size >= GRAPH_CORPUS_LIMITS.maxSemanticInputFiles) {
-    throw new GraphCorpusLimitError("maxSemanticInputFiles");
-  }
-  if (fileBytes !== null) {
-    if (!Number.isSafeInteger(fileBytes)
-      || fileBytes < 0
-      || fileBytes > GRAPH_CORPUS_LIMITS.maxSourceFileBytes) {
-      throw new GraphCorpusLimitError("maxSourceFileBytes");
-    }
-    const next = ledger.bytes + fileBytes;
-    if (!Number.isSafeInteger(next) || next > GRAPH_CORPUS_LIMITS.maxSemanticInputBytes) {
-      throw new GraphCorpusLimitError("maxSemanticInputBytes");
-    }
-    ledger.bytes = next;
-  }
-  ledger.paths.add(path);
-  if (recordsSemanticInput) ledger.semanticPaths.add(path);
 }
 
 /**

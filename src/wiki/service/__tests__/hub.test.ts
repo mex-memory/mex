@@ -17,7 +17,7 @@
  */
 
 import { currentGraphPath } from "../../../graph/storage.js";
-import { describe, it, expect, afterEach } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -172,6 +172,7 @@ const GRAPH_TEST_TIMEOUT = 60_000;
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) {
     try {
       rmSync(root, { recursive: true, force: true });
@@ -216,7 +217,7 @@ async function buildGraph(project: Project): Promise<void> {
 function withSynthesisGraph<T>(project: Project, body: (graph: ReturnType<typeof createSynthesisGraph>) => T): T {
   const dbPath = currentGraphPath(project.root);
   const engine = createGraphEngine({ rootDir: project.root });
-  const db = openGraphDatabase(dbPath);
+  const db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
   try {
     return body(createSynthesisGraph(engine, db));
   } finally {
@@ -493,6 +494,7 @@ describe("§17 old-versus-new drift panel", () => {
   });
 
   it("returns both sides of the diff from a real baseline", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const project = createProject();
     await buildGraph(project);
 
@@ -521,6 +523,7 @@ describe("§17 old-versus-new drift panel", () => {
   }, GRAPH_TEST_TIMEOUT);
 
   it("does not call an unchanged node drifted", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const project = createProject();
     await buildGraph(project);
     const db = openGraphDatabase(currentGraphPath(project.root));

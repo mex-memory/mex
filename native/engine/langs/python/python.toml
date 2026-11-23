@@ -1,0 +1,16 @@
+grammar = "python"
+adapter_version = 1
+extensions = [".py"]
+
+[functions]
+function_definition = "name"
+
+[classes]
+class_definition = "name"
+
+[imports]
+import_statement = "name"
+import_from_statement = "module_name"
+
+[calls]
+call = "function"

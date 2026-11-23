@@ -6,9 +6,8 @@
 //        [--binary <mex-hook>] [--sample 100|all] [--baseline-db <graph.db>]
 //        [--rg] [--out <report.json>] [--no-build] [--gate]
 //
-// The answer key is the TypeScript compiler's language service (typescript
-// 5.9, not the tsrs build MEX extracts with): for each definition, every call
-// site, as file:line. The definitions are functions, methods and functions
+// TypeScript 5.9's language service is the answer key. For each definition it
+// supplies every call site as file:line. The definitions are functions, methods and functions
 // bound to a const whose name the program defines once, every k-th in path
 // order, or all of them. Arms:
 //

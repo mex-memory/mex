@@ -4,17 +4,23 @@ import { skippedByRule } from "../file-index/discover.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 import { gitignoreMatcher } from "./gitignore.js";
 import { isSupportedSourceFile } from "./extraction/grammars.js";
+import { BASIC_RESOLUTION } from "./types.js";
 
-export type GraphCoverage = { indexed: true } | { indexed: false; reason: string };
+export type GraphCoverage = { indexed: true; reason?: typeof BASIC_RESOLUTION } | { indexed: false; reason: string };
+
+export function coverageAllowsNodes(reason: string | undefined): boolean {
+  return reason === undefined || reason === BASIC_RESOLUTION;
+}
 
 /**
- * One path's coverage. `reason` is its coverage row (files the build saw and
- * did not index); without one, an indexed file is covered and any other path
- * says why it isn't in the graph.
+ * One path's coverage. A basic file has declarations and name-only hints.
+ * Other coverage rows explain why a file lacks declarations.
  */
-export function graphCoverage(path: string, reason: string | undefined, indexed: boolean, root: string): GraphCoverage {
+export function graphCoverage(path: string, reason: string | undefined, indexed: boolean, root?: string): GraphCoverage {
+  if (reason === BASIC_RESOLUTION && indexed) return { indexed: true, reason };
   if (reason !== undefined) return { indexed: false, reason };
   if (indexed) return { indexed: true };
+  if (!root) return { indexed: false, reason: "not indexed" };
   if (!isSupportedSourceFile(path)) return { indexed: false, reason: "unsupported language" };
   if (skippedByRule(path) || gitignoreMatcher(root)(path)) return { indexed: false, reason: "excluded" };
   return { indexed: false, reason: existsSync(join(root, path)) ? "not indexed yet" : "missing" };

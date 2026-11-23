@@ -74,7 +74,7 @@ export const FREE_MEMORY_FLOOR_BYTES = 2 * 1024 ** 3;
 export const SMALL_GRAPH_BUILD_RESERVE_BYTES = 2.5 * 1024 ** 3;
 /** Measured peaks grew roughly with indexed files (10.5 GB on a 9.4k-file monorepo with the automatic heap). */
 const GRAPH_RESERVE_BYTES_PER_FILE = 1.2 * 1024 ** 2;
-/** Native and compiler memory the worker uses outside its V8 heap. */
+/** Native memory the worker uses outside its V8 heap. */
 export const GRAPH_NATIVE_OVERHEAD_BYTES = 1024 ** 3;
 
 /** The heap ceiling the graph worker will get on this machine. */

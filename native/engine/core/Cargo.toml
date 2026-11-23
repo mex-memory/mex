@@ -1,0 +1,21 @@
+[package]
+name = "mex-graph-core"
+description = "Facts, node identity, interning and resolution for the MEX graph engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bincode = { version = "2.0.1", features = ["derive"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json = "1"

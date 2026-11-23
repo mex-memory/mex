@@ -117,6 +117,7 @@ When adding a language, document the grammar source and version.
 - **Binary package license:** Unlicense
 - **Upstream grammar:** [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust)
 - **Upstream grammar license:** MIT
+- **Native engine:** compiles the same `tree-sitter-rust` 0.20.4 C sources with the workspace toolchain. The vendored sources retain their [MIT license](../native/engine/langs/rust/grammar/LICENSE).
 
 ### C#
 - **Binary source:** `tree-sitter-c-sharp` package, version `0.23.5` (the grammar's own published package, not `tree-sitter-wasms` — see note below)
@@ -125,6 +126,7 @@ When adding a language, document the grammar source and version.
 - **Binary package license:** MIT
 - **Upstream grammar:** [tree-sitter/tree-sitter-c-sharp](https://github.com/tree-sitter/tree-sitter-c-sharp)
 - **Upstream grammar license:** MIT
+- **Native engine:** pins the MIT-licensed `tree-sitter-c-sharp` Rust crate to 0.23.5.
 - **Note:** `tree-sitter-wasms@0.1.12` also ships a `tree-sitter-c_sharp.wasm`, but it is built from a different grammar revision than the `node-types.json` published with `tree-sitter-c-sharp@0.23.5`. Several fields that `node-types.json` declares (`variable_declarator.name`, `using_directive.name`) return `undefined` via `childForFieldName` against that older build. The extractor is written and tested against 0.23.5's own field layout — use the grammar's own published wasm for this language, not `tree-sitter-wasms`'s copy.
 
 ## Pull request proof

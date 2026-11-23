@@ -99,8 +99,8 @@ function digestsCurrent(file: string): boolean {
 }
 
 /** Whether a change of this size should rebuild the base instead (design: max(200 files, 10%)). */
-export function overlayTooLarge(plan: OverlayPlan): boolean {
-  return plan.files.length > Math.max(200, Math.ceil(plan.total * 0.1));
+export function overlayTooLarge(files: number, total: number): boolean {
+  return files > Math.max(200, Math.ceil(total * 0.1));
 }
 
 /**

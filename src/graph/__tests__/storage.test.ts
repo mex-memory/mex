@@ -141,6 +141,7 @@ describe("per-file graph coverage", () => {
 
 describe("interrupted candidate publication", () => {
   it("preserves the pointer and readable base after a real worker is killed on progress", async () => {
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
     const root = fixture(); await rebuildGraph(root);
     const location = graphLocation(root), pointer = readFileSync(graphPointerFile(location));
     const before = readFileSync(currentGraphPath(root));

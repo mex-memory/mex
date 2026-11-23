@@ -1,0 +1,9 @@
+[[language]]
+id = "broken"
+folder = "broken"
+level = "basic"
+
+[[language]]
+id = "sample"
+folder = "sample"
+level = "basic"

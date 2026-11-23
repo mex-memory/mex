@@ -156,7 +156,7 @@ describe("graph config identity", () => {
   },
 }`;
       const plain = JSON.stringify({
-        compilerOptions: { moduleResolution: "NodeNext", strict: false, declaration: true },
+        compilerOptions: { moduleResolution: "NodeNext", strict: false, declaration: true, noEmit: true },
       });
       expect(graphConfigIdentity("tsconfig.json", withComments))
         .toBe(graphConfigIdentity("tsconfig.json", plain));

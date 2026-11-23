@@ -6,6 +6,7 @@ import { inspectGraphStatus } from "./status.js";
 import { openRecordReadOnly } from "../record/index.js";
 import { latestBuildUsage } from "../record/build-usage.js";
 import { readGraphState } from "./jobs.js";
+import { graphEngineRuntimeLabel } from "./engine-languages.js";
 /** Graph health and freshness. Reads only, apart from collecting unreferenced graph files. */
 export async function runGraphStatus(options: GraphCommandOptions = {}): Promise<void> {
   const rootDir = options.root ?? process.cwd();
@@ -60,6 +61,7 @@ function printStatus(status: GraphStatus): void {
   const head = status.currentRepo.head?.slice(0, 12) ?? "no HEAD";
   const changes = status.changes;
   console.log(`Graph status: ${status.status}`);
+  if (status.engineRuntime) console.log(`Graph engine: ${graphEngineRuntimeLabel(status.engineRuntime)}`);
   console.log(`Repository: ${branch} @ ${head}${status.currentRepo.dirty ? " (dirty)" : ""}`);
   if (status.inspected === false) {
     console.log("Last successful index: not inspected");

@@ -11,6 +11,7 @@ import {
   refreshGraph,
   type GraphMaintenanceResult,
 } from "./maintenance.js";
+import { graphEngineFallbackMessage, graphEngineRuntimeLabel } from "./engine-languages.js";
 import { inspectGraphStatus } from "./status.js";
 import { coverageFields, readStoredGraphCoverage, type GraphCoverageObservation } from "./coverage.js";
 
@@ -78,10 +79,7 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
       },
       ...coverageFields(coverage),
       ...(result.skipped && result.skipped.length > 0 ? { skipped: result.skipped } : {}),
-      ...(result.declinedInputs && result.declinedInputs.length > 0
-        ? { declinedInputs: result.declinedInputs }
-        : {}),
-      ...(result.typescript ? { typescript: result.typescript } : {}),
+      ...(result.engine ? { engine: result.engine } : {}),
       ...(upgrade.upgraded > 0 ? { checksUpgraded: { entries: upgrade.upgraded, checks: upgrade.checks } } : {}),
     }, null, 2));
     return;
@@ -100,22 +98,21 @@ export async function runGraph(options: GraphCommandOptions = {}): Promise<void>
   }
   printUnindexedSources(coverage);
   printSkippedSources(result.skipped);
-  printDeclinedInputs(result.declinedInputs);
-  printTypeScriptReport(result.typescript);
+  printEngineReport(result.engine);
 }
 
-/**
- * Say which compiler built the TypeScript graph, and every project that was
- * built by another compiler or had its tsconfig translated, with why.
- */
-function printTypeScriptReport(report: GraphRefreshResult["typescript"]): void {
-  if (!report || report.notes.length === 0) return;
-  console.log(`TypeScript graph built with ${report.compiler}; notes for ${new Set(report.notes.map((entry) => entry.project)).size} project(s):`);
-  for (const entry of report.notes.slice(0, MAX_SKIPPED_PATHS_SHOWN)) {
-    console.log(`  ${entry.project.replace(/^config:/u, "")}: ${entry.note}`);
+function printEngineReport(report: GraphRefreshResult["engine"]): void {
+  if (!report) return;
+  const languages = report.languages.join(", ");
+  if (report.files === 0 && report.fallbackFiles > 0) {
+    console.log(graphEngineFallbackMessage(report));
+    return;
   }
-  const omitted = report.notes.length - Math.min(report.notes.length, MAX_SKIPPED_PATHS_SHOWN);
-  if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
+  const usage = report.wallMs === undefined ? "" : ` in ${report.wallMs}ms, peak ${report.peakRssMb} MiB`;
+  const engine = report.runtime ? `Graph engine (${graphEngineRuntimeLabel(report.runtime)})` : "Rust graph engine";
+  console.log(`${engine} built ${report.files} ${languages} file(s)${usage}.`);
+  if (report.nativeUnavailable) console.log(`WASI fallback ran because ${report.nativeUnavailable}.`);
+  if (report.fallbackFiles > 0) console.log(graphEngineFallbackMessage(report));
 }
 
 /**
@@ -161,23 +158,7 @@ function printSkippedSources(skipped: GraphRefreshResult["skipped"]): void {
   console.log("Add a glob to \"graph.ignore\" in .mex/config.json to exclude a path deliberately.");
 }
 
-/**
- * Name the config inputs the graph refused to read.
- *
- * Every source file is still in the graph; what is reduced is type resolution
- * for the affected project, which is otherwise invisible.
- */
-function printDeclinedInputs(declined: GraphRefreshResult["declinedInputs"]): void {
-  if (!declined || declined.length === 0) return;
-  const shown = declined.slice(0, MAX_SKIPPED_PATHS_SHOWN);
-  console.log(
-    `Declined ${declined.length} TypeScript config input(s) outside the project; `
-      + "type resolution for the affected projects is less complete:",
-  );
-  for (const input of shown) console.log(`  ${input.filePath}`);
-  const omitted = declined.length - shown.length;
-  if (omitted > 0) console.log(`  …and ${omitted} more (use --json for the full list)`);
-}
+
 
 /** Human output stays bounded; `--json` carries the complete list. */
 const MAX_SKIPPED_PATHS_SHOWN = 10;
@@ -219,8 +200,7 @@ function printMaintenance(verb: "refreshed" | "rebuilt", result: GraphMaintenanc
       + `across ${result.filesIndexed} files in ${result.durationMs}ms; status ${result.status.status}.`,
   );
   printSkippedSources(result.skipped);
-  printDeclinedInputs(result.declinedInputs);
-  printTypeScriptReport(result.typescript);
+  printEngineReport(result.engine);
   if (result.recoveryPath) {
     console.log(`Previous index retained for local recovery: ${result.recoveryPath}`);
   }

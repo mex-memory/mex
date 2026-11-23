@@ -3,7 +3,7 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openSqlite } from "../db/sqlite.js";
 import { createGraphEngine } from "../index.js";
 import type { GraphEngine } from "../engine.js";
@@ -18,6 +18,8 @@ let root: string;
 let engine: GraphEngine;
 
 beforeAll(async () => {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
+  vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "javascript,typescript");
   root = mkdtempSync(join(tmpdir(), "mex-python-graph-"));
   cpSync(FIXTURE, join(root, "pkg"), { recursive: true });
   writeFileSync(
@@ -29,6 +31,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  vi.unstubAllEnvs();
   engine.close();
   rmSync(root, { recursive: true, force: true });
 });

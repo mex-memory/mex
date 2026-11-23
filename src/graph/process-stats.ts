@@ -1,17 +1,29 @@
-// CPU time and peak memory of this process and of the compiler servers it
-// started, for the usage log and the warm compilers' memory cap.
-//
-// Node reports its own numbers for free (process.resourceUsage). A compiler
-// server is another process, so it is probed: Linux reads /proc (cheap and
-// exact), Windows asks CIM once for every child of this process (about a
-// second, so it is never on an edit's path), macOS uses ps (current, not peak).
+// Usage of the candidate process and resident Rust engines. Linux reads /proc,
+// Windows queries CIM, and macOS samples current RSS through ps.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 
 export interface ProcessUsage {
   cpuMs: number;
   peakRssMb: number;
+}
+
+// One maintenance operation can run more than one engine job (for example,
+// an oversized overlay followed by a base build). Sum CPU and keep peak RSS.
+const engineUsage = new AsyncLocalStorage<ProcessUsage>();
+
+export function withEngineUsage<T>(usage: ProcessUsage, run: () => T): T {
+  return engineUsage.run(usage, run);
+}
+
+export function addEngineUsage(usage: { cpuMs?: number; peakRssMb: number }): void {
+  const total = engineUsage.getStore();
+  if (total) {
+    total.cpuMs += usage.cpuMs ?? 0;
+    total.peakRssMb = Math.max(total.peakRssMb, usage.peakRssMb);
+  }
 }
 
 export interface ChildProcessUsage extends ProcessUsage {
@@ -31,14 +43,13 @@ export function ownUsage(): ProcessUsage {
   };
 }
 
-/** The compiler servers among this process's children (tsrs, tsgo). */
-export const COMPILER_SERVER = /^(tsrs|tsgo|typescript-go|tsc)(\.exe)?$/iu;
+export const WARM_GRAPH_SERVER = /^mex-graph(\.exe)?$/iu;
 
 /**
  * Children of `parentPid` whose executable name matches `name`. Resolves to an
  * empty list when the platform cannot tell; never rejects.
  */
-export function childProcessUsage(name: RegExp = COMPILER_SERVER, parentPid = process.pid, timeoutMs = 5_000): Promise<ChildProcessUsage[]> {
+export function childProcessUsage(name: RegExp = WARM_GRAPH_SERVER, parentPid = process.pid, timeoutMs = 5_000): Promise<ChildProcessUsage[]> {
   try {
     if (process.platform === "linux") return Promise.resolve(linuxChildren(parentPid).filter((child) => name.test(child.name)));
     if (process.platform === "win32") return windowsChildren(parentPid, timeoutMs).then((all) => all.filter((child) => name.test(child.name)));
@@ -136,49 +147,4 @@ function cpuTime(text: string): number {
   while (parts.length < 3) parts.unshift(0);
   const [hours, minutes, seconds] = parts as [number, number, number];
   return Math.round(((Number(days) * 24 + hours) * 3600 + minutes * 60 + seconds) * 1000);
-}
-
-/**
- * Usage of the compiler servers this process closed, summed per build. A
- * compiler adds a probe just before it closes its server; the build awaits
- * them all at the end.
- */
-const pendingProbes: Promise<ChildProcessUsage[]>[] = [];
-let probesEnabled = false;
-
-/** Probe each compiler server before it closes: the candidate process and warm compilers turn this on. */
-export function enableCompilerServerProbes(enabled = true): void {
-  probesEnabled = enabled;
-}
-
-export function compilerServerProbesEnabled(): boolean {
-  return probesEnabled;
-}
-
-/** Probe the live compiler servers now; `then` runs once the probe settled. */
-export function probeCompilerServers(then?: () => void): void {
-  const probe = childProcessUsage().catch(() => [] as ChildProcessUsage[]);
-  pendingProbes.push(probe);
-  if (then) void probe.finally(then);
-}
-
-/** Every probe since the last call: CPU summed, peak the highest one seen. */
-export async function settleCompilerServerUsage(): Promise<ProcessUsage | undefined> {
-  const probes = pendingProbes.splice(0);
-  if (probes.length === 0) return undefined;
-  const seen = new Map<number, ChildProcessUsage>();
-  for (const children of await Promise.all(probes)) {
-    for (const child of children) {
-      const previous = seen.get(child.pid);
-      if (!previous || child.cpuMs >= previous.cpuMs) seen.set(child.pid, child);
-    }
-  }
-  if (seen.size === 0) return undefined;
-  let cpuMs = 0;
-  let peakRssMb = 0;
-  for (const child of seen.values()) {
-    cpuMs += child.cpuMs;
-    peakRssMb = Math.max(peakRssMb, child.peakRssMb);
-  }
-  return { cpuMs, peakRssMb };
 }

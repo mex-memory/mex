@@ -48,6 +48,30 @@ export interface GraphSourceChanges {
   grammarChanged: boolean;
 }
 
+export type GraphEngineRuntime = "native" | "wasi" | "node";
+
+/** What the graph engine (OSS-73) built in one pass. */
+export interface GraphEngineReport {
+  /** The languages it was asked to build. */
+  languages: string[];
+  /** Files whose rows came from the engine. */
+  files: number;
+  /** Files built by Node's tree-sitter extractors after an engine fallback. */
+  fallbackFiles: number;
+  /** Why the engine could not build any of the requested files. */
+  fellBack?: string;
+  runtime?: GraphEngineRuntime;
+  /** Why a WASI job used the shipped module. */
+  nativeUnavailable?: string;
+  /** The engine job's elapsed time and peak sampled memory. */
+  wallMs?: number;
+  peakRssMb?: number;
+  cpuMs?: number;
+}
+
+/** Published fallback coverage, independent of the job's runtime measurements. */
+export type GraphEngineFallback = Pick<GraphEngineReport, "languages" | "files" | "fallbackFiles" | "fellBack">;
+
 export interface GraphStatus {
   status: GraphStatusKind;
   /**
@@ -65,6 +89,12 @@ export interface GraphStatus {
   schemaVersion: number | null;
   extractorVersion: string | null;
   grammarVersion: string | null;
+  /** Published coverage for files built after a Rust engine fallback. */
+  engineFallback?: GraphEngineFallback;
+  engineRuntime?: GraphEngineRuntime;
+  nativeEngineUnavailable?: string;
+  /** Cap from the last memory-limit failure against this publication. */
+  engineMemoryLimitMb?: number;
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];
@@ -106,17 +136,8 @@ export interface GraphRefreshResult extends IndexJobResult {
   edgesCreated: number;
   /** Optional and additive; absent when every discovered file was indexed. */
   skipped?: readonly GraphSkippedSource[];
-  /** Compiler config inputs outside the project corpus that were declined. */
-  declinedInputs?: readonly GraphDeclinedInput[];
-  /**
-   * Which compiler built the TypeScript graph, and why any project was built
-   * by another or had its tsconfig translated. Optional and additive.
-   */
-  typescript?: {
-    compiler: string;
-    projects: Readonly<Record<string, string>>;
-    notes: ReadonlyArray<{ project: string; note: string }>;
-  };
+  /** What the Rust graph engine built or why staging fell back. */
+  engine?: GraphEngineReport;
   /** How a refresh did its work. Optional and additive; absent from a rebuild. */
   refresh?: GraphRefreshWork;
 }
@@ -135,18 +156,6 @@ export interface GraphRefreshWork {
   publicationFallbackReason?: string;
   /** Files whose derived rows were written. */
   filesRewritten: number;
-}
-
-/**
- * A compiler config input the containment policy declined to read.
- *
- * No source file is missing from the graph, but the affected project's type
- * resolution is less complete than it looks, so it is reported.
- */
-export interface GraphDeclinedInput {
-  filePath: string;
-  reason: "outside-project-corpus";
-  message: string;
 }
 
 export interface GraphPage<T> extends Page<T> {

@@ -1,0 +1,18 @@
+grammar = "rust"
+adapter_version = 1
+extensions = [".rs"]
+
+[functions]
+function_item = "name"
+function_signature_item = "name"
+
+[classes]
+struct_item = "name"
+enum_item = "name"
+trait_item = "name"
+
+[imports]
+use_declaration = "argument"
+
+[calls]
+call_expression = "function"

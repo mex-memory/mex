@@ -4,7 +4,7 @@
 // index: a line shift per edited file and the `index-pending` marker. The
 // registry reads which files changed from those shifts, keeps a checkout warm
 // once an edit arrives for it, and publishes each edit as an overlay. It
-// enforces the warm memory cap (the compiler servers plus the Node memory the
+// enforces the warm memory cap (the engine processes plus the Node memory the
 // warm checkouts hold) by closing the least recently used checkout, closes a
 // checkout after 15 minutes without an edit, and queues a cold `graph-refresh`
 // once a checkout's edits have been quiet for 2 minutes after the warm path
@@ -12,13 +12,15 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { childProcessUsage, enableCompilerServerProbes } from "./process-stats.js";
-import { GRAPH_SERVER_CAP_MB } from "./sizing.js";
-import { readGraphState } from "./jobs.js";
-import type { WarmCheckout, WarmEditResult } from "./warm.js";
+import { childProcessUsage, WARM_GRAPH_SERVER } from "./process-stats.js";
+import { graphStorageV5 } from "./engine-languages.js";
+import { graphEngineMemoryMb } from "./sizing.js";
+import { readGraphState, type GraphState } from "./jobs.js";
+import type { GraphLocation } from "./storage.js";
+import type { WarmGraphCheckout, WarmEditResult } from "./warm.js";
 
 export interface WarmRegistrySettings {
-  /** The warm compilers' memory cap, MB: servers plus their share of Node. */
+  /** Warm memory cap, MB: servers plus their share of Node. */
   capMb: number;
   /** A checkout with no edit for this long closes. */
   coolMs: number;
@@ -29,7 +31,7 @@ export interface WarmRegistrySettings {
 }
 
 export const WARM_DEFAULTS: WarmRegistrySettings = {
-  capMb: GRAPH_SERVER_CAP_MB,
+  get capMb() { return graphEngineMemoryMb("resident"); },
   coolMs: 15 * 60_000,
   quietMs: 2 * 60_000,
   probeMs: 60_000,
@@ -42,14 +44,14 @@ export interface WarmHost {
   noteUsage?(projectId: string, checkout: string, result: WarmEditResult, cpuMs: number, rssMb: number, serverRssMb?: number): void;
   log?(line: string): void;
   /** Test seam: open a checkout. */
-  open?(root: string): Promise<WarmCheckout> | WarmCheckout;
+  open?(root: string): Promise<WarmGraphCheckout> | WarmGraphCheckout;
   clock?(): number;
 }
 
 interface Waiting { projectId: string; lastEditAt: number }
 
 export class WarmRegistry {
-  private readonly warm = new Map<string, { checkout: WarmCheckout; projectId: string }>();
+  private readonly warm = new Map<string, { checkout: WarmGraphCheckout; projectId: string }>();
   private readonly pending = new Map<string, { projectId: string; paths: Set<string> }>();
   private readonly waiting = new Map<string, Waiting>();
   private serverRssMb = 0;
@@ -57,9 +59,7 @@ export class WarmRegistry {
   private probing = false;
   private readonly baselineRssMb = process.memoryUsage().rss / 1024 ** 2;
 
-  constructor(private readonly host: WarmHost, private readonly settings: WarmRegistrySettings = WARM_DEFAULTS) {
-    enableCompilerServerProbes();
-  }
+  constructor(private readonly host: WarmHost, private readonly settings: WarmRegistrySettings = { ...WARM_DEFAULTS }) {}
 
   private now(): number {
     return this.host.clock?.() ?? Date.now();
@@ -143,13 +143,22 @@ export class WarmRegistry {
 
   private async apply(root: string, projectId: string, paths: string[]): Promise<void> {
     const now = this.now();
+    if (!graphStorageV5()) {
+      this.close(root, "cold");
+      this.host.log?.(`warm: ${root} stays cold: Schema v4 edits use a normal graph refresh.`);
+      this.wait(root, projectId, now);
+      return;
+    }
     let entry = this.warm.get(root);
     if (!entry) {
       // A repository whose last full-rebuild check differed stays cold.
       const location = await import("./storage.js").then(({ graphLocation }) => graphLocation(root)).catch(() => undefined);
-      if (!location || readGraphState(location.directory)?.warm === "off") { this.wait(root, projectId, now); return; }
+      if (!location) { this.wait(root, projectId, now); return; }
+      const state = readGraphState(location.directory);
+      if (state?.warm === "off" && await checkDisabled(location, state)) { this.wait(root, projectId, now); return; }
       try {
-        const checkout = await (this.host.open?.(root) ?? import("./warm.js").then(({ WarmCheckout }) => WarmCheckout.open(root)));
+        const checkout = await (this.host.open?.(root)
+          ?? import("./warm.js").then(({ openWarmCheckout }) => openWarmCheckout(root, this.settings.capMb)));
         entry = { checkout, projectId };
         this.warm.set(root, entry);
         this.host.log?.(`warm: ${root}`);
@@ -162,7 +171,9 @@ export class WarmRegistry {
     const cpu = process.cpuUsage();
     const result = await entry.checkout.edit(paths);
     const used = process.cpuUsage(cpu);
-    this.host.noteUsage?.(projectId, root, result, (used.user + used.system) / 1000, process.memoryUsage().rss / 1024 ** 2 + this.serverRssMb, this.serverRssMb || undefined);
+    const engineRss = result.engineUsage?.peakRssMb;
+    this.host.noteUsage?.(projectId, root, result, (used.user + used.system) / 1000 + (result.engineUsage?.cpuMs ?? 0),
+      process.memoryUsage.rss() / 1024 ** 2 + (engineRss ?? 0), engineRss);
     if (result.status === "cold") {
       this.host.log?.(`warm: ${root} went cold: ${result.reason ?? "unknown"}`);
       this.close(root, "cold");
@@ -184,7 +195,7 @@ export class WarmRegistry {
     if (!this.probing && now - this.lastProbe >= this.settings.probeMs) {
       this.probing = true;
       this.lastProbe = now;
-      void childProcessUsage().then((servers) => {
+      void childProcessUsage(WARM_GRAPH_SERVER).then((servers) => {
         this.serverRssMb = servers.reduce((sum, server) => sum + (server.rssMb ?? server.peakRssMb), 0);
       }).finally(() => { this.probing = false; });
     }
@@ -209,6 +220,14 @@ export class WarmRegistry {
   closeAll(): void {
     for (const root of [...this.warm.keys()]) this.close(root, "stopping");
   }
+}
+
+async function checkDisabled(location: GraphLocation, state: GraphState): Promise<boolean> {
+  const { openGraphRead } = await import("./overlay-open.js");
+  const { readsV5Graph } = await import("./db/v5.js");
+  const db = openGraphRead(location.root);
+  try { return !db || readsV5Graph(db) === (state.schemaVersion === 5); }
+  finally { db?.close(); }
 }
 
 /** The marker the hook touches after an edit. */

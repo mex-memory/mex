@@ -12,15 +12,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DB_SCHEMA_VERSION } from "../db/database.js";
 import { openSqlite } from "../db/sqlite.js";
 import { createGraphEngine, GraphSourceStagingError } from "../engine-impl.js";
 import {
   GRAPH_SNAPSHOT_METADATA_KEY,
-  GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS,
   computeSourceCorpusDigest,
-  createGraphSnapshot,
   parseGraphSnapshot,
   serializeGraphSnapshot,
 } from "../snapshot.js";
@@ -28,6 +26,7 @@ import {
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -87,9 +86,8 @@ describe("graph snapshot provenance", () => {
       indexedBranch: "snapshot-test",
       indexedHead: head,
       schemaVersion: DB_SCHEMA_VERSION,
-      compilerVersion: expect.stringMatching(/^(tsrs|tsgo)-/u),
-      extractorVersion: expect.stringContaining("typescript-api"),
-      resolverVersion: "compiler-first-v3",
+      extractorVersion: expect.stringContaining("tree-sitter-v5+engine-"),
+      resolverVersion: "engine-first-v4",
       sourceCorpusDigest: computeSourceCorpusDigest([{ path: "src/stable.ts", contentHash }]),
       sourceCount: 1,
       parseHealth: { total: 1, ok: 1, partial: 0, failed: 0 },
@@ -147,91 +145,46 @@ describe("graph snapshot provenance", () => {
     expect(computeSourceCorpusDigest([first, second])).toBe(computeSourceCorpusDigest([second, first]));
   });
 
-  it("validates canonical, bounded, unique semantic-input provenance", () => {
-    const digest = "a".repeat(64);
-    const snapshot = createGraphSnapshot({
-      indexedAt: "2026-08-22T00:00:00.000Z",
-      git: { branch: null, head: null },
-      schemaVersion: DB_SCHEMA_VERSION,
-      compilerVersion: "test",
-      extractorVersion: "test",
-      resolverVersion: "test",
-      grammarHash: digest,
-      configHash: digest,
-      manifestHash: digest,
-      sources: [{ path: "src/a.ts", contentHash: digest, parseStatus: "ok" }],
-      semanticInputs: [
-        { path: "config/z.json", contentHash: null },
-        { path: "config/a.json", contentHash: digest },
-      ],
-    });
-    expect(snapshot.semanticInputs.map((entry) => entry.path)).toEqual([
-      "config/a.json",
-      "config/z.json",
-    ]);
-    expect(parseGraphSnapshot(serializeGraphSnapshot(snapshot))).toEqual(snapshot);
-
-    const duplicate = JSON.parse(serializeGraphSnapshot(snapshot)) as Record<string, unknown>;
-    duplicate.semanticInputs = [
-      { path: "config/a.json", contentHash: digest },
-      { path: "config/a.json", contentHash: null },
-    ];
-    expect(parseGraphSnapshot(JSON.stringify(duplicate))).toBeNull();
-
-    const oversized = JSON.parse(serializeGraphSnapshot(snapshot)) as Record<string, unknown>;
-    oversized.semanticInputs = Array.from(
-      { length: GRAPH_SNAPSHOT_MAX_SEMANTIC_INPUTS + 1 },
-      (_, index) => ({ path: `config/${String(index).padStart(5, "0")}.json`, contentHash: null }),
-    );
-    expect(parseGraphSnapshot(JSON.stringify(oversized))).toBeNull();
-    const overlong = JSON.parse(serializeGraphSnapshot(snapshot)) as Record<string, unknown>;
-    overlong.semanticInputs = [{ path: `${"x".repeat(4_097)}.json`, contentHash: null }];
-    expect(parseGraphSnapshot(JSON.stringify(overlong))).toBeNull();
-    expect(() => createGraphSnapshot({
-      ...snapshot,
-      git: { branch: null, head: null },
-      sources: [{ path: "src/a.ts", contentHash: digest, parseStatus: "ok" }],
-      semanticInputs: [{ path: "src/a.ts", contentHash: digest }],
-    })).toThrow("must not duplicate supported source paths");
-  });
-
-  it("binds compiler facts to staged source bytes across an A-to-B-to-A race", async () => {
-    const root = temporaryRoot("mex-graph-compiler-source-aba-");
+  it("binds graph facts to staged source bytes across an A-to-B-to-A race", async () => {
+    const root = temporaryRoot("mex-graph-source-aba-");
     const sourcePath = join(root, "src", "stable.ts");
     const dbPath = join(root, "graph.db");
     mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(sourcePath, "export function priorCompilerFact(): number { return 1; }\n");
+    writeFileSync(sourcePath, "export function priorGraphFact(): number { return 1; }\n");
 
     const baseline = createGraphEngine({ rootDir: root, dbPath });
     await baseline.build();
     baseline.close();
 
     const stagedA = "export function securelyStagedFact(): number { return 2; }\n";
-    const transientB = "export function transientCompilerFact(): number { return 3; }\n";
+    const transientB = "export function transientGraphFact(): number { return 3; }\n";
     writeFileSync(sourcePath, stagedA);
     let swapped = false;
     const engine = createGraphEngine({
       rootDir: root,
       dbPath,
       __internalGraphEngineHooks: {
-        afterSemanticInputsStaged: () => {
+        afterSourcesStaged: () => {
           if (swapped) return;
           writeFileSync(sourcePath, transientB);
           swapped = true;
         },
-        afterCompilerExtraction: () => writeFileSync(sourcePath, stagedA),
+        afterExtraction: () => writeFileSync(sourcePath, stagedA),
       },
     } as Parameters<typeof createGraphEngine>[0]);
 
     await engine.sync(["src/stable.ts"]);
     expect(swapped).toBe(true);
     expect(engine.searchNodes("securelyStagedFact").some((node) => node.name === "securelyStagedFact")).toBe(true);
-    expect(engine.searchNodes("transientCompilerFact").some((node) => node.name === "transientCompilerFact")).toBe(false);
+    expect(engine.searchNodes("transientGraphFact").some((node) => node.name === "transientGraphFact")).toBe(false);
     engine.close();
   });
 
   it("binds import resolution to the staged path set across an A-to-B-to-A race", async () => {
-    const root = temporaryRoot("mex-graph-compiler-import-aba-");
+    const root = temporaryRoot("mex-graph-import-aba-");
+    // A native job that missed the target abstains. This case verifies that
+    // the Node fallback resolves only against its captured source set.
+    vi.stubEnv("MEX_GRAPH_ENGINE", join(root, "missing-mex-graph.wasm"));
     const sourceDir = join(root, "src");
     const targetPath = join(sourceDir, "target.ts");
     const savedTargetPath = join(sourceDir, "target.saved");
@@ -248,11 +201,11 @@ describe("graph snapshot provenance", () => {
       rootDir: root,
       dbPath,
       __internalGraphEngineHooks: {
-        afterSemanticInputsStaged: () => {
+        afterSourcesStaged: () => {
           renameSync(targetPath, savedTargetPath);
           writeFileSync(transientTargetPath, "export const targetValue = 2;\n");
         },
-        afterCompilerExtraction: () => {
+        afterExtraction: () => {
           rmSync(transientTargetPath);
           renameSync(savedTargetPath, targetPath);
         },
@@ -263,55 +216,13 @@ describe("graph snapshot provenance", () => {
 
     const db = openSqlite(dbPath, { readOnly: true });
     const binding = db.prepare(
-      "SELECT resolved_file_path AS resolvedFilePath FROM import_bindings WHERE module_specifier = './target'",
+      `SELECT target.file_path AS resolvedFilePath
+       FROM edges e JOIN nodes target ON target.id = e.target
+       JOIN nodes source ON source.id = e.source
+       WHERE e.kind = 'imports' AND source.kind = 'file' AND source.file_path = 'src/use.ts'`,
     ).get() as { resolvedFilePath: string | null } | undefined;
     db.close();
     expect(binding).toEqual({ resolvedFilePath: "src/target.ts" });
-  });
-
-  it("rejects an extended-config A-to-B-to-A compiler race and preserves the prior snapshot", async () => {
-    const root = temporaryRoot("mex-graph-compiler-config-aba-");
-    const sourcePath = join(root, "src", "stable.ts");
-    const baseConfigPath = join(root, "compiler-base.json");
-    const dbPath = join(root, "graph.db");
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(sourcePath, "export function priorConfigFact(): number { return 1; }\n");
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./compiler-base.json",
-      include: ["src/**/*.ts"],
-    }));
-    const configA = JSON.stringify({ compilerOptions: { strict: true, target: "ES2022" } });
-    const configB = JSON.stringify({ compilerOptions: { strict: false, target: "ES5" } });
-    writeFileSync(baseConfigPath, configA);
-
-    const baseline = createGraphEngine({ rootDir: root, dbPath });
-    await baseline.build();
-    const priorNode = baseline.searchNodes("priorConfigFact")
-      .find((node) => node.name === "priorConfigFact")!;
-    baseline.close();
-    const successfulSnapshot = metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY);
-    writeFileSync(sourcePath, "export function priorConfigFact(): number { return 2; }\n");
-
-    const engine = createGraphEngine({
-      rootDir: root,
-      dbPath,
-      __internalGraphEngineHooks: {
-        afterSemanticInputsStaged: () => writeFileSync(baseConfigPath, configB),
-        afterCompilerExtraction: () => writeFileSync(baseConfigPath, configA),
-      },
-    } as Parameters<typeof createGraphEngine>[0]);
-    await expect(engine.sync(["src/stable.ts"])).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: expect.arrayContaining([
-        expect.objectContaining({
-          filePath: "compiler-base.json",
-          message: expect.stringContaining("semantic input changed"),
-        }),
-      ]),
-    });
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
-    expect(engine.getNode(priorNode.id)).toMatchObject({ id: priorNode.id, bodyHash: priorNode.bodyHash });
-    engine.close();
   });
 
   it("records a failed parse on a full rebuild without exposing its old facts", async () => {
@@ -361,113 +272,6 @@ describe("graph snapshot provenance", () => {
   // extending a hoisted package is ordinary in any pnpm/yarn workspace. What
   // this test actually protects, and still asserts, is that the external file
   // is never read and never becomes graph provenance.
-  it("declines a direct external tsconfig extension without reading it", async () => {
-    const root = temporaryRoot("mex-graph-config-direct-escape-");
-    const externalRoot = temporaryRoot("mex-graph-config-direct-external-");
-    const sourcePath = join(root, "src", "stable.ts");
-    const dbPath = join(root, "graph.db");
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(sourcePath, "export function containedConfigFact(): number { return 7; }\n");
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ include: ["src/**/*.ts"] }));
-    const engine = createGraphEngine({ rootDir: root, dbPath });
-    await engine.build();
-    const successfulSnapshot = metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY);
-
-    const externalConfig = join(externalRoot, "node_modules", "attacker", "outside.json");
-    mkdirSync(join(externalRoot, "node_modules", "attacker"), { recursive: true });
-    writeFileSync(externalConfig, JSON.stringify({ compilerOptions: { strict: false } }));
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: externalConfig,
-      include: ["src/**/*.ts"],
-    }));
-    const result = await engine.sync(["tsconfig.json"]);
-
-    expect(result.declinedInputs).toContainEqual(expect.objectContaining({
-      reason: "outside-project-corpus",
-    }));
-    // The external file is not read, so it is in no snapshot and no compiler
-    // option it declares can reach the graph.
-    const snapshot = parseGraphSnapshot(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY));
-    expect(snapshot).not.toBeNull();
-    expect(successfulSnapshot).not.toBeNull();
-    for (const input of snapshot!.semanticInputs) {
-      expect(input.path.startsWith("..")).toBe(false);
-      expect(input.path).not.toContain("attacker");
-    }
-    engine.close();
-  });
-
-  it("rejects a missing compiler input below an escaped symlink ancestor", async () => {
-    const root = temporaryRoot("mex-graph-config-missing-ancestor-escape-");
-    const externalRoot = temporaryRoot("mex-graph-config-missing-ancestor-external-");
-    const sourcePath = join(root, "src", "stable.ts");
-    const dbPath = join(root, "graph.db");
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(sourcePath, "export function containedMissingFact(): number { return 7; }\n");
-    const engine = createGraphEngine({ rootDir: root, dbPath });
-    await engine.build();
-    const successfulSnapshot = metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY);
-
-    symlinkSync(externalRoot, join(root, "probes"));
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./probes/optional.json",
-      include: ["src/**/*.ts"],
-    }));
-    await expect(engine.sync(["tsconfig.json"])).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: expect.arrayContaining([
-        expect.objectContaining({
-          filePath: "probes/optional.json",
-          code: "GRAPH_SOURCE_PATH_ESCAPE",
-        }),
-      ]),
-    });
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
-    engine.close();
-  });
-
-  it("persists indirect compiler inputs without duplicating source provenance", async () => {
-    const root = temporaryRoot("mex-graph-semantic-input-provenance-");
-    const sourcePath = join(root, "src", "stable.ts");
-    const baseConfigPath = join(root, "compiler-base.json");
-    const dbPath = join(root, "graph.db");
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(sourcePath, "export function semanticInputFact(): number { return 7; }\n");
-    writeFileSync(baseConfigPath, JSON.stringify({ compilerOptions: { strict: true } }));
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./compiler-base.json",
-      include: ["src/**/*.ts"],
-    }));
-    const engine = createGraphEngine({ rootDir: root, dbPath });
-    await engine.build();
-    engine.close();
-
-    const snapshot = parseGraphSnapshot(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY))!;
-    expect(snapshot.semanticInputs).toEqual(expect.arrayContaining([{
-      path: "compiler-base.json",
-      contentHash: createHash("sha256").update(readFileSync(baseConfigPath)).digest("hex"),
-    }]));
-    expect(snapshot.semanticInputs.some((input) => input.path === "src/stable.ts")).toBe(false);
-  });
-
-  it("persists a missing extended-config probe so later appearance can stale the graph", async () => {
-    const root = temporaryRoot("mex-graph-missing-semantic-input-");
-    const sourcePath = join(root, "src", "stable.ts");
-    const dbPath = join(root, "graph.db");
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(sourcePath, "export function missingConfigFact(): number { return 7; }\n");
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./compiler-base.json",
-      include: ["src/**/*.ts"],
-    }));
-    const engine = createGraphEngine({ rootDir: root, dbPath });
-    await engine.build();
-    engine.close();
-
-    const snapshot = parseGraphSnapshot(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY))!;
-    expect(snapshot.semanticInputs).toContainEqual({ path: "compiler-base.json", contentHash: null });
-  });
-
   it("rejects publication when Git branch provenance changes during staging", async () => {
     const root = temporaryRoot("mex-graph-snapshot-git-race-");
     const sourcePath = join(root, "src", "stable.ts");
@@ -507,50 +311,6 @@ describe("graph snapshot provenance", () => {
         expect.objectContaining({ filePath: ".git/HEAD" }),
       ]),
     });
-    expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
-    engine.close();
-  }, 10_000);
-
-  it("rejects a checkout during final indirect semantic-input verification", async () => {
-    const root = temporaryRoot("mex-graph-snapshot-semantic-git-race-");
-    const sourcePath = join(root, "src", "stable.ts");
-    const dbPath = join(root, "graph.db");
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(sourcePath, "export function stableSnapshot(): number { return 7; }\n");
-    writeFileSync(join(root, "compiler-base.json"), JSON.stringify({ compilerOptions: { strict: true } }));
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
-      extends: "./compiler-base.json",
-      include: ["src/**/*.ts"],
-    }));
-    initializeGit(root);
-    const baseline = createGraphEngine({ rootDir: root, dbPath });
-    await baseline.build();
-    baseline.close();
-    const successfulSnapshot = metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY);
-    writeFileSync(sourcePath, "export function stableSnapshot(): number { return 8; }\n");
-
-    let switchedBranch = false;
-    const engine = createGraphEngine({
-      rootDir: root,
-      dbPath,
-      __internalGraphEngineHooks: {
-        afterFinalSemanticInputRead: (path: string) => {
-          if (switchedBranch || path !== "compiler-base.json") return;
-          execFileSync("git", ["checkout", "-b", "semantic-input-race"], {
-            cwd: root,
-            stdio: ["ignore", "ignore", "pipe"],
-          });
-          switchedBranch = true;
-        },
-      },
-    } as Parameters<typeof createGraphEngine>[0]);
-    await expect(engine.sync(["src/stable.ts"])).rejects.toMatchObject({
-      name: "GraphSourceStagingError",
-      failures: expect.arrayContaining([
-        expect.objectContaining({ filePath: ".git/HEAD" }),
-      ]),
-    });
-    expect(switchedBranch).toBe(true);
     expect(metadata(dbPath, GRAPH_SNAPSHOT_METADATA_KEY)).toBe(successfulSnapshot);
     engine.close();
   }, 10_000);
