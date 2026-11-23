@@ -73,7 +73,7 @@ function clusterInput(cluster: Cluster, refused: readonly string[] = []): unknow
       ...(candidate.path ? { path: candidate.path } : {}),
       ...(candidate.document?.headings.length ? { section: candidate.document.headings.join(" > ") } : {}),
       text: candidate.text,
-      ...(candidate.prText ? { prText: candidate.prText } : {}),
+      ...(candidate.prText && !candidate.text.includes(candidate.prText) ? { prText: candidate.prText } : {}),
       ...(candidate.changedPaths?.length ? { changedPaths: candidate.changedPaths.slice(0, 24) } : {}),
       ...(candidate.code?.head ? { today: { path: candidate.code.head.path, code: numbered(candidate.code.head) } } : {}),
     })),

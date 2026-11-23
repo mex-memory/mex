@@ -32,7 +32,6 @@ import { shortHash } from "../record/project.js";
 import { applyDocQuota, clusterLessons, matchEarlier, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
-import { hasDecisionsSection } from "./harvest/forge.js";
 import { procedureProposal, procedureSamples, type ProcedureSample } from "./procedures.js";
 import { harvestBatch } from "./harvest/index.js";
 import { networkGroups, networkProofKey, readNetworkGroups } from "./network-proof.js";
@@ -697,10 +696,8 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       add(state.counts, "covered-sources", current.length - candidates.length);
       add(state.counts, "historical-docs", batch.candidates.length - current.length);
       if (context.writer.setting(context.job.project_id!, "learning.prDecisions") === "true") {
-        for (const candidate of batch.candidates) {
-          if (candidate.kind !== "pr-text" && candidate.kind !== "closed-pr") continue;
-          add(state.counts, hasDecisionsSection(candidate.prText ?? "") ? "trial.pr.followed" : "trial.pr.ignored");
-        }
+        add(state.counts, "trial.pr.followed", batch.descriptions.decisions);
+        add(state.counts, "trial.pr.ignored", batch.descriptions.plain);
       }
       state.cursor = batch.cursor;
       state.harvestDone = batch.done;

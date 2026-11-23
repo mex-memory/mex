@@ -51,7 +51,8 @@ export interface HarvestCursor {
   sources: Partial<Record<HarvestSource, SourceRead>>;
   backfill?: HarvestScan;
   weekly?: HarvestScan;
-  run?: { id: string; evidence: HarvestEvidenceSize; requests: number };
+  /** `access`: who may push, by hashed login, as far as this run has seen. */
+  run?: { id: string; evidence: HarvestEvidenceSize; requests: number; access?: Record<string, boolean> };
   /** Hashed reviewer/path-or-package pairs and the dates of their two earliest observed PRs. */
   familiarity?: Record<string, Array<{ pull: number; at: string }>>;
 }
@@ -63,7 +64,11 @@ export interface HarvestEvidenceSize {
   writerTokens: number;
   largestWriterTokens: number;
 }
-export interface HarvestBatch { candidates: Candidate[]; cursor: HarvestCursor; spentEstimate: number; gaps: string[]; done: boolean; }
+export interface HarvestBatch {
+  candidates: Candidate[]; cursor: HarvestCursor; spentEstimate: number; gaps: string[]; done: boolean;
+  /** Pull request descriptions read, with and without a Decisions section. */
+  descriptions: { decisions: number; plain: number };
+}
 export interface HarvestOptions extends SourceWindow {
   checkout: string;
   head: string;

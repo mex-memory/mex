@@ -53,7 +53,7 @@ function evidenceTokens(parts: Array<string | undefined>): number {
 export function addHarvestEvidence(size: HarvestEvidenceSize, candidate: Pick<Candidate, "text" | "prText" | "code" | "related">):
 HarvestEvidenceSize {
   const { text, prText, code, related } = candidate;
-  const writerTokens = evidenceTokens([text, prText, code?.anchor, code?.before?.text, code?.after?.text, code?.head?.text,
+  const writerTokens = evidenceTokens([text, prText && !text.includes(prText) ? prText : undefined, code?.anchor, code?.before?.text, code?.after?.text, code?.head?.text,
     related?.reland?.before.text, related?.reland?.after.text]);
   return { candidates: size.candidates + 1, triageTokens: size.triageTokens + evidenceTokens([text]),
     writerTokens: size.writerTokens + writerTokens, largestWriterTokens: Math.max(size.largestWriterTokens, writerTokens) };
@@ -92,8 +92,8 @@ Record<CandidateKind, number> {
   return {
     // The earlier runs harvested on the order of two eligible comments per sampled PR.
     "review-thread": inventory.merged * 2,
-    // Some descriptions are blank or repeat the title.
-    "pr-text": Math.ceil(inventory.merged * 0.6),
+    // Most descriptions only list what changed, and those are context for the reviews.
+    "pr-text": Math.ceil(inventory.merged * 0.3),
     // Closed searches include stalled, empty and bot-closed work. Start with one in four.
     "closed-pr": Math.ceil((inventory.closed ?? 0) / 4),
     revert: inventory.revert ?? 0,

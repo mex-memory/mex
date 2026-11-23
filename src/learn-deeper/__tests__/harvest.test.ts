@@ -10,10 +10,13 @@ import { DEFAULT_HARVEST_BUDGET, estimateHarvest, forecastCounts, harvestBatch, 
   type Candidate, type HarvestBatch, type HarvestCursor, type HarvestOptions } from "../harvest/index.js";
 import { productionPath } from "../harvest/local.js";
 import { addHarvestEvidence, emptyHarvestEvidence, projectHarvestSpend } from "../harvest/estimate.js";
-import { reviewedFiles } from "../harvest/forge.js";
+import { authored, decides, decisionsFirst, hasDecisionsSection } from "../harvest/description.js";
+import { reviewedFiles, ReviewRead } from "../harvest/forge.js";
 import { Gaps } from "../harvest/evidence.js";
 import { align, hunkSpan, RegionReader, reviewRegions } from "../harvest/regions.js";
+import { clusterLessons } from "../cluster.js";
 import { sourceDigest } from "../source.js";
+import { writerPrompt } from "../write.js";
 
 const source = { host: "github.com", slug: "fiction/transports" } as const;
 const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
@@ -77,6 +80,7 @@ beforeAll(async () => {
       "package-lock.json": "{}",
       "CODEOWNERS": "/src/changed.ts @fern-owner\n/src/new-name.ts @fiction/transport",
       "packages/transport/package.json": '{"name":"transport"}',
+      ".github/PULL_REQUEST_TEMPLATE.md": "## What\n\nWe decided every change says what it does.\n",
       "packages/transport/README.md": "# Transport\n\n## Usage\n\nCall the API.\n\n## Development\n\nBuild the test harness.",
       "docs/adr/001-transport.md": "# Transport\n\n## Considered options\n\nA second transport adds a deployment boundary.\n\n## Decision\n\nKeep the in-process transport.",
       "docs/AGENTS.md": "# Development\n\nDo not learn this rule file.",
@@ -141,7 +145,13 @@ afterAll(() => {
   if (checkout) rmSync(checkout, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false, mergedCount = 1 } = {}) {
+const CHOSEN = "We chose one adapter name rather than two.";
+
+function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false, mergedCount = 1,
+  merged: mergedRow = {}, closed: closedRow = {} }: {
+    paging?: boolean; weekly?: boolean; issue?: boolean; reverts?: boolean; textOnly?: boolean; fork?: boolean; mergedCount?: number;
+    merged?: object; closed?: object;
+  } = {}) {
   const captures: string[] = [];
   const data = JSON.parse(raw.replaceAll("OID_ORIGINAL", original).replaceAll("OID_MERGE", merge));
   if (fork) {
@@ -161,6 +171,8 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
     data.merged.reviewThreads.nodes = data.merged.reviewThreads.nodes.slice(0, 4);
     for (const thread of data.merged.reviewThreads.nodes) thread.comments.nodes[0].diffHunk = "";
   }
+  Object.assign(data.merged, mergedRow);
+  Object.assign(data.closed[0], closedRow);
   const merged = Array.from({ length: mergedCount }, (_, i) => {
     if (!i) return data.merged;
     const row = structuredClone(data.merged);
@@ -172,7 +184,7 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
     return row;
   });
   if (weekly) for (const [number, day] of [[51, 21], [52, 27]]) merged.push({ ...data.merged, number,
-    mergedAt: `2026-11-${day}T10:00:00Z`, reviewThreads: { nodes: [] } });
+    mergedAt: `2026-11-${day}T10:00:00Z`, reviewThreads: { nodes: [] }, body: CHOSEN, author: data.closed[0].author });
   const issues = issue ? [{ id: "I_fixture61", number: 61, title: "Do not support the older protocol",
     body: "Clients still need the handshake.", stateReason: "NOT_PLANNED", closedAt: "2026-11-19T10:00:00Z",
     comments: { nodes: [{ ...data.closed[0].comments.nodes[0], id: "IC_fixture61", body: "The older protocol has no version handshake." }] } }] : [];
@@ -388,9 +400,10 @@ describe("harvest", () => {
     expect(first.spent).toBe(projectHarvestSpend(first.cursor.run!.evidence, "claude"));
     expect(first.gaps).toContain("Learning reached its estimated token budget.");
     const second = await drain(options(bounds), deps, first.cursor);
+    expect([first, second].map(run => run.batches.reduce((sum, batch) => sum + batch.descriptions.plain, 0))).toEqual([2, 0]);
     const joined = [...first.candidates, ...second.candidates].map(candidate => candidate.id);
     expect(new Set(joined).size).toBe(joined.length);
-    expect(joined.sort()).toEqual(["gh:closed:41", "gh:pr:31", ...[1, 2, 3, 4].map(number => `gh:thread:PRRT_fixture${number}`)]);
+    expect(joined.sort()).toEqual(["gh:closed:41", ...[1, 2, 3, 4].map(number => `gh:thread:PRRT_fixture${number}`)]);
     const weekly = await drain(options({ ...bounds, mode: "weekly", until: "2026-11-30T00:00:00Z" }), forge({ weekly: true }), second.cursor);
     expect(weekly.candidates.map(candidate => candidate.id).sort()).toEqual(["gh:pr:51", "gh:pr:52"]);
     expect(weekly.cursor.sources.merged?.newest.at).toBe("2026-11-27T10:00:00.000Z");
@@ -407,7 +420,7 @@ describe("harvest", () => {
     expect(docs.spent).toBeGreaterThan(budget / 4);
     expect(docs.spent).toBeLessThanOrEqual(budget);
     expect(reviews.candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(4);
-    expect(reviews.candidates).toHaveLength(5);
+    expect(reviews.candidates).toHaveLength(4);
     expect(reviews.gaps).not.toContain("Learning reached its estimated token budget.");
     expect(reviews.spent).toBeLessThan(docs.spent);
   }, GIT_FIXTURE_TIMEOUT);
@@ -441,7 +454,7 @@ describe("harvest", () => {
     expect(blocked.gaps).toContain("Learning reached its forge request budget.");
     expect(deps.captures).toEqual(["query HarvestSearch", "query HarvestSearch"]);
     const resumed = await drain(options(reviewWindow), deps, blocked.cursor);
-    expect(resumed.candidates).toHaveLength(5);
+    expect(resumed.candidates).toHaveLength(4);
   }, GIT_FIXTURE_TIMEOUT);
 
   it("recognizes verified CODEOWNERS teams and two distinct earlier PRs in the same package", async () => {
@@ -506,15 +519,165 @@ it("caps reviewed-file requests per batch and caches missing files", async () =>
 it("quotes both calibration shapes using packed calls, prose-only triage and an allowance for one repair in five", () => {
   const hono = estimateHarvest(forecastCounts({ merged: 48, doc: 17 }), "claude");
   const novu = estimateHarvest(forecastCounts({ merged: 45, doc: 36 }), "codex");
-  expect([hono.total, novu.total]).toEqual([156_582, 300_084]);
+  expect([hono.total, novu.total]).toEqual([142_484, 291_432]);
   expect(hono.total).toBeLessThan(392_384);
   expect(novu.total).toBeLessThan(480_000);
   expect(novu.total).toBeLessThan(DEFAULT_HARVEST_BUDGET);
 });
 
 describe("PR descriptions", () => {
-  it("reads a Decisions section first, so a long description's excerpt keeps it", async () => {
-    const { decisionsFirst, hasDecisionsSection } = await import("../harvest/forge.js");
+  it.each([
+    ["a template's hidden help", "Mine.\n<!-- Say why. We never merge without it. -->\nAlso mine.", "Mine.\n\nAlso mine."],
+    ["a hidden comment left open", "Mine.\n<!-- template\nAlways link the issue.", "Mine."],
+    ["a comment's opening quoted in a line", "Escape `<!--` in the body.", "Escape `<!--` in the body."],
+    ["ticked and empty boxes, with their wrapped lines", "Mine.\n- [x] I read [CONTRIBUTING](docs/CONTRIBUTING.md)\n  and agree\n* [ ] Never skip tests\n\nAlso mine.", "Mine.\n\nAlso mine."],
+    ["boxes shown as code", "```md\n- [ ] an example\n```", "```md\n- [ ] an example\n```"],
+    ["the repository's template", "Please describe your change.\nMine.\n  please  DESCRIBE your change.", "Mine."],
+    ["headings left empty", "## What\nMine.\n## Screenshots\n\n### Phone\n## Why\nBecause.\n## Notes", "## What\nMine.\n\n## Why\nBecause."],
+    ["a block a program put there", "Mine.\n<!-- review_summary -->\nAlways use the adapter.\n<!-- /review_summary -->\nAlso mine.", "Mine.\n\nAlso mine."],
+    ["a block with other markers inside it", "Mine.\n<!-- This is an auto-generated comment: notes -->\nA\n<!-- part_start -->B<!-- part_end -->\nC\n<!-- end of auto-generated comment: notes -->\nAlso mine.", "Mine.\n\nAlso mine."],
+    ["a block that never ends", "Mine.\n<!-- BODY_BEGIN -->\nNever do this.", "Mine."],
+    ["a formatter's marker", "<!-- prettier-ignore -->\n| a |\nMine.", "| a |\nMine."],
+  ])("keeps only what its author wrote: %s", (_what, body, kept) => {
+    expect(authored(body, new Set(["please describe your change."]))).toBe(kept);
+  });
+
+  it("cleans a hostile body in linear time", () => {
+    const started = performance.now();
+    for (const body of ["<!--".repeat(16_000), "<!-- a_b -->".repeat(5_000), "<!-- a_start --><!-- a_end -->".repeat(2_000), "- [ ] a\n".repeat(8_000)]) authored(body);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it.each([
+    ["We chose one adapter name rather than two.", true], ["Kept the old name on purpose.", true], ["Handlers never read the body twice.", true],
+    ["## Decisions\n- The cache stays.", true], ["Adds the export and updates the docs.", false], ["Fixes #12 because the parser failed.", false],
+  ])("tells a choice from a list of changes: %s", (text, expected) => { expect(decides(text)).toBe(expected); });
+
+  const owner = { __typename: "User", login: "fern-owner", name: "Fern Example" };
+  it.each([
+    ["a writer's choice", { body: CHOSEN, author: owner }, "weak"],
+    ["a writer's Decisions section", { body: "## Decisions\n- Keep one adapter.", author: owner }, "strong"],
+    ["a writer's link to a guideline", { body: CHOSEN + " See [the guide](docs/CONTRIBUTING.md).", author: owner }, "weak"],
+    ["the template's own words", { body: "## What\nWe decided every change says what it does.\nUnify the adapter names.", author: owner }, undefined],
+    ["a writer's list of changes", { body: "Unify the adapter names.", author: owner }, undefined],
+    ["an outsider's choice", { body: CHOSEN, authorAssociation: "CONTRIBUTOR" }, undefined],
+    ["a bot's choice", { body: CHOSEN, author: { ...owner, __typename: "Bot" } }, undefined],
+    ["a program's choice in a writer's description", { body: "Unify the names.\n<!-- review_summary -->\n" + CHOSEN, author: owner }, undefined],
+    ["a description with a private part", { body: CHOSEN + "\n<!-- <private>the client</private> -->", author: owner }, undefined],
+  ] as const)("is evidence on its own only when a writer decides something: %s", async (_what, merged, signal) => {
+    const deps = forge({ textOnly: true, merged });
+    const { candidates } = await drain(options(reviewWindow), deps);
+    expect(candidates.filter(candidate => candidate.kind === "pr-text").map(candidate => [candidate.id, candidate.signal]))
+      .toEqual(signal ? [["gh:pr:31", signal]] : []);
+    expect(candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(4);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("counts the descriptions read, whether or not they are evidence", async () => {
+    const told = async (body: string) => (await drain(options(reviewWindow), forge({ textOnly: true, merged: { body, author: owner } }))).batches
+      .reduce((sum, { descriptions }) => [sum[0]! + descriptions.decisions, sum[1]! + descriptions.plain], [0, 0]);
+    expect(await told("Unify the adapter names.")).toEqual([0, 1]);
+    expect(await told("## Decisions\n- Keep one adapter.")).toEqual([1, 0]);
+    expect(await told("- [x] I read [CONTRIBUTING](docs/CONTRIBUTING.md)")).toEqual([0, 0]);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("never fetches a change nobody discussed, and still reads the ones beside it", async () => {
+    const row = JSON.parse(raw);
+    const read = async (kind: "merged" | "closed", change: object) => {
+      const deps = forge({ textOnly: true, [kind]: change });
+      const { candidates, cursor } = await drain(options(kind === "merged" ? reviewWindow : { since: "2026-11-15T00:00:00Z", until: "2026-11-17T00:00:00Z" }), deps);
+      // A change that isn't read counts as done: the next run starts after it.
+      expect(cursor.sources[kind]?.newest.at).toBeDefined();
+      return { detail: deps.captures.filter(query => query === "query HarvestChanges").length, found: candidates.length };
+    };
+    const quiet = { reviewThreads: { ...row.merged.reviewThreads, nodes: [], totalCount: 0 } };
+    expect((await read("merged", { ...quiet, authorAssociation: "CONTRIBUTOR" })).detail).toBe(0);
+    expect((await read("merged", { ...quiet, author: { __typename: "Bot", login: "fern-bot" } })).detail).toBe(0);
+    // A writer may have described a decision, a reply may be missing from the counts, and anyone's change may be reviewed.
+    expect((await read("merged", { ...quiet, authorAssociation: "MEMBER", author: owner, body: CHOSEN }))).toEqual({ detail: 1, found: 1 });
+    expect((await read("merged", { authorAssociation: "CONTRIBUTOR", reviewThreads: { ...row.merged.reviewThreads, totalCount: undefined } })).detail).toBe(1);
+    expect((await read("merged", { authorAssociation: "CONTRIBUTOR" })).found).toBe(4);
+    const nothing = { nodes: [], totalCount: 0 };
+    expect((await read("closed", {})).found).toBe(1);
+    expect((await read("closed", { comments: nothing })).found).toBe(1);
+    expect((await read("closed", { comments: nothing, reviews: nothing })).found).toBe(0);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("remembers who may push for the whole run, and a review outranks an earlier refusal", async () => {
+    const lookups: string[] = [];
+    const client = { repo: source, anonymous: false, graphql: async () => ({}),
+      get: async (path: string) => { lookups.push(path); return undefined; } } as unknown as ForgeClient;
+    const access = {};
+    const reader = () => new ReviewRead(client, new Gaps(), access);
+    const comment = { id: "IC_1", body: "Keep one adapter.", createdAt: "2026-11-12T00:00:00Z", author: owner };
+    expect(await reader().comments([comment])).toEqual([]);
+    expect(await reader().comments([comment])).toEqual([]);
+    expect(await reader().canWrite({ authorAssociation: "MEMBER" }, "fern-owner")).toBe(false);
+    expect(lookups).toHaveLength(1);
+    reader().observe({ author: owner, authorCanPushToRepository: true });
+    expect(await reader().comments([comment])).toHaveLength(1);
+    // An outsider's comment costs no lookup.
+    expect(await reader().comments([{ ...comment, author: { ...owner, login: "iris-dev" }, authorAssociation: "CONTRIBUTOR" }])).toEqual([]);
+    expect(await reader().comments([{ ...comment, author: { ...owner, login: "iris-dev" }, authorAssociation: "CONTRIBUTOR", authorCanPushToRepository: true }])).toHaveLength(1);
+    // Known from a review, whatever the forge calls them.
+    expect(await reader().canWrite({ authorAssociation: "CONTRIBUTOR" }, "fern-owner")).toBe(true);
+    expect(await reader().canWrite({ authorAssociation: "CONTRIBUTOR" }, "iris-dev")).toBe(false);
+    expect(lookups).toHaveLength(1);
+    expect(JSON.stringify(access)).not.toContain("fern");
+    // The batches of one run share it, through the saved cursor.
+    const { cursor } = await drain(options(reviewWindow), forge({ textOnly: true }));
+    expect(Object.values(cursor.run?.access ?? {})).toContain(true);
+  });
+
+  const closedCase = async (body: string, comment: string) => {
+    const row = JSON.parse(raw).closed[0];
+    const { candidates } = await drain(options({ since: "2026-11-15T00:00:00Z", until: "2026-11-17T00:00:00Z" }), forge({ closed: { body,
+      comments: { ...row.comments, nodes: [{ ...row.comments.nodes[0], body: comment }] }, reviews: { ...row.reviews, nodes: [] } } }));
+    return candidates.find(candidate => candidate.id === "gh:closed:41");
+  };
+  it("takes a closed change's signal from the maintainer's words, not from the description beside them", async () => {
+    expect((await closedCase("We always use two transports. See [the guide](docs/CONTRIBUTING.md).", "A second one is not needed."))?.signal).toBe("weak");
+    expect((await closedCase("Use two transports.", "We never run two transports here."))?.signal).toBe("strong");
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it.each([
+    ["Superseded by #12.", false], ["Closing this in favour of the other change.", false], ["Thanks! Please rebase.", false], ["It does not fix the issue.", false],
+    ["We can’t accept a second transport.", true], ["This is unnecessary: the adapter already retries.", true], ["That should not live here.", true], ["I'd prefer one transport.", true],
+  ])("reads a closed change only when the maintainer gives a reason: %s", async (comment, read) => {
+    expect(!!await closedCase("We decided to use two transports instead.", comment)).toBe(read);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("keeps only the start of what a closed change proposed", async () => {
+    const candidate = (await closedCase("Adds a second transport. ".repeat(50), "A second one is not needed."))!;
+    expect(candidate.text.startsWith("A second one is not needed.\n\nAdds a second transport.")).toBe(true);
+    expect(Buffer.byteLength(candidate.text)).toBeLessThan(600);
+    expect(candidate.text).toContain(candidate.prText);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("can take a quarter of the budget, and the reviews are still read", async () => {
+    const budget = 128_000;
+    const body = CHOSEN + " " + "The other name stays in the notes for readers. ".repeat(30);
+    const { candidates, gaps } = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true, mergedCount: 24, merged: { body, author: owner } }));
+    const texts = candidates.filter(candidate => candidate.kind === "pr-text");
+    expect(texts.length).toBeGreaterThan(5);
+    expect(texts.length).toBeLessThan(24);
+    expect(projectHarvestSpend(texts.reduce(addHarvestEvidence, emptyHarvestEvidence), "claude")).toBeLessThanOrEqual(budget / 4);
+    expect(gaps).toContain("Pull request descriptions reached their share of the estimated token budget.");
+    expect(candidates.filter(candidate => candidate.kind === "review-thread").length).toBeGreaterThan(texts.length);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("is paid for once when it is already in the text", () => {
+    const size = (candidate: { text: string; prText?: string }) => addHarvestEvidence(emptyHarvestEvidence, candidate);
+    expect(size({ text: CHOSEN, prText: CHOSEN })).toEqual(size({ text: CHOSEN }));
+    expect(size({ text: "No.\n\n" + CHOSEN, prText: CHOSEN })).toEqual(size({ text: "No.\n\n" + CHOSEN }));
+    expect(size({ text: "No.", prText: CHOSEN }).writerTokens).toBeGreaterThan(size({ text: "No." }).writerTokens);
+    const candidate = { id: "gh:pr:31", kind: "pr-text", link: "https://github.com/fiction/transports/pull/31", at: "2026-11-12T00:00:00Z", title: "Unify", pull: 31,
+      text: CHOSEN, prText: CHOSEN, hash: "", nodeIds: [], reviewers: [], weights: {}, signal: "strong" } as unknown as Candidate;
+    const prompt = (own: Candidate) => writerPrompt(clusterLessons([{ candidate: own, triage: { id: own.id, keep: true, category: "api-use", lesson: CHOSEN } }]), { linters: [] });
+    expect(prompt(candidate).split(CHOSEN)).toHaveLength(prompt({ ...candidate, prText: undefined }).split(CHOSEN).length);
+    expect(prompt({ ...candidate, text: "Keep it.", prText: CHOSEN })).toContain('"prText"');
+  });
+
+  it("reads a Decisions section first, so a long description's excerpt keeps it", () => {
     const body = "Adds the export.\n\n## Testing\nRan the suite.\n\n## Decisions\n- Chose streaming over buffering: large exports ran out of memory.\n\n## Notes\nNone.";
     expect(decisionsFirst(body).startsWith("## Decisions\n- Chose streaming over buffering")).toBe(true);
     expect(decisionsFirst(body)).toContain("## Testing\nRan the suite.");

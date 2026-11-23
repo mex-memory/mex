@@ -251,6 +251,7 @@ it("writes a review that backs nothing as its own lesson, and leaves the rule it
     const harvest = await planHarvest({ checkout, head: mergedHead, source: origin, agent: "codex", ...window }, { client: forge.client });
     const plan = Plan.parse({ checkout, head: mergedHead, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
       ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
+    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES (?,'learning.prDecisions','true')").run(project);
     const other = "Name the adapter's caller in the label.";
     const model = vi.fn<typeof runModel>(async request => {
       if (request.purpose === "learn-deeper-filter") {
@@ -272,6 +273,8 @@ it("writes a review that backs nothing as its own lesson, and leaves the rule it
     const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
     expect(learned.map(entry => entry.mex.one_line).sort()).toEqual([claim, other].sort());
     expect(counts).toMatchObject({ "cluster.unbacked": 1 });
+    // The Decisions trial counts every description read: one change has one, without a Decisions section.
+    expect([counts["trial.pr.followed"] ?? 0, counts["trial.pr.ignored"]]).toEqual([0, 1]);
     // Neither rule may claim the other's review.
     expect(reviewRows(writer, project, job.id).map(item => [item.claim, item.support]).sort()).toEqual([[claim, 1], [other, 1]].sort());
     // Saved raw rows are gone, and the leftover was written once.

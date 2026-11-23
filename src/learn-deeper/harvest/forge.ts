@@ -1,7 +1,8 @@
 import { object, positive, rows, SourceError } from "../forge.js";
 import { Reviewers } from "../reviewers.js";
 import { repository, validAt, type SourceWindow } from "../source.js";
-import { cleanText, evidenceDigest, newCandidate, PR_BYTES, reviewerKey, safePath, safeRaw, type Gaps } from "./evidence.js";
+import { authored, decides, decisionsFirst, hasDecisionsSection } from "./description.js";
+import { cleanText, contrastive, evidenceDigest, excerpt, newCandidate, PR_BYTES, PROPOSAL_BYTES, reviewerKey, safePath, safeRaw, type Gaps } from "./evidence.js";
 import type { Familiarity } from "./familiarity.js";
 import { MAX_BLOB, oid, reviewRegions, type ReadReviewedFile, type RegionReader } from "./regions.js";
 import type { Candidate, ForgeSource, HarvestDeps, HarvestPlan, HarvestPoint, SearchPage } from "./types.js";
@@ -16,7 +17,7 @@ const MAX_PERMISSION_READS = 12;
 // objects without turning a busy review into a long chain of requests.
 const MAX_REVIEWED_FILE_REQUESTS = 8;
 const actor = "author{__typename login ... on User{name}}";
-const common = `id fullDatabaseId body createdAt isMinimized ${actor}`;
+const common = `id fullDatabaseId body createdAt isMinimized authorAssociation ${actor}`;
 const discussionFields = `comments(last:${COMMENT_PAGE}){pageInfo{hasPreviousPage} nodes{${common}}}
 reviews(last:${COMMENT_PAGE},states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){
   pageInfo{hasPreviousPage} nodes{${common} submittedAt authorCanPushToRepository isCopilotCodeReview}
@@ -119,8 +120,19 @@ export function reviewedFiles(client: Client, canRequest: () => boolean, gaps: G
   };
 }
 
-export async function search(client: Client, requests: Array<{ source: ForgeSource; page: SearchPage }>, countsOnly = false):
-Promise<Array<{ count: number; points: HarvestPoint[]; next?: string }>> {
+const OUTSIDERS = ["NONE", "CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN"];
+const total = (value: unknown) => connection(value).total;
+
+/** A change that holds no evidence, known from its search row: nobody said anything, or only an outsider described it. */
+function silent(source: ForgeSource, row: Raw, describe: boolean): boolean {
+  if (source === "closed") return total(row.comments) === 0 && total(row.reviews) === 0;
+  return source === "merged" && total(row.reviewThreads) === 0
+    && (!describe || object(row.author)?.__typename === "Bot" || OUTSIDERS.includes(string(row.authorAssociation) ?? ""));
+}
+
+/** `describe`: whether a merged change's own description can still be evidence. */
+export async function search(client: Client, requests: Array<{ source: ForgeSource; page: SearchPage }>, countsOnly = false, describe = true):
+Promise<Array<{ count: number; points: Array<HarvestPoint & { silent: boolean }>; next?: string }>> {
   if (!requests.length) return [];
   const variables: Record<string, unknown> = {};
   const params: string[] = [], fields: string[] = [];
@@ -132,7 +144,8 @@ Promise<Array<{ count: number; points: HarvestPoint[]; next?: string }>> {
     variables[`a${i}`] = page.after ?? null;
     params.push(`$q${i}:String!,$a${i}:String`);
     const nodes = source === "issue" ? "nodes{... on Issue{number closedAt}}"
-      : `nodes{... on PullRequest{number ${source === "merged" ? "mergedAt" : "closedAt"}}}`;
+      : `nodes{... on PullRequest{number ${source === "merged" ? "mergedAt authorAssociation author{__typename} reviewThreads{totalCount}"
+        : "closedAt comments{totalCount} reviews{totalCount}"}}}`;
     fields.push(`s${i}:search(type:ISSUE,query:$q${i},first:${countsOnly ? 1 : SEARCH_PAGE},after:$a${i}){
       issueCount pageInfo{hasNextPage endCursor} ${countsOnly ? "" : nodes}}`);
   }
@@ -144,7 +157,8 @@ Promise<Array<{ count: number; points: HarvestPoint[]; next?: string }>> {
     if (links.more && (!links.end || links.end === page.after)) throw new SourceError("unavailable");
     const points = links.nodes.flatMap(row => {
       const at = timestamp(source === "merged" ? row.mergedAt : row.closedAt);
-      return positive(row.number) && at && validAt(at, page.window.since, page.window.until) ? [{ id: String(row.number), at }] : [];
+      return positive(row.number) && at && validAt(at, page.window.since, page.window.until)
+        ? [{ id: String(row.number), at, silent: silent(source, row, describe) }] : [];
     });
     return { count, points, next: links.more ? links.end : undefined };
   });
@@ -163,19 +177,24 @@ function directPermission(row: Raw, login: string): boolean | undefined {
 
 export class ReviewRead {
   readonly reviewers = new Reviewers();
-  private readonly permissions = new Map<string, boolean>();
+  private readonly observed = new Map<string, boolean>();
   private permissionReads = 0;
 
-  constructor(private readonly client: Client, private readonly gaps: Gaps) {}
+  /** `access`: what the run has learned so far, by hashed login. A review row outranks an earlier refused lookup. */
+  constructor(private readonly client: Client, private readonly gaps: Gaps, private readonly access: Record<string, boolean> = {}) {}
 
   observe(row: Raw): void {
     const author = person(row.author, this.reviewers);
     const permission = author?.human ? directPermission(row, author.login) : undefined;
-    if (author && permission !== undefined && this.permissions.get(author.login) !== false) this.permissions.set(author.login, permission);
+    if (!author || permission === undefined || this.observed.get(author.login) === false) return;
+    this.observed.set(author.login, permission);
+    this.access[this.key(author.login)] = permission;
   }
 
+  private key(login: string): string { return reviewerKey(this.client.repo.slug, login); }
+
   private async writer(row: Raw, login: string): Promise<boolean> {
-    const known = directPermission(row, login) ?? this.permissions.get(login);
+    const known = directPermission(row, login) ?? this.access[this.key(login)];
     if (known !== undefined) return known;
     if (this.permissionReads >= MAX_PERMISSION_READS) {
       this.gaps.messages.add("Some author permissions exceeded the lookup limit.");
@@ -186,8 +205,14 @@ export class ReviewRead {
     const permission = string(object(reply?.value)?.permission);
     if (!permission) this.gaps.messages.add("Some authors' write access could not be verified.");
     const writer = ["write", "maintain", "admin"].includes(permission ?? "");
-    this.permissions.set(login, writer);
+    this.access[this.key(login)] = writer;
     return writer;
+  }
+
+  /** Whether the author of a comment or a change may push. One the forge calls an outsider is known without asking. */
+  async canWrite(row: Raw, login: string): Promise<boolean> {
+    if ((directPermission(row, login) ?? this.access[this.key(login)]) === undefined && OUTSIDERS.includes(string(row.authorAssociation) ?? "")) return false;
+    return this.writer(row, login);
   }
 
   async comments(rows: Raw[], start?: string): Promise<Comment[]> {
@@ -198,7 +223,7 @@ export class ReviewRead {
       if (!author?.human || !id || !raw?.trim() || !at || start && at <= start
         || row.isMinimized === true || row.isCopilotCodeReview === true) continue;
       if (safeRaw(raw) === undefined) { this.gaps.withheld(false); continue; }
-      if (await this.writer(row, author.login)) result.push({ id, at, raw, login: author.login, databaseId: databaseId(row.fullDatabaseId) });
+      if (await this.canWrite(row, author.login)) result.push({ id, at, raw, login: author.login, databaseId: databaseId(row.fullDatabaseId) });
     }
     return result;
   }
@@ -227,7 +252,7 @@ export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pa
     if (source === "issue") return `p${i}:issue(number:${number}){id number title body stateReason closedAt ${actor}
       ${closureFields} comments(last:${COMMENT_PAGE}){pageInfo{hasPreviousPage} nodes{${common}}}}`;
     return `p${i}:pullRequest(number:${number}){id number title body mergedAt closedAt state mergeCommit{oid} headRefOid
-      changedFiles ${actor} files(first:${FILE_PAGE}){pageInfo{hasNextPage} nodes{path}}
+      changedFiles authorAssociation ${actor} files(first:${FILE_PAGE}){pageInfo{hasNextPage} nodes{path}}
       ${discussionFields} ${source === "closed" ? closureFields : `headRepository{nameWithOwner} reviewThreads(first:${THREAD_PAGE}){
         totalCount pageInfo{hasNextPage endCursor} nodes{${threadFields}}}`}}`;
   });
@@ -323,14 +348,19 @@ export async function readyThreads(change: Change, read: ReviewRead, familiarity
 }
 
 export async function changeCandidates(plan: HarvestPlan, change: Change, threads: ReadyThread[], read: ReviewRead,
-  familiarity: Familiarity | undefined, reader: RegionReader, deps: HarvestDeps, gaps: Gaps): Promise<Candidate[]> {
+  familiarity: Familiarity | undefined, reader: RegionReader, deps: HarvestDeps, gaps: Gaps,
+  template: ReadonlySet<string>, descriptions?: { decisions: number; plain: number }): Promise<Candidate[]> {
   const { row, item: { source, point } } = change;
   const pull = Number(point.id);
   const link = `https://github.com/${plan.source.slug}/${source === "issue" ? "issues" : "pull"}/${pull}`;
   const title = cleanText(string(row.title) ?? "", gaps, read.reviewers, 256);
   const rawDescription = string(row.body) ?? "";
+  if (safeRaw(rawDescription) === undefined) gaps.withheld(false);
   // A "Decisions" section is read first, so the excerpt keeps it however long the description is.
-  const prText = cleanText(decisionsFirst(rawDescription), gaps, read.reviewers, PR_BYTES);
+  const prText = safeRaw(rawDescription) === undefined ? undefined
+    : cleanText(decisionsFirst(authored(rawDescription, template)), gaps, read.reviewers, PR_BYTES);
+  // For the Decisions trial, which counts the descriptions read.
+  const readDescription = () => { if (prText && descriptions) descriptions[hasDecisionsSection(prText) ? "decisions" : "plain"]++; };
   const changedPaths = [...new Set(connection(row.files).nodes.map(file => file.path).filter(safePath))];
   const smallPr = typeof row.changedFiles === "number" && Number.isSafeInteger(row.changedFiles) && row.changedFiles >= 0 && row.changedFiles < 20;
   const base = { at: point.at, title, changedPaths, ...(source === "issue" ? {} : { pull }) };
@@ -362,18 +392,30 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     if (source === "closed" && !comments.length) return [];
     if (source === "issue" && !(comments.length && (row.stateReason === "NOT_PLANNED" || notPlanned.test(followed.raw))
       || rootCause.test((prText ? rawDescription : "") + "\n" + followed.raw))) return [];
-    const description = prText && comments.length ? "\n\n" + prText : prText ?? "";
+    const proposal = source === "closed" && prText ? excerpt(prText, PROPOSAL_BYTES) : prText;
+    const description = proposal && comments.length ? "\n\n" + proposal : proposal ?? "";
     const text = cleanText(followed.raw + description, gaps, read.reviewers);
     if (!text) return [];
     const node = nodeId(row.id);
     const nodeIds = prText ? [...followed.nodeIds, node ?? ""] : followed.nodeIds;
-    return [newCandidate({ ...base, ...followedFields(followed), nodeIds, id: `gh:${source}:${pull}`, kind: source === "closed" ? "closed-pr" : "issue",
-      link, hash: evidenceDigest(prText ? [...followed.bodies, rawDescription] : followed.bodies), text, prText }, { smallPr })];
+    const candidate = newCandidate({ ...base, ...followedFields(followed), nodeIds, id: `gh:${source}:${pull}`, kind: source === "closed" ? "closed-pr" : "issue",
+      link, hash: evidenceDigest(prText ? [...followed.bodies, rawDescription] : followed.bodies), text, prText: proposal }, { smallPr }, followed.raw);
+    if (source === "issue") return [candidate];
+    readDescription();
+    // Superseded, stacked and abandoned changes are closed without a reason anyone could rule something out with.
+    return candidate.signal === "strong" || contrastive(followed.raw) ? [candidate] : [];
   }
 
   const candidates: Candidate[] = [];
-  if (prText && person(row.author)?.human) candidates.push(newCandidate({ ...base, id: `gh:pr:${pull}`, kind: "pr-text", link,
-    text: prText, prText, hash: evidenceDigest([rawDescription]), nodeIds: [nodeId(row.id) ?? ""], reviewers: [] }, { smallPr }));
+  const author = person(row.author);
+  if (author?.human) readDescription();
+  // It travels with the change's review threads as context. Alone it is evidence only when someone with write access
+  // says what was chosen or ruled out, and strong only under a Decisions heading: nobody reviewed it.
+  if (prText && author?.human && decides(prText) && await read.canWrite(row, author.login)) {
+    candidates.push({ ...newCandidate({ ...base, id: `gh:pr:${pull}`, kind: "pr-text", link,
+      text: prText, prText, hash: evidenceDigest([rawDescription]), nodeIds: [nodeId(row.id) ?? ""], reviewers: [] }, { smallPr, guidelineLink: false }),
+      signal: hasDecisionsSection(prText) ? "strong" : "weak" });
+  }
   for (const thread of threads) {
     const { row: position, root, path, id, comments } = thread;
     const followed = read.discussion(comments);
@@ -405,26 +447,4 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
 
 function followedFields({ reviewers, nodeIds, commentHashes }: Discussion): Pick<Candidate, "reviewers" | "nodeIds" | "commentHashes"> {
   return { reviewers, nodeIds, commentHashes };
-}
-
-const decisionsHeading = /^(?:#{1,4}\s*Decisions?\b.*|\*\*Decisions?\*\*:?[ \t]*)$/iu;
-
-export function hasDecisionsSection(body: string): boolean {
-  const lines = body.split(/\r?\n/u);
-  const start = lines.findIndex(line => decisionsHeading.test(line.trim()));
-  const content = lines.slice(start + 1).find(line => line.trim());
-  return start >= 0 && content !== undefined && !/^(?:#{1,6}\s|\*\*[^*]+\*\*:?\s*$)/u.test(content.trim());
-}
-
-/** Move a PR description's "Decisions" section (a heading, or a bold line) to the front; otherwise unchanged. */
-export function decisionsFirst(body: string): string {
-  const lines = body.replace(/\r\n?/gu, "\n").split("\n");
-  const heading = (line: string) => /^(#{1,4})\s/u.exec(line.trim())?.[1]?.length;
-  const bold = (line: string) => /^\*\*[^*]+\*\*:?\s*$/u.test(line.trim());
-  const start = lines.findIndex(line => decisionsHeading.test(line.trim()));
-  if (start <= 0) return body;
-  const level = heading(lines[start]!) ?? 4;
-  let end = start + 1;
-  while (end < lines.length && !((heading(lines[end]!) ?? 99) <= level) && !bold(lines[end]!)) end++;
-  return [...lines.slice(start, end), "", ...lines.slice(0, start), ...lines.slice(end)].join("\n").trim();
 }

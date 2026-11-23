@@ -6,13 +6,27 @@ import type { Candidate } from "./types.js";
 
 export const TEXT_BYTES = 4096;
 export const PR_BYTES = 1536;
+/** What was proposed, beside the reason it was turned down. */
+export const PROPOSAL_BYTES = 512;
 
 export function evidenceDigest(bodies: string[]): string {
   return sourceDigest(bodies.join("\n\n"));
 }
 const privateMarker = /<\s*\/?\s*private\b/iu;
 const guideline = /(?:https?:\/\/[^\s)>\]]+|\]\([^\s)]+\))/giu;
-const generalising = /\b(?:always|never|we don['’]t|in this repo(?:sitory)?|instead use|conventions?|prefer\b[^\n.!?]{1,100}\bover)\b/iu;
+export const generalising = /\b(?:always|never|we don['’]t|in this repo(?:sitory)?|instead use|conventions?|prefer\b[^\n.!?]{1,100}\bover)\b/iu;
+
+const contrast = new RegExp(`\\b(?:${[
+  "instead|rather than|ruled out|reject(?:ed|ing)|reverted because|we(?:['’]ve| have)? decided|decided (?:against|not)",
+  "won['’]t|will not|not going to|should(?:n['’]t| not)|we (?:don['’]t|do not|can['’]t|cannot)",
+  "do(?:es)?(?:n['’]t| not) (?:want|need|add|support|plan|think|use|accept|allow|belong)",
+  "not (?:needed|necessary|required|worth|appropriate)|unnecessary|useless|no need|out of scope|by design|intentional(?:ly)?|on purpose|prefer",
+].join("|")})\\b`, "iu");
+
+/** Whether someone turns something down, with a reason or a preference. "Superseded by #12" is only a status. */
+export function contrastive(text: string): boolean {
+  return contrast.test(text);
+}
 
 export class Gaps {
   readonly messages = new Set<string>();
@@ -62,11 +76,12 @@ export function reviewerKey(slug: string, login: string): string {
   return sourceDigest(`reviewer\n${slug.toLowerCase()}\n${login.toLowerCase()}`);
 }
 
+/** `judged` is the text whose wording counts: a pull request's description says nothing about what a reviewer meant. */
 export function newCandidate(source: Omit<Candidate, "weights" | "signal">,
-  weights: Partial<Candidate["weights"]> = {}): Candidate {
-  const guidelineLink = [...source.text.matchAll(guideline)].some(([link]) =>
+  weights: Partial<Candidate["weights"]> = {}, judged = source.text): Candidate {
+  const guidelineLink = [...judged.matchAll(guideline)].some(([link]) =>
     /(?:^|[./#_(-])(?:contributing|docs?|style[-_]?guide|wiki|adrs?|decisions)(?:[./#_?)-]|$)/iu.test(link));
-  const flags = { actedOn: false, familiar: false, guidelineLink, generalising: generalising.test(source.text),
+  const flags = { actedOn: false, familiar: false, guidelineLink, generalising: generalising.test(judged),
     smallPr: false, hotUnknown: false, ...weights };
   return { ...source, weights: flags, signal: flags.guidelineLink || (flags.actedOn && flags.familiar)
     || (flags.generalising && source.reviewers.length > 0) ? "strong" : "weak" };

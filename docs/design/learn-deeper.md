@@ -14,7 +14,7 @@ repeats the mistake, with the team's fix, and is withheld when the code no longe
 | Source | Where it comes from | What it can teach |
 | --- | --- | --- |
 | Review threads from people with write access, with the code as reviewed, the merged fix and today's code | the forge (GitHub in 0.9.0) | team rules, where code belongs, how to use the repo's own APIs |
-| Pull request descriptions | the forge | the reason for a change |
+| Pull request descriptions by people with write access that say what was chosen or ruled out | the forge | the decision behind a change. Any description is context for the review threads of its change |
 | Closed, unmerged pull requests with a maintainer's reason | the forge | what the team tried and ruled out |
 | Reverts, joined to the reverted change and any re-land | local git history | what broke, and the fixed approach |
 | Commits that say "regression from", "caused by" or "broken by", whose diff changes production code | local git history | pitfalls with a known cause |
@@ -27,6 +27,12 @@ first step already imports them. Docs are at most a quarter of a run's rules unl
 history. Bot comments, minimised comments, authors without write access and anything that looks like a secret are
 dropped. Reviewers are counted by a hashed key, never by name.
 
+Of a description only what its author wrote is read: not hidden comments, ticked boxes, the repository's own template
+or a block a program put there. A checklist's link to CONTRIBUTING is nobody's argument, and a template repeated in a
+hundred descriptions is one statement. Nobody reviewed a description, so on its own it is strong only under a Decisions
+heading, and descriptions take at most a quarter of the token budget. A closed change counts only with a reason in the
+maintainer's own words ("superseded by" is a status), next to the first 512 bytes of what was proposed.
+
 Each source is weighted, in code: whether the commented lines changed before merge (acted on), whether the
 reviewer knows that path (listed in CODEOWNERS, or reviewed it before), a link to a guideline, generalising
 wording ("always", "we don't", "instead use"), and a small pull request.
@@ -35,7 +41,7 @@ wording ("always", "we don't", "instead use"), and a small pull request.
 
 | Stage | Model | What happens |
 | --- | --- | --- |
-| Harvest | none | Newest first, spread across the review window, until the run's token budget is reached. A cursor is saved, so weekly learning reads only what is newer |
+| Harvest | none | Newest first, spread across the review window, until the run's token budget is reached. A change the search shows nobody discussed is not fetched. A cursor is saved, so weekly learning reads only what is newer |
 | Triage | cheap | Keep or drop each item from its comment text alone, with a category and a one-line lesson. Nits, one-offs, questions, status and generic advice are dropped |
 | First rules | best | The strongest items of the first batch are written right away, so the first rules arrive within minutes |
 | Cluster | none | Lessons that say the same thing, in the same direction, are grouped across the whole window. A shared code identifier is only a hint: two comments about one API are usually two lessons. A cluster is led by its strongest item, so unrelated lessons don't chain together. In doubt two lessons stay apart, because a missed repeat costs a duplicate and a wrong one gives a rule support it doesn't have |

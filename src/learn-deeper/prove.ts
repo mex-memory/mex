@@ -18,7 +18,7 @@ import { checkPatterns, type PatternCandidate, type PatternVerdict } from "../kn
 import type { GateContext } from "../knowledge/gate.js";
 import { backedBy, writerMembers, type Cluster, type Triaged } from "./cluster.js";
 import { command, type PatternStage, type PinnedTree } from "./git.js";
-import { safePath } from "./harvest/evidence.js";
+import { contrastive, safePath } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
 
@@ -91,10 +91,6 @@ function sources(candidate: Candidate): string[] {
   const reland = candidate.related?.reland;
   return [candidate.text, candidate.prText, code?.before?.text, code?.after?.text, code?.head?.text, reland?.before.text, reland?.after.text]
     .filter((text): text is string => !!text).map(squash);
-}
-
-function contrastive(text: string): boolean {
-  return /\b(?:instead|we decided|decided against|won't|will not|not going to|rather than|ruled out|rejected|reverted because|we don't|we do not)\b/iu.test(text);
 }
 
 const words = (text: string) => new Set(text.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length > 2));
