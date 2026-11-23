@@ -19,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -82,18 +83,22 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 	}
 	file := bumpStatePath(env.RecordDirectory, ev)
 	state := loadBumpState(file, epoch.Number)
-	full := map[string]map[string]*entries.Item{}
-	fullItem := func(b bump) *entries.Item {
+	full := map[string]map[[2]string]*entries.Item{}
+	fullSnapshot := func(b bump) map[[2]string]*entries.Item {
 		key := b.project + "\x00" + b.check
 		if full[key] == nil {
-			full[key] = map[string]*entries.Item{}
+			full[key] = map[[2]string]*entries.Item{}
 			if snap, err := entries.Load(env.RecordDirectory, env.Home, b.project, b.check); err == nil {
 				for i := range snap.Items {
-					full[key][snap.Items[i].Entry.ID] = &snap.Items[i]
+					item := &snap.Items[i]
+					full[key][[2]string{item.Level, item.Entry.ID}] = item
 				}
 			}
 		}
-		it := full[key][b.item.Entry.ID]
+		return full[key]
+	}
+	fullItem := func(b bump) *entries.Item {
+		it := fullSnapshot(b)[[2]string{b.item.Level, b.item.Entry.ID}]
 		if it == nil || it.Hash != b.item.Hash {
 			return nil
 		}
@@ -123,14 +128,11 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 			if it == nil {
 				continue
 			}
-			senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: b.project, checkout: b.check, hooks: h}
 			verdict := unknown
 			if ok {
 				verdict = v.Verdict
 			}
-			s := shape(candidate{item: it}, verdict, senv)
-			senv.close()
-			if s.action != "given" {
+			if !bumpGiven(h, env, b, it, verdict) {
 				continue
 			}
 		}
@@ -162,12 +164,51 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		return contract.Reply{} // without a record it could stop twice
 	}
 	bumpReceipts(h, ev, env, epoch.Number, overrides, "control", "override")
-	reply, shown := renderBump(stop, fullItem)
+	fullStops := map[[4]string]bool{}
+	for _, b := range stop[:min(len(stop), bumpMaxReasons)] {
+		fullStops[[4]string{b.project, b.check, b.item.Level, b.item.Entry.ID}] = true
+	}
+	companion := func(b bump, it *entries.Item) string {
+		if b.trigger.Type != "rejected" || it == nil || !it.Entry.Learned() || it.Entry.Kind != "decision" {
+			return ""
+		}
+		for _, id := range it.Entry.Companions {
+			if id == it.Entry.ID || fullStops[[4]string{b.project, b.check, it.Level, id}] {
+				continue
+			}
+			other := fullSnapshot(b)[[2]string{it.Level, id}]
+			// A retired, missing or rewritten note cannot supply the other reason.
+			if other == nil || other.Entry.Status != "active" || !other.Entry.Learned() || other.Entry.Kind != "decision" ||
+				!slices.Contains(other.Entry.Companions, it.Entry.ID) || !slices.Contains(other.Entry.When, b.trigger) ||
+				!retirements.Allows(b.project, other) {
+				continue
+			}
+			v, ok, err := h.VerdictOf(b.project, b.check, id)
+			if err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) {
+				continue
+			}
+			verdict := unknown
+			if ok {
+				verdict = v.Verdict
+			}
+			if bumpGiven(h, env, b, other, verdict) {
+				return strings.TrimSpace(other.Full)
+			}
+		}
+		return ""
+	}
+	reply, shown := renderBump(stop, fullItem, companion)
 	bumpReceipts(h, ev, env, epoch.Number, stop[:shown], "given", "")
 	for _, b := range stop {
 		noteViolation(env.RecordDirectory, b.project, b.item.Entry.ID, env.Now)
 	}
 	return contract.Reply{Decision: contract.Deny, Reason: reply}
+}
+
+func bumpGiven(h *record.Hooks, env Environment, b bump, item *entries.Item, verdict string) bool {
+	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: b.project, checkout: b.check, hooks: h}
+	defer senv.close()
+	return shape(candidate{item: item}, verdict, senv).action == "given"
 }
 
 func bumpReceipts(h *record.Hooks, ev contract.Event, env Environment, epoch int, rules []bump, action, detail string) {
@@ -401,7 +442,7 @@ func currentText(path string) string {
 const bumpIntro = "MEX stopped this edit once. "
 const bumpTail = ", unless the person asked for exactly this. If they did, make the edit again and it will go through, and tell them it goes against what the team recorded."
 
-func renderBump(stop []bump, fullItem func(bump) *entries.Item) (string, int) {
+func renderBump(stop []bump, fullItem func(bump) *entries.Item, companion func(bump, *entries.Item) string) (string, int) {
 	terms := "it"
 	if len(stop) > 1 {
 		terms = "them"
@@ -415,15 +456,20 @@ func renderBump(stop []bump, fullItem func(bump) *entries.Item) (string, int) {
 	for i, b := range stop {
 		var full *entries.Item
 		limit := room
+		related := ""
 		if i < fullCount {
 			full, limit = fullItem(b), perReason
+			if why := companion(b, full); why != "" {
+				const prefix = "\nRelated reason: "
+				related = prefix + shorten(why, limit/2-len(prefix))
+			}
 		}
-		reason := bumpReason(b, full, limit)
-		if reason == "" || len(reason)+2 > room {
+		reason := bumpReason(b, full, limit-len(related))
+		if reason == "" || len(reason)+len(related)+2 > room {
 			break
 		}
-		reasons = append(reasons, reason)
-		room -= len(reason) + 2
+		reasons = append(reasons, reason+related)
+		room -= len(reason) + len(related) + 2
 	}
 	shown := len(reasons)
 	if shown < len(stop) {

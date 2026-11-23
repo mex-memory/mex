@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { noteKey } from "../learn-deeper/coverage.js";
 import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
 import { codexExitCodes } from "./codex-exits.js";
@@ -13,7 +14,7 @@ import { knowledgeProject, type KnowledgeProject } from "./context.js";
 import { CheckSchema, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, isLearnedEntry, parseEntry, serializeEntry, sourceQuoteWordCount, validateEntry, type EntryCheck, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readBoundedTextFile, readEntryFile } from "./files.js";
 import { scopesOverlap } from "./gate-scopes.js";
-import type { AcceptedEntry, Dropped, GateContext, GateResult, Observation, Proposal, ProposedCheck } from "./gate-types.js";
+import type { AcceptedEntry, DecisionPairingRole, Dropped, GateContext, GateResult, Observation, Proposal, ProposedCheck } from "./gate-types.js";
 import { assertNoSecrets, gateEntry } from "./gates.js";
 import { publishNotes, readNotes, recoverNotes } from "./personal-store.js";
 import { anchorRequired, entryProducer, ownsEntryId, producer, producerEntryId, PRODUCER_IDS } from "./producers.js";
@@ -54,12 +55,17 @@ interface Candidate {
   checks: ProposedCheck[];
   evidence: NonNullable<Proposal["evidence"]>;
   replaces?: string;
+  decisionPairing?: DecisionPairingRole;
   sanitized: NonNullable<AcceptedEntry["sanitized"]>;
 }
 interface Active { entry: KnowledgeEntry; level: "personal" | "team" | "hint"; }
 interface Existing extends Active { claim: string; }
 type ConflictProof = StoredConflict["conflicts"][number];
-interface Publication { hash: string; evidence: Candidate["evidence"]; replaces?: string; approved?: ConflictProof[]; }
+interface Publication {
+  hash: string; evidence: Candidate["evidence"]; replaces?: string; approved?: ConflictProof[];
+  decisionPairing?: DecisionPairingRole;
+  paired?: string[];
+}
 const conflictProof = ({ entry, level }: Existing): ConflictProof =>
   ({ id: entry.mex.id, level, revision: digest(serializeEntry(entry)) });
 
@@ -137,6 +143,8 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
     if (p.id !== undefined && (!EntryIdSchema.safeParse(p.id).success || (special?.mode !== "judge" && !ownsEntryId(p.id, owner)))) invalid("Entry id is outside the producer's namespace.");
     if (p.replaces !== undefined && (!EntryIdSchema.safeParse(p.replaces).success || !ownsEntryId(p.replaces, owner) || p.replaces === p.id)) invalid("Replacement id is outside the producer's namespace or is the same entry.");
     if (p.kind as string === "hint") invalid("Hints are not producer entries.");
+    if (p.decisionPairing !== undefined && (p.producer !== "learn-deeper" || p.kind !== "decision"
+      || (p.decisionPairing !== "decision" && p.decisionPairing !== "ruled-out"))) invalid("Invalid learned decision route.");
     if (p.model === undefined || p.model === null) invalid("Specify a model or none.");
     if (p.evidenceClass !== undefined && !owner.variesEvidence) invalid("This producer has a fixed evidence class.");
     evidence = p.evidence ?? [];
@@ -221,7 +229,7 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
     } catch { return drop("quote-not-found"); }
   }
   const cleanChecks = gated.mex.checks.map((check, i) => toProposedCheck(check, checks[kept[i]!]!.saw !== undefined));
-  return { entry: gated, checks: cleanChecks, evidence, replaces: p.replaces, sanitized };
+  return { entry: gated, checks: cleanChecks, evidence, replaces: p.replaces, decisionPairing: p.decisionPairing, sanitized };
 }
 
 export function toProposedCheck(check: Exclude<EntryCheck, { kind: "legacy-grounding" }>, withSaw?: boolean): ProposedCheck;
@@ -252,12 +260,12 @@ function sameTarget(a: EntryCheck, b: EntryCheck): boolean {
     { ...b.target, match: b.target.match ?? "literal", expect: b.target.expect ?? "exact" });
   return a.kind === b.kind && isDeepStrictEqual(a.target, b.target);
 }
-function duplicate(a: KnowledgeEntry, b: Existing, hash: string): boolean {
+function duplicate(a: KnowledgeEntry, b: Existing, hash: string, mayPair: () => boolean): boolean {
   if (hash === b.claim) return true;
   if (!isLearnedEntry(a.mex) && a.mex.kind === b.entry.mex.kind && a.mex.checks.some(check => check.role === "complete"
     && b.entry.mex.checks.some(old => old.role === "complete" && sameTarget(check, old)))) return true;
-  return !!a.mex.when?.some(trigger => b.entry.mex.when?.some(old => trigger.type === old.type && trigger.pattern === old.pattern))
-    && scopeKey(a) === scopeKey(b.entry);
+  return !!a.mex.when?.some(trigger => b.entry.mex.when?.some(old => trigger.type === old.type && trigger.pattern === old.pattern
+    && !(trigger.type === "rejected" && trigger.match === old.match && mayPair()))) && scopeKey(a) === scopeKey(b.entry);
 }
 function checkRequest(project: KnowledgeProject, tree: string) {
   return { checkout: tree, project_id: project.projectId, mex_home: project.location.home, record_directory: project.location.directory };
@@ -375,10 +383,15 @@ function hintClaims(project: KnowledgeProject): { entries: KnowledgeEntry[]; inv
 }
 
 const activeEntry = (entry: KnowledgeEntry, level: Active["level"]): Existing => ({ entry, level, claim: claimHash(entry.text) });
-function compare(p: Candidate, others: Existing[], forgotten: Set<string>, retired: (id: string) => boolean, rules: () => Set<string>): Dropped | undefined {
+function compare(p: Candidate, others: Existing[], forgotten: Set<string>, retired: (id: string) => boolean, rules: () => Set<string>,
+  pairingRole?: (entry: KnowledgeEntry) => DecisionPairingRole | undefined): Dropped | undefined {
   const { entry } = p, { id, kind } = entry.mex, hash = claimHash(entry.text);
   if (retired(id) || forgotten.has(hash)) return drop("forgotten");
-  const duplicateId = others.find(other => (other.entry.mex.id === id || duplicate(entry, other, hash)));
+  const duplicateId = others.find(other => other.entry.mex.id === id || duplicate(entry, other, hash, () => {
+    if (!p.decisionPairing || other.level !== "personal") return false;
+    const role = pairingRole?.(other.entry);
+    return role !== undefined && role !== p.decisionPairing;
+  }));
   if (duplicateId) return drop("duplicate-entry", duplicateId.entry.mex.id);
   const commandRecipe = kind === "recipe" && entry.mex.checks.some(check => check.kind === "command");
   const commandOnly = (text: string) => commandRecipe && entry.mex.checks.some(check =>
@@ -416,9 +429,59 @@ function owns(writer: RecordWriter, project: string, entry: KnowledgeEntry, raw:
   if (source.producer || source.type === "person" && /^mex edit(?: |$)/u.test(source.ref)) return false;
   if (owner === "setup-recipe") return kind === "recipe" && source.type === "config";
   if (owner !== "learn-deeper") return false;
-  const legacy = writer.setting(project, `learning.deep.note.${id}`);
+  const legacy = writer.setting(project, noteKey(id));
   if (!legacy || Buffer.byteLength(legacy) > 20_000) return false;
   try { return JSON.parse(legacy).hash === digest(raw); } catch { return false; }
+}
+
+type PairingEntry = { entry: KnowledgeEntry; receipt: Publication; base: string[]; links: string[] };
+type PairingUpdate = { entry: KnowledgeEntry; companions: string[] | undefined; raw: string; beforeHash: string; receipt: Publication };
+const rejectedKeys = (entry: KnowledgeEntry) => (entry.mex.when ?? []).flatMap(trigger =>
+  trigger.type === "rejected" ? [JSON.stringify([trigger.match, trigger.pattern])] : []);
+
+function pairDecisions(entries: readonly PairingEntry[], eligible: (entry: KnowledgeEntry) => boolean): void {
+  const decisions = new Map<string, PairingEntry[]>();
+  for (const item of entries) {
+    if (item.receipt.decisionPairing !== "decision" || !eligible(item.entry)) continue;
+    for (const key of new Set(rejectedKeys(item.entry))) {
+      const matching = decisions.get(key);
+      if (matching) matching.push(item);
+      else decisions.set(key, [item]);
+    }
+  }
+  for (const item of entries) {
+    if (item.receipt.decisionPairing !== "ruled-out" || !eligible(item.entry)) continue;
+    const candidates = new Set(rejectedKeys(item.entry).flatMap(key => decisions.get(key) ?? []));
+    const winners = [...candidates].filter(other => item.entry.mex.scope.some(a => other.entry.mex.scope.some(b => scopesOverlap(a, b))));
+    if (winners.length !== 1) continue;
+    const winner = winners[0]!;
+    const [ruled, decision] = [item.entry.mex.id, winner.entry.mex.id];
+    // Reserve both places before adding either half of the link.
+    if ((!item.base.includes(decision) && item.base.length + item.links.length >= 32)
+      || (!winner.base.includes(ruled) && winner.base.length + winner.links.length >= 32)) continue;
+    if (!item.base.includes(decision)) item.links.push(decision);
+    if (!winner.base.includes(ruled)) winner.links.push(ruled);
+  }
+}
+
+function preparePairedUpdates(entries: readonly PairingEntry[], files: ReadonlyMap<string, string>, storedBytes: number): PairingUpdate[] {
+  const updates: PairingUpdate[] = [];
+  try {
+    for (const { entry, receipt, base, links } of entries) {
+      const ids = [...base, ...links];
+      if (isDeepStrictEqual(ids, entry.mex.companions ?? [])) continue;
+      const companions = ids.length ? ids : undefined;
+      const raw = serializeEntry({ ...entry, mex: { ...entry.mex, companions } });
+      storedBytes += Buffer.byteLength(raw) - Buffer.byteLength(files.get(entry.mex.id)!);
+      updates.push({ entry, companions, raw, beforeHash: receipt.hash,
+        receipt: { ...receipt, hash: digest(raw), paired: links.length ? links : undefined } });
+    }
+  } catch (error) {
+    if (!(error instanceof KnowledgeError) || error.code !== "ENTRY_TOO_LARGE") throw error;
+    return [];
+  }
+  // The two halves are optional but must fit together.
+  return storedBytes <= KNOWLEDGE_LIMITS.scanBytes ? updates : [];
 }
 
 function activeClaims(project: KnowledgeProject, notes: Map<string, KnowledgeEntry>, context: GateContext): Existing[] {
@@ -464,24 +527,34 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
     const forgotten = retiredClaimHashes(writer, projectId);
     const retired = (id: string) => project.retired.has(id);
     const accepted: AcceptedEntry[] = [];
+    const retiring = new Set<string>();
+    let pairingChanged = proposals.some(p => p?.decisionPairing !== undefined);
     let storedBytes = [...files.values()].reduce((n, raw) => n + Buffer.byteLength(raw), 0);
     const put = writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value WHERE settings.value<>excluded.value");
-    const save = (id: string, hash: string, evidence?: Candidate["evidence"], replaces?: string, approved?: ConflictProof[]) => {
-      const previous = publication(writer, projectId, id);
-      const record = JSON.stringify({ hash, evidence: evidence ?? previous?.evidence ?? [], replaces, approved });
+    const save = (id: string, receipt: Publication) => {
+      const record = JSON.stringify(receipt);
       if (Buffer.byteLength(record) > 256 << 10) throw new KnowledgeError("STORE_LIMIT", "Producer metadata exceeds its size limit.");
-      if (JSON.stringify(previous) !== record) put.run(projectId, publicationKey(id), record);
+      put.run(projectId, publicationKey(id), record);
+    };
+    const pairingReceipt = (entry: KnowledgeEntry) => {
+      const id = entry.mex.id;
+      if (entry.mex.kind !== "decision" || entry.mex.source.producer !== "learn-deeper" || retiring.has(id)) return undefined;
+      const receipt = publication(writer, projectId, id);
+      if ((!receipt?.decisionPairing && !receipt?.paired?.length) || receipt.hash !== digest(files.get(id)!)) return undefined;
+      return receipt;
     };
     const retire = (entry: KnowledgeEntry, reason: string, by: string, permanent: boolean) => {
       const info = { reason, by, at: date };
       const raw = serializeEntry({ ...entry, mex: { ...entry.mex, status: "retired", retired: info } });
       storedBytes += Buffer.byteLength(raw) - Buffer.byteLength(files.get(entry.mex.id) ?? "");
       files.set(entry.mex.id, raw);
+      retiring.add(entry.mex.id);
+      if (entry.mex.companions?.length) pairingChanged = true;
       if (permanent) {
         saveTombstone(writer, projectId, entry, info);
         project.retired.add(entry.mex.id);
         forgotten.add(claimHash(entry.text));
-      } else save(entry.mex.id, digest(raw));
+      } else save(entry.mex.id, { hash: digest(raw), evidence: publication(writer, projectId, entry.mex.id)?.evidence ?? [] });
       active = active.filter(other => other.level !== "personal" || other.entry.mex.id !== entry.mex.id);
     };
 
@@ -499,7 +572,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
         }
       }
       // The producer's own entry and the entry it replaces are not duplicates of it.
-      return compare(p, active.filter(other => other.level !== "personal" || (other.entry.mex.id !== id && other.entry.mex.id !== p.replaces)), forgotten, retired, rules);
+      return compare(p, active.filter(other => other.level !== "personal" || (other.entry.mex.id !== id && other.entry.mex.id !== p.replaces)),
+        forgotten, retired, rules, other => pairingReceipt(other)?.decisionPairing);
     };
     const checks: ProposedCheck[] = [], offsets = new Map<Candidate, number>(), owners = new Map<ProposedCheck, KnowledgeEntry>();
     const firstPass = pending.map(p => {
@@ -538,6 +612,11 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       const { entry } = p, { id, source } = entry.mex;
       const old = notes.get(id);
       if (old) entry.mex.created = old.mex.created;
+      const pairing = old && pairingReceipt(old);
+      if (pairing) {
+        pairingChanged = true;
+        entry.mex.companions = old.mex.companions;
+      }
       const raw = serializeEntry(entry);
       const hash = digest(raw), previous = publication(writer, projectId, id);
       const reviewed = previous?.hash === hash && Array.isArray(previous.approved) ? previous.approved : [];
@@ -564,7 +643,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       active = active.filter(other => other.level !== "personal" || other.entry.mex.id !== id);
       if (isActive(entry)) active.push(activeEntry(entry, "personal"));
       const approved = approval?.item.conflicts.filter(other => other.level !== "personal") ?? reviewed;
-      save(id, hash, p.evidence, p.replaces, approved.length ? approved : undefined);
+      save(id, { hash, evidence: p.evidence, replaces: p.replaces, approved: approved.length ? approved : undefined,
+        decisionPairing: p.decisionPairing, paired: pairing?.paired });
       const replaced = p.replaces && notes.get(p.replaces);
       // A replacement is not a forget: no tombstone, so the claim stays available. Retired by
       // the producer rather than its sweep, the old id is never revived.
@@ -605,6 +685,38 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       }
     }
 
+    let pairedUpdates: PairingUpdate[] = [];
+    if (pairingChanged) {
+      const rejected = new Set(proposals.flatMap((p, i) => {
+        const id = results[i]?.status !== "accepted" && p && proposedId(p);
+        return id ? [id] : [];
+      }));
+      const candidates = [...notes.keys()].sort().flatMap(id => {
+        const entry = notes.get(id)!;
+        const receipt = pairingReceipt(entry);
+        if (!receipt) return [];
+        const managed = new Set(Array.isArray(receipt.paired) ? receipt.paired : []);
+        return [{ entry, receipt, base: (entry.mex.companions ?? []).filter(other => !managed.has(other)), links: [] as string[] }];
+      });
+      pairDecisions(candidates, entry => isActive(entry) && !retired(entry.mex.id) && !rejected.has(entry.mex.id)
+        && !forgotten.has(claimHash(entry.text)) && !writer.setting(projectId, `learning.deep.refused.${entry.mex.id}`));
+      pairedUpdates = preparePairedUpdates(candidates, files, storedBytes);
+      const revised = new Set(pairedUpdates.map(update => update.entry));
+      for (const { entry, companions, raw, receipt } of pairedUpdates) {
+        entry.mex.companions = companions;
+        files.set(entry.mex.id, raw);
+        save(entry.mex.id, receipt);
+      }
+      let acceptedIndex = 0;
+      for (const result of results) {
+        if (result.status !== "accepted") continue;
+        const item = accepted[acceptedIndex++]!;
+        if (!revised.has(item.entry)) continue;
+        const before = snapshot.files.get(item.entryId);
+        item.change = result.change = before === undefined ? "new" : before === files.get(item.entryId) ? "unchanged" : "updated";
+      }
+    }
+
     if (storedBytes > KNOWLEDGE_LIMITS.scanBytes) {
       throw new KnowledgeError("STORE_LIMIT", "Personal notes exceed the byte or entry limit.");
     }
@@ -614,7 +726,15 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       }
     }
     const changed = files.size !== snapshot.files.size || [...files].some(([id, raw]) => snapshot.files.get(id) !== raw);
-    if (changed) publishNotes(writer, projectId, snapshot, files, () => context.onAccepted?.(writer, accepted, results), { locked: true });
+    if (changed) publishNotes(writer, projectId, snapshot, files, () => {
+      context.onAccepted?.(writer, accepted, results);
+      // A companion changes the file revision without changing the evidence.
+      for (const { entry, beforeHash, receipt } of pairedUpdates) {
+        writer.db.prepare(`UPDATE settings SET value=json_set(value,'$.hash',?)
+          WHERE scope=? AND key=? AND CASE WHEN json_valid(value) THEN json_extract(value,'$.hash')=? ELSE 0 END`)
+          .run(receipt.hash, projectId, noteKey(entry.mex.id), beforeHash);
+      }
+    }, { locked: true });
     else { context.onAccepted?.(writer, accepted, results); writer.db.exec("COMMIT"); }
     const learned = accepted.filter(item => isLearnedEntry(item.entry.mex)).map(item => item.entry);
     if (learned.length) {

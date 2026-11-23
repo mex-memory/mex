@@ -7,6 +7,7 @@ import type { Verdict } from "./check.js";
 type Entry = KnowledgeEntry["mex"];
 type CheckInput<T extends EntryCheck> = T extends EntryCheck ? Pick<T, "kind" | "role" | "target"> & { saw?: T["saw"] } : never;
 export type ProposedCheck = CheckInput<Exclude<EntryCheck, { kind: "legacy-grounding" }>>;
+export type DecisionPairingRole = "decision" | "ruled-out";
 
 export interface Proposal {
   producer: ProducerId;
@@ -31,6 +32,8 @@ export interface Proposal {
    * A later proposal can promote it to active; nothing demotes an active entry.
    */
   status?: "active" | "proposed";
+  /** Learn deeper's proven route. Only rejected triggers retained by the gate can pair. */
+  decisionPairing?: DecisionPairingRole;
   lasts?: unknown;
 }
 
