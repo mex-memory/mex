@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GRAPH_ENGINE_LANGUAGES_ENV } from "../../graph/engine-languages.js";
 import type { GraphMaintenanceProgress } from "../../team/contracts/graph.js";
 import { runHeadlessSetup, type SetupProgressStep } from "../headless.js";
 import { buildSetupGraph } from "../phases.js";
@@ -10,6 +11,7 @@ import { currentGraphPath } from "../../graph/storage.js";
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -50,6 +52,10 @@ describe("real setup graph progress", () => {
   });
 
   it("forwards isolated worker phases and file counts while the parent remains responsive", async () => {
+    // This heartbeat exercises the isolated Node candidate worker. A standalone
+    // v5 job can parse these three files within a single interval tick.
+    vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
+    vi.stubEnv(GRAPH_ENGINE_LANGUAGES_ENV, "");
     const root = fixture();
     const setupSteps: SetupProgressStep[] = [];
     const updates: GraphMaintenanceProgress[] = [];
