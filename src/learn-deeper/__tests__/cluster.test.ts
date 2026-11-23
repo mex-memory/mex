@@ -65,15 +65,22 @@ describe("clustering lessons across the whole window", () => {
     expect(clusters.find(c => c.pulls.includes(3))!.pulls).toEqual([3]);
   });
 
-  it("doesn't chain A to C through B when A and C share nothing", () => {
+  it("doesn't chain A to C through B when only the neighbours are alike", () => {
+    const clusters = clusterLessons([
+      item({ pull: 1, path: "a.ts", lesson: "Reset shared database fixtures between suites", category: "tests", strong: true }),
+      item({ pull: 2, path: "b.ts", lesson: "Reset database fixtures between parallel suites", category: "tests" }),
+      item({ pull: 3, path: "c.ts", lesson: "Split parallel suites between slow database workers", category: "tests" }),
+    ]);
+    expect(clusters.find(c => c.pulls.includes(1))!.pulls).toEqual([1, 2]);
+    expect(clusters.find(c => c.pulls.includes(3))!.pulls).toEqual([3]);
+  });
+
+  it("keeps two lessons apart that only name the same helper", () => {
     const clusters = clusterLessons([
       item({ pull: 1, path: "packages/core/a.ts", anchor: "readConfig()", lesson: "Read settings with `readConfig`, never process.env.", strong: true }),
       item({ pull: 2, path: "packages/core/b.ts", anchor: "readConfig(); cacheStore.set()", lesson: "`readConfig` then `cacheStore`: warm the cache once." }),
-      item({ pull: 3, path: "packages/core/c.ts", anchor: "cacheStore.clear()", lesson: "Never clear `cacheStore` inside a request." }),
     ]);
-    const leader = clusters.find(c => c.pulls.includes(1))!;
-    expect(leader.pulls).toEqual([1, 2]);
-    expect(clusters.find(c => c.pulls.includes(3))!.pulls).toEqual([3]);
+    expect(clusters.map(c => c.support)).toEqual([1, 1]);
   });
 
   it("matches an earlier learned entry so the lesson adds support instead of a duplicate", () => {
@@ -106,7 +113,7 @@ describe("cluster helpers", () => {
   });
 
   it("stems lesson words lightly and drops stop words", () => {
-    expect([...lessonWords("Always validate the inputs before using them")].sort()).toEqual(["before", "input", "them", "validate"]);
+    expect([...lessonWords("Always validate the inputs before using them")].sort()).toEqual(["befor", "input", "them", "validat"]);
   });
 
   it("sends the writer one member per PR first", () => {

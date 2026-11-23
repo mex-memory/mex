@@ -238,7 +238,7 @@ it.each([
   } finally { writer.close(); }
 }, 120_000);
 
-it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting"] as const)("honors %s when a different PR rewords a lesson", async decision => {
+it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", "forget, then a different lesson", "forget, then the same trigger"] as const)("honors %s when a different PR teaches something", async decision => {
   await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
   const writer = openRecord();
   try {
@@ -253,7 +253,12 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting"] 
       const pr = second ? 40 : 31;
       const forge = recordedForge([pr], "2026-11-14T10:00:00Z");
       const id = second ? repeatedId : candidateId;
-      const wording = second ? "In changedEntry, route fallback calls through the stable adapter." : claim;
+      const wording = !second ? claim
+        : decision === "forget, then a different lesson" ? "Validate the label before changedEntry builds the response."
+        : decision === "forget, then the same trigger" ? "Keep the transport name out of changedEntry labels."
+        : "In changedEntry, route fallback calls through the stable adapter.";
+      const pattern = !second ? "fallback(" : decision === "forget, then a different lesson" ? "return fallback"
+        : decision === "forget, then the same trigger" ? "fallback(label)" : "fallback(";
       const proven = second || decision !== "leave waiting";
       const model = vi.fn<typeof runModel>(async request => {
         if (request.purpose === "learn-deeper-filter") {
@@ -263,7 +268,7 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting"] 
         const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
         return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim: wording, scope: [path],
           clauses: [{ text: wording, quotes: [{ id, quote: "Prefer the stable adapter over the fallback." }] }],
-          ...(proven ? { when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
+          ...(proven ? { when: [{ type: "anti", match: "literal", pattern }],
             fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } } : {}) }] });
       });
       // Separate quotes for the two windows. Neither a cursor nor a seen-source receipt can hide PR 40.
@@ -288,7 +293,7 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting"] 
     expect(first.rows).toHaveLength(1);
     const id = first.rows[0]!.entryId;
     expect(first.rows[0]).toMatchObject({ support: 1, status: decision === "leave waiting" ? "proposed" : "active" });
-    if (decision === "forget") {
+    if (decision.startsWith("forget")) {
       forget(id, "Dropped the lesson", { projectPath: checkout, home: writer.location.home });
       expect(writer.setting(project, `knowledge.retired.${id}`)).toBeTruthy();
     } else if (decision === "legacy forget") {
@@ -312,7 +317,30 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting"] 
     const later = await learn(true);
     expect(later.wording).not.toBe(claim);
     const after = [...snapshotNotes(writer, project).files];
-    if (decision === "leave waiting") {
+    const edited = () => {
+      const hook = (event: string, payload: Record<string, unknown>) => execFileSync(binary, ["claude-code", event], {
+        encoding: "utf8", timeout: 20_000, input: JSON.stringify({ session_id: "after-drop", cwd: checkout, hook_event_name: event, ...payload }),
+      });
+      hook("SessionStart", { source: "startup" });
+      return hook("PreToolUse", { tool_name: "Edit", tool_input: { file_path: join(checkout, path),
+        old_string: "  return stable(label);", new_string: "  return fallback(label);" } });
+    };
+    const written = later.model.mock.calls.filter(([request]) => request.purpose === LEARN_KIND);
+    if (decision === "forget, then a different lesson") {
+      // Kept, because it is another lesson; not switched on, because the person refused one about the same thing.
+      expect(written).toHaveLength(1);
+      expect(written[0]![0].prompt).toContain(`"refusedByTeam":${JSON.stringify([claim])}`);
+      expect(later.counts).toMatchObject({ "cluster.near-refused": 1, saved: 1, proposed: 1 });
+      expect(later.rows).toMatchObject([{ claim: later.wording, proven: true, status: "proposed" }]);
+      expect(later.rows[0]!.entryId).not.toBe(id);
+      expect(edited()).not.toContain("deny");
+    } else if (decision === "forget, then the same trigger") {
+      expect(written).toHaveLength(1);
+      expect(later.counts).toMatchObject({ "cluster.forgotten": 1 });
+      expect(later.rows).toEqual([]);
+      expect(after).toEqual(before);
+      expect(edited()).not.toContain("deny");
+    } else if (decision === "leave waiting") {
       expect(later.rows).toMatchObject([{ entryId: id, claim: later.wording, support: 2, status: "active" }]);
       expect(later.model.mock.calls.some(([request]) => request.purpose === LEARN_KIND)).toBe(true);
       expect(parseEntry(new Map(after).get(id)!).mex.status).toBe("active");
