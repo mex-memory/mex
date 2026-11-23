@@ -8,6 +8,7 @@
  * literal and structural patterns behave exactly as they will at delivery.
  */
 import { spawnSync } from "node:child_process";
+import { z } from "zod";
 import { nativeBinary } from "./check.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import type { KnowledgeEntry } from "./entry.js";
@@ -27,7 +28,16 @@ export interface PatternCandidate extends WhenPattern {
   anchor?: string;
 }
 
-export interface PatternVerdict { keep: boolean; reason: string; files: number; matched: number }
+const patternVerdict = z.object({
+  keep: z.boolean(),
+  reason: z.string(),
+  common: z.boolean(),
+  files: z.number().int().nonnegative(),
+  matched: z.number().int().nonnegative(),
+  occurrences: z.number().int().nonnegative(),
+});
+export type PatternVerdict = z.infer<typeof patternVerdict>;
+const patternReply = z.object({ ok: z.literal(true), results: z.array(patternVerdict) });
 
 /** At most this many candidates per call; the native side refuses more. */
 export const PATTERN_CHECK_MAX = 64;
@@ -55,9 +65,9 @@ export function checkPatterns(candidates: readonly PatternCandidate[], scope: re
     env: { ...(options.env ?? process.env), MEX_BACKGROUND: "1" },
   });
   try {
-    const parsed = JSON.parse(run.stdout || "{}") as { ok?: boolean; results?: PatternVerdict[] };
-    if (!parsed.ok || !Array.isArray(parsed.results) || parsed.results.length !== candidates.length) return null;
-    return parsed.results.map(r => ({ keep: r.keep === true, reason: String(r.reason ?? ""), files: Number(r.files) || 0, matched: Number(r.matched) || 0 }));
+    const parsed = patternReply.safeParse(JSON.parse(run.stdout || "{}"));
+    if (!parsed.success || parsed.data.results.length !== candidates.length) return null;
+    return parsed.data.results;
   } catch {
     return null;
   }

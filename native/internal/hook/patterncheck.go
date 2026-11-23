@@ -10,8 +10,7 @@ import (
 	"github.com/mex-memory/mex/native/pattern"
 )
 
-// Bounds on the area a pattern check reads. Over them, the share is taken
-// over the files read so far.
+// Bounds on the area a pattern check reads. A partial area can't prove rarity.
 const (
 	patternCheckFiles     = 5000
 	patternCheckFileBytes = 512 << 10
@@ -30,7 +29,7 @@ type patternCheckRequest struct {
 // patternCheck answers `mex-hook --pattern-check`: the $0 self-check for
 // patterns learned from a review, run in the background before an entry is
 // written. The area's files are listed by the file index and read from the
-// checkout; without an index the share is unknown and anti patterns are
+// checkout; without a complete area the frequency is unknown and anti patterns are
 // dropped.
 func patternCheck(stdin io.Reader, stdout io.Writer) int {
 	var req patternCheckRequest
@@ -65,15 +64,19 @@ func readArea(req patternCheckRequest) pattern.Area {
 	seen := map[string]bool{}
 	var paths []string
 	for _, glob := range req.Scope {
-		found, _, err := idx.PathsMatching(glob, patternCheckFiles)
-		if err != nil {
-			return nil // a glob the index can't list leaves the area unknown
+		found, truncated, err := idx.PathsMatching(glob, patternCheckFiles)
+		if err != nil || truncated {
+			return nil
 		}
 		for _, p := range found {
-			if !seen[p] && len(paths) < patternCheckFiles {
-				seen[p] = true
-				paths = append(paths, p)
+			if seen[p] {
+				continue
 			}
+			if len(paths) == patternCheckFiles {
+				return nil
+			}
+			seen[p] = true
+			paths = append(paths, p)
 		}
 	}
 	root, err := os.OpenRoot(req.Checkout)
@@ -85,16 +88,15 @@ func readArea(req patternCheckRequest) pattern.Area {
 	total := 0
 	for _, p := range paths {
 		info, err := root.Stat(filepath.FromSlash(p))
-		if err != nil || !info.Mode().IsRegular() || info.Size() > patternCheckFileBytes {
-			continue
-		}
-		if total += int(info.Size()); total > patternCheckBytes {
-			break
+		if err != nil || !info.Mode().IsRegular() || info.Size() > patternCheckFileBytes || info.Size() > int64(patternCheckBytes-total) {
+			return nil
 		}
 		data, err := root.ReadFile(filepath.FromSlash(p))
-		if err == nil {
-			area = append(area, string(data))
+		if err != nil || len(data) > patternCheckFileBytes || len(data) > patternCheckBytes-total {
+			return nil
 		}
+		total += len(data)
+		area = append(area, string(data))
 	}
 	return area
 }

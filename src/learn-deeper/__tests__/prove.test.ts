@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PatternCandidate, PatternVerdict } from "../../knowledge/pattern-check.js";
 import { clusterLessons, type Cluster, type Triaged } from "../cluster.js";
 import type { PinnedTree } from "../git.js";
 import type { Candidate, Region } from "../harvest/types.js";
+import { PIPELINE_LIMITS } from "../pipeline.js";
 import { addedOccurrences, proveEntry, processConfirmed, type ProofContext } from "../prove.js";
 import { routeEntry } from "../route.js";
 import { parseTriage } from "../triage.js";
@@ -17,16 +18,16 @@ const region = (path: string, start: number, text: string, commit = "b".repeat(4
 function fakePatterns(common = new Set<string>()) {
   return (candidates: readonly PatternCandidate[]): PatternVerdict[] => candidates.map(c => {
     const has = (code: string) => code.includes(c.pattern);
-    const no = (reason: string): PatternVerdict => ({ keep: false, reason, files: 10, matched: 0 });
+    const no = (reason: string): PatternVerdict => ({ keep: false, reason, common: false, files: 0, matched: 0, occurrences: 0 });
     if (c.type === "required") {
       if (!has(c.fixed)) return no("it doesn't match the fixed code");
       if (has(c.objected)) return no("the objected code already had it");
-      return { keep: true, reason: "matches the fix only", files: 0, matched: 0 };
+      return { ...no("matches the fix only"), keep: true };
     }
     if (!has(c.objected)) return no("it doesn't match the code the reviewer objected to");
     if (c.fixed && has(c.fixed)) return no("it still matches the fixed code");
-    if (common.has(c.pattern)) return { keep: false, reason: "already in 6 of 10 the area's files", files: 10, matched: 6 };
-    return { keep: true, reason: "matches the objected code only, and is rare in the area", files: 10, matched: 0 };
+    if (common.has(c.pattern)) return { ...no("widespread at HEAD (6 occurrences in 6 of 10 scoped files)"), common: true, files: 10, matched: 6, occurrences: 6 };
+    return { ...no("matches the objected code only, and is rare in the area"), keep: true, files: 10 };
   });
 }
 
@@ -181,7 +182,7 @@ describe("proving a learned rule", () => {
     const one = clusterOf([thread(3, "packages/api/src/users.ts")]);
     const single = await proveEntry(draft(one), one, context({ patterns: fakePatterns(new Set(["console.log("])) }));
     expect(single.when).toEqual([]);
-    expect(single.failures.join(" ")).toMatch(/narrow the scope/u);
+    expect(single.failures.join(" ")).toContain("6 occurrences in 6 of 10 scoped files). Narrow the scope");
     const two = clusterOf([thread(3, "packages/api/src/users.ts"), thread(40, "packages/api/src/orders.ts")]);
     const double = await proveEntry(draft(two), two, context({ patterns: fakePatterns(new Set(["console.log("])) }));
     expect(double.when[0]!.migration).toBe(true);
@@ -189,6 +190,37 @@ describe("proving a learned rule", () => {
     if ("dropped" in routed) throw new Error(routed.dropped);
     expect(routed.proposal.label).toBe("Learned from 2 PRs, 1 maintainer · migration in progress");
     expect(routed.proposal.text).toContain("Older code here still does this; don't add more.");
+  });
+
+  it("cannot establish rarity from a partially staged scope", async () => {
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
+    const proof = await proveEntry(draft(cluster), cluster, context({
+      check: { projectPath: ".", checkTree: ".", checkIndex: { projectId: "fixture", recordDirectory: "." } },
+      patterns: candidates => fakePatterns()(candidates).map(verdict => ({ ...verdict, files: 2 })),
+    }));
+    expect(proof.when).toEqual([]);
+    expect(proof.failures).toEqual([expect.stringContaining("could not be checked in all 3 scoped files at HEAD")]);
+  });
+
+  it("reports the files missing after the 2,000-file staging cap without checking the sample", async () => {
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
+    const readable = new Set([
+      "packages/api/src/users.ts",
+      ...Array.from({ length: PIPELINE_LIMITS.stagedFiles - 1 }, (_, i) => `packages/api/src/file-${i}.ts`),
+    ]);
+    const missing = "packages/api/src/unstaged.ts";
+    const pinned = tree(HEAD);
+    pinned.paths = () => [...readable, missing];
+    const patterns = vi.fn(fakePatterns());
+    const proof = await proveEntry(draft(cluster), cluster, context({
+      tree: pinned, patterns,
+      check: { projectPath: ".", checkTree: ".", checkIndex: { projectId: "fixture", recordDirectory: "." } },
+      patternStage: { readable, binary: new Set() },
+    }));
+    expect(readable.size).toBe(2000);
+    expect(patterns).not.toHaveBeenCalled();
+    expect(proof.when).toEqual([]);
+    expect(proof.failures).toEqual([expect.stringContaining(`Could not read 1 scoped file ("${missing}"). Narrow the scope`)]);
   });
 
   it("removes an unsupported clause and drops an entry whose claim is invented", async () => {

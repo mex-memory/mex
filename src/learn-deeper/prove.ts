@@ -17,7 +17,8 @@ import { globToRegExp } from "../file-index/glob.js";
 import { checkPatterns, type PatternCandidate, type PatternVerdict } from "../knowledge/pattern-check.js";
 import type { GateContext } from "../knowledge/gate.js";
 import { writerMembers, type Cluster, type Triaged } from "./cluster.js";
-import { command, type PinnedTree } from "./git.js";
+import { command, type PatternStage, type PinnedTree } from "./git.js";
+import { safePath } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
 
@@ -72,6 +73,7 @@ export interface ProofContext {
   tree: PinnedTree;
   /** A staged copy of the pinned tree with a file index, for the native matcher's area check. */
   check: Pick<GateContext, "checkTree" | "checkIndex"> & { projectPath: string };
+  patternStage?: PatternStage;
   /** Run the native matcher; tests pass a fake. */
   patterns?: typeof checkPatterns;
   /** Read the default branch's later history; tests pass a fake. */
@@ -105,6 +107,26 @@ function scopeMatches(tree: PinnedTree, glob: string): boolean {
   try { pattern = globToRegExp(glob); } catch { return false; }
   for (const path of tree.paths()) if (pattern.test(path)) return true;
   return false;
+}
+
+export function patternScopeCoverage(tree: Pick<PinnedTree, "paths">, scope: readonly string[], stage?: PatternStage) {
+  const globs = scope.map(globToRegExp);
+  let files = 0;
+  const unread: string[] = [];
+  for (const path of tree.paths()) {
+    if (!globs.some(glob => glob.test(path)) || stage?.binary.has(path)) continue;
+    files++;
+    if (stage && !stage.readable.has(path)) unread.push(path);
+  }
+  return { files, unread };
+}
+
+function unreadScopeFailure(unread: readonly string[]): string {
+  // Keep the repair input bounded and never copy a withheld path into it.
+  const examples = unread.filter(safePath).slice(0, 8);
+  const remaining = unread.length - examples.length;
+  const list = [...examples.map(path => JSON.stringify(path)), ...(remaining ? [`${remaining} other`] : [])];
+  return `HEAD scope is unknown. Could not read ${unread.length} scoped ${unread.length === 1 ? "file" : "files"} (${list.join(", ")}). Narrow the scope around unread files or remove the pattern.`;
 }
 
 /** The common folder of some paths, as a glob ("packages/api/**"), or undefined at the root. */
@@ -262,7 +284,10 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   if (draft.when.length && !codeRoutes.has(draft.route)) failures.push(`a ${draft.route} carries no edit pattern`);
   const wanted = codeRoutes.has(draft.route) ? draft.when : [];
   if (wanted.length && !pairs.length) failures.push("no before/after code to prove a pattern on");
-  if (wanted.length && pairs.length && result.scope[0] !== "**") {
+  const coverage = wanted.some(item => item.type !== "required") && context.check.checkTree && context.check.checkIndex
+    ? patternScopeCoverage(context.tree, result.scope, context.patternStage) : undefined;
+  if (coverage?.unread.length) failures.push(unreadScopeFailure(coverage.unread));
+  if (wanted.length && pairs.length && result.scope[0] !== "**" && !coverage?.unread.length) {
     const run = context.patterns ?? checkPatterns;
     const candidates: PatternCandidate[] = [];
     const owner: Array<{ pattern: number; pair: number | "example"; probe?: true }> = [];
@@ -297,8 +322,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
         ?? mine.find(o => o.probe && occurs(o.verdict?.reason));
       const example = mine.find(o => o.pair === "example");
       const exampleCounter = example && /still matches the fixed code|already had it/u.test(example.verdict?.reason ?? "");
-      const common = real.filter(o => /^already in \d+ of/u.test(o.verdict?.reason ?? ""));
-      const proven = real.filter(o => o.verdict?.keep || /^already in \d+ of/u.test(o.verdict?.reason ?? ""));
+      const proven = real.filter(o => o.verdict?.keep || o.verdict?.common);
       const label = `${item.type} ${JSON.stringify(item.pattern)}`;
       if (!mine.some(item => item.verdict)) continue;
       if (counter) {
@@ -306,7 +330,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
         continue;
       }
       if (exampleCounter) { failures.push(`${label} matches its own "ok" example`); continue; }
-      if (!example || !(example.verdict?.keep || /^already in \d+ of/u.test(example.verdict?.reason ?? ""))) {
+      if (!(example?.verdict?.keep || example?.verdict?.common)) {
         failures.push(`${label} does not separate its flag and ok examples`);
         continue;
       }
@@ -317,9 +341,16 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
         failures.push(`${label} isn't proven on any pair: ${[...new Set(real.map(o => o.verdict?.reason).filter(Boolean))].join("; ")}`);
         continue;
       }
-      const migration = common.length > 0;
-      if (migration && cluster.support < 2) { failures.push(`${label} is already common in its scope today: ${common[0]!.verdict!.reason}; narrow the scope`); continue; }
-      result.when.push({ ...item, pairs: proven.map(o => o.pair as number).slice(0, 3), migration });
+      if (item.type !== "required" && coverage && proven.some(o => o.verdict!.files !== coverage.files)) {
+        failures.push(`${label} could not be checked in all ${coverage.files} scoped files at HEAD. Narrow the scope.`);
+        continue;
+      }
+      const common = proven.find(o => o.verdict?.common)?.verdict;
+      if (common && cluster.support < 2) {
+        failures.push(`${label} is ${common.reason}. Narrow the scope or remove this pattern.`);
+        continue;
+      }
+      result.when.push({ ...item, pairs: proven.map(o => o.pair as number).slice(0, 3), migration: common !== undefined });
     }
   }
 

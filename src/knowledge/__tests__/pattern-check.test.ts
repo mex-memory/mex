@@ -23,7 +23,10 @@ describe("pattern self-check without the native binary", () => {
   });
 
   it("keeps only the candidates the check kept, without their review text", () => {
-    const verdicts = [{ keep: true, reason: "ok", files: 3, matched: 0 }, { keep: false, reason: "common", files: 3, matched: 2 }];
+    const verdicts = [
+      { keep: true, reason: "ok", common: false, files: 3, matched: 0, occurrences: 0 },
+      { keep: false, reason: "common", common: true, files: 3, matched: 2, occurrences: 2 },
+    ];
     expect(keptPatterns([moment, logging], verdicts)).toEqual([{ type: "anti", match: "literal", pattern: "from 'moment'" }]);
   });
 });
@@ -45,7 +48,7 @@ describe.skipIf(!enabled)("pattern self-check with the native binary", () => {
     const files: Record<string, string> = {
       "apps/api/a.ts": "import { format } from 'date-fns'\n",
       "apps/api/b.ts": "export const b = 1\n",
-      "apps/api/c.ts": "console.log('debug')\n",
+      "apps/api/c.ts": "console.log('debug')\nconsole.log('twice')\n",
       "apps/api/d.ts": "console.log('more')\n",
       "apps/api/e.ts": "console.log('again')\n",
     };
@@ -55,7 +58,32 @@ describe.skipIf(!enabled)("pattern self-check with the native binary", () => {
     await buildIndex({ root, projectId: project.projectId, recordDirectory: project.location.directory, workers: 0 });
 
     const verdicts = checkPatterns([moment, logging], ["apps/api/**"], options);
-    expect(verdicts?.map(v => [v.keep, v.files, v.matched])).toEqual([[true, 5, 0], [false, 5, 3]]);
+    expect(verdicts).toMatchObject([
+      { keep: true, common: false, files: 5, matched: 0, occurrences: 0 },
+      { keep: false, common: true, files: 5, matched: 3, occurrences: 4 },
+    ]);
     expect(keptPatterns([moment, logging], verdicts)).toEqual([{ type: "anti", match: "literal", pattern: "from 'moment'" }]);
+  }, 60_000);
+
+  it.each([
+    { files: 20, perFile: [3], common: false },
+    { files: 20, perFile: [4], common: true },
+    { files: 150, perFile: [1, 1], common: true },
+    { files: 200, perFile: [1, 1], common: false },
+    { files: 20, perFile: [1], common: false },
+  ])("checks $perFile occurrences by file across $files files", async ({ files, perFile, common }) => {
+    const root = mkdtempSync(join(tmpdir(), "mex-pattern-count-")); roots.push(root);
+    for (let i = 0; i < files; i++) {
+      writeFileSync(join(root, `file-${i}.ts`), "console.log('debug');\n".repeat(perFile[i] ?? 0) || "export {};\n");
+    }
+    const recordDirectory = join(root, ".mex"), projectId = "fixture";
+    await buildIndex({ root, projectId, recordDirectory, workers: 0 });
+    const verdicts = checkPatterns([logging], ["*.ts"], {
+      projectPath: root, checkTree: root, checkIndex: { projectId, recordDirectory },
+      env: { ...process.env, MEX_HOOK_BINARY: binary },
+    });
+    expect(verdicts).toMatchObject([{
+      keep: !common, common, files, matched: perFile.length, occurrences: perFile.reduce((sum, n) => sum + n, 0),
+    }]);
   }, 60_000);
 });
