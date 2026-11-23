@@ -160,8 +160,12 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const alternatives = proof.alternatives.map(item => `Considered and ruled out: ${item.option} (${item.reason}).`);
   const text = [proof.claim, ...proof.reasons, ...lint, ...alternatives].join(" ").slice(0, 1000);
   const fixKinds = new Set(["rule", "pitfall", "decision"]);
-  const status = cluster.decision === "write" && !proof.notAlwaysFollowed ? "active"
-    : proven && !proof.notAlwaysFollowed ? "active" : "proposed";
+  // R19: repeated support from one reviewer is that person's habit until the code proves it, a doc agrees, or a
+  // person ticks it, so it waits for the tick rather than reaching sessions on support alone.
+  const writtenPolicy = members.some(candidate => candidate.kind === "doc" || candidate.kind === "adr");
+  const oneReviewer = cluster.source === "review" && cluster.reviewers < 2 && !writtenPolicy;
+  const status = proof.notAlwaysFollowed ? "proposed" : proven ? "active"
+    : cluster.decision === "write" && !oneReviewer ? "active" : "proposed";
   const key = JSON.stringify([plan.host, plan.slug.toLowerCase(), "lesson", cluster.key]);
   const proposal: Proposal = {
     producer: "learn-deeper", ...(cluster.earlier ? { id: cluster.earlier } : { key }),

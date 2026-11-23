@@ -157,6 +157,22 @@ describe("proving a learned rule", () => {
     expect("dropped" in routed ? "" : routed.status).toBe("proposed");
   });
 
+  it("doesn't pre-tick an unproven lesson that only one reviewer kept asking for", async () => {
+    const prose = (cluster: Cluster) => draft(cluster, { when: [], fix: undefined });
+    const plan = { host: "github.com", slug: "acme/app" }, model = { id: "best", version: "test" };
+    const solo = clusterOf([thread(3, "packages/api/src/users.ts"), thread(40, "packages/api/src/orders.ts")]);
+    expect(solo.decision).toBe("write");
+    const alone = routeEntry(await proveEntry(prose(solo), solo, context()), plan, model);
+    if ("dropped" in alone) throw new Error(alone.dropped);
+    expect([alone.status, alone.proposal.label]).toEqual(["proposed", "Learned from 2 PRs, 1 maintainer"]);
+    const team = clusterOf([thread(3, "packages/api/src/users.ts"), thread(40, "packages/api/src/orders.ts", { reviewers: ["r2"] })]);
+    const agreed = routeEntry(await proveEntry(prose(team), team, context()), plan, model);
+    expect("dropped" in agreed ? agreed.dropped : agreed.status).toBe("active");
+    // Proven against the code, one reviewer is enough.
+    const proven = routeEntry(await proveEntry(draft(solo), solo, context()), plan, model);
+    expect("dropped" in proven ? proven.dropped : [proven.status, proven.proven]).toEqual(["active", true]);
+  });
+
   it("drops a ruled-out lesson without a maintainer's contrastive reason", async () => {
     const closed = thread(12, "packages/api/src/users.ts", { kind: "closed-pr", text: "Closing this one." });
     const cluster = clusterOf([closed], "Don't add a second logger package.");
