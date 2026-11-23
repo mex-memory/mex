@@ -2610,12 +2610,14 @@ function graphStatusUnavailable(
   validation?: GraphReadValidation,
   configDriftTolerated = false,
 ): void {
+  const diagnostics = status.diagnostics.filter((entry) =>
+    entry.code !== "GRAPH_ENGINE_FALLBACK" && entry.code !== "GRAPH_ENGINE_WASI");
   const blocking = configDriftTolerated
-    ? status.diagnostics.filter((entry) => !CONFIG_DRIFT_DIAGNOSTIC_CODES.has(entry.code))
-    : status.diagnostics;
+    ? diagnostics.filter((entry) => !CONFIG_DRIFT_DIAGNOSTIC_CODES.has(entry.code))
+    : diagnostics;
   // Fall back to the full list only when config drift was the whole story and
   // something else — a race, a mid-read change — still refused the read.
-  const candidates = blocking.length > 0 ? blocking : status.diagnostics;
+  const candidates = blocking.length > 0 ? blocking : diagnostics;
   const diagnostic = validation?.code
     ? status.diagnostics.find((entry) => entry.code === validation.code)
     : [...candidates].reverse().find((entry) => entry.severity !== "info")
@@ -2952,13 +2954,25 @@ const v5UnresolvedSpelling = (db: SqliteDatabase) => `id IN (
   SELECT -id FROM ${v5Rows(db, "unresolved_other")} WHERE name = (SELECT id FROM ${v5Rows(db, "unresolved_names")} WHERE name = ?)
 )`;
 
+function unresolvedCallFilter(db: SqliteDatabase, name: string): { where: string; args: string[] } {
+  if (readsV5Graph(db)) return { where: v5UnresolvedSpelling(db), args: [name, name, name] };
+  const dot = name.lastIndexOf(".");
+  if (dot > 0) {
+    // A member's separate receiver can still satisfy a qualified query.
+    return {
+      where: "status <> 'resolved' AND (reference_name = ? OR (reference_name = ? AND receiver = ? AND reference_kind = 'calls'))",
+      args: [name, name.slice(dot + 1), name.slice(0, dot)],
+    };
+  }
+  return { where: "reference_name = ? AND status <> 'resolved'", args: [name] };
+}
+
 /** Total matching call sites, so the summary can report what it capped. */
 function unresolvedCallSiteCount(db: SqliteDatabase, name: string): number {
-  const native = readsV5Graph(db);
+  const { where, args } = unresolvedCallFilter(db, name);
   const row = db.prepare(
-    `SELECT COUNT(*) AS total FROM unresolved_refs
-      WHERE ${native ? v5UnresolvedSpelling(db) : "reference_name = ? AND status <> 'resolved'"}`,
-  ).get(...(native ? [name, name, name] : [name])) as { total?: unknown } | undefined;
+    `SELECT COUNT(*) AS total FROM unresolved_refs WHERE ${where}`,
+  ).get(...args) as { total?: unknown } | undefined;
   return typeof row?.total === "number" ? row.total : 0;
 }
 
@@ -2969,14 +2983,15 @@ function unresolvedCallSites(
   limit: number,
 ): UnresolvedCallSite[] {
   const native = readsV5Graph(db);
+  const { where, args } = unresolvedCallFilter(db, name);
   return db.prepare(
     `SELECT reference_name, reference_kind, status, file_path, line, col,
             from_node_id, receiver, qualifier${native ? ", candidate_id" : ""}
        FROM unresolved_refs
-      WHERE ${native ? v5UnresolvedSpelling(db) : "reference_name = ? AND status <> 'resolved'"}
+      WHERE ${where}
       ORDER BY file_path, line, col, from_node_id
       LIMIT ?`,
-  ).all(...(native ? [name, name, name] : [name]), Math.max(0, limit)) as UnresolvedCallSite[];
+  ).all(...args, Math.max(0, limit)) as UnresolvedCallSite[];
 }
 
 /**
