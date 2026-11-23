@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
 import { currentGraphPath, graphLocation, readGraphPointer } from "../storage.js";
 import { openGraphRead } from "../overlay-open.js";
@@ -18,6 +18,10 @@ import { openGraphRead } from "../overlay-open.js";
  */
 
 const roots: string[] = [];
+// Compare the v4 row digests and import bindings throughout the replay.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
+
 afterAll(() => {
   for (const root of roots.splice(0)) {
     try { git(root, "worktree", "prune"); } catch { /* not a repository */ }

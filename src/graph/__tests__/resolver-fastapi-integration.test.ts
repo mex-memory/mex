@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { rebuildGraph } from "../maintenance.js";
-import { openSqlite } from "../db/sqlite.js";
+import { openGraphDatabase } from "../db/database.js";
 
 const roots: string[] = [];
 
@@ -61,7 +61,7 @@ describe("FastAPI resolver integration", () => {
     const result = await rebuildGraph(root);
     expect(result.status.status).toBe("fresh");
 
-    const db = openSqlite(currentGraphPath(root));
+    const db = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
     try {
       const routes = db.prepare(
         "SELECT id, name, signature FROM nodes WHERE kind = 'route' ORDER BY name",
@@ -125,7 +125,7 @@ describe("FastAPI resolver integration", () => {
     const result = await rebuildGraph(root);
     expect(result.status.status).toBe("fresh");
 
-    const db = openSqlite(currentGraphPath(root));
+    const db = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
     try {
       const routes = db.prepare(
         "SELECT id, signature FROM nodes WHERE kind = 'route'",

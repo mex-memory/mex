@@ -26,7 +26,7 @@ import { currentGraphPath } from "../../../graph/storage.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createGraphEngine } from "../../../graph/engine-impl.js";
 import { openGraphDatabase } from "../../../graph/db/database.js";
 import { FingerprintStore } from "../../../graph/fingerprint-store.js";
@@ -58,6 +58,10 @@ export function issueAccessToken(subject: string): string {
 `;
 
 const roots: string[] = [];
+
+// These fixtures write to the schema v4 backing tables.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+afterEach(() => vi.unstubAllEnvs());
 
 afterEach(() => {
   for (const root of roots.splice(0)) {

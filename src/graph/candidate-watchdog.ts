@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 /**
  * Only the lifeline runs in a Worker; graph construction stays in the disposable
  * process. EOF is an OS-owned parent-lifetime signal, not a PID liveness guess
- * that could accept a reused PID. It works during a blocked compiler/SQLite call.
+ * that could accept a reused PID. It works during a blocked extraction or SQLite call.
  */
 export async function startGraphCandidateWatchdog(): Promise<() => Promise<void>> {
   const worker = new Worker(`

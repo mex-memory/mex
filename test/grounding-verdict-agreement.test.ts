@@ -160,7 +160,7 @@ function wikiVerdict(fx: Fixture): { verdict: GroundingVerdict; stored: string |
   const parsed = parseWikiMarkdown({ path: "context/orders.md", text: readFileSync(fx.scaffold, "utf-8") });
   const entity = parsed.entities[0]!.entity;
   const dbPath = currentGraphPath(fx.root);
-  const db = openGraphDatabase(dbPath);
+  const db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
   const engine = createGraphEngine({ rootDir: fx.root });
   try {
     const graph = createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: fx.root });
@@ -213,7 +213,7 @@ describe("check and the Wiki share one code-link verdict", () => {
 /** Run `fn` with the Wiki's graph adapter over the fixture's graph. */
 function withWikiGraph<T>(fx: Fixture, fn: (graph: ReturnType<typeof createGroundingGraph>) => T): T {
   const dbPath = currentGraphPath(fx.root);
-  const db = openGraphDatabase(dbPath);
+  const db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
   const engine = createGraphEngine({ rootDir: fx.root });
   try {
     return fn(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db, { projectRoot: fx.root }));

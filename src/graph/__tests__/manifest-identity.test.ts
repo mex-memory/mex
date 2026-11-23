@@ -56,7 +56,6 @@ describe("graph manifest identity", () => {
 
     for (const patch of [
       { db: stored.inputs.db + 1 },
-      { compiler: "9.9.9" },
       { extractor: "extractor-next" },
       { resolver: "resolver-next" },
       { corpusPolicyHash: "0".repeat(64) },

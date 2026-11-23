@@ -1,0 +1,3710 @@
+{
+  "typescript": "5.9.3",
+  "cases": [
+    {
+      "text": "{",
+      "standard": [
+        "FirstPunctuation"
+      ],
+      "jsx": [
+        "FirstPunctuation"
+      ]
+    },
+    {
+      "text": "}",
+      "standard": [
+        "CloseBraceToken"
+      ],
+      "jsx": [
+        "CloseBraceToken"
+      ]
+    },
+    {
+      "text": "(",
+      "standard": [
+        "OpenParenToken"
+      ],
+      "jsx": [
+        "OpenParenToken"
+      ]
+    },
+    {
+      "text": ")",
+      "standard": [
+        "CloseParenToken"
+      ],
+      "jsx": [
+        "CloseParenToken"
+      ]
+    },
+    {
+      "text": "[",
+      "standard": [
+        "OpenBracketToken"
+      ],
+      "jsx": [
+        "OpenBracketToken"
+      ]
+    },
+    {
+      "text": "]",
+      "standard": [
+        "CloseBracketToken"
+      ],
+      "jsx": [
+        "CloseBracketToken"
+      ]
+    },
+    {
+      "text": ".",
+      "standard": [
+        "DotToken"
+      ],
+      "jsx": [
+        "DotToken"
+      ]
+    },
+    {
+      "text": "...",
+      "standard": [
+        "DotDotDotToken"
+      ],
+      "jsx": [
+        "DotDotDotToken"
+      ]
+    },
+    {
+      "text": ";",
+      "standard": [
+        "SemicolonToken"
+      ],
+      "jsx": [
+        "SemicolonToken"
+      ]
+    },
+    {
+      "text": ",",
+      "standard": [
+        "CommaToken"
+      ],
+      "jsx": [
+        "CommaToken"
+      ]
+    },
+    {
+      "text": "?.",
+      "standard": [
+        "QuestionDotToken"
+      ],
+      "jsx": [
+        "QuestionDotToken"
+      ]
+    },
+    {
+      "text": "<",
+      "standard": [
+        "FirstBinaryOperator"
+      ],
+      "jsx": [
+        "FirstBinaryOperator"
+      ]
+    },
+    {
+      "text": "</",
+      "standard": [
+        "FirstBinaryOperator",
+        "SlashToken"
+      ],
+      "jsx": [
+        "LessThanSlashToken"
+      ]
+    },
+    {
+      "text": ">",
+      "standard": [
+        "GreaterThanToken"
+      ],
+      "jsx": [
+        "GreaterThanToken"
+      ]
+    },
+    {
+      "text": "<=",
+      "standard": [
+        "LessThanEqualsToken"
+      ],
+      "jsx": [
+        "LessThanEqualsToken"
+      ]
+    },
+    {
+      "text": ">=",
+      "standard": [
+        "GreaterThanToken",
+        "FirstAssignment"
+      ],
+      "jsx": [
+        "GreaterThanToken",
+        "FirstAssignment"
+      ]
+    },
+    {
+      "text": "==",
+      "standard": [
+        "EqualsEqualsToken"
+      ],
+      "jsx": [
+        "EqualsEqualsToken"
+      ]
+    },
+    {
+      "text": "!=",
+      "standard": [
+        "ExclamationEqualsToken"
+      ],
+      "jsx": [
+        "ExclamationEqualsToken"
+      ]
+    },
+    {
+      "text": "===",
+      "standard": [
+        "EqualsEqualsEqualsToken"
+      ],
+      "jsx": [
+        "EqualsEqualsEqualsToken"
+      ]
+    },
+    {
+      "text": "!==",
+      "standard": [
+        "ExclamationEqualsEqualsToken"
+      ],
+      "jsx": [
+        "ExclamationEqualsEqualsToken"
+      ]
+    },
+    {
+      "text": "=>",
+      "standard": [
+        "EqualsGreaterThanToken"
+      ],
+      "jsx": [
+        "EqualsGreaterThanToken"
+      ]
+    },
+    {
+      "text": "+",
+      "standard": [
+        "PlusToken"
+      ],
+      "jsx": [
+        "PlusToken"
+      ]
+    },
+    {
+      "text": "-",
+      "standard": [
+        "MinusToken"
+      ],
+      "jsx": [
+        "MinusToken"
+      ]
+    },
+    {
+      "text": "*",
+      "standard": [
+        "AsteriskToken"
+      ],
+      "jsx": [
+        "AsteriskToken"
+      ]
+    },
+    {
+      "text": "**",
+      "standard": [
+        "AsteriskAsteriskToken"
+      ],
+      "jsx": [
+        "AsteriskAsteriskToken"
+      ]
+    },
+    {
+      "text": "/",
+      "standard": [
+        "SlashToken"
+      ],
+      "jsx": [
+        "SlashToken"
+      ]
+    },
+    {
+      "text": "%",
+      "standard": [
+        "PercentToken"
+      ],
+      "jsx": [
+        "PercentToken"
+      ]
+    },
+    {
+      "text": "++",
+      "standard": [
+        "PlusPlusToken"
+      ],
+      "jsx": [
+        "PlusPlusToken"
+      ]
+    },
+    {
+      "text": "--",
+      "standard": [
+        "MinusMinusToken"
+      ],
+      "jsx": [
+        "MinusMinusToken"
+      ]
+    },
+    {
+      "text": "<<",
+      "standard": [
+        "LessThanLessThanToken"
+      ],
+      "jsx": [
+        "LessThanLessThanToken"
+      ]
+    },
+    {
+      "text": ">>",
+      "standard": [
+        "GreaterThanToken",
+        "GreaterThanToken"
+      ],
+      "jsx": [
+        "GreaterThanToken",
+        "GreaterThanToken"
+      ]
+    },
+    {
+      "text": ">>>",
+      "standard": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken"
+      ],
+      "jsx": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken"
+      ]
+    },
+    {
+      "text": "&",
+      "standard": [
+        "AmpersandToken"
+      ],
+      "jsx": [
+        "AmpersandToken"
+      ]
+    },
+    {
+      "text": "|",
+      "standard": [
+        "BarToken"
+      ],
+      "jsx": [
+        "BarToken"
+      ]
+    },
+    {
+      "text": "^",
+      "standard": [
+        "CaretToken"
+      ],
+      "jsx": [
+        "CaretToken"
+      ]
+    },
+    {
+      "text": "!",
+      "standard": [
+        "ExclamationToken"
+      ],
+      "jsx": [
+        "ExclamationToken"
+      ]
+    },
+    {
+      "text": "~",
+      "standard": [
+        "TildeToken"
+      ],
+      "jsx": [
+        "TildeToken"
+      ]
+    },
+    {
+      "text": "&&",
+      "standard": [
+        "AmpersandAmpersandToken"
+      ],
+      "jsx": [
+        "AmpersandAmpersandToken"
+      ]
+    },
+    {
+      "text": "||",
+      "standard": [
+        "BarBarToken"
+      ],
+      "jsx": [
+        "BarBarToken"
+      ]
+    },
+    {
+      "text": "?",
+      "standard": [
+        "QuestionToken"
+      ],
+      "jsx": [
+        "QuestionToken"
+      ]
+    },
+    {
+      "text": ":",
+      "standard": [
+        "ColonToken"
+      ],
+      "jsx": [
+        "ColonToken"
+      ]
+    },
+    {
+      "text": "@",
+      "standard": [
+        "AtToken"
+      ],
+      "jsx": [
+        "AtToken"
+      ]
+    },
+    {
+      "text": "??",
+      "standard": [
+        "QuestionQuestionToken"
+      ],
+      "jsx": [
+        "QuestionQuestionToken"
+      ]
+    },
+    {
+      "text": "`",
+      "standard": [
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "#",
+      "standard": [
+        "PrivateIdentifier"
+      ],
+      "jsx": [
+        "PrivateIdentifier"
+      ]
+    },
+    {
+      "text": "=",
+      "standard": [
+        "FirstAssignment"
+      ],
+      "jsx": [
+        "FirstAssignment"
+      ]
+    },
+    {
+      "text": "+=",
+      "standard": [
+        "FirstCompoundAssignment"
+      ],
+      "jsx": [
+        "FirstCompoundAssignment"
+      ]
+    },
+    {
+      "text": "-=",
+      "standard": [
+        "MinusEqualsToken"
+      ],
+      "jsx": [
+        "MinusEqualsToken"
+      ]
+    },
+    {
+      "text": "*=",
+      "standard": [
+        "AsteriskEqualsToken"
+      ],
+      "jsx": [
+        "AsteriskEqualsToken"
+      ]
+    },
+    {
+      "text": "**=",
+      "standard": [
+        "AsteriskAsteriskEqualsToken"
+      ],
+      "jsx": [
+        "AsteriskAsteriskEqualsToken"
+      ]
+    },
+    {
+      "text": "/=",
+      "standard": [
+        "SlashEqualsToken"
+      ],
+      "jsx": [
+        "SlashEqualsToken"
+      ]
+    },
+    {
+      "text": "%=",
+      "standard": [
+        "PercentEqualsToken"
+      ],
+      "jsx": [
+        "PercentEqualsToken"
+      ]
+    },
+    {
+      "text": "<<=",
+      "standard": [
+        "LessThanLessThanEqualsToken"
+      ],
+      "jsx": [
+        "LessThanLessThanEqualsToken"
+      ]
+    },
+    {
+      "text": ">>=",
+      "standard": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment"
+      ],
+      "jsx": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment"
+      ]
+    },
+    {
+      "text": ">>>=",
+      "standard": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment"
+      ],
+      "jsx": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment"
+      ]
+    },
+    {
+      "text": "&=",
+      "standard": [
+        "AmpersandEqualsToken"
+      ],
+      "jsx": [
+        "AmpersandEqualsToken"
+      ]
+    },
+    {
+      "text": "|=",
+      "standard": [
+        "BarEqualsToken"
+      ],
+      "jsx": [
+        "BarEqualsToken"
+      ]
+    },
+    {
+      "text": "||=",
+      "standard": [
+        "BarBarEqualsToken"
+      ],
+      "jsx": [
+        "BarBarEqualsToken"
+      ]
+    },
+    {
+      "text": "&&=",
+      "standard": [
+        "AmpersandAmpersandEqualsToken"
+      ],
+      "jsx": [
+        "AmpersandAmpersandEqualsToken"
+      ]
+    },
+    {
+      "text": "??=",
+      "standard": [
+        "QuestionQuestionEqualsToken"
+      ],
+      "jsx": [
+        "QuestionQuestionEqualsToken"
+      ]
+    },
+    {
+      "text": "^=",
+      "standard": [
+        "LastBinaryOperator"
+      ],
+      "jsx": [
+        "LastBinaryOperator"
+      ]
+    },
+    {
+      "text": "break",
+      "standard": [
+        "FirstKeyword"
+      ],
+      "jsx": [
+        "FirstKeyword"
+      ]
+    },
+    {
+      "text": "case",
+      "standard": [
+        "CaseKeyword"
+      ],
+      "jsx": [
+        "CaseKeyword"
+      ]
+    },
+    {
+      "text": "catch",
+      "standard": [
+        "CatchKeyword"
+      ],
+      "jsx": [
+        "CatchKeyword"
+      ]
+    },
+    {
+      "text": "class",
+      "standard": [
+        "ClassKeyword"
+      ],
+      "jsx": [
+        "ClassKeyword"
+      ]
+    },
+    {
+      "text": "const",
+      "standard": [
+        "ConstKeyword"
+      ],
+      "jsx": [
+        "ConstKeyword"
+      ]
+    },
+    {
+      "text": "continue",
+      "standard": [
+        "ContinueKeyword"
+      ],
+      "jsx": [
+        "ContinueKeyword"
+      ]
+    },
+    {
+      "text": "debugger",
+      "standard": [
+        "DebuggerKeyword"
+      ],
+      "jsx": [
+        "DebuggerKeyword"
+      ]
+    },
+    {
+      "text": "default",
+      "standard": [
+        "DefaultKeyword"
+      ],
+      "jsx": [
+        "DefaultKeyword"
+      ]
+    },
+    {
+      "text": "delete",
+      "standard": [
+        "DeleteKeyword"
+      ],
+      "jsx": [
+        "DeleteKeyword"
+      ]
+    },
+    {
+      "text": "do",
+      "standard": [
+        "DoKeyword"
+      ],
+      "jsx": [
+        "DoKeyword"
+      ]
+    },
+    {
+      "text": "else",
+      "standard": [
+        "ElseKeyword"
+      ],
+      "jsx": [
+        "ElseKeyword"
+      ]
+    },
+    {
+      "text": "enum",
+      "standard": [
+        "EnumKeyword"
+      ],
+      "jsx": [
+        "EnumKeyword"
+      ]
+    },
+    {
+      "text": "export",
+      "standard": [
+        "ExportKeyword"
+      ],
+      "jsx": [
+        "ExportKeyword"
+      ]
+    },
+    {
+      "text": "extends",
+      "standard": [
+        "ExtendsKeyword"
+      ],
+      "jsx": [
+        "ExtendsKeyword"
+      ]
+    },
+    {
+      "text": "false",
+      "standard": [
+        "FalseKeyword"
+      ],
+      "jsx": [
+        "FalseKeyword"
+      ]
+    },
+    {
+      "text": "finally",
+      "standard": [
+        "FinallyKeyword"
+      ],
+      "jsx": [
+        "FinallyKeyword"
+      ]
+    },
+    {
+      "text": "for",
+      "standard": [
+        "ForKeyword"
+      ],
+      "jsx": [
+        "ForKeyword"
+      ]
+    },
+    {
+      "text": "function",
+      "standard": [
+        "FunctionKeyword"
+      ],
+      "jsx": [
+        "FunctionKeyword"
+      ]
+    },
+    {
+      "text": "if",
+      "standard": [
+        "IfKeyword"
+      ],
+      "jsx": [
+        "IfKeyword"
+      ]
+    },
+    {
+      "text": "import",
+      "standard": [
+        "ImportKeyword"
+      ],
+      "jsx": [
+        "ImportKeyword"
+      ]
+    },
+    {
+      "text": "in",
+      "standard": [
+        "InKeyword"
+      ],
+      "jsx": [
+        "InKeyword"
+      ]
+    },
+    {
+      "text": "instanceof",
+      "standard": [
+        "InstanceOfKeyword"
+      ],
+      "jsx": [
+        "InstanceOfKeyword"
+      ]
+    },
+    {
+      "text": "new",
+      "standard": [
+        "NewKeyword"
+      ],
+      "jsx": [
+        "NewKeyword"
+      ]
+    },
+    {
+      "text": "null",
+      "standard": [
+        "NullKeyword"
+      ],
+      "jsx": [
+        "NullKeyword"
+      ]
+    },
+    {
+      "text": "return",
+      "standard": [
+        "ReturnKeyword"
+      ],
+      "jsx": [
+        "ReturnKeyword"
+      ]
+    },
+    {
+      "text": "super",
+      "standard": [
+        "SuperKeyword"
+      ],
+      "jsx": [
+        "SuperKeyword"
+      ]
+    },
+    {
+      "text": "switch",
+      "standard": [
+        "SwitchKeyword"
+      ],
+      "jsx": [
+        "SwitchKeyword"
+      ]
+    },
+    {
+      "text": "this",
+      "standard": [
+        "ThisKeyword"
+      ],
+      "jsx": [
+        "ThisKeyword"
+      ]
+    },
+    {
+      "text": "throw",
+      "standard": [
+        "ThrowKeyword"
+      ],
+      "jsx": [
+        "ThrowKeyword"
+      ]
+    },
+    {
+      "text": "true",
+      "standard": [
+        "TrueKeyword"
+      ],
+      "jsx": [
+        "TrueKeyword"
+      ]
+    },
+    {
+      "text": "try",
+      "standard": [
+        "TryKeyword"
+      ],
+      "jsx": [
+        "TryKeyword"
+      ]
+    },
+    {
+      "text": "typeof",
+      "standard": [
+        "TypeOfKeyword"
+      ],
+      "jsx": [
+        "TypeOfKeyword"
+      ]
+    },
+    {
+      "text": "var",
+      "standard": [
+        "VarKeyword"
+      ],
+      "jsx": [
+        "VarKeyword"
+      ]
+    },
+    {
+      "text": "void",
+      "standard": [
+        "VoidKeyword"
+      ],
+      "jsx": [
+        "VoidKeyword"
+      ]
+    },
+    {
+      "text": "while",
+      "standard": [
+        "WhileKeyword"
+      ],
+      "jsx": [
+        "WhileKeyword"
+      ]
+    },
+    {
+      "text": "with",
+      "standard": [
+        "LastReservedWord"
+      ],
+      "jsx": [
+        "LastReservedWord"
+      ]
+    },
+    {
+      "text": "implements",
+      "standard": [
+        "FirstFutureReservedWord"
+      ],
+      "jsx": [
+        "FirstFutureReservedWord"
+      ]
+    },
+    {
+      "text": "interface",
+      "standard": [
+        "InterfaceKeyword"
+      ],
+      "jsx": [
+        "InterfaceKeyword"
+      ]
+    },
+    {
+      "text": "let",
+      "standard": [
+        "LetKeyword"
+      ],
+      "jsx": [
+        "LetKeyword"
+      ]
+    },
+    {
+      "text": "package",
+      "standard": [
+        "PackageKeyword"
+      ],
+      "jsx": [
+        "PackageKeyword"
+      ]
+    },
+    {
+      "text": "private",
+      "standard": [
+        "PrivateKeyword"
+      ],
+      "jsx": [
+        "PrivateKeyword"
+      ]
+    },
+    {
+      "text": "protected",
+      "standard": [
+        "ProtectedKeyword"
+      ],
+      "jsx": [
+        "ProtectedKeyword"
+      ]
+    },
+    {
+      "text": "public",
+      "standard": [
+        "PublicKeyword"
+      ],
+      "jsx": [
+        "PublicKeyword"
+      ]
+    },
+    {
+      "text": "static",
+      "standard": [
+        "StaticKeyword"
+      ],
+      "jsx": [
+        "StaticKeyword"
+      ]
+    },
+    {
+      "text": "yield",
+      "standard": [
+        "LastFutureReservedWord"
+      ],
+      "jsx": [
+        "LastFutureReservedWord"
+      ]
+    },
+    {
+      "text": "abstract",
+      "standard": [
+        "FirstContextualKeyword"
+      ],
+      "jsx": [
+        "FirstContextualKeyword"
+      ]
+    },
+    {
+      "text": "accessor",
+      "standard": [
+        "AccessorKeyword"
+      ],
+      "jsx": [
+        "AccessorKeyword"
+      ]
+    },
+    {
+      "text": "as",
+      "standard": [
+        "AsKeyword"
+      ],
+      "jsx": [
+        "AsKeyword"
+      ]
+    },
+    {
+      "text": "asserts",
+      "standard": [
+        "AssertsKeyword"
+      ],
+      "jsx": [
+        "AssertsKeyword"
+      ]
+    },
+    {
+      "text": "assert",
+      "standard": [
+        "AssertKeyword"
+      ],
+      "jsx": [
+        "AssertKeyword"
+      ]
+    },
+    {
+      "text": "any",
+      "standard": [
+        "AnyKeyword"
+      ],
+      "jsx": [
+        "AnyKeyword"
+      ]
+    },
+    {
+      "text": "async",
+      "standard": [
+        "AsyncKeyword"
+      ],
+      "jsx": [
+        "AsyncKeyword"
+      ]
+    },
+    {
+      "text": "await",
+      "standard": [
+        "AwaitKeyword"
+      ],
+      "jsx": [
+        "AwaitKeyword"
+      ]
+    },
+    {
+      "text": "boolean",
+      "standard": [
+        "BooleanKeyword"
+      ],
+      "jsx": [
+        "BooleanKeyword"
+      ]
+    },
+    {
+      "text": "constructor",
+      "standard": [
+        "ConstructorKeyword"
+      ],
+      "jsx": [
+        "ConstructorKeyword"
+      ]
+    },
+    {
+      "text": "declare",
+      "standard": [
+        "DeclareKeyword"
+      ],
+      "jsx": [
+        "DeclareKeyword"
+      ]
+    },
+    {
+      "text": "get",
+      "standard": [
+        "GetKeyword"
+      ],
+      "jsx": [
+        "GetKeyword"
+      ]
+    },
+    {
+      "text": "infer",
+      "standard": [
+        "InferKeyword"
+      ],
+      "jsx": [
+        "InferKeyword"
+      ]
+    },
+    {
+      "text": "intrinsic",
+      "standard": [
+        "IntrinsicKeyword"
+      ],
+      "jsx": [
+        "IntrinsicKeyword"
+      ]
+    },
+    {
+      "text": "is",
+      "standard": [
+        "IsKeyword"
+      ],
+      "jsx": [
+        "IsKeyword"
+      ]
+    },
+    {
+      "text": "keyof",
+      "standard": [
+        "KeyOfKeyword"
+      ],
+      "jsx": [
+        "KeyOfKeyword"
+      ]
+    },
+    {
+      "text": "module",
+      "standard": [
+        "ModuleKeyword"
+      ],
+      "jsx": [
+        "ModuleKeyword"
+      ]
+    },
+    {
+      "text": "namespace",
+      "standard": [
+        "NamespaceKeyword"
+      ],
+      "jsx": [
+        "NamespaceKeyword"
+      ]
+    },
+    {
+      "text": "never",
+      "standard": [
+        "NeverKeyword"
+      ],
+      "jsx": [
+        "NeverKeyword"
+      ]
+    },
+    {
+      "text": "out",
+      "standard": [
+        "OutKeyword"
+      ],
+      "jsx": [
+        "OutKeyword"
+      ]
+    },
+    {
+      "text": "readonly",
+      "standard": [
+        "ReadonlyKeyword"
+      ],
+      "jsx": [
+        "ReadonlyKeyword"
+      ]
+    },
+    {
+      "text": "require",
+      "standard": [
+        "RequireKeyword"
+      ],
+      "jsx": [
+        "RequireKeyword"
+      ]
+    },
+    {
+      "text": "number",
+      "standard": [
+        "NumberKeyword"
+      ],
+      "jsx": [
+        "NumberKeyword"
+      ]
+    },
+    {
+      "text": "object",
+      "standard": [
+        "ObjectKeyword"
+      ],
+      "jsx": [
+        "ObjectKeyword"
+      ]
+    },
+    {
+      "text": "satisfies",
+      "standard": [
+        "SatisfiesKeyword"
+      ],
+      "jsx": [
+        "SatisfiesKeyword"
+      ]
+    },
+    {
+      "text": "set",
+      "standard": [
+        "SetKeyword"
+      ],
+      "jsx": [
+        "SetKeyword"
+      ]
+    },
+    {
+      "text": "string",
+      "standard": [
+        "StringKeyword"
+      ],
+      "jsx": [
+        "StringKeyword"
+      ]
+    },
+    {
+      "text": "symbol",
+      "standard": [
+        "SymbolKeyword"
+      ],
+      "jsx": [
+        "SymbolKeyword"
+      ]
+    },
+    {
+      "text": "type",
+      "standard": [
+        "TypeKeyword"
+      ],
+      "jsx": [
+        "TypeKeyword"
+      ]
+    },
+    {
+      "text": "undefined",
+      "standard": [
+        "UndefinedKeyword"
+      ],
+      "jsx": [
+        "UndefinedKeyword"
+      ]
+    },
+    {
+      "text": "unique",
+      "standard": [
+        "UniqueKeyword"
+      ],
+      "jsx": [
+        "UniqueKeyword"
+      ]
+    },
+    {
+      "text": "unknown",
+      "standard": [
+        "UnknownKeyword"
+      ],
+      "jsx": [
+        "UnknownKeyword"
+      ]
+    },
+    {
+      "text": "using",
+      "standard": [
+        "UsingKeyword"
+      ],
+      "jsx": [
+        "UsingKeyword"
+      ]
+    },
+    {
+      "text": "from",
+      "standard": [
+        "FromKeyword"
+      ],
+      "jsx": [
+        "FromKeyword"
+      ]
+    },
+    {
+      "text": "global",
+      "standard": [
+        "GlobalKeyword"
+      ],
+      "jsx": [
+        "GlobalKeyword"
+      ]
+    },
+    {
+      "text": "bigint",
+      "standard": [
+        "BigIntKeyword"
+      ],
+      "jsx": [
+        "BigIntKeyword"
+      ]
+    },
+    {
+      "text": "override",
+      "standard": [
+        "OverrideKeyword"
+      ],
+      "jsx": [
+        "OverrideKeyword"
+      ]
+    },
+    {
+      "text": "of",
+      "standard": [
+        "OfKeyword"
+      ],
+      "jsx": [
+        "OfKeyword"
+      ]
+    },
+    {
+      "text": "defer",
+      "standard": [
+        "LastContextualKeyword"
+      ],
+      "jsx": [
+        "LastContextualKeyword"
+      ]
+    },
+    {
+      "text": "",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": " \t\r\n\u000b\f",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": "letx = 1 +​2 + 3　;﻿",
+      "standard": [
+        "LetKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken",
+        "SemicolonToken"
+      ],
+      "jsx": [
+        "LetKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken",
+        "SemicolonToken"
+      ]
+    },
+    {
+      "text": "a b c d e f g h i j k",
+      "standard": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a b c",
+      "standard": [
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a᠎b\u001cc",
+      "standard": [
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken"
+      ]
+    },
+    {
+      "text": "\u0000",
+      "standard": [
+        "FirstToken"
+      ],
+      "jsx": [
+        "FirstToken"
+      ]
+    },
+    {
+      "text": "x\u0000y",
+      "standard": [
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "�",
+      "standard": [
+        "NonTextFileMarkerTrivia"
+      ],
+      "jsx": [
+        "NonTextFileMarkerTrivia"
+      ]
+    },
+    {
+      "text": "x �class y {}",
+      "standard": [
+        "Identifier",
+        "NonTextFileMarkerTrivia"
+      ],
+      "jsx": [
+        "Identifier",
+        "NonTextFileMarkerTrivia"
+      ]
+    },
+    {
+      "text": "#!",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": "#!/usr/bin/env node\nconst x = 1",
+      "standard": [
+        "ConstKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "ConstKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "#!bin\r\nvalue",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "#!bin value",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "#!bin value",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "#!binhidden\nvalue",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "﻿#!bin\nvalue",
+      "standard": [
+        "FirstToken",
+        "ExclamationToken",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstToken",
+        "ExclamationToken",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": " #!bin\nvalue",
+      "standard": [
+        "FirstToken",
+        "ExclamationToken",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstToken",
+        "ExclamationToken",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "x\n#!bin\nvalue",
+      "standard": [
+        "Identifier",
+        "FirstToken",
+        "ExclamationToken",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstToken",
+        "ExclamationToken",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "// comment",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": "// @ts-expect-error\r\nclass X {}",
+      "standard": [
+        "ClassKeyword",
+        "Identifier",
+        "FirstPunctuation",
+        "CloseBraceToken"
+      ],
+      "jsx": [
+        "ClassKeyword",
+        "Identifier",
+        "FirstPunctuation",
+        "CloseBraceToken"
+      ]
+    },
+    {
+      "text": "// comment let a // comment let b",
+      "standard": [
+        "LetKeyword",
+        "Identifier",
+        "LetKeyword",
+        "Identifier"
+      ],
+      "jsx": [
+        "LetKeyword",
+        "Identifier",
+        "LetKeyword",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "// commentstill comment\nlet a",
+      "standard": [
+        "LetKeyword",
+        "Identifier"
+      ],
+      "jsx": [
+        "LetKeyword",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "/*/",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": "/*",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": "/**/",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": "/* comment **/ *",
+      "standard": [
+        "AsteriskToken"
+      ],
+      "jsx": [
+        "AsteriskToken"
+      ]
+    },
+    {
+      "text": "/** @see x\n */\n*",
+      "standard": [
+        "AsteriskToken"
+      ],
+      "jsx": [
+        "AsteriskToken"
+      ]
+    },
+    {
+      "text": "/* outer /* inner */ after */",
+      "standard": [
+        "Identifier",
+        "AsteriskToken",
+        "SlashToken"
+      ],
+      "jsx": [
+        "Identifier",
+        "AsteriskToken",
+        "SlashToken"
+      ]
+    },
+    {
+      "text": "/* �\n    */ after",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "prefix/* unterminated",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "<<<<<<< HEAD\nconst current = 1\n=======\nconst other = 2\n>>>>>>> other\nconst after = 3",
+      "standard": [
+        "ConstKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken",
+        "ConstKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "ConstKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken",
+        "ConstKeyword",
+        "Identifier",
+        "FirstAssignment",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "<<<<<<< HEAD\r\nx\r\n||||||| base\r\nx2\r\n=======\r\nx3\r\n>>>>>>> other\r\ny",
+      "standard": [
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "<<<<<<< HEAD x =======not a break z >>>>>>> other y",
+      "standard": [
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "||||||| base\nold\n>>>>>>> end\nkept",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "=======\nours\n=======\ntheirs\n>>>>>>> end\nkept",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "=======anything",
+      "standard": [],
+      "jsx": []
+    },
+    {
+      "text": "=======",
+      "standard": [
+        "EqualsEqualsEqualsToken",
+        "EqualsEqualsEqualsToken",
+        "FirstAssignment"
+      ],
+      "jsx": [
+        "EqualsEqualsEqualsToken",
+        "EqualsEqualsEqualsToken",
+        "FirstAssignment"
+      ]
+    },
+    {
+      "text": "<<<<<<<",
+      "standard": [
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator"
+      ],
+      "jsx": [
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator"
+      ]
+    },
+    {
+      "text": ">>>>>>>",
+      "standard": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken"
+      ],
+      "jsx": [
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken"
+      ]
+    },
+    {
+      "text": "|||||||",
+      "standard": [
+        "BarBarToken",
+        "BarBarToken",
+        "BarBarToken",
+        "BarToken"
+      ],
+      "jsx": [
+        "BarBarToken",
+        "BarBarToken",
+        "BarBarToken",
+        "BarToken"
+      ]
+    },
+    {
+      "text": "<<<<<<<\tHEAD",
+      "standard": [
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator",
+        "Identifier"
+      ],
+      "jsx": [
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator",
+        "Identifier"
+      ]
+    },
+    {
+      "text": " <<<<<<< HEAD",
+      "standard": [
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator",
+        "Identifier"
+      ],
+      "jsx": [
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a<<<<<<< HEAD",
+      "standard": [
+        "Identifier",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "FirstBinaryOperator",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a <<<<<<< HEAD",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a/*\n*/=======\nlet x",
+      "standard": [
+        "Identifier",
+        "EqualsEqualsEqualsToken",
+        "EqualsEqualsEqualsToken",
+        "FirstAssignment",
+        "LetKeyword",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "EqualsEqualsEqualsToken",
+        "EqualsEqualsEqualsToken",
+        "FirstAssignment",
+        "LetKeyword",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a\n<<<<<<<< HEAD",
+      "standard": [
+        "Identifier",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "LessThanLessThanToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "foo _foo $foo Foo _ $ abc123",
+      "standard": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "Class break1 deferral satisfies2 _await instanceof_",
+      "standard": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "é é 变量 αβ א أ हिन्दी",
+      "standard": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "ͺ ゛ a· 𝒜 𐐀x x𐐀",
+      "standard": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "́x ١x x١",
+      "standard": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "‌x ‍x break‌ break‍",
+      "standard": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a󠄀b 󠄀b",
+      "standard": [
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "😀x x😀y 😀😀 ☃ ﷐ 􏿿",
+      "standard": [
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "FirstToken",
+        "FirstToken",
+        "FirstToken",
+        "FirstToken"
+      ],
+      "jsx": [
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "FirstToken",
+        "FirstToken",
+        "FirstToken",
+        "FirstToken"
+      ]
+    },
+    {
+      "text": "# #x #class #$ #_ #变量 #𐐀",
+      "standard": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier"
+      ],
+      "jsx": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier"
+      ]
+    },
+    {
+      "text": "## #1 #😀 #? #. #‌ #�",
+      "standard": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "FirstLiteralToken",
+        "PrivateIdentifier",
+        "FirstToken",
+        "PrivateIdentifier",
+        "QuestionToken",
+        "PrivateIdentifier",
+        "DotToken",
+        "PrivateIdentifier",
+        "FirstToken",
+        "PrivateIdentifier",
+        "NonTextFileMarkerTrivia"
+      ],
+      "jsx": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "FirstLiteralToken",
+        "PrivateIdentifier",
+        "FirstToken",
+        "PrivateIdentifier",
+        "QuestionToken",
+        "PrivateIdentifier",
+        "DotToken",
+        "PrivateIdentifier",
+        "FirstToken",
+        "PrivateIdentifier",
+        "NonTextFileMarkerTrivia"
+      ]
+    },
+    {
+      "text": "\\u0062reak br\\u0065ak br\\u{65}ak",
+      "standard": [
+        "FirstKeyword",
+        "FirstKeyword",
+        "FirstKeyword"
+      ],
+      "jsx": [
+        "FirstKeyword",
+        "FirstKeyword",
+        "FirstKeyword"
+      ]
+    },
+    {
+      "text": "\\u{63}lass a\\u{10400}z \\u{10400}z",
+      "standard": [
+        "ClassKeyword",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "ClassKeyword",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\\u{24} \\u005f ab\\u0031 \\u0031a",
+      "standard": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\\uD801\\uDC00 z\\uD801\\uDC00 \\u{D801}",
+      "standard": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken"
+      ],
+      "jsx": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken"
+      ]
+    },
+    {
+      "text": "a\\u0301 \\u0301 x\\u{e0100} a\\u{200c} a\\u200d",
+      "standard": [
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "Identifier",
+        "Identifier",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\\u{0000000000000000000000069}f",
+      "standard": [
+        "IfKeyword"
+      ],
+      "jsx": [
+        "IfKeyword"
+      ]
+    },
+    {
+      "text": "\\u0069ignored\\u{66}",
+      "standard": [
+        "IfKeyword"
+      ],
+      "jsx": [
+        "IfKeyword"
+      ]
+    },
+    {
+      "text": "cl\\u0061ignored\\u{73}s",
+      "standard": [
+        "ClassKeyword"
+      ],
+      "jsx": [
+        "ClassKeyword"
+      ]
+    },
+    {
+      "text": "\\u{69",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\\u{69\\u0066",
+      "standard": [
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\\u{69xyz; a\\u{31 x; a\\u{61}x",
+      "standard": [
+        "Identifier",
+        "SemicolonToken",
+        "Identifier",
+        "Identifier",
+        "SemicolonToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "SemicolonToken",
+        "Identifier",
+        "Identifier",
+        "SemicolonToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\\u{} \\u{z} \\u{20} \\u{1f600} \\u{110000} \\u{ffffffffffff}",
+      "standard": [
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "Identifier",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken"
+      ],
+      "jsx": [
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "Identifier",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "CloseBraceToken",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken"
+      ]
+    },
+    {
+      "text": "\\u \\u123 \\u00z0 \\u12é \\uＧ000 \\U0061 \\x61",
+      "standard": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier",
+        "FirstToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\\",
+      "standard": [
+        "FirstToken"
+      ],
+      "jsx": [
+        "FirstToken"
+      ]
+    },
+    {
+      "text": "x\\",
+      "standard": [
+        "Identifier",
+        "FirstToken"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstToken"
+      ]
+    },
+    {
+      "text": "#\\u0061 #\\u{10400} #\\u{61 #\\u0030 #\\u{d800} #\\u{}",
+      "standard": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "CloseBraceToken"
+      ],
+      "jsx": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "Identifier",
+        "CloseBraceToken",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "CloseBraceToken"
+      ]
+    },
+    {
+      "text": "#x\\u{31} #\\u{200c} #\\u{24}",
+      "standard": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "Identifier",
+        "CloseBraceToken",
+        "PrivateIdentifier"
+      ],
+      "jsx": [
+        "PrivateIdentifier",
+        "PrivateIdentifier",
+        "FirstToken",
+        "Identifier",
+        "FirstPunctuation",
+        "FirstLiteralToken",
+        "Identifier",
+        "CloseBraceToken",
+        "PrivateIdentifier"
+      ]
+    },
+    {
+      "text": "0 123 -42 42n 0n -0n 123_456n",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "MinusToken",
+        "FirstLiteralToken",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "MinusToken",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "MinusToken",
+        "FirstLiteralToken",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "MinusToken",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ]
+    },
+    {
+      "text": "0x",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0b",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0o",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0X",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0B",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0O",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0x 0b 0o ",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "0x😀 0b𐐀 0oé",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0x\u0000",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstToken"
+      ]
+    },
+    {
+      "text": "0xFF 0Xabcd 0b101 0B01 0o77 0O07",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "0xffn 0XFn 0b10n 0B1n 0o770n 0O7n",
+      "standard": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ],
+      "jsx": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ]
+    },
+    {
+      "text": "0xn 0bn 0on 0xg 0b2 0o8",
+      "standard": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "0x_ 0b__ 0o_ 0x__n 0b_n 0o__n",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ]
+    },
+    {
+      "text": "0x1__fn 0b1__01n 0o7__05n",
+      "standard": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ],
+      "jsx": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "BigIntLiteral"
+      ]
+    },
+    {
+      "text": "0x1nfoo 0b1nn 0o7nn 10nfoo",
+      "standard": [
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0xfe+1 0XAB.9 0b1.0 0o7e1",
+      "standard": [
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "00 0123 08 099 078 09n 00n 012n",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "00.1 01.e2 077e1 00e-1 08.1n 08e+2n",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "DotToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "MinusToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "DotToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "MinusToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "00_0n 08_0n 0_0n 0__9n 9__ 09_",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "0. 1. .5 1.25 .5e-2 0e+1 1E-3",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "1..2 .1.2 1...x ... .1e5",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "DotToken",
+        "DotToken",
+        "Identifier",
+        "DotDotDotToken",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "DotToken",
+        "DotToken",
+        "Identifier",
+        "DotDotDotToken",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "1._ 1._2 1.__e___3 1e0_2 1e_",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "1e 1E+ 1e- 1e+x 1E-foo 1e++8",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "PlusToken",
+        "FirstLiteralToken"
+      ]
+    },
+    {
+      "text": "1e+n 1E-_n 1.0n 1.0nn .5n .5ns",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "1nn 1nnn 1nnever 1namespace 1defer 1é",
+      "standard": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "NeverKeyword",
+        "BigIntLiteral",
+        "Identifier",
+        "FirstLiteralToken",
+        "LastContextualKeyword",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "BigIntLiteral",
+        "BigIntLiteral",
+        "Identifier",
+        "BigIntLiteral",
+        "NeverKeyword",
+        "BigIntLiteral",
+        "Identifier",
+        "FirstLiteralToken",
+        "LastContextualKeyword",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "1.ń 1.n𐐀 1.n😀",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstToken"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstToken"
+      ]
+    },
+    {
+      "text": "1.\\u006e 1.n\\u0030 1.nn\\u{e9} 1.nn\\u{10400}",
+      "standard": [
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "1.nn\\u{301} 1.nn\\u{61 1.nn\\u{61} 1nnn\\u{61}",
+      "standard": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "BigIntLiteral"
+      ],
+      "jsx": [
+        "FirstLiteralToken",
+        "FirstLiteralToken",
+        "Identifier",
+        "FirstLiteralToken",
+        "BigIntLiteral"
+      ]
+    },
+    {
+      "text": "?.7 ?.١ ?. .7 ?.e",
+      "standard": [
+        "QuestionToken",
+        "FirstLiteralToken",
+        "QuestionDotToken",
+        "FirstToken",
+        "QuestionDotToken",
+        "FirstLiteralToken",
+        "QuestionDotToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "QuestionToken",
+        "FirstLiteralToken",
+        "QuestionDotToken",
+        "FirstToken",
+        "QuestionDotToken",
+        "FirstLiteralToken",
+        "QuestionDotToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'' \"\" '😀x y z\u0000' after",
+      "standard": [
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'unclosed",
+      "standard": [
+        "StringLiteral"
+      ],
+      "jsx": [
+        "StringLiteral"
+      ]
+    },
+    {
+      "text": "\"unclosed",
+      "standard": [
+        "StringLiteral"
+      ],
+      "jsx": [
+        "StringLiteral"
+      ]
+    },
+    {
+      "text": "'a\nlet x",
+      "standard": [
+        "StringLiteral",
+        "LetKeyword",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "LetKeyword",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\"a\r\nb",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'a\\\r\nb' after",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'a\\\rb\\\nc\\ d\\ e' after",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\"a\\",
+      "standard": [
+        "StringLiteral"
+      ],
+      "jsx": [
+        "StringLiteral"
+      ]
+    },
+    {
+      "text": "'a\\😀b' after",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'a�b' after",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "\"'s\" '\\\"' '\\'' \"\\\\\" after",
+      "standard": [
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'\\0\\08\\01\\011\\377\\400\\777\\8\\9' after",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'\\n\\r\\t\\b\\v\\f\\z\\x41\\u0041\\u{41}\\u{1f600}' after",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'\\u12' '\\x1' '\\u{41' '\\u{}' '\\u{110000}' '\\uD801\\uDC00' after",
+      "standard": [
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "'\\u{4\nreturn",
+      "standard": [
+        "StringLiteral",
+        "ReturnKeyword"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "ReturnKeyword"
+      ]
+    },
+    {
+      "text": "'\\x still in string' after",
+      "standard": [
+        "StringLiteral",
+        "Identifier"
+      ],
+      "jsx": [
+        "StringLiteral",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "``",
+      "standard": [
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`plain`",
+      "standard": [
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`no close",
+      "standard": [
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`no close\\",
+      "standard": [
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`${",
+      "standard": [
+        "TemplateHead"
+      ],
+      "jsx": [
+        "TemplateHead"
+      ]
+    },
+    {
+      "text": "`head ${x} tail`",
+      "standard": [
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`a${`b${n}c`}d`",
+      "standard": [
+        "TemplateHead",
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "TemplateHead",
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`a\\${b\\`c` tail",
+      "standard": [
+        "FirstTemplateToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstTemplateToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "`a\\x${b}c`",
+      "standard": [
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`a\\u{41${b}c`",
+      "standard": [
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ],
+      "jsx": [
+        "TemplateHead",
+        "Identifier",
+        "CloseBraceToken",
+        "Identifier",
+        "FirstTemplateToken"
+      ]
+    },
+    {
+      "text": "`a\\u12\\u{110000}\\u{}\\01\\8` after",
+      "standard": [
+        "FirstTemplateToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstTemplateToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "`a\r\nb\\\r\nc d e�😀` after",
+      "standard": [
+        "FirstTemplateToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstTemplateToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "<div data-id='a'>Hello &amp; world</div>",
+      "standard": [
+        "FirstBinaryOperator",
+        "Identifier",
+        "Identifier",
+        "MinusToken",
+        "Identifier",
+        "FirstAssignment",
+        "StringLiteral",
+        "GreaterThanToken",
+        "Identifier",
+        "AmpersandToken",
+        "Identifier",
+        "SemicolonToken",
+        "Identifier",
+        "FirstBinaryOperator",
+        "SlashToken",
+        "Identifier",
+        "GreaterThanToken"
+      ],
+      "jsx": [
+        "FirstBinaryOperator",
+        "Identifier",
+        "Identifier",
+        "MinusToken",
+        "Identifier",
+        "FirstAssignment",
+        "StringLiteral",
+        "GreaterThanToken",
+        "Identifier",
+        "AmpersandToken",
+        "Identifier",
+        "SemicolonToken",
+        "Identifier",
+        "LessThanSlashToken",
+        "Identifier",
+        "GreaterThanToken"
+      ]
+    },
+    {
+      "text": "<ns:a x:y=\"a\nb\">{x as Foo<Bar>}</ns:a>",
+      "standard": [
+        "FirstBinaryOperator",
+        "Identifier",
+        "ColonToken",
+        "Identifier",
+        "Identifier",
+        "ColonToken",
+        "Identifier",
+        "FirstAssignment",
+        "StringLiteral",
+        "Identifier",
+        "StringLiteral"
+      ],
+      "jsx": [
+        "FirstBinaryOperator",
+        "Identifier",
+        "ColonToken",
+        "Identifier",
+        "Identifier",
+        "ColonToken",
+        "Identifier",
+        "FirstAssignment",
+        "StringLiteral",
+        "Identifier",
+        "StringLiteral"
+      ]
+    },
+    {
+      "text": "<>class yield 1.0n // jsx-looking text\n</>",
+      "standard": [
+        "FirstBinaryOperator",
+        "GreaterThanToken",
+        "ClassKeyword",
+        "LastFutureReservedWord",
+        "FirstLiteralToken",
+        "FirstBinaryOperator",
+        "SlashToken",
+        "GreaterThanToken"
+      ],
+      "jsx": [
+        "FirstBinaryOperator",
+        "GreaterThanToken",
+        "ClassKeyword",
+        "LastFutureReservedWord",
+        "FirstLiteralToken",
+        "LessThanSlashToken",
+        "GreaterThanToken"
+      ]
+    },
+    {
+      "text": "<// comment-looking text</x>\nnext",
+      "standard": [
+        "FirstBinaryOperator",
+        "Identifier"
+      ],
+      "jsx": [
+        "LessThanSlashToken",
+        "SlashToken",
+        "Identifier",
+        "MinusToken",
+        "Identifier",
+        "Identifier",
+        "LessThanSlashToken",
+        "Identifier",
+        "GreaterThanToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "</* a block comment */x",
+      "standard": [
+        "FirstBinaryOperator",
+        "Identifier"
+      ],
+      "jsx": [
+        "FirstBinaryOperator",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "</=x",
+      "standard": [
+        "FirstBinaryOperator",
+        "SlashEqualsToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "LessThanSlashToken",
+        "FirstAssignment",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "a-b a:b #a-b #a:b",
+      "standard": [
+        "Identifier",
+        "MinusToken",
+        "Identifier",
+        "Identifier",
+        "ColonToken",
+        "Identifier",
+        "PrivateIdentifier",
+        "MinusToken",
+        "Identifier",
+        "PrivateIdentifier",
+        "ColonToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "MinusToken",
+        "Identifier",
+        "Identifier",
+        "ColonToken",
+        "Identifier",
+        "PrivateIdentifier",
+        "MinusToken",
+        "Identifier",
+        "PrivateIdentifier",
+        "ColonToken",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "T<U<V>> x >>>= y >= z >>= w",
+      "standard": [
+        "Identifier",
+        "FirstBinaryOperator",
+        "Identifier",
+        "FirstBinaryOperator",
+        "Identifier",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "Identifier",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment",
+        "Identifier",
+        "GreaterThanToken",
+        "FirstAssignment",
+        "Identifier",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstBinaryOperator",
+        "Identifier",
+        "FirstBinaryOperator",
+        "Identifier",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "Identifier",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment",
+        "Identifier",
+        "GreaterThanToken",
+        "FirstAssignment",
+        "Identifier",
+        "GreaterThanToken",
+        "GreaterThanToken",
+        "FirstAssignment",
+        "Identifier"
+      ]
+    },
+    {
+      "text": "x = /a[\\/]b/gu; x/=2;",
+      "standard": [
+        "Identifier",
+        "FirstAssignment",
+        "SlashToken",
+        "Identifier",
+        "OpenBracketToken",
+        "FirstToken",
+        "SlashToken",
+        "CloseBracketToken",
+        "Identifier",
+        "SlashToken",
+        "Identifier",
+        "SemicolonToken",
+        "Identifier",
+        "SlashEqualsToken",
+        "FirstLiteralToken",
+        "SemicolonToken"
+      ],
+      "jsx": [
+        "Identifier",
+        "FirstAssignment",
+        "SlashToken",
+        "Identifier",
+        "OpenBracketToken",
+        "FirstToken",
+        "SlashToken",
+        "CloseBracketToken",
+        "Identifier",
+        "SlashToken",
+        "Identifier",
+        "SemicolonToken",
+        "Identifier",
+        "SlashEqualsToken",
+        "FirstLiteralToken",
+        "SemicolonToken"
+      ]
+    },
+    {
+      "text": "<!-- comment-looking text -->",
+      "standard": [
+        "FirstBinaryOperator",
+        "ExclamationToken",
+        "MinusMinusToken",
+        "Identifier",
+        "MinusToken",
+        "Identifier",
+        "Identifier",
+        "MinusMinusToken",
+        "GreaterThanToken"
+      ],
+      "jsx": [
+        "FirstBinaryOperator",
+        "ExclamationToken",
+        "MinusMinusToken",
+        "Identifier",
+        "MinusToken",
+        "Identifier",
+        "Identifier",
+        "MinusMinusToken",
+        "GreaterThanToken"
+      ]
+    },
+    {
+      "text": "a<<=b&&=c||=d??=e**=f",
+      "standard": [
+        "Identifier",
+        "LessThanLessThanEqualsToken",
+        "Identifier",
+        "AmpersandAmpersandEqualsToken",
+        "Identifier",
+        "BarBarEqualsToken",
+        "Identifier",
+        "QuestionQuestionEqualsToken",
+        "Identifier",
+        "AsteriskAsteriskEqualsToken",
+        "Identifier"
+      ],
+      "jsx": [
+        "Identifier",
+        "LessThanLessThanEqualsToken",
+        "Identifier",
+        "AmpersandAmpersandEqualsToken",
+        "Identifier",
+        "BarBarEqualsToken",
+        "Identifier",
+        "QuestionQuestionEqualsToken",
+        "Identifier",
+        "AsteriskAsteriskEqualsToken",
+        "Identifier"
+      ]
+    }
+  ]
+}

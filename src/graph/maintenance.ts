@@ -1,6 +1,5 @@
 import { materializeOverlay } from "./overlay-materialize.js";
-import { openRecord } from "../record/index.js";
-import { recordBuildUsage } from "../record/build-usage.js";
+import { logGraphUsage, startGraphUsage } from "./usage.js";
 import type { GraphCandidateUsage } from "./candidate-protocol.js";
 import { acquireGraphWriter, adoptSiblingBase, assertGraphDirectory, cloneGraph, collectGraphGarbage, currentGraphPath, discardGraphTemporary, enforceIndexCap, finalizeGraph, graphLocation, graphStoragePathAllowed, verifiedGraphLocation, graphTemporary, publishGraph, publishGraphOverlay, publishGraphPointer, readGraphPointer, siblingBase, siblingBases, withGraphStorageContext, type GraphLocation } from "./storage.js";
 import { overlayTooLarge, planOverlay, writeOverlay, type OverlayPlan } from "./overlay-write.js";
@@ -25,6 +24,7 @@ import {
   writeSync,
   type Stats,
 } from "node:fs";
+import { open as openFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type {
   Diagnostic,
@@ -35,19 +35,32 @@ import type {
   GraphRefreshResult,
   GraphStatus,
 } from "../team/contracts/graph.js";
-import { DB_SCHEMA_VERSION, upgradeGraphDatabase } from "./db/database.js";
+import { DB_SCHEMA_VERSION, openGraphDatabase, upgradeGraphDatabase } from "./db/database.js";
 import { openSqlite } from "./db/sqlite.js";
-import { auditRecordProvenInProcess, recordAuditedDatabase } from "./audit-record.js";
+import { ENGINE_GRAPH_SCHEMA_VERSION, hasV5GraphSchema, inspectV5GraphInvariants, inspectV5GraphSchema, v5Rows } from "./db/v5.js";
+import { GraphStore } from "./db/store.js";
+import { FingerprintStore, transferGroundingBaselines } from "./fingerprint-store.js";
+import { installGraphViews, overlayBase } from "./overlay.js";
+import { NativeGraphJobError, prepareNativeGraphBuild, type NativeGraphBuild, type NativeGraphFile, type NativeGraphRefresh } from "./native-build.js";
+import { hasGraphEngine, type GraphEngineBuildMetadata } from "./native-engine.js";
+import { graphStorageV5 } from "./engine-languages.js";
+import {
+  GRAPH_ENGINE_MEMORY_LIMIT, GraphEngineMemoryLimitError, graphEngineMemoryDiagnostic, recordGraphMemoryFailure,
+} from "./engine-memory.js";
+import { withEngineUsage, type ProcessUsage } from "./process-stats.js";
+import { auditRecordProvenInProcess, holdsAuditedBytes, recordAuditedDatabase } from "./audit-record.js";
 import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
-import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing } from "./engine-impl.js";
+import { createGraphEngine, deltaAuditScope, GraphSourceStagingError, refreshWouldPublishNothing, restoreGraphAliases, restoreOverlayAliases } from "./engine-impl.js";
 import type { BuildResult, GraphEngine } from "./engine.js";
 import {
   inspectGraphSidecars,
   inspectGraphStatus,
+  quickCheck,
+  type GraphMaintenanceInputs,
 } from "./status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { GraphCandidateProcessError, runGraphCandidateProcess, type GraphCandidateProcessOptions } from "./candidate-process.js";
-import { flushGraphPhaseTimings, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
+import { flushGraphPhaseTimings, recordGraphPhase, timeGraphPhase, timeGraphPhaseAsync } from "./phase-timing.js";
 
 const HASH_CHUNK_BYTES = 1024 * 1024;
 
@@ -61,6 +74,7 @@ export type GraphMaintenanceErrorCode =
   | "GRAPH_MAINTENANCE_PATH_UNSAFE"
   | "GRAPH_MAINTENANCE_RACE"
   | "GRAPH_CANDIDATE_INVALID"
+  | typeof GRAPH_ENGINE_MEMORY_LIMIT
   | "GRAPH_PUBLICATION_FAILED";
 
 /** Internal typed failure used by the CLI and the future GraphPort adapter. */
@@ -178,6 +192,8 @@ interface CandidatePublicationInput {
   retainRecovery: boolean;
   options: InternalMaintenanceOptions;
   assertStatus?: (status: GraphStatus) => void;
+  overlay?: { base: string; identity: DatabaseIdentity; counts: { nodes: number; edges: number }; files: number };
+  assertInputsUnchanged?: () => void;
 }
 
 interface CandidatePublicationResult {
@@ -265,15 +281,28 @@ export function acquireGraphMaintenanceLease(
       sweepOrphanCandidates(paths);
       // One operation reads each unchanged source once; see source-memo.
       if (operation === "repair") return await withGraphStorageContext(() => withSourceMemo(() => repairGraphWithLease(paths, merged)));
-      const meter = startUsageMeter();
+      const meter = startGraphUsage();
+      const engineUsage: ProcessUsage = { cpuMs: 0, peakRssMb: 0 };
       let outcome: GraphMaintenanceResult | undefined;
       try {
-        outcome = operation === "refresh"
-          ? await withGraphStorageContext(() => withSourceMemo(() => refreshGraphWithLease(paths, merged)))
-          : await withGraphStorageContext(() => withSourceMemo(() => rebuildGraphWithLease(paths, merged)));
+        outcome = await withEngineUsage(engineUsage, () => operation === "refresh"
+          ? withGraphStorageContext(() => withSourceMemo(() => refreshGraphWithLease(paths, merged)))
+          : withGraphStorageContext(() => withSourceMemo(() => rebuildGraphWithLease(paths, merged))));
         return outcome;
+      } catch (error) {
+        if (!(error instanceof GraphEngineMemoryLimitError)) throw error;
+        assertNotAborted(merged.signal);
+        assertMaintenanceDirectoryUnchanged(paths);
+        paths.writer?.assertOwned();
+        try { recordGraphMemoryFailure(paths.location, error.memoryMb); }
+        catch { /* Keep the operation's diagnostic if the local status record cannot be saved. */ }
+        const diagnostic = graphEngineMemoryDiagnostic(error.memoryMb);
+        throw new GraphMaintenanceError(GRAPH_ENGINE_MEMORY_LIMIT, diagnostic.message, [diagnostic]);
       } finally {
-        logGraphUsage(paths, operation === "rebuild" ? "build" : "refresh", meter, merged.__usage?.candidate, outcome);
+        const candidate = merged.__usage?.candidate;
+        const unchanged = outcome?.filesIndexed === 0 && outcome.nodesCreated === 0 && !candidate;
+        logGraphUsage(paths.location, operation === "rebuild" ? "build" : "refresh", meter, engineUsage, candidate,
+          outcome?.refresh?.filesChanged ?? outcome?.filesIndexed ?? 0, !outcome ? "failed" : unchanged ? "unchanged" : "ok");
       }
     } finally {
       active = false;
@@ -304,7 +333,7 @@ export async function ensureGraphCurrent(
   if (options.force) return { ...await rebuildGraph(projectRoot, options), operation: "rebuild" };
   const status = await inspectGraphStatus({ projectRoot });
   assertNotAborted(options.signal);
-  if (status.status === "fresh") {
+  if (status.status === "fresh" && !shouldRetryEngine(status)) {
     return {
       ...maintenanceResult(started, new Date(), {
         filesIndexed: 0, nodesCreated: 0, edgesCreated: 0, durationMs: 0,
@@ -321,6 +350,10 @@ export async function ensureGraphCurrent(
     if (!sibling) return { ...await rebuildGraph(projectRoot, options), operation: "rebuild" };
   }
   return { ...await refreshGraph(projectRoot, options), operation: "refresh" };
+}
+
+function shouldRetryEngine(status: GraphStatus): boolean {
+  return status.engineFallback !== undefined && hasGraphEngine();
 }
 
 /** Explicit correctness-first refresh. Reads never call this function. */
@@ -375,19 +408,24 @@ async function refreshGraphWithLease(
 ): Promise<GraphMaintenanceResult> {
   const started = currentDate(options);
   let candidatePath: string | null = null;
+  let native: NativeGraphBuild | undefined;
   try {
     assertNotAborted(options.signal);
     // The candidate mostly keeps the live graph's fingerprints; its audit
     // reuses their band hashes instead of deriving them again.
     const bandHashMemo = new Map<string, readonly string[]>();
     const statBeforeInspect = liveDatabaseStat(paths.database);
+    const v5Pointer = graphStorageV5() && !options.__internal?.publishAsBase
+      ? readGraphPointer(paths.location) : undefined;
+    const v5Base = v5Pointer ? join(paths.location.directory, v5Pointer.base) : undefined;
+    const v5Identity = v5Base ? captureDatabaseIdentity(v5Base) : undefined;
+    native = await prepareNativeGraphBuild(paths.projectRoot, v5Base, paths.database);
     const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
-      inspect(options, paths.projectRoot, paths.database, bandHashMemo));
+      inspect(options, paths.projectRoot, paths.database, bandHashMemo, undefined, native?.observation));
     assertMaintenanceDirectoryUnchanged(paths);
     assertRefreshable(priorStatus);
     assertClearSidecars(paths.database);
     progress(options, "discover", "Inspecting the current graph snapshot and source corpus.");
-
     // A refresh that would publish nothing, not even coverage or HEAD, needs
     // no candidate (issue #209): the live graph is already what a candidate
     // would become, and it is left byte-identical. Anything else, including a
@@ -397,10 +435,16 @@ async function refreshGraphWithLease(
     // A degraded graph differs from a fresh one only by partially parsed
     // files, which unchanged sources would parse the same way again.
     const statBefore = liveDatabaseStat(paths.database);
-    if ((priorStatus.status === "fresh" || priorStatus.status === "degraded")
+    const sameStorage = priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION
+      ? Boolean(v5Pointer && native && native.runtime === priorStatus.engineRuntime)
+      : !native;
+    if (sameStorage && !shouldRetryEngine(priorStatus)
+      && (priorStatus.status === "fresh" || priorStatus.status === "degraded")
       && timeGraphPhase("envelope.noOpCheck", () => refreshWouldPublishNothing(paths.projectRoot, paths.database, {
         sourcesInspected: !options.__internal?.inspectStatus && sameLiveDatabaseStat(statBeforeInspect, statBefore),
       }))) {
+      native?.assertInputsUnchanged();
+      assertNotAborted(options.signal);
       assertMaintenanceDirectoryUnchanged(paths);
       assertClearSidecars(paths.database);
       if (sameLiveDatabaseStat(statBefore, liveDatabaseStat(paths.database))) {
@@ -423,6 +467,79 @@ async function refreshGraphWithLease(
         );
       }
     }
+
+    if (native || priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION || shouldRetryEngine(priorStatus)) {
+      const priorIdentity = captureDatabaseIdentity(paths.database);
+      candidatePath = ownedPath(paths, "candidate", createToken(options));
+      let patch: NativeGraphRefresh | undefined;
+      let chosenBase: { name: string; identity: DatabaseIdentity } | undefined;
+      let buildResult: BuildResult;
+      try {
+        if (native && priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION && v5Base && v5Identity) {
+          progress(options, "stage", "Preparing an isolated schema v5 refresh candidate.");
+          options.__internal?.beforeCandidateDatabaseOpen?.(candidatePath);
+          assertMaintenanceDirectoryUnchanged(paths);
+          revalidateLiveDatabase(v5Base, v5Identity);
+          patch = await native.refresh(candidatePath, options, v5Base);
+          if (patch) chosenBase = { name: basename(v5Base), identity: v5Identity };
+          if (patch && overlayTooLarge(patch.shadowedFiles, patch.result.filesIndexed)) {
+            cleanupOwnedDatabase(paths, candidatePath);
+            patch = undefined;
+            chosenBase = undefined;
+            // A checkout returning from a large branch can share its sibling's
+            // base again when that base admits a bounded overlay.
+            for (const name of siblingBases(paths.location, basename(v5Base))) {
+              assertNotAborted(options.signal);
+              const path = join(paths.location.directory, name);
+              const identity = captureDatabaseIdentity(path);
+              revalidateLiveDatabase(path, identity);
+              const attempt = await native.refresh(candidatePath, options, path);
+              if (!attempt) continue;
+              if (!overlayTooLarge(attempt.shadowedFiles, attempt.result.filesIndexed)) {
+                patch = attempt;
+                chosenBase = { name, identity };
+                break;
+              }
+              cleanupOwnedDatabase(paths, candidatePath);
+            }
+          }
+        }
+        // A format switch, a legacy v5 base, and an oversized patch all start
+        // from an empty candidate. The same captured inputs and facts cache apply.
+        buildResult = patch?.result ?? await buildStandaloneCandidate(paths, candidatePath, options, native);
+      } catch (error) {
+        assertNotAborted(options.signal);
+        if (!(error instanceof NativeGraphJobError)) throw error;
+        patch = undefined;
+        chosenBase = undefined;
+        buildResult = await rebuildAfterEngineFailure(paths, candidatePath, options, error);
+      }
+      assertMaintenanceDirectoryUnchanged(paths);
+      revalidateLiveDatabase(paths.database, priorIdentity);
+      timeGraphPhase("native.continuity", () => restoreStandaloneContinuity(paths.database, candidatePath!, chosenBase?.name === v5Pointer?.base && !!patch));
+      await options.__internal?.afterCandidateBuilt?.(candidatePath);
+      progress(options, "validate", "Validating the refreshed graph candidate.");
+      const candidate = await validateCandidate(options, paths, candidatePath, undefined, undefined, undefined, native?.observation);
+      await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
+      const published = await publishCandidate({
+        paths, candidatePath, candidate, priorStatus, priorIdentity, retainRecovery: false, options,
+        ...(native ? { assertInputsUnchanged: native.assertInputsUnchanged } : {}),
+        ...(patch && chosenBase ? { overlay: {
+          base: chosenBase.name, identity: chosenBase.identity, files: patch.shadowedFiles,
+          counts: { nodes: buildResult.nodesCreated, edges: buildResult.edgesCreated },
+        } } : {}),
+      });
+      candidatePath = null;
+      return maintenanceResult(started, currentDate(options), {
+        ...buildResult,
+        refresh: {
+          mode: patch ? "incremental" : "full", publication: patch ? "delta" : "full", filesChanged: priorStatus.changes.total,
+          filesReextracted: patch?.filesReextracted ?? native?.filesReextracted ?? buildResult.filesIndexed,
+          filesRewritten: patch?.shadowedFiles ?? buildResult.filesIndexed,
+        },
+      }, published);
+    }
+
     const priorIdentity = captureDatabaseIdentity(paths.database);
     // A checkout reads its base plus its overlay; the refresh starts from the
     // base alone, so the result can be published as an overlay over that base.
@@ -466,6 +583,7 @@ async function refreshGraphWithLease(
     const finished = currentDate(options);
     return maintenanceResult(started, finished, buildResult, published);
   } finally {
+    native?.dispose();
     if (candidatePath) cleanupOwnedDatabase(paths, candidatePath);
     flushGraphPhaseTimings("refresh", paths.projectRoot);
   }
@@ -490,17 +608,19 @@ async function rebuildGraphWithLease(
 ): Promise<GraphMaintenanceResult> {
   const started = currentDate(options);
   let candidatePath: string | null = null;
+  let native: NativeGraphBuild | undefined;
   try {
     assertNotAborted(options.signal);
     progress(options, "discover", "Inspecting graph recovery prerequisites.");
+    native = await prepareNativeGraphBuild(paths.projectRoot);
     const priorStatus = await timeGraphPhaseAsync("envelope.inspect", () =>
-      inspect(options, paths.projectRoot, paths.database));
+      inspect(options, paths.projectRoot, paths.database, undefined, undefined, native?.observation));
     assertMaintenanceDirectoryUnchanged(paths);
     const databaseExists = existsSync(paths.database);
     if (databaseExists) assertClearSidecars(paths.database);
     const priorIdentity = databaseExists ? captureDatabaseIdentity(paths.database) : null;
 
-    const cloneForContinuity = Boolean(priorIdentity && shouldCloneForContinuity(priorStatus));
+    const cloneForContinuity = Boolean(!native && priorIdentity && shouldCloneForContinuity(priorStatus));
     let continuityFallback = false;
     candidatePath = ownedPath(paths, "candidate", createToken(options));
     if (priorIdentity && cloneForContinuity) {
@@ -518,7 +638,12 @@ async function rebuildGraphWithLease(
     }
     let buildResult: BuildResult;
     try {
-      buildResult = await timeGraphPhaseAsync("envelope.build", () => rebuildCandidate(paths, candidatePath!, options));
+      try {
+        buildResult = await timeGraphPhaseAsync("envelope.build", () => buildStandaloneCandidate(paths, candidatePath!, options, native));
+      } catch (error) {
+        if (!(error instanceof NativeGraphJobError)) throw error;
+        buildResult = await rebuildAfterEngineFailure(paths, candidatePath!, options, error);
+      }
     } catch (error) {
       if (!cloneForContinuity || !isContinuityCloneCompatibilityFailure(error)) throw error;
       // An older database may be readable enough to identify its version yet
@@ -540,12 +665,20 @@ async function rebuildGraphWithLease(
         }]);
       }
     }
+    if (priorIdentity && !cloneForContinuity && (
+      priorStatus.schemaVersion === DB_SCHEMA_VERSION || priorStatus.schemaVersion === ENGINE_GRAPH_SCHEMA_VERSION
+    ) && (priorStatus.status === "fresh" || priorStatus.status === "stale" || priorStatus.status === "degraded")) {
+      assertMaintenanceDirectoryUnchanged(paths);
+      revalidateLiveDatabase(paths.database, priorIdentity);
+      restoreStandaloneContinuity(paths.database, candidatePath);
+    }
     await options.__internal?.afterCandidateBuilt?.(candidatePath);
     assertMaintenanceDirectoryUnchanged(paths);
     assertNotAborted(options.signal);
 
     progress(options, "validate", "Validating the isolated graph rebuild candidate.");
-    const candidate = await timeGraphPhaseAsync("envelope.validate", () => validateCandidate(options, paths, candidatePath!));
+    const candidate = await timeGraphPhaseAsync("envelope.validate", () =>
+      validateCandidate(options, paths, candidatePath!, undefined, undefined, undefined, native?.observation));
     await options.__internal?.afterCandidateValidated?.(candidatePath, candidate.status);
     assertMaintenanceDirectoryUnchanged(paths);
 
@@ -559,6 +692,7 @@ async function rebuildGraphWithLease(
       priorIdentity,
       retainRecovery,
       options,
+      ...(native ? { assertInputsUnchanged: native.assertInputsUnchanged } : {}),
     }));
     const published = continuityFallback
       ? {
@@ -577,9 +711,98 @@ async function rebuildGraphWithLease(
     const finished = currentDate(options);
     return maintenanceResult(started, finished, buildResult, published);
   } finally {
+    native?.dispose();
     if (candidatePath) cleanupOwnedDatabase(paths, candidatePath);
     flushGraphPhaseTimings("rebuild", paths.projectRoot);
   }
+}
+
+async function buildStandaloneCandidate(
+  paths: MaintenancePaths,
+  candidate: string,
+  options: InternalMaintenanceOptions,
+  native: NativeGraphBuild | undefined,
+): Promise<BuildResult> {
+  if (!native) return rebuildCandidate(paths, candidate, options);
+  progress(options, "stage", "Building a schema v5 graph in a standalone candidate.");
+  options.__internal?.beforeCandidateDatabaseOpen?.(candidate);
+  assertMaintenanceDirectoryUnchanged(paths);
+  assertNotAborted(options.signal);
+  try {
+    return await native.build(candidate, options);
+  } catch (error) {
+    assertNotAborted(options.signal);
+    throw error;
+  }
+}
+
+async function rebuildAfterEngineFailure(
+  paths: MaintenancePaths, candidate: string, options: InternalMaintenanceOptions, error: NativeGraphJobError,
+): Promise<BuildResult> {
+  assertNotAborted(options.signal);
+  cleanupOwnedDatabase(paths, candidate);
+  return rebuildCandidate(paths, candidate, options, error.fallbackReason);
+}
+
+function restoreStandaloneContinuity(previous: string, candidate: string, delta = false): void {
+  assertRegularNonSymlink(candidate, "graph candidate");
+  assertClearSidecars(candidate);
+  const source = openGraphDatabase(previous, { readOnly: true, immutable: true });
+  try {
+    const destination = openGraphDatabase(candidate, { allowV5ContinuityWrites: true });
+    try {
+      const destinationFingerprints = new FingerprintStore(destination);
+      destination.transaction(() => {
+        if (delta) {
+          const paths = overlayShadowPaths(source, destination);
+          const missing = overlayMissingNodeIds(source, destination, paths);
+          if (missing.size) {
+            restoreOverlayAliases(source, destination, missing, destinationFingerprints);
+          } else if (source.prepare("SELECT 1 FROM main.aliases LIMIT 1").get()) {
+            const sourceStore = new GraphStore(source);
+            const destinationStore = new GraphStore(destination);
+            for (const alias of sourceStore.getAllAliases()) {
+              destinationStore.insertAlias(alias.aliasId, alias.canonicalNodeId, alias.matchMethod, alias.confidence);
+            }
+          }
+        } else restoreGraphAliases(new GraphStore(source), new GraphStore(destination),
+          new FingerprintStore(source), destinationFingerprints);
+        transferGroundingBaselines(source, destinationFingerprints);
+      });
+    } finally { destination.close(); }
+  } finally { source.close(); }
+}
+
+function overlayShadowPaths(source: ReturnType<typeof openSqlite>, destination: ReturnType<typeof openSqlite>): string[] {
+  const shadows = (db: typeof source) => overlayBase(db)
+    ? db.prepare("SELECT path FROM main.shadow_files").all().map(row => (row as { path: string }).path) : [];
+  return [...new Set([...shadows(source), ...shadows(destination)])];
+}
+
+function overlayMissingNodeIds(
+  source: ReturnType<typeof openSqlite>, destination: ReturnType<typeof openSqlite>, paths: readonly string[],
+): Map<string, Set<string>> {
+  const missing = new Map<string, Set<string>>();
+  if (paths.length === 0) return missing;
+  const prior = source.prepare(`SELECT f.path, lower(hex(n.public_id)) AS id FROM ${v5Rows(source, "files")} f
+    CROSS JOIN ${v5Rows(source, "nodes")} n ON n.file = f.id
+    WHERE f.path IN (SELECT value FROM json_each(?))`).all(JSON.stringify(paths)) as Array<{ path: string; id: string }>;
+  if (prior.length === 0) return missing;
+  // A standalone prior can only lose identities on shadowed paths. Every
+  // surviving node on those paths is physically present in the new patch.
+  const retainedSide = overlayBase(source) ? v5Rows(destination, "nodes") : "main.nodes";
+  const retained = destination.prepare(`SELECT lower(hex(public_id)) AS id FROM ${retainedSide}
+    WHERE public_id IN (SELECT unhex(value) FROM json_each(?))`)
+    .all(JSON.stringify(prior.map(row => row.id))) as Array<{ id: string }>;
+  if (retained.length === prior.length) return missing;
+  const available = new Set(retained.map(row => row.id));
+  for (const { path, id } of prior) {
+    if (available.has(id)) continue;
+    const ids = missing.get(path) ?? new Set<string>();
+    ids.add(id);
+    missing.set(path, ids);
+  }
+  return missing;
 }
 
 async function refreshCandidate(
@@ -591,9 +814,8 @@ async function refreshCandidate(
   if (options.candidateExecution === "process") return runIsolatedCandidate(paths, candidatePath, "refresh", options);
   const engine = maintenanceEngine(paths, candidatePath, options);
   try {
-    // The empty-hint sync path performs the exact corpus, semantic-input,
-    // manifest, and branch handshake. It no-ops only when all provenance still
-    // matches; otherwise it securely restages the whole semantic corpus.
+    // The empty-hint sync path checks the exact corpus, manifest and branch
+    // before deciding whether the graph needs to be restaged.
     return await engine.sync([]);
   } finally {
     engine.close();
@@ -604,10 +826,11 @@ async function rebuildCandidate(
   paths: MaintenancePaths,
   candidatePath: string,
   options: InternalMaintenanceOptions,
+  engineFallbackReason?: string,
 ): Promise<BuildResult> {
   progress(options, "stage", "Building the graph in an isolated same-directory candidate.");
-  if (options.candidateExecution === "process") return runIsolatedCandidate(paths, candidatePath, "rebuild", options);
-  const engine = maintenanceEngine(paths, candidatePath, options);
+  if (options.candidateExecution === "process") return runIsolatedCandidate(paths, candidatePath, "rebuild", options, engineFallbackReason);
+  const engine = maintenanceEngine(paths, candidatePath, options, engineFallbackReason);
   try {
     return await engine.build(paths.projectRoot);
   } finally {
@@ -620,6 +843,7 @@ async function runIsolatedCandidate(
   candidatePath: string,
   operation: "refresh" | "rebuild",
   options: InternalMaintenanceOptions,
+  engineFallbackReason?: string,
 ): Promise<BuildResult> {
   options.__internal?.beforeCandidateDatabaseOpen?.(candidatePath);
   assertMaintenanceDirectoryUnchanged(paths);
@@ -629,6 +853,7 @@ async function runIsolatedCandidate(
       projectRoot: paths.projectRoot,
       candidatePath,
       operation,
+      engineFallbackReason,
       signal: options.signal,
       onProgress: (update) => {
         assertNotAborted(options.signal);
@@ -655,6 +880,7 @@ function maintenanceEngine(
   paths: MaintenancePaths,
   candidatePath: string,
   options: InternalMaintenanceOptions,
+  engineFallbackReason?: string,
 ): GraphEngine {
   assertMaintenanceDirectoryUnchanged(paths);
   const check = () => {
@@ -669,8 +895,11 @@ function maintenanceEngine(
         options.__internal?.beforeCandidateDatabaseOpen?.(candidatePath);
         check();
       },
-      afterSemanticInputsStaged: check,
-      afterCompilerExtraction: check,
+      engineFallbackReason,
+      sourceSpoolDirectory: paths.location.directory,
+      sourceSpoolPrefix: basename(candidatePath) + ".sources-",
+      afterSourcesStaged: check,
+      afterExtraction: check,
       beforePublication: check,
     },
   } as Parameters<typeof createGraphEngine>[0]);
@@ -678,26 +907,42 @@ function maintenanceEngine(
 
 async function publishCandidate(input: CandidatePublicationInput): Promise<CandidatePublicationResult> {
   const { paths, options, candidate } = input;
+  const revalidateBase = () => {
+    if (input.overlay) revalidateLiveDatabase(join(paths.location.directory, input.overlay.base), input.overlay.identity);
+  };
   assertMaintenanceDirectoryUnchanged(paths);
   assertNotAborted(options.signal);
   await options.__internal?.beforeLiveRevalidation?.();
   revalidateLiveDatabase(paths.database, input.priorIdentity);
+  revalidateBase();
   if (currentGraphPath(paths.projectRoot) !== paths.database) throw new GraphMaintenanceError("GRAPH_MAINTENANCE_RACE", "The graph pointer changed during construction.");
   assertCandidateUnchanged(input.candidatePath, candidate);
   progress(options, "publish", "Publishing the validated graph pointer.");
   assertMaintenanceDirectoryUnchanged(paths);
   assertNotAborted(options.signal);
+  if (input.assertInputsUnchanged) timeGraphPhase("native.verifyInputs", input.assertInputsUnchanged);
   revalidateLiveDatabase(paths.database, input.priorIdentity);
+  revalidateBase();
   assertCandidateUnchanged(input.candidatePath, candidate);
-  const countsDb = openSqlite(input.candidatePath, { readOnly: true, immutable: true });
-  let counts: { nodes: number; edges: number };
-  try { counts = countsDb.prepare("SELECT (SELECT count(*) FROM nodes) nodes, (SELECT count(*) FROM edges) edges").get() as typeof counts; } finally { countsDb.close(); }
-  const database = publishGraph(paths.location, input.candidatePath, {
+  let counts = input.overlay?.counts;
+  if (!counts) {
+    const countsDb = openSqlite(input.candidatePath, { readOnly: true, immutable: true });
+    try { counts = countsDb.prepare("SELECT (SELECT count(*) FROM nodes) nodes, (SELECT count(*) FROM edges) edges").get() as typeof counts; }
+    finally { countsDb.close(); }
+  }
+  const data = {
     head: candidate.status.currentRepo.head, files: candidate.status.parseHealth.ok + candidate.status.parseHealth.partial + candidate.status.parseHealth.failed,
-    ...counts, build: { finishedAt: currentDate(options).toISOString() },
-  });
+    nodes: counts!.nodes, edges: counts!.edges,
+    build: { finishedAt: currentDate(options).toISOString(), ...(input.overlay ? { overlayFiles: input.overlay.files } : {}) },
+  };
+  const database = input.overlay
+    ? publishGraphOverlay(paths.location, input.candidatePath, input.overlay.base, data)
+    : publishGraph(paths.location, input.candidatePath, data);
   paths.database = database;
-  recordAuditedDatabase(realpathSync.native(database), candidate.identity.size, candidate.identity.digest);
+  recordAuditedDatabase(realpathSync.native(database), candidate.identity.size, candidate.identity.digest, input.overlay ? {
+    canonicalDbPath: join(paths.location.directory, input.overlay.base),
+    size: input.overlay.identity.size, digest: input.overlay.identity.digest,
+  } : undefined);
   collectGraphGarbage(paths.location);
   enforceIndexCap(paths.location);
   await options.__internal?.afterPublish?.(database);
@@ -723,7 +968,7 @@ async function publishOverlay(input: CandidatePublicationInput, base: string): P
   let chosen: { base: string; plan: OverlayPlan } | undefined;
   for (const option of [base, ...siblingBases(paths.location, base)]) {
     const plan = timeGraphPhase("overlay.plan", () => planOverlay(join(paths.location.directory, option), input.candidatePath));
-    if ("reason" in plan || overlayTooLarge(plan)) continue;
+    if ("reason" in plan || overlayTooLarge(plan.files.length, plan.total)) continue;
     if (!chosen || plan.files.length < chosen.plan.files.length) chosen = { base: option, plan };
   }
   if (!chosen) return undefined;
@@ -773,6 +1018,7 @@ function maintenanceResult(
   build: BuildResult,
   published: CandidatePublicationResult,
 ): GraphMaintenanceResult {
+  const engine = build.engine ?? published.status.engineFallback;
   return {
     state: "succeeded",
     startedAt: started.toISOString(),
@@ -784,10 +1030,7 @@ function maintenanceResult(
     nodesCreated: build.nodesCreated,
     edgesCreated: build.edgesCreated,
     ...(build.skipped && build.skipped.length > 0 ? { skipped: build.skipped } : {}),
-    ...(build.declinedInputs && build.declinedInputs.length > 0
-      ? { declinedInputs: build.declinedInputs }
-      : {}),
-    ...(build.typescript ? { typescript: build.typescript } : {}),
+    ...(engine ? { engine } : {}),
     ...(build.refresh ? { refresh: build.refresh } : {}),
     ...(published.recoveryPath ? { recoveryPath: published.recoveryPath } : {}),
   };
@@ -810,9 +1053,138 @@ function acquireMaintenanceLock(paths: MaintenancePaths, _options: InternalMaint
   catch (error) { throw new GraphMaintenanceError((error as { code?: string }).code === "GRAPH_MAINTENANCE_LOCKED" ? "GRAPH_MAINTENANCE_LOCKED" : "GRAPH_MAINTENANCE_PATH_UNSAFE", errorMessage(error)); }
 }
 
+export interface WarmGraphArtifact {
+  path: string;
+  size: number;
+  digest: string;
+  assertCurrent(): void;
+}
+
+/** Bind a resident checkout once to the audited base and overlay byte identities. */
+export function pinWarmGraphArtifact(path: string, base?: WarmGraphArtifact): WarmGraphArtifact {
+  assertClearSidecars(path);
+  const canonical = realpathSync.native(path);
+  const before = lstatSync(path, { bigint: true });
+  const stat = lstatSync(path);
+  if (!before.isFile()) throw new Error("The published graph is not a regular file.");
+  const identity = captureDatabaseIdentity(path);
+  const artifact = holdWarmGraphArtifact(canonical, identity, before);
+  if (!holdsAuditedBytes(canonical, stat, base?.path)) {
+    const db = openSqlite(path, { readOnly: true, immutable: true });
+    try {
+      if (!hasV5GraphSchema(db) || overlayBase(db) !== (base && basename(base.path))) {
+        throw new Error("The published graph has the wrong base or schema.");
+      }
+      installGraphViews(db, path);
+      const problems = [...inspectV5GraphSchema(db), ...quickCheck(db), ...inspectV5GraphInvariants(db)];
+      if (problems.length) throw new Error(`Invalid published graph: ${problems.join(", ")}.`);
+    } finally { db.close(); }
+    base?.assertCurrent();
+  }
+  artifact.assertCurrent();
+  return artifact;
+}
+
+function holdWarmGraphArtifact(path: string, identity: DatabaseIdentity, stamp = lstatSync(path, { bigint: true })): WarmGraphArtifact {
+  return {
+    path, size: identity.size, digest: identity.digest,
+    assertCurrent() {
+      assertClearSidecars(path);
+      const now = lstatSync(path, { bigint: true });
+      if (!now.isFile() || now.ino !== stamp.ino || now.dev !== stamp.dev || now.size !== stamp.size
+        || now.mtimeNs !== stamp.mtimeNs || now.ctimeNs !== stamp.ctimeNs
+        || ((now.ino === 0n || now.ctimeNs % 1_000_000n === 0n) && captureDatabaseIdentityUntimed(path, undefined, false).digest !== identity.digest)) {
+        throw new Error("The published graph changed since the resident engine opened it.");
+      }
+    },
+  };
+}
+
+interface NativeWarmPublication {
+  location: GraphLocation;
+  base: WarmGraphArtifact;
+  previous: WarmGraphArtifact;
+  output: string;
+  result: { files: number; nodes: number; edges: number; shadowedFiles?: number | null };
+  expected: ReadonlyMap<string, NativeGraphFile>;
+  requiredShadows: ReadonlySet<string>;
+  metadata: GraphEngineBuildMetadata;
+  assertCurrent(): void;
+  verifyInputs(): Promise<boolean>;
+}
+
+/** Audit changed rows against the pinned base, then publish under the caller's writer lease. */
+export async function publishNativeWarmOverlay(input: NativeWarmPublication): Promise<{
+  artifact: WarmGraphArtifact; publishedAt: number;
+} | undefined> {
+  const { location, base, previous, output, result, expected, requiredShadows, metadata } = input;
+  input.assertCurrent();
+  timeGraphPhase("native.warm.continuity", () => restoreStandaloneContinuity(previous.path, output, true));
+  assertClearSidecars(output);
+  const identity = captureDatabaseIdentity(output);
+  const validating = performance.now();
+  const db = openSqlite(output, { readOnly: true, immutable: true });
+  try {
+    if (!hasV5GraphSchema(db) || overlayBase(db) !== basename(base.path)) throw new Error("The resident candidate has the wrong base or schema.");
+    installGraphViews(db, output);
+    const problems = [...inspectV5GraphSchema(db), ...quickCheck(db), ...inspectV5GraphInvariants(db)];
+    if (problems.length) throw new Error(`Invalid resident graph candidate: ${problems.join(", ")}.`);
+
+    const snapshot = db.prepare(`SELECT indexed_at AS indexedAt, indexed_branch AS indexedBranch,
+      lower(hex(indexed_head)) AS head, compiler_version AS compilerVersion, extractor_version AS extractorVersion,
+      resolver_version AS resolverVersion, lower(hex(grammar_hash)) AS grammarHash, lower(hex(config_hash)) AS configHash,
+      lower(hex(manifest_hash)) AS manifestHash, lower(hex(corpus_digest)) AS sourceCorpusDigest,
+      source_count AS sources FROM main.snapshot`).get() as Partial<GraphEngineBuildMetadata> & { head: string; sources: number };
+    if (!snapshot || snapshot.sources !== expected.size || result.files !== expected.size || (snapshot.head || null) !== metadata.indexedHead
+      || (["indexedAt", "indexedBranch", "compilerVersion", "extractorVersion", "resolverVersion", "grammarHash",
+        "configHash", "manifestHash", "sourceCorpusDigest"] as const).some(key => snapshot[key] !== metadata[key])) {
+      throw new Error("The resident graph candidate does not describe the observed checkout.");
+    }
+    const shadows = new Set<string>();
+    const files = db.prepare(`SELECT s.path, lower(hex(f.content_hash)) AS hash, f.size, f.extractor_version AS extractor
+      FROM main.shadow_files s LEFT JOIN main.files f USING(path)`).iterate() as Iterable<{
+      path: string; hash: string; size: number | null; extractor: string | null;
+    }>;
+    for (const row of files) {
+      const wanted = expected.get(row.path);
+      if (wanted ? row.hash !== wanted.contentHash || row.size !== wanted.size || row.extractor !== wanted.extractorVersion : row.size !== null) {
+        throw new Error("The resident overlay has an unexpected source row.");
+      }
+      shadows.add(row.path);
+    }
+    if (shadows.size !== result.shadowedFiles || [...requiredShadows].some(path => !shadows.has(path))) {
+      throw new Error("The resident overlay omitted a changed source.");
+    }
+  } finally { db.close(); }
+  recordGraphPhase("native.warm.validate", performance.now() - validating);
+  revalidateLiveDatabase(output, identity);
+  // The engine and the continuity writer both closed their transactions.
+  // Flush the sidecar-free candidate while the engine proves source stamps.
+  const synced = timeGraphPhaseAsync("native.warm.finalize", async () => {
+    const handle = await openFile(output, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    try { await handle.sync(); } finally { await handle.close(); }
+  });
+  const [verified, durable] = await Promise.allSettled([input.verifyInputs(), synced]);
+  if (durable.status === "rejected") throw durable.reason;
+  if (verified.status === "rejected") throw verified.reason;
+  if (!verified.value) return undefined;
+  input.assertCurrent();
+  assertClearSidecars(output);
+  revalidateLiveDatabase(output, identity);
+  const file = timeGraphPhase("native.warm.publish", () => publishGraphOverlay(location, output, basename(base.path), {
+    head: metadata.indexedHead, files: result.files, nodes: result.nodes, edges: result.edges,
+    build: { finishedAt: new Date().toISOString(), overlayFiles: result.shadowedFiles },
+  }));
+  const publishedAt = performance.now();
+  recordAuditedDatabase(realpathSync.native(file), identity.size, identity.digest, {
+    canonicalDbPath: base.path, size: base.size, digest: base.digest,
+  });
+  return { artifact: holdWarmGraphArtifact(file, identity), publishedAt };
+}
+
 /**
  * Record a graph file this process wrote and checked as audited, so readers
- * need not audit it again (the warm path publishes overlays this way). @internal
+ * need not audit it again. @internal
  */
 export function recordWrittenGraphAudited(path: string): void {
   const identity = captureDatabaseIdentity(path);
@@ -828,14 +1200,14 @@ function captureDatabaseIdentity(path: string): DatabaseIdentity {
  * that are hashed are also written to that descriptor, so the copy is bound
  * to the digest in one read.
  */
-function captureDatabaseIdentityUntimed(path: string, copyTo?: number): DatabaseIdentity {
+function captureDatabaseIdentityUntimed(path: string, copyTo?: number, useMemo = true): DatabaseIdentity {
   assertRegularNonSymlink(path, "graph database");
   const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
   const fd = openSync(path, constants.O_RDONLY | noFollow);
   try {
     const before = fstatSync(fd);
     // Bytes this operation already hashed with the identity unchanged since.
-    const remembered = copyTo === undefined ? recallDigest(path, before) : undefined;
+    const remembered = useMemo && copyTo === undefined ? recallDigest(path, before) : undefined;
     if (remembered !== undefined) {
       const pathNow = lstatSync(path);
       if (sameStatIdentity(before, pathNow) && !pathNow.isSymbolicLink()) {
@@ -923,12 +1295,13 @@ async function validateCandidate(
   assertStatus: (status: GraphStatus) => void = assertPublishableCandidate,
   bandHashMemo?: Map<string, readonly string[]>,
   fingerprintScope?: readonly string[],
+  maintenanceInputs?: GraphMaintenanceInputs,
 ): Promise<ValidatedCandidate> {
   assertMaintenanceDirectoryUnchanged(paths);
   finalizeGraph(candidatePath);
   assertClearSidecars(candidatePath);
   const identityBefore = captureDatabaseIdentity(candidatePath);
-  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo, fingerprintScope);
+  const status = await inspect(options, paths.projectRoot, candidatePath, bandHashMemo, fingerprintScope, maintenanceInputs);
   assertMaintenanceDirectoryUnchanged(paths);
   assertStatus(status);
   assertClearSidecars(candidatePath);
@@ -974,6 +1347,7 @@ function assertSnapshotWithinIdentityCheck(path: string): void {
   assertClearSidecars(path);
   const db = openSqlite(path, { readOnly: true, immutable: true });
   try {
+    if (hasV5GraphSchema(db)) installGraphViews(db, path);
     const row = db.prepare(
       "SELECT value FROM project_metadata WHERE key = ?",
     ).get(GRAPH_SNAPSHOT_METADATA_KEY) as { value?: unknown } | undefined;
@@ -1034,7 +1408,7 @@ function assertRefreshable(status: GraphStatus): void {
     "GRAPH_MANIFEST_INSPECTION_FAILED",
     "GRAPH_STATUS_OBSERVATION_RACE",
   ]);
-  if (status.schemaVersion !== DB_SCHEMA_VERSION
+  if ((status.schemaVersion !== DB_SCHEMA_VERSION && status.schemaVersion !== ENGINE_GRAPH_SCHEMA_VERSION)
     || status.status === "corrupt"
     || status.status === "rebuild_required"
     || status.diagnostics.some((diagnostic) => blockedCodes.has(diagnostic.code))) {
@@ -1101,6 +1475,8 @@ function assertRepairPublishableCandidate(status: GraphStatus): void {
  */
 const PUBLISHABLE_DEGRADED_CODES = new Set([
   "GRAPH_PARSE_DEGRADED",
+  "GRAPH_ENGINE_FALLBACK",
+  "GRAPH_ENGINE_WASI",
   "GRAPH_INDEX_HEAD_CHANGED",
   // Added by the per-file skip path. Without it the publish gate discarded the
   // candidate that path exists to produce.
@@ -1167,12 +1543,14 @@ async function inspect(
   database: string,
   bandHashMemo?: Map<string, readonly string[]>,
   fingerprintScope?: readonly string[],
+  maintenanceInputs?: GraphMaintenanceInputs,
 ): Promise<GraphStatus> {
   return (options.__internal?.inspectStatus ?? inspectGraphStatus)({
     projectRoot,
     dbPath: database,
     ...(bandHashMemo ? { bandHashMemo } : {}),
     ...(fingerprintScope ? { fingerprintScope } : {}),
+    ...(maintenanceInputs ? { maintenanceInputs } : {}),
   });
 }
 
@@ -1347,50 +1725,4 @@ function errorCode(error: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-interface UsageMeter { startedAt: number; cpu: NodeJS.CpuUsage }
-
-function startUsageMeter(): UsageMeter {
-  return { startedAt: performance.now(), cpu: process.cpuUsage() };
-}
-
-/**
- * One row of the usage log per build or refresh: wall time, CPU of this
- * process plus the candidate and its compiler servers, and peak memory of the
- * candidate plus its server. Never fails the operation it measures.
- */
-function logGraphUsage(
-  paths: MaintenancePaths,
-  kind: "build" | "refresh",
-  meter: UsageMeter,
-  candidate: GraphCandidateUsage | undefined,
-  outcome: GraphMaintenanceResult | undefined,
-): void {
-  try {
-    const cpu = process.cpuUsage(meter.cpu);
-    const ownCpuMs = (cpu.user + cpu.system) / 1000;
-    const unchanged = !!outcome && outcome.filesIndexed === 0 && outcome.nodesCreated === 0 && !candidate;
-    const files = outcome?.refresh?.filesChanged ?? outcome?.filesIndexed ?? 0;
-    const writer = openRecord({ busyTimeoutMs: 1000 });
-    try {
-      recordBuildUsage(writer.db, {
-        projectId: paths.location.projectId,
-        checkout: paths.location.root,
-        kind,
-        files,
-        wallMs: performance.now() - meter.startedAt,
-        cpuMs: ownCpuMs + (candidate?.cpuMs ?? 0) + (candidate?.serverCpuMs ?? 0),
-        peakRssMb: candidate
-          ? candidate.peakRssMb + (candidate.serverPeakRssMb ?? 0)
-          : process.memoryUsage().rss / 1024 ** 2,
-        ...(candidate?.serverPeakRssMb !== undefined ? { serverRssMb: candidate.serverPeakRssMb } : {}),
-        result: !outcome ? "failed" : unchanged ? "unchanged" : "ok",
-      });
-    } finally {
-      writer.close();
-    }
-  } catch {
-    // The usage log is a report; a locked or missing record never fails a build.
-  }
 }

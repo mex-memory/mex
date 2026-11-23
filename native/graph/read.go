@@ -109,7 +109,7 @@ type Reader interface {
 	// UnresolvedIn counts calls inside the definition the graph couldn't
 	// resolve: callees it may not show.
 	UnresolvedIn(id string) int
-	// Complete reports that every file the graph would cover is indexed. It
+	// Complete reports that every file the graph would cover has full coverage. It
 	// is one condition of "none"; files changed since the build are another.
 	Complete() bool
 	// BuiltFiles is every file the graph holds, with its hash at build.

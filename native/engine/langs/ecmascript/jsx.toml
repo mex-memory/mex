@@ -1,0 +1,17 @@
+grammar = "javascript"
+adapter_version = 1
+extensions = [".jsx"]
+
+[functions]
+function_declaration = "name"
+generator_function_declaration = "name"
+method_definition = "name"
+
+[classes]
+class_declaration = "name"
+
+[imports]
+import_statement = "source"
+
+[calls]
+call_expression = "function"

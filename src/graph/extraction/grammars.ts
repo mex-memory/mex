@@ -95,7 +95,7 @@ export async function loadGrammars(languages: Language[]): Promise<void> {
   const toLoad = [...new Set(languages)].filter(
     (lang) => lang in WASM_GRAMMAR_FILES && !languageCache.has(lang),
   );
-  // Successful compiler-only extraction has no tree-sitter work. In a fresh
+  // Full native extraction needs no WASM grammars. In a fresh
   // candidate process, initializing its WASM runtime here would be wasted.
   if (toLoad.length === 0) return;
   await initRuntime();

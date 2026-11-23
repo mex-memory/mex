@@ -1,6 +1,5 @@
 import { discoverGraphReadPaths } from "./read-discovery.js";
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { isSameResolvedPath, toPosix } from "../paths.js";
@@ -10,15 +9,19 @@ import {
 } from "./corpus-policy.js";
 import { graphConfigIdentity } from "./config-identity.js";
 import { DB_SCHEMA_VERSION } from "./db/database.js";
+import { engineExtractorSuffix, graphEngineLanguages, TREE_SITTER_EXTRACTOR_VERSION } from "./engine-languages.js";
 import { grammarManifestHash } from "./extraction/grammars.js";
 import { GraphSourceStagingError, type GraphSourceStagingFailure } from "./source-errors.js";
 import { recallSource, rememberSource } from "./source-memo.js";
 
-// Package metadata does not initialize the compiler on a graph read.
-const TYPESCRIPT_COMPILER_VERSION: string = createRequire(import.meta.url)("typescript/package.json").version;
-// Pinned against extraction by the read-manifest compatibility test.
-export const CORPUS_EXTRACTOR_VERSION = "typescript-api-v8+tree-sitter-v4";
-export const RESOLVER_VERSION = "compiler-first-v3";
+// A new manifest preimage prevents compiler-built graphs from being adopted.
+export const CORPUS_EXTRACTOR_VERSION = TREE_SITTER_EXTRACTOR_VERSION;
+export const RESOLVER_VERSION = "engine-first-v4";
+
+/** Corpus identity includes the default engine languages and any opt-ins. */
+export function corpusExtractorVersion(env: NodeJS.ProcessEnv = process.env): string {
+  return CORPUS_EXTRACTOR_VERSION + engineExtractorSuffix(graphEngineLanguages(env));
+}
 
 export interface GraphManifest {
   manifestHash: string;
@@ -39,7 +42,6 @@ export interface GraphManifest {
 /** One fixed key order; the serialized form is the manifest hash preimage. */
 export interface GraphManifestInputs {
   db: number;
-  compiler: string;
   extractor: string;
   resolver: string;
   corpusPolicyHash: string;
@@ -47,14 +49,16 @@ export interface GraphManifestInputs {
   configHash: string;
 }
 
-export function graphManifest(root: string): GraphManifest {
-  const configSources = discoverGraphConfigSources(root);
+export function graphManifest(root: string, schemaVersion = DB_SCHEMA_VERSION): GraphManifest {
+  return graphManifestFromSources(root, discoverGraphConfigSources(root), schemaVersion);
+}
+
+export function graphManifestFromSources(root: string, configSources: ReadonlyMap<string, string>, schemaVersion = DB_SCHEMA_VERSION): GraphManifest {
   const configHash = configHashForSources(configSources);
   const grammarHash = grammarManifestHash();
   const inputs: GraphManifestInputs = {
-    db: DB_SCHEMA_VERSION,
-    compiler: TYPESCRIPT_COMPILER_VERSION,
-    extractor: CORPUS_EXTRACTOR_VERSION,
+    db: schemaVersion,
+    extractor: corpusExtractorVersion(),
     resolver: RESOLVER_VERSION,
     corpusPolicyHash: graphCorpusPolicyHash(root),
     grammarHash,
@@ -68,6 +72,13 @@ export function graphManifest(root: string): GraphManifest {
   };
 }
 
+/** Reuse one exact config observation when inspection learns the store's format. */
+export function graphManifestForSchema(manifest: GraphManifest, schemaVersion: number): GraphManifest {
+  if (manifest.inputs.db === schemaVersion) return manifest;
+  const inputs = Object.freeze({ ...manifest.inputs, db: schemaVersion });
+  return { ...manifest, inputs, manifestHash: graphManifestHash(inputs) };
+}
+
 /**
  * Fold manifest inputs in one fixed order.
  *
@@ -79,7 +90,6 @@ export function graphManifest(root: string): GraphManifest {
 export function graphManifestHash(inputs: GraphManifestInputs): string {
   return sha256(JSON.stringify({
     db: inputs.db,
-    compiler: inputs.compiler,
     extractor: inputs.extractor,
     resolver: inputs.resolver,
     corpusPolicyHash: inputs.corpusPolicyHash,
@@ -122,7 +132,7 @@ export function discoverGraphConfigSources(root: string): Map<string, string> {
       ...GRAPH_CORPUS_GLOB_OPTIONS,
       cwd: root,
       ignore: graphCorpusIgnoreGlobs(root),
-    }, GRAPH_CORPUS_LIMITS.maxConfigFiles).map(toPosix);
+    }, GRAPH_CORPUS_LIMITS.maxConfigFiles, true).map(toPosix);
   } catch (error) {
     throw new GraphSourceStagingError([sourceStagingFailure(".", "discover", error)]);
   }
@@ -155,7 +165,7 @@ export function discoverGraphConfigSources(root: string): Map<string, string> {
  * Hashing raw content made a dependency bump, an npm script or a reindent
  * indistinguishable from a change to module resolution, and every one of them
  * invalidated the index. `graphConfigIdentity` projects each file down to the
- * fields that decide what the compiler resolves, and falls back to exact bytes
+ * fields that affect module resolution, and falls back to exact bytes
  * for anything it cannot parse or recognize.
  */
 export function configHashForSources(configSources: ReadonlyMap<string, string>): string {

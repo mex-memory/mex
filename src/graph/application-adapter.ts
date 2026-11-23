@@ -1,3 +1,4 @@
+import { readsV5Graph, v5NodeKey } from "./db/v5.js";
 import { currentGraphPath } from "./storage.js";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -50,7 +51,7 @@ import { GRAPH_SNAPSHOT_METADATA_KEY } from "./snapshot.js";
 import { createScopedSourcePredicate, inspectGraphStatus } from "./status.js";
 import { prepareCodeHashing } from "./code-hash.js";
 import { createGroundingEvidence, type CommittedBody, type GroundingChangeEvidence } from "./grounding-evidence.js";
-import { LANGUAGES, NODE_KINDS, type GraphNode } from "./types.js";
+import { BASIC_RESOLUTION, LANGUAGES, NODE_KINDS, type GraphNode } from "./types.js";
 
 const MAX_CURSOR_BYTES = 4 * 1024;
 const MAX_QUERY_CHARS = 256;
@@ -274,7 +275,7 @@ export class RepositoryGraphPort implements GraphPort {
     try {
       return await this.#deps.inspectStatus({
         projectRoot: this.#projectRoot,
-        dbPath: this.#dbPath,
+        dbPath: this.#explicitDbPath,
       });
     } catch {
       throw portError(
@@ -514,9 +515,24 @@ export class RepositoryGraphPort implements GraphPort {
       listFiles() { load(); return [...files!.keys()].sort().map(path => ({ path })); },
       nodesInFile(path) { load(); return files!.get(path) ?? []; },
       describeNode(id) { load(); return nodes!.get(id) ?? null; },
-      callersOf(id) { assertActive(); return context.session.graph.getIncoming(id, ["calls"]).map(neighbor => neighbor.edge.source); },
-      calleesOf(id) { assertActive(); return context.session.graph.getOutgoing(id, ["calls"]).map(neighbor => neighbor.edge.target); },
-      outgoingEdges(id) { assertActive(); return context.session.graph.getOutgoing(id).map(({ edge }) => ({ source: edge.source, target: edge.target, kind: edge.kind })); },
+      callersOf(id) {
+        assertActive();
+        return context.session.graph.getIncoming(id, ["calls"])
+          .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION)
+          .map(({ edge }) => edge.source);
+      },
+      calleesOf(id) {
+        assertActive();
+        return context.session.graph.getOutgoing(id, ["calls"])
+          .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION)
+          .map(({ edge }) => edge.target);
+      },
+      outgoingEdges(id) {
+        assertActive();
+        return context.session.graph.getOutgoing(id)
+          .filter(({ edge }) => edge.resolutionMethod !== BASIC_RESOLUTION)
+          .map(({ edge }) => ({ source: edge.source, target: edge.target, kind: edge.kind }));
+      },
       readFileLines(path) { assertActive(); return readIndexedSource(context, path).split("\n"); },
     };
     return {
@@ -1133,17 +1149,23 @@ function queryRelationRows(
   direction: "callers" | "callees",
   limit: number,
 ): RelationRow[] {
-  const predicate = direction === "callers" ? "edges.target = ?" : "edges.source = ?";
+  const side = direction === "callers" ? "target" : "source";
+  const native = readsV5Graph(db);
+  const key = native ? v5NodeKey(db, symbolId) : symbolId;
+  if (key === undefined) return [];
+  const predicate = `edges.${side}${native ? "_key" : ""} = ?`;
+  const path = native ? "edges.source_path" : "source_nodes.file_path";
+  const join = native ? "" : "JOIN nodes source_nodes ON source_nodes.id = edges.source";
   return db.prepare(
     `SELECT edges.source, edges.target, edges.kind, edges.line, edges.col,
-            edges.confidence, edges.provenance, source_nodes.file_path AS source_path
-       FROM edges
-       JOIN nodes source_nodes ON source_nodes.id = edges.source
+            edges.confidence, edges.provenance, ${path} AS source_path
+       FROM edges ${join}
       WHERE ${predicate} AND edges.kind = 'calls'
+        AND edges.resolution_method IS NOT '${BASIC_RESOLUTION}'
       ORDER BY edges.source, edges.target, edges.kind,
                IFNULL(edges.line, -1), IFNULL(edges.col, -1), edges.id
       LIMIT ?`,
-  ).all(symbolId, limit) as RelationRow[];
+  ).all(key, limit) as RelationRow[];
 }
 
 function projectRelationRow(row: RelationRow): GraphRelation {
@@ -1234,25 +1256,30 @@ function queryDistinctCallerRows(
   symbolId: string,
   limit: number,
 ): RelationRow[] {
+  const native = readsV5Graph(db);
+  const key = native ? v5NodeKey(db, symbolId) : symbolId;
+  if (key === undefined) return [];
+  const path = native ? "edges.source_path" : "source_nodes.file_path";
+  const join = native ? "" : "JOIN nodes source_nodes ON source_nodes.id = edges.source";
   return db.prepare(
     `WITH ranked_callers AS (
        SELECT edges.source, edges.target, edges.kind, edges.line, edges.col,
               edges.confidence, edges.provenance,
-              source_nodes.file_path AS source_path,
+              ${path} AS source_path,
               ROW_NUMBER() OVER (
                 PARTITION BY edges.source
                 ORDER BY IFNULL(edges.line, -1), IFNULL(edges.col, -1), edges.id
               ) AS caller_rank
-         FROM edges
-         JOIN nodes source_nodes ON source_nodes.id = edges.source
-        WHERE edges.target = ? AND edges.kind = 'calls'
+         FROM edges ${join}
+        WHERE edges.target${native ? "_key" : ""} = ? AND edges.kind = 'calls'
+          AND edges.resolution_method IS NOT '${BASIC_RESOLUTION}'
      )
      SELECT source, target, kind, line, col, confidence, provenance, source_path
        FROM ranked_callers
       WHERE caller_rank = 1
       ORDER BY source, target, kind, IFNULL(line, -1), IFNULL(col, -1)
       LIMIT ?`,
-  ).all(symbolId, limit) as RelationRow[];
+  ).all(key, limit) as RelationRow[];
 }
 
 function resolveImpactRoots(
@@ -1887,6 +1914,8 @@ async function translateMaintenanceError(error: unknown): Promise<MexPortError> 
         "Graph changed during maintenance",
         "The published graph or source corpus changed during maintenance. Retry from current state.",
       );
+    case "GRAPH_ENGINE_MEMORY_LIMIT":
+      return portError("JOB_FAILED", 500, "Graph engine memory limit reached", error.message);
     case "GRAPH_CANDIDATE_INVALID":
     case "GRAPH_PUBLICATION_FAILED":
       return portError(

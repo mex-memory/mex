@@ -1,0 +1,35 @@
+# Each entry reads <folder>/<id>.toml. The folder also holds the adapter's tests.
+[[language]]
+id = "python"
+folder = "python"
+level = "full"
+
+[[language]]
+id = "rust"
+folder = "rust"
+level = "full"
+
+[[language]]
+id = "csharp"
+folder = "csharp"
+level = "full"
+
+[[language]]
+id = "javascript"
+folder = "ecmascript"
+level = "full"
+
+[[language]]
+id = "jsx"
+folder = "ecmascript"
+level = "full"
+
+[[language]]
+id = "typescript"
+folder = "ecmascript"
+level = "full"
+
+[[language]]
+id = "tsx"
+folder = "ecmascript"
+level = "full"

@@ -1,3 +1,5 @@
+import { graphEngineFallbackMessage, graphEngineRuntimeLabel } from "../graph/engine-languages.js";
+import { GRAPH_ENGINE_MEMORY_LIMIT, graphEngineMemoryDiagnostic } from "../graph/engine-memory.js";
 import { DiagramRepository } from "../statechart/repository.js";
 import { readAgentLoggingPolicy, setAgentLoggingPolicy } from "../logging/policy.js";
 import {
@@ -1532,11 +1534,23 @@ function projectGraphHealthStatus(
   return {
     id: "graph",
     label: "Code graph",
-    status: status.status === "fresh" && status.parseHealth.failed === 0
+    status: status.status === "fresh" && status.parseHealth.failed === 0 && status.engineMemoryLimitMb === undefined
       ? "healthy"
       : "degraded",
-    summary: graphHealthSummary(status),
-    diagnostics: status.diagnostics.slice(0, HUB_LIMITS.maxDiagnosticCount).map(projectGraphDiagnostic),
+    summary: graphHealthSummary(status) + (status.engineRuntime ? ` Graph engine used ${graphEngineRuntimeLabel(status.engineRuntime)}.` : ""),
+    diagnostics: status.diagnostics.slice(0, HUB_LIMITS.maxDiagnosticCount).map((diagnostic) => {
+      const projected = projectGraphDiagnostic(diagnostic);
+      if (diagnostic.code === "GRAPH_ENGINE_FALLBACK" && status.engineFallback) {
+        projected.message = graphEngineFallbackMessage(status.engineFallback);
+      }
+      if (diagnostic.code === "GRAPH_ENGINE_WASI" && status.nativeEngineUnavailable) {
+        projected.message = `The WASI graph engine ran because ${status.nativeEngineUnavailable}.`;
+      }
+      if (diagnostic.code === GRAPH_ENGINE_MEMORY_LIMIT && status.engineMemoryLimitMb !== undefined) {
+        projected.message = graphEngineMemoryDiagnostic(status.engineMemoryLimitMb).message;
+      }
+      return projected;
+    }),
     ...(recommendedJobKind === null ? {} : { repairJobKind: recommendedJobKind }),
     graph: graphDetails,
   };
@@ -1596,7 +1610,6 @@ function graphDiagnosticMessage(code: string): string {
     GRAPH_INDEX_BRANCH_CHANGED: "The indexed branch differs from the current branch.",
     GRAPH_INDEX_HEAD_CHANGED: "The repository HEAD changed since the last successful index.",
     GRAPH_BUILD_MANIFEST_CHANGED: "Graph extraction inputs changed since the last index.",
-    GRAPH_SEMANTIC_INPUTS_CHANGED: "Graph semantic inputs changed since the last index.",
     GRAPH_SOURCE_CORPUS_MISMATCH: "The source corpus differs from the indexed snapshot.",
     GRAPH_PARSE_DEGRADED: "One or more source files could not be parsed completely.",
     GRAPH_INDEX_REBUILD_REQUIRED: "The graph requires an explicit rebuild.",

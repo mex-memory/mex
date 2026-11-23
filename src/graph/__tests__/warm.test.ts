@@ -2,12 +2,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
+import { FingerprintStore } from "../fingerprint-store.js";
 import { openGraphRead } from "../overlay-open.js";
 import { createGraphReadEngine } from "../read-engine.js";
 import { readGraphPointer, graphLocation } from "../storage.js";
-import { WarmCheckout } from "../warm.js";
+import { graphEngineBinary } from "../native-engine.js";
+import { openWarmCheckout, type WarmGraphCheckout } from "../warm.js";
 
 /**
  * The warm path must publish exactly what a cold refresh publishes for the
@@ -17,8 +19,14 @@ import { WarmCheckout } from "../warm.js";
  * go cold instead of publishing anything.
  */
 
+const binary = graphEngineBinary();
 const roots: string[] = [];
-const checkouts: WarmCheckout[] = [];
+beforeAll(() => {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v5");
+  vi.stubEnv("MEX_GRAPH_ENGINE_LANGUAGES", "typescript,javascript");
+});
+afterAll(() => vi.unstubAllEnvs());
+const checkouts: WarmGraphCheckout[] = [];
 afterAll(() => {
   for (const checkout of checkouts.splice(0)) checkout.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -37,13 +45,8 @@ const IMAGES: Record<string, string> = {
   edges: "SELECT source, target, kind, metadata, line, col, provenance, confidence, resolution_method, evidence FROM edges",
   files: "SELECT path, content_hash, language, size, parse_status, diagnostic_count, missing_count, error_coverage, errors, node_count, extractor_version FROM files",
   unresolved_refs: "SELECT ref_key, from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language, receiver, qualifier, import_source, metadata, status, target_id, resolver FROM unresolved_refs",
-  import_bindings: "SELECT * FROM import_bindings",
-  coverage: "SELECT * FROM coverage",
-  node_fingerprints: "SELECT node_id, hex(minhash), neighbors, token_count FROM node_fingerprints",
-  lsh_buckets: "SELECT l.band, CAST(l.band_hash AS TEXT), f.node_id FROM lsh_buckets l JOIN node_fingerprints f ON f.ref = l.ref",
-  source_chunks: "SELECT file_path, start_line, end_line, content_hash, path_terms, identifier_terms, comment_terms FROM source_chunks",
-  file_row_digests: "SELECT * FROM file_row_digests",
-  file_extraction_cache: "SELECT path, content_hash, hex(payload) FROM file_extraction_cache",
+  coverage: "SELECT path, reason FROM coverage",
+  source_chunks: "SELECT file_path, start_line, end_line, content_hash FROM source_chunks",
 };
 
 function images(root: string): Record<string, string[]> {
@@ -53,13 +56,21 @@ function images(root: string): Record<string, string[]> {
     for (const [table, sql] of Object.entries(IMAGES)) {
       out[table] = (db.prepare(sql).all() as unknown[]).map((row) => JSON.stringify(Object.values(row as object))).sort();
     }
+    const fingerprints = new FingerprintStore(db);
+    out.fingerprints = (db.prepare("SELECT node_id FROM node_fingerprints ORDER BY node_id").all() as Array<{ node_id: string }>)
+      .map(({ node_id }) => JSON.stringify([node_id, fingerprints.get(node_id)]));
     return out;
   } finally { db.close(); }
 }
 
 async function inHome<T>(home: string, work: () => Promise<T> | T): Promise<T> {
-  vi.stubEnv("MEX_HOME", home);
-  try { return await work(); } finally { vi.unstubAllEnvs(); }
+  const previous = process.env.MEX_HOME;
+  process.env.MEX_HOME = home;
+  try { return await work(); }
+  finally {
+    if (previous === undefined) delete process.env.MEX_HOME;
+    else process.env.MEX_HOME = previous;
+  }
 }
 
 function repository(): string {
@@ -76,18 +87,18 @@ function repository(): string {
   return root;
 }
 
-describe("warm edits", () => {
-  it("publish what a cold refresh publishes, and go cold for what they cannot reproduce", async () => {
+describe.skipIf(!binary)("warm edits", () => {
+  it("publishes the same rows as normal refresh across body, signature, and import edits", async () => {
     const root = repository();
     const warmHome = mkdtempSync(join(tmpdir(), "mex-warm-home-"));
     const coldHome = mkdtempSync(join(tmpdir(), "mex-cold-home-"));
     roots.push(warmHome, coldHome);
     await inHome(warmHome, () => rebuildGraph(root));
     await inHome(coldHome, () => rebuildGraph(root));
-    let warm = await inHome(warmHome, () => WarmCheckout.open(root));
+    const warm = await inHome(warmHome, () => openWarmCheckout(root));
     checkouts.push(warm);
 
-    const steps: Array<{ name: string; path: string; text: string; expect: "published" | "cold" | "unchanged" }> = [
+    const steps: Array<{ name: string; path: string; text: string; expect: "published" | "unchanged" }> = [
       { name: "body edit", path: "src/math.ts", expect: "published",
         text: "import { add } from \"./util\";\n\nexport function sum(values: number[]): number {\n  let total = 10;\n  for (const value of values) total = add(total, value);\n  return total;\n}\n" },
       { name: "a new call into another file", path: "src/app.ts", expect: "published",
@@ -98,36 +109,27 @@ describe("warm edits", () => {
         text: "import { sum } from \"./math\";\nimport { mul } from \"./util\";\n\nexport function run(): number {\n  return sum([1, 2, 3]);\n}\n\nexport const twice = (value: number): number => mul(value, 2);\n" },
       { name: "the same bytes again", path: "src/app.ts", expect: "unchanged",
         text: "import { sum } from \"./math\";\nimport { mul } from \"./util\";\n\nexport function run(): number {\n  return sum([1, 2, 3]);\n}\n\nexport const twice = (value: number): number => mul(value, 2);\n" },
-      { name: "an exported signature other files import", path: "src/util.ts", expect: "cold",
+      { name: "an exported signature other files import", path: "src/util.ts", expect: "published",
         text: "export function add(a: number, b: number, c = 0): number {\n  return a + b + c;\n}\n\nexport function mul(a: number, b: number): number {\n  return a * b;\n}\n" },
-      { name: "a removed declaration", path: "src/other.ts", expect: "cold",
+      { name: "a removed declaration", path: "src/other.ts", expect: "published",
         text: "export function lonely(): number {\n  return 1;\n}\n" },
       { name: "another name from a module it already imports", path: "src/math.ts", expect: "published",
         text: "import { add, mul } from \"./util\";\n\nexport function sum(values: number[]): number {\n  let total = 10;\n  for (const value of values) total = add(total, mul(value, 1));\n  return total;\n}\n" },
-      { name: "an import of a module it did not import", path: "src/math.ts", expect: "cold",
+      { name: "an import of a module it did not import", path: "src/math.ts", expect: "published",
         text: "import { add, mul } from \"./util\";\nimport { lonely } from \"./other\";\n\nexport function sum(values: number[]): number {\n  let total = lonely();\n  for (const value of values) total = add(total, mul(value, 1));\n  return total;\n}\n" },
-      { name: "a body edit after a cold refresh", path: "src/math.ts", expect: "published",
+      { name: "a body edit after a dependency change", path: "src/math.ts", expect: "published",
         text: "import { add, mul } from \"./util\";\nimport { lonely } from \"./other\";\n\nexport function sum(values: number[]): number {\n  let total = lonely() + 1;\n  for (const value of values) total = add(total, mul(value, 1));\n  return total;\n}\n" },
-      { name: "two files at once", path: "src/app.ts", expect: "published",
+      { name: "two changed callsites", path: "src/app.ts", expect: "published",
         text: "import { sum } from \"./math\";\nimport { mul } from \"./util\";\n\nexport function run(): number {\n  return sum([4, 5, 6]);\n}\n\nexport const twice = (value: number): number => mul(value, 3);\n" },
     ];
     for (const step of steps) {
-      put(root, step.path, step.text);
-      const before = await inHome(warmHome, () => readGraphPointer(graphLocation(root)));
+      if (step.expect !== "unchanged") put(root, step.path, step.text);
       const result = await inHome(warmHome, () => warm.edit([step.path]));
       expect(result.status, `${step.name}: ${result.reason ?? ""}`).toBe(step.expect);
-      if (result.status === "cold") {
-        // Nothing was published; the caller refreshes cold and warms again.
-        expect(await inHome(warmHome, () => readGraphPointer(graphLocation(root)))).toEqual(before);
-        warm.close();
-        await inHome(warmHome, () => refreshGraph(root));
-        warm = await inHome(warmHome, () => WarmCheckout.open(root));
-        checkouts.push(warm);
-      }
       await inHome(coldHome, () => refreshGraph(root));
       const warmRows = await inHome(warmHome, () => images(root));
       const coldRows = await inHome(coldHome, () => images(root));
-      for (const table of Object.keys(IMAGES)) expect(warmRows[table], `${step.name}: ${table}`).toEqual(coldRows[table]);
+      for (const table of Object.keys(coldRows)) expect(warmRows[table], `${step.name}: ${table}`).toEqual(coldRows[table]);
     }
   }, 240_000);
 
@@ -137,7 +139,7 @@ describe("warm edits", () => {
     const fresh = mkdtempSync(join(tmpdir(), "mex-warm-fresh-"));
     roots.push(home, fresh);
     await inHome(home, () => rebuildGraph(root));
-    const warm = await inHome(home, () => WarmCheckout.open(root));
+    const warm = await inHome(home, () => openWarmCheckout(root));
     checkouts.push(warm);
     put(root, "src/app.ts", "import { sum } from \"./math\";\nimport { mul } from \"./util\";\n\nexport function run(): number {\n  return mul(sum([1, 2, 3]), 2);\n}\n\nexport const twice = (value: number): number => mul(value, 2);\n");
     expect((await inHome(home, () => warm.edit(["src/app.ts"]))).status).toBe("published");
@@ -147,7 +149,7 @@ describe("warm edits", () => {
     await inHome(fresh, () => rebuildGraph(root));
     const rebuilt = await inHome(home, () => images(root));
     const expected = await inHome(fresh, () => images(root));
-    for (const table of Object.keys(IMAGES)) expect(rebuilt[table], table).toEqual(expected[table]);
+    for (const table of Object.keys(expected)) expect(rebuilt[table], table).toEqual(expected[table]);
   }, 120_000);
 
   it("answers a caller query from the overlay it just published", async () => {
@@ -155,10 +157,8 @@ describe("warm edits", () => {
     const home = mkdtempSync(join(tmpdir(), "mex-warm-read-"));
     roots.push(home);
     await inHome(home, () => rebuildGraph(root));
-    const warm = await inHome(home, () => WarmCheckout.open(root));
+    const warm = await inHome(home, () => openWarmCheckout(root));
     checkouts.push(warm);
-    put(root, "src/other.ts", "import { add } from \"./util\";\n\nexport function lonely(): number {\n  return add(1, 1);\n}\n");
-    // A new import goes cold; a call through an existing import is warm.
     put(root, "src/app.ts", "import { sum } from \"./math\";\nimport { mul } from \"./util\";\n\nexport function run(): number {\n  return mul(sum([1, 2, 3]), 2);\n}\n\nexport const twice = (value: number): number => mul(value, 2);\n");
     const result = await inHome(home, () => warm.edit(["src/app.ts"]));
     expect(result.status, result.reason).toBe("published");

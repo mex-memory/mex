@@ -49,6 +49,11 @@ jobs:
       matrix:
         node-version: ['22.22.0', '24']
         shard: [1, 2]
+        include:
+          - node-version: '22.22.0'
+            native-engine: true
+          - node-version: '24'
+            native-engine: false
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -61,6 +66,26 @@ jobs:
         with:
           go-version-file: native/go.mod
           cache-dependency-path: native/go.sum
+      - name: Install the pinned Rust toolchain
+        if: matrix.native-engine
+        working-directory: native/engine
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@v4
+        if: matrix.native-engine
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/engine/target
+          key: rust-check-${{ runner.os }}-${{ hashFiles('native/engine/Cargo.lock', 'native/engine/rust-toolchain.toml') }}
+          restore-keys: rust-check-${{ runner.os }}-
+      - name: Build the release graph engine
+        if: matrix.native-engine
+        working-directory: native/engine
+        run: cargo build --locked --release
+      - name: Build the host Go hook
+        if: matrix.native-engine
+        run: node scripts/build-hook-binaries.mjs --host
       - run: npm ci --prefer-offline --no-audit --no-fund
       # Preserve the CLI suite's build condition and 240-second deadline, before
       # parallel suites consume the same dist workers and grammars.
@@ -69,10 +94,19 @@ jobs:
         timeout-minutes: 4
         env:
           NODE_ENV: test
-      - name: Test the completed app build
+      - name: Test with the native graph engine and real Go readers
+        if: matrix.native-engine
         run: npm run test -- --shard=${{ matrix.shard }}/2
         env:
           MEX_TEST_PREBUILT: '1'
+          MEX_GRAPH_ENGINE: ${{ github.workspace }}/native/engine/target/release/mex-graph
+          MEX_TEST_REAL_HOOK_BINARY: '1'
+      - name: Test the Node graph fallback
+        if: ${{ !matrix.native-engine }}
+        run: npm run test -- --shard=${{ matrix.shard }}/2
+        env:
+          MEX_TEST_PREBUILT: '1'
+          MEX_GRAPH_ENGINE: ${{ runner.temp }}/no-mex-graph.wasm
 
   package:
     needs: changes
@@ -197,6 +231,52 @@ jobs:
           npm ci --prefer-offline --no-audit --no-fund
           # Keep other native process tests out of the capture deadline.
           npx vitest run --maxWorkers=1 src/hooks/shim/__tests__/binary.test.ts src/telemetry/__tests__/background.test.ts src/file-index/__tests__/go-parity.test.ts src/knowledge/__tests__/check.test.ts src/knowledge/__tests__/rule-cache.test.ts src/knowledge/__tests__/native-checks.test.ts src/knowledge/__tests__/brief.test.ts
+
+  # The Rust graph engine (OSS-73): format, lint and tests on every OS.
+  rust:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    defaults:
+      run:
+        working-directory: native/engine
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      # As for Go: the default C: disk is about twice as slow on hosted Windows
+      # runners, so cargo's home and build output live under RUNNER_TEMP (D:).
+      - name: Keep cargo's files on the fast disk
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'cargo')" >> $env:GITHUB_ENV
+          "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'cargo-target')" >> $env:GITHUB_ENV
+          "PATH=$(Join-Path $env:RUNNER_TEMP 'cargo\bin');$env:PATH" >> $env:GITHUB_ENV
+      # rust-toolchain.toml pins the version; rustup installs it on first use.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME || '~/.cargo' }}/registry
+            ${{ env.CARGO_HOME || '~/.cargo' }}/git
+            ${{ env.CARGO_TARGET_DIR || 'native/engine/target' }}
+          key: rust-${{ runner.os }}-${{ hashFiles('native/engine/Cargo.lock', 'native/engine/rust-toolchain.toml') }}
+          restore-keys: rust-${{ runner.os }}-
+      - name: rustfmt
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --locked
 
   storage-portability:
     needs: changes
@@ -359,7 +439,7 @@ jobs:
           retention-days: 7
 
   ci-passed:
-    needs: [changes, check, package, go, storage-portability, hub-browser]
+    needs: [changes, check, package, go, rust, storage-portability, hub-browser]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

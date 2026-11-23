@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runImpact, type AgentCommandDeps } from "../src/graph/cli-agent.js";
 import { openGraphDatabase } from "../src/graph/db/database.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
@@ -28,7 +28,11 @@ import { knowledgeRecordsFor } from "../src/wiki/cli/for-code.js";
 
 const roots: string[] = [];
 
+// These fixtures exercise the writable v4 layout.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) {
     try {
       rmSync(root, { recursive: true, force: true });

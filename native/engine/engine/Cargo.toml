@@ -1,0 +1,39 @@
+[package]
+name = "mex-graph"
+description = "The MEX graph engine binary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mex-graph"
+path = "src/main.rs"
+
+[dependencies]
+bincode = "2.0.1"
+memory-stats = "1"
+mex-graph-core = { path = "../core" }
+mex-graph-csharp = { path = "../langs/csharp" }
+mex-graph-ecmascript = { version = "0.1.0", path = "../langs/ecmascript" }
+mex-graph-python = { version = "0.1.0", path = "../langs/python" }
+mex-graph-rust = { path = "../langs/rust" }
+mex-graph-syntax = { path = "../langs/syntax" }
+regex = "1"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
+tree-sitter = "0.26"
+zstd = { version = "0.13", default-features = false }
+
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+cpu-time = "1.0"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1"

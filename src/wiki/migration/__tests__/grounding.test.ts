@@ -117,7 +117,7 @@ async function buildGraph(project: Project): Promise<void> {
 function withGraph<T>(project: Project, body: (graph: GroundingGraph) => T): T {
   const dbPath = currentGraphPath(project.root);
   const engine = createGraphEngine({ rootDir: project.root });
-  const db = openGraphDatabase(dbPath);
+  const db = openGraphDatabase(dbPath, { readOnly: true, immutable: true });
   try {
     return body(createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(db)), db));
   } finally {
@@ -252,7 +252,7 @@ describe("tier 2 — a grounded scaffold, migrated", () => {
     expect(current).not.toBe(original);
 
     // The baseline `mex ground` cached when the grounding was made.
-    const db = openGraphDatabase(currentGraphPath(project.root));
+    const db = openGraphDatabase(currentGraphPath(project.root), { allowV5ContinuityWrites: true });
     try {
       new FingerprintStore(db).saveBaseline({
         subject: { kind: "scaffold", id: ".mex/patterns/rotate-tokens.md" },

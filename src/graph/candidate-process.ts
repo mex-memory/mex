@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir, totalmem, freemem } from "node:os";
 import { getHeapStatistics } from "node:v8";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuildResult } from "./engine.js";
+import { GraphEngineMemoryLimitError } from "./engine-memory.js";
 import {
   boundedCandidateMessage,
   type GraphCandidateProgress,
@@ -12,6 +13,7 @@ import {
   type GraphCandidateRequest,
 } from "./candidate-protocol.js";
 import { phaseTimingsWorkerEnv } from "./phase-timing.js";
+import { createGraphWorkspace } from "./storage.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STARTUP_TIMEOUT_MS = 15_000;
@@ -23,7 +25,7 @@ const NODE_HEAP_FAILURE = /^FATAL ERROR: (?:Reached heap limit|Ineffective mark-
 
 /**
  * Keep explicit user heap flags; otherwise allow a share of machine memory, leaving room for
- * native/compiler work. The heap is a ceiling: free memory at spawn does not cap it, because a
+ * native work. The heap is a ceiling: free memory at spawn does not cap it, because a
  * large repository that needs more than is free would otherwise fail outright instead of paging.
  */
 export function graphWorkerHeap(input: {
@@ -91,9 +93,10 @@ export interface GraphCandidateProcessOptions {
   projectRoot: string;
   candidatePath: string;
   operation: "refresh" | "rebuild";
+  engineFallbackReason?: string;
   signal?: AbortSignal;
   onProgress?: (progress: GraphCandidateProgress) => void;
-  /** CPU time and peak memory of the candidate and its compiler servers. */
+  /** CPU time and peak memory of the candidate process. */
   onUsage?: (usage: GraphCandidateUsage) => void;
   /** Deterministic subprocess fault seams; never exposed by the GraphPort. */
   __internal?: {
@@ -131,12 +134,15 @@ function candidateEntrypoint(): string {
 /** Construct only the parent's candidate. Lease and publication stay in maintenance. */
 export async function runGraphCandidateProcess(options: GraphCandidateProcessOptions): Promise<BuildResult> {
   if (options.signal?.aborted) throw new GraphCandidateProcessError("cancelled");
-  const workspace = mkdtempSync(join(tmpdir(), "mex-graph-candidate-"));
+  const workspace = createGraphWorkspace(/^graph-tmp-\d+-[a-z0-9-]+\.db$/u.test(basename(options.candidatePath))
+    ? options.candidatePath + ".worker-"
+    : join(tmpdir(), "mex-graph-candidate-"));
   const workspaceIdentity = identity(workspace);
   try {
     const request: GraphCandidateRequest = {
       version: 1,
       operation: options.operation,
+      ...(options.engineFallbackReason ? { engineFallbackReason: options.engineFallbackReason } : {}),
       projectRoot: options.projectRoot,
       candidatePath: options.candidatePath,
       workspace,
@@ -162,12 +168,11 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
       nodeOptions: process.env.NODE_OPTIONS, execArgv: process.execArgv });
     let child: ChildProcess;
     try {
-      // --expose-gc lets extraction collect each released compiler program.
-      child = spawn(process.execPath, [...heap.args, "--expose-gc", options.__internal?.entrypoint ?? candidateEntrypoint()], {
+      child = spawn(process.execPath, [...heap.args, options.__internal?.entrypoint ?? candidateEntrypoint()], {
         cwd: options.projectRoot,
         env: { ...process.env, ...phaseTimingsWorkerEnv(), MEX_TELEMETRY: "0", DO_NOT_TRACK: "1" },
         // FD 4 is a lifeline. A watchdog in the child observes EOF even while
-        // its main thread is inside synchronous TypeScript or SQLite work.
+        // its main thread is inside synchronous extraction or SQLite work.
         // Overlapped enables asynchronous reads on the inherited Windows
         // lifeline handle; it is identical to `pipe` on Unix.
         stdio: ["ignore", "ignore", "pipe", "ipc", "overlapped"],
@@ -183,6 +188,7 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
     let ready = false;
     let result: BuildResult | undefined;
     let failure: GraphCandidateProcessError | undefined;
+    let engineMemoryLimitMb: number | undefined;
     let lastProgress: GraphCandidateProgress | undefined;
     const sentSignals = new Set<NodeJS.Signals>();
     child.stderr?.on("data", (chunk: Buffer) => stderr.append(chunk));
@@ -241,11 +247,12 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
         }
       } else if (message.type === "complete") {
         result = message.result;
-        if (message.usage) {
-          try { options.onUsage?.(message.usage); } catch { /* the usage log never fails a build */ }
-        }
       } else {
+        engineMemoryLimitMb = message.engineMemoryLimitMb;
         stop(fail("worker-error", message.category));
+      }
+      if ((message.type === "complete" || message.type === "failed") && message.usage) {
+        try { options.onUsage?.(message.usage); } catch { /* the usage log never fails a build */ }
       }
     });
     child.once("close", (code, signal) => {
@@ -256,6 +263,10 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
       options.signal?.removeEventListener("abort", cancelled);
       child.stdio[4]?.destroy();
       if (options.signal?.aborted) failure = fail("cancelled", "cancelled");
+      if (engineMemoryLimitMb !== undefined && failure?.diagnostic?.reason === "worker-error") {
+        reject(new GraphEngineMemoryLimitError(engineMemoryLimitMb));
+        return;
+      }
       if (failure || code !== 0 || signal || !result) {
         let reason = failure?.diagnostic?.reason ?? "exit";
         const diagnosticOutput = stderr.text();

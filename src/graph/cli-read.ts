@@ -119,7 +119,7 @@ export function renderGraphAnswer(answer: GraphAnswer): string[] {
   if (answer.verdict === "none") lines.push(`${none}: every file is indexed and none changed since the build uses it.`);
   if (answer.verdict === "unknown") {
     const why = [
-      !answer.complete ? "some files are not indexed" : "",
+      !answer.complete ? "some files have incomplete graph coverage" : "",
       answer.dropped ? `${plural(answer.dropped, "result")} in changed files no longer hold` : "",
       answer.unresolved ? `${plural(answer.unresolved, answer.op === "callees" ? "call" : "dynamic use")} could not be resolved` : "",
       answer.changed > 0 ? `${plural(answer.changed, "file")} changed since the build use the name` : "",

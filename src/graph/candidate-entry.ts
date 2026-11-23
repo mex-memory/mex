@@ -1,9 +1,10 @@
-import { enableCompilerServerProbes, ownUsage, settleCompilerServerUsage } from "./process-stats.js";
+import { ownUsage, withEngineUsage, type ProcessUsage } from "./process-stats.js";
 import { graphStoragePathAllowed } from "./storage.js";
 import { existsSync, lstatSync, realpathSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { createGraphEngine, GraphSourceStagingError } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
+import { GraphEngineMemoryLimitError } from "./engine-memory.js";
 import {
   boundedCandidateMessage,
   graphCandidateRequest,
@@ -72,10 +73,15 @@ function writeFailureDiagnostic(error: unknown): void {
 async function main(): Promise<void> {
   if (!process.send || !process.connected) throw new Error("Candidate construction requires its private parent channel.");
   const stopWatchdog = await startGraphCandidateWatchdog();
-  enableCompilerServerProbes();
   process.once("message", async (raw: unknown) => {
     let engine: GraphEngine | undefined;
     let outcome: GraphCandidateMessage;
+    const engineUsage: ProcessUsage = { cpuMs: 0, peakRssMb: 0 };
+    const usage = () => {
+      const own = ownUsage();
+      return { cpuMs: own.cpuMs + engineUsage.cpuMs, peakRssMb: own.peakRssMb + engineUsage.peakRssMb,
+        enginePeakRssMb: engineUsage.peakRssMb };
+    };
     try {
       const request = graphCandidateRequest.parse(raw);
       checkPaths(request);
@@ -87,28 +93,31 @@ async function main(): Promise<void> {
           sourceSpoolDirectory: request.workspace,
           onBuildProgress: createGraphCandidateProgressSender(),
           beforeDatabaseOpen: check,
-          afterSemanticInputsStaged: check,
-          afterCompilerExtraction: check,
+          engineFallbackReason: request.engineFallbackReason,
+          afterSourcesStaged: check,
+          afterExtraction: check,
           beforePublication: check,
         },
       } as Parameters<typeof createGraphEngine>[0]);
       const result = await timeGraphPhaseAsync("candidate.operation", () =>
-        withSourceSpoolBudget(() => request.operation === "refresh" ? engine!.sync([]) : engine!.build()));
+        withEngineUsage(engineUsage, () =>
+          withSourceSpoolBudget(() => request.operation === "refresh" ? engine!.sync([]) : engine!.build())));
       timeGraphPhase("candidate.close", () => engine!.close());
       engine = undefined;
       flushGraphPhaseTimings(`candidate-${request.operation}`, request.projectRoot);
-      const server = await settleCompilerServerUsage();
-      const own = ownUsage();
       outcome = {
         type: "complete",
         result,
-        usage: { ...own, ...(server ? { serverCpuMs: server.cpuMs, serverPeakRssMb: server.peakRssMb } : {}) },
+        usage: usage(),
       };
       if (!boundedCandidateMessage(outcome)) throw new Error("Graph result exceeded its private message bound.");
     } catch (error) {
       writeFailureDiagnostic(error);
       try { engine?.close(); } catch { /* The supervisor removes the unpublished candidate after close. */ }
-      outcome = { type: "failed", category: failureCategory(error) };
+      outcome = {
+        type: "failed", category: failureCategory(error), usage: usage(),
+        ...(error instanceof GraphEngineMemoryLimitError ? { engineMemoryLimitMb: error.memoryMb } : {}),
+      };
     }
     try {
       await send(outcome);

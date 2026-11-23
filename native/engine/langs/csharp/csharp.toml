@@ -1,0 +1,20 @@
+grammar = "csharp"
+adapter_version = 1
+extensions = [".cs"]
+
+[functions]
+method_declaration = "name"
+constructor_declaration = "name"
+local_function_statement = "name"
+
+[classes]
+class_declaration = "name"
+struct_declaration = "name"
+interface_declaration = "name"
+record_declaration = "name"
+
+[imports]
+using_directive = "0"
+
+[calls]
+invocation_expression = "function"

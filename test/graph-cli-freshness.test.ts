@@ -18,7 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentCommandDeps } from "../src/graph/cli-agent.js";
 import { GRAPH_CORPUS_LIMITS } from "../src/graph/corpus-policy.js";
 import {
@@ -46,7 +46,11 @@ interface Fixture {
   original: string;
 }
 
+// These fixtures exercise the writable v4 layout.
+beforeEach(() => vi.stubEnv("MEX_GRAPH_STORAGE", "v4"));
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

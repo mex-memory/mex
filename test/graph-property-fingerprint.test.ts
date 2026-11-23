@@ -41,7 +41,7 @@ describe("property fingerprints", () => {
     });
     engine.close();
 
-    const db = openGraphDatabase(currentGraphPath(root));
+    const db = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
     try {
       const store = new FingerprintStore(db);
       for (const node of properties) {

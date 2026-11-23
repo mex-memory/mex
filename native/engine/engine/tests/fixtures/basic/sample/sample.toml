@@ -1,0 +1,15 @@
+grammar = "python"
+adapter_version = 1
+extensions = [".sample"]
+
+[functions]
+function_definition = "name"
+
+[classes]
+class_definition = "name"
+
+[imports]
+import_statement = "name"
+
+[calls]
+call = "function"

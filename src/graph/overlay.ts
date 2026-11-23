@@ -16,11 +16,25 @@
  */
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { lstatSync } from "node:fs";
+import { hasV5GraphSchema, installV5GraphViews, readsV5Graph } from "./db/v5.js";
 import type { SqliteDatabase } from "./db/sqlite.js";
 
 export const OVERLAY_NAME = /^graph-o-[a-f0-9]{24}-[a-z0-9-]+\.db$/;
 /** Overlay fingerprint refs are shifted past any base ref so the two never collide. */
 export const OVERLAY_REF_OFFSET = 2 ** 40;
+
+interface V5BaseAttachment { path: string; identity: string }
+const v5Attachments = new WeakMap<SqliteDatabase, V5BaseAttachment>();
+
+export function attachedV5Base(db: SqliteDatabase): V5BaseAttachment | undefined {
+  return v5Attachments.get(db);
+}
+
+export function v5BaseIsCurrent(base: V5BaseAttachment | undefined): boolean {
+  try { return !base || v5BaseIdentity(base.path) === base.identity; }
+  catch { return false; }
+}
 
 type Owner = "file" | "node" | "ref";
 /** Tables owned row by row, and the column that names each row's owner. */
@@ -56,6 +70,20 @@ export function overlayBase(db: SqliteDatabase): string | undefined {
  * `uncovered` hides further files (sources that drifted since the build).
  */
 export function installGraphViews(db: SqliteDatabase, overlayPath: string | undefined, uncovered: readonly string[] = []): void {
+  if (readsV5Graph(db) || hasV5GraphSchema(db)) {
+    if (readsV5Graph(db)) {
+      installV5GraphViews(db, uncovered);
+      return;
+    }
+    const base = overlayBase(db);
+    if (!base && overlayPath && OVERLAY_NAME.test(basename(overlayPath))) throw new Error("Missing schema v5 overlay base.");
+    if (base) {
+      if (!overlayPath || !/^graph-base-[a-z0-9-]+\.db$/.test(base)) throw new Error("Invalid schema v5 overlay base.");
+      attachV5Base(db, join(dirname(overlayPath), base));
+    }
+    installV5GraphViews(db, uncovered, base !== undefined);
+    return;
+  }
   const attached = readsOverlay(db);
   const base = overlayPath || attached ? overlayBase(db) : undefined;
   if (!base && uncovered.length === 0) return;
@@ -66,6 +94,8 @@ export function installGraphViews(db: SqliteDatabase, overlayPath: string | unde
     if (base && !attached) {
       if (basename(base) !== base || !/^graph-base-[a-z0-9-]+\.db$/.test(base)) throw new Error("Invalid overlay base");
       db.exec(`ATTACH DATABASE '${uri(join(dirname(overlayPath!), base)).replaceAll("'", "''")}' AS base`);
+      const version = db.prepare("PRAGMA base.user_version").get() as { user_version: number };
+      if (version.user_version !== 0) throw new Error("A schema v4 overlay requires a schema v4 base.");
     }
     db.exec("CREATE TEMP TABLE IF NOT EXISTS graph_uncovered(path TEXT PRIMARY KEY) WITHOUT ROWID");
     const insert = db.prepare("INSERT OR IGNORE INTO temp.graph_uncovered VALUES (?)");
@@ -92,6 +122,31 @@ export function installGraphViews(db: SqliteDatabase, overlayPath: string | unde
         UNION ALL SELECT * FROM main.${table} WHERE 1${uncoveredFilter}`);
     }
   } finally { if (queryOnly) db.exec("PRAGMA query_only = ON"); }
+}
+
+function v5BaseIdentity(path: string): string | undefined {
+  const file = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (!file?.isFile()) return undefined;
+  for (const suffix of ["-wal", "-shm", "-journal"]) {
+    if (lstatSync(`${path}${suffix}`, { throwIfNoEntry: false })) return undefined;
+  }
+  return `${file.dev}:${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}`;
+}
+
+function attachV5Base(db: SqliteDatabase, path: string): void {
+  const identity = v5BaseIdentity(path);
+  if (!identity) throw new Error("The schema v5 overlay base is unavailable, unsafe, or has active sidecars.");
+  const readOnly = (db.prepare("PRAGMA query_only").get() as { query_only: number }).query_only;
+  if (readOnly) db.pragma("query_only = OFF");
+  try {
+    db.prepare("ATTACH DATABASE ? AS base").run(`${pathToFileURL(path).href}?mode=ro&immutable=1`);
+    const { user_version } = db.prepare("PRAGMA base.user_version").get() as { user_version: number };
+    if (user_version !== 5 || hasTable(db, "base", "overlay_info")) throw new Error("A schema v5 overlay requires a schema v5 base.");
+    if (v5BaseIdentity(path) !== identity) throw new Error("The schema v5 overlay base changed during attachment.");
+    v5Attachments.set(db, { path, identity });
+  } finally {
+    if (readOnly) db.pragma("query_only = ON");
+  }
 }
 
 /** Whether a connection reads through an overlay (its base is attached). */

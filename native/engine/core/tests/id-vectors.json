@@ -1,0 +1,226 @@
+[
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/app.py",
+      "kind": "function",
+      "qualifiedName": "main",
+      "signature": "()"
+    },
+    "identity": "src/app.py\u0000function\u0000main\u0000function\u0000()",
+    "id": "function:8287d56ee77745d138120fc2468571e2"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "pkg\\mod.py",
+      "kind": "method",
+      "qualifiedName": "Client.request",
+      "signature": "(self, method, url)"
+    },
+    "identity": "pkg/mod.py\u0000method\u0000Client.request\u0000method\u0000(self, method, url)",
+    "id": "method:8c1dbbe74320949a4ff02ff59d44ad8f"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/lib.rs",
+      "kind": "function",
+      "qualifiedName": "  spaced \t name  ",
+      "declarationRole": "free-function",
+      "signature": "fn  run(\n  x: u32,\n)"
+    },
+    "identity": "src/lib.rs\u0000function\u0000spaced name\u0000free-function\u0000fn run( x: u32, )",
+    "id": "function:50c19605020974823dd550cca5d7f0bd"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/a.cs",
+      "kind": "method",
+      "qualifiedName": "N.C.M",
+      "signature": "(int a,　string b)"
+    },
+    "identity": "src/a.cs\u0000method\u0000N.C.M\u0000method\u0000(int a, string b)",
+    "id": "method:6eefd9782bcc921123d1a5a5eac8880d"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/a.cs",
+      "kind": "method",
+      "qualifiedName": "N.C.M",
+      "signature": "(int a)"
+    },
+    "identity": "src/a.cs\u0000method\u0000N.C.M\u0000method\u0000(int a)",
+    "id": "method:c3355817aa9449522601863bc9d3c1ab"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/bom.py",
+      "kind": "class",
+      "qualifiedName": "﻿Bom",
+      "signature": ""
+    },
+    "identity": "src/bom.py\u0000class\u0000Bom\u0000class\u0000",
+    "id": "class:9296a4460f4229836ff8740f4d8c6e58"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/nel.py",
+      "kind": "function",
+      "qualifiedName": "ab",
+      "signature": "(x)"
+    },
+    "identity": "src/nel.py\u0000function\u0000ab\u0000function\u0000(x)",
+    "id": "function:e4e43e2ba7e29d3a11e21b13558bc84e"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/ls.py",
+      "kind": "function",
+      "qualifiedName": "a b",
+      "signature": "( )"
+    },
+    "identity": "src/ls.py\u0000function\u0000a b\u0000function\u0000( )",
+    "id": "function:9a39eb28f317015cc8e7bcc172a01d1f"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/emoji.py",
+      "kind": "function",
+      "qualifiedName": "f😀",
+      "signature": "(s: '𝒳')"
+    },
+    "identity": "src/emoji.py\u0000function\u0000f😀\u0000function\u0000(s: '𝒳')",
+    "id": "function:6d3938f55b56de4fc1203892d40a01fa"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "src/empty.py",
+      "kind": "variable",
+      "qualifiedName": "",
+      "signature": ""
+    },
+    "identity": "src/empty.py\u0000variable\u0000\u0000variable\u0000",
+    "id": "variable:52238b10ea650404da62aa9c68a2555c"
+  },
+  {
+    "input": {
+      "profile": "signature",
+      "path": "./src/dot.py",
+      "kind": "function",
+      "qualifiedName": "dot",
+      "declarationRole": "framework:flask",
+      "signature": "()"
+    },
+    "identity": "./src/dot.py\u0000function\u0000dot\u0000framework:flask\u0000()",
+    "id": "function:e5cc5dd8378200d7af7573786de8a539"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src/index.ts",
+      "kind": "function",
+      "qualifiedName": "handler",
+      "declarationRole": "function"
+    },
+    "identity": "src/index.ts\u0000function\u0000handler\u0000function",
+    "id": "function:486cc27c5a56caddf8666cee09179735"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "./src/index.ts",
+      "kind": "file",
+      "qualifiedName": "src/index.ts",
+      "declarationRole": "source-file"
+    },
+    "identity": "src/index.ts\u0000file\u0000src/index.ts\u0000source-file",
+    "id": "file:26a69944cc85defd454c8a41805bfd6a"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src\\win\\path.ts",
+      "kind": "method",
+      "qualifiedName": "App::route",
+      "declarationRole": "method"
+    },
+    "identity": "src/win/path.ts\u0000method\u0000App::route\u0000method",
+    "id": "method:e1aefc3c42728d634ef151211025633f"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src/ns.ts",
+      "kind": "method",
+      "qualifiedName": "A :: b ::  c",
+      "declarationRole": "  method  "
+    },
+    "identity": "src/ns.ts\u0000method\u0000A::b::c\u0000method",
+    "id": "method:98c28b8dd03ec128d915c9b163b3a50e"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src/over.ts",
+      "kind": "function",
+      "qualifiedName": "over",
+      "declarationRole": "function",
+      "ordinal": 0
+    },
+    "identity": "src/over.ts\u0000function\u0000over\u0000function\u0000ordinal:0",
+    "id": "function:78940c956c3c0464197f4ef2004c2d4b"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src/over.ts",
+      "kind": "function",
+      "qualifiedName": "over",
+      "declarationRole": "function",
+      "ordinal": 3
+    },
+    "identity": "src/over.ts\u0000function\u0000over\u0000function\u0000ordinal:3",
+    "id": "function:e4f8e0be167a76d8c1316e4f901c539e"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src/assign.js",
+      "kind": "function",
+      "qualifiedName": "res.send",
+      "declarationRole": "function-assignment"
+    },
+    "identity": "src/assign.js\u0000function\u0000res.send\u0000function-assignment",
+    "id": "function:240bd611a03105f92a2f2992389b2973"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src/ws.ts",
+      "kind": "class",
+      "qualifiedName": "﻿ Widget　",
+      "declarationRole": "class"
+    },
+    "identity": "src/ws.ts\u0000class\u0000Widget\u0000class",
+    "id": "class:e316c2a28b444f2324cfa3721be66217"
+  },
+  {
+    "input": {
+      "profile": "ordinal",
+      "path": "src/nel.ts",
+      "kind": "function",
+      "qualifiedName": "x",
+      "declarationRole": "function"
+    },
+    "identity": "src/nel.ts\u0000function\u0000x\u0000function",
+    "id": "function:7a22327fc466078f56d841ca270ce43f"
+  }
+]

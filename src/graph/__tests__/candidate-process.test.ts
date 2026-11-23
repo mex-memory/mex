@@ -1,22 +1,28 @@
 import { currentGraphPath, graphLocation, graphTemporary } from "../storage.js";
 import { createHash } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { boundedCandidateMessage } from "../candidate-protocol.js";
 import { createGraphCandidateProgressSender } from "../candidate-progress.js";
 import { GRAPH_CANDIDATE_DIAGNOSTIC_BYTES, GraphCandidateProcessError, runGraphCandidateProcess } from "../candidate-process.js";
 import { GRAPH_CORPUS_LIMITS } from "../corpus-policy.js";
 import { createGraphEngine } from "../engine-impl.js";
 import { rebuildGraph, refreshGraph, type GraphMaintenanceExecutionOptions } from "../maintenance.js";
+import { GRAPH_ENGINE_ENV, GRAPH_ENGINE_LANGUAGES_ENV, graphEngineBinary } from "../native-engine.js";
 import { openSqlite } from "../db/sqlite.js";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const roots: string[] = [];
+beforeEach(() => {
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v4");
+  vi.stubEnv(GRAPH_ENGINE_LANGUAGES_ENV, "javascript,typescript");
+});
+afterEach(() => vi.unstubAllEnvs());
 const children = new Set<ChildProcess>();
 let bundleDir: string;
 let realEntry: string;
@@ -50,11 +56,10 @@ async function bundle(name: string, source: string): Promise<string> {
 }
 
 beforeAll(async () => {
-  // The temporary bundle lives under node_modules so external runtime imports
-  // resolve exactly as in an installation, without a TS loader in the child.
-  const cache = join(repository, "node_modules", ".cache");
-  mkdirSync(cache, { recursive: true });
-  bundleDir = mkdtempSync(join(cache, "mex-candidate-tests-"));
+  // Resolve the same external dependencies as the build from an owned directory.
+  bundleDir = mkdtempSync(join(tmpdir(), "mex-candidate-tests-"));
+  symlinkSync(join(repository, "node_modules"), join(bundleDir, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir");
   cpSync(join(repository, "src/graph/schema.sql"), join(bundleDir, "schema.sql"));
   cpSync(join(repository, "src/graph/wasm"), join(bundleDir, "wasm"), { recursive: true });
   realEntry = await bundle("real", 'import "./src/graph/candidate-entry.ts";');
@@ -156,6 +161,37 @@ function isolated(entrypoint: string, extra: Record<string, unknown> = {}): Grap
 }
 
 describe("isolated graph candidate construction", () => {
+  it.skipIf(!graphEngineBinary())("publishes a mixed Rust engine stage job through the isolated worker", async () => {
+    const path = root();
+    writeFileSync(join(path, "caller.py"), "from service import service\n\ndef caller():\n    return service()\n");
+    writeFileSync(join(path, "service.ts"), "export function invoke(): number { return 2; }\n");
+    writeFileSync(join(path, "caller.jsx"), 'import { invoke } from "./service.js";\nexport function caller() { return invoke(); }\n');
+    const saved = [process.env[GRAPH_ENGINE_ENV], process.env[GRAPH_ENGINE_LANGUAGES_ENV]] as const;
+    // The bundled worker runs outside the checkout, so it is pointed at the engine.
+    process.env[GRAPH_ENGINE_ENV] = graphEngineBinary()!;
+    process.env[GRAPH_ENGINE_LANGUAGES_ENV] = "python,typescript,javascript";
+    try {
+      const built = await rebuildGraph(path, isolated(realEntry));
+      expect(built.state).toBe("succeeded");
+      expect(built.status.status).toBe("fresh");
+      expect(built.engine).toMatchObject({ languages: ["javascript", "python", "typescript"], files: 4, fallbackFiles: 0 });
+      const db = openSqlite(currentGraphPath(path), { readOnly: true });
+      try {
+        expect(db.prepare(`
+          SELECT e.resolution_method FROM edges e JOIN nodes s ON s.id = e.source
+          WHERE s.file_path = 'caller.jsx' AND e.kind = 'calls'
+        `).all()).toEqual([{ resolution_method: "engine-ecmascript" }]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      for (const [key, value] of [[GRAPH_ENGINE_ENV, saved[0]], [GRAPH_ENGINE_LANGUAGES_ENV, saved[1]]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("builds and refreshes a real candidate with numeric progress and a closed, valid published database", async () => {
     const path = root();
     const progress: string[] = [];
@@ -287,7 +323,7 @@ describe("isolated graph candidate construction", () => {
       expect(readFileSync(join(workspace, "sentinel"), "utf8")).toBe("replacement directory must survive");
       expect(existsSync(original)).toBe(true);
       expect(hash(database)).toBe(before);
-      expect(artifacts(path)).toEqual([]);
+      expect(artifacts(path)).toEqual([basename(workspace)]);
     } finally {
       // These are the two exact directories created/moved by this fixture;
       // production cleanup must have left the replacement entirely alone.
@@ -332,7 +368,7 @@ describe("isolated graph candidate construction", () => {
     expect(artifacts(path)).toEqual([]);
   });
 
-  it("enforces its hang deadline even when the compiler thread ignores SIGTERM", async () => {
+  it("enforces its hang deadline even when the worker ignores SIGTERM", async () => {
     const path = root();
     let pid = 0;
     await expect(runGraphCandidateProcess({
@@ -342,7 +378,7 @@ describe("isolated graph candidate construction", () => {
     expect(processAlive(pid)).toBe(false);
   });
 
-  it("stops an orphaned busy compiler when its parent is killed without running cleanup", async () => {
+  it("stops an orphaned busy worker when its parent is killed without running cleanup", async () => {
     const path = root();
     const parent = spawn(process.execPath, [parentEntry, path, graphTemporary(graphLocation(path, { create: true })), busyEntry], {
       stdio: ["ignore", "ignore", "ignore", "ipc"], windowsHide: true,
@@ -378,6 +414,13 @@ describe("isolated graph candidate construction", () => {
     expect(boundedCandidateMessage({ type: "failed", category: "failed", stack: "private" })).toBeNull();
     expect(boundedCandidateMessage({ type: "complete", result: { filesIndexed: -1, nodesCreated: 0, edgesCreated: 0, durationMs: 0 } })).toBeNull();
     expect(boundedCandidateMessage({ type: "failed", category: "x".repeat(1024 * 1024) })).toBeNull();
+  });
+
+  it("carries the Rust engine's report and nothing beyond it", () => {
+    const result = { filesIndexed: 1, nodesCreated: 1, edgesCreated: 0, durationMs: 1 };
+    const engine = { languages: ["python"], files: 1, fallbackFiles: 0, wallMs: 12, peakRssMb: 30 };
+    expect(boundedCandidateMessage({ type: "complete", result: { ...result, engine } })).not.toBeNull();
+    expect(boundedCandidateMessage({ type: "complete", result: { ...result, engine: { ...engine, path: "src/app.py" } } })).toBeNull();
   });
 
   it("reports a worker startup crash with its exit code and bounded local stderr", async () => {

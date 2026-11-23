@@ -1,6 +1,3 @@
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-
 /**
  * What a config file contributes to graph extraction, and nothing else.
  *
@@ -9,9 +6,7 @@ const require = createRequire(import.meta.url);
  * an npm script, an author field or a reindent look identical to a change in
  * how modules resolve, and each of those invalidated the whole index.
  *
- * This projects each file down to the fields that actually decide what the
- * compiler resolves and which files it reads. Everything else is dropped, so
- * changing it cannot invalidate anything.
+ * This projects each file down to the fields that affect module resolution.
  *
  * **The hazard runs the other way.** Over-hashing is noisy; under-hashing is
  * wrong, and silently — a field that affects extraction but is missing here
@@ -21,16 +16,11 @@ const require = createRequire(import.meta.url);
  */
 
 /** `compilerOptions` entries that change which declaration a reference binds to. */
-const SIGNIFICANT_COMPILER_OPTIONS = Object.freeze([
-  "allowJs",
-  "baseUrl",
-  "checkJs",
-  "jsx",
-  "module",
-  "moduleResolution",
-  "paths",
-  "target",
-] as const);
+const MODULE_RESOLUTION_OPTIONS = [
+  "allowJs", "baseUrl", "checkJs", "jsx", "module", "moduleResolution", "paths", "target",
+  "composite", "customConditions", "declarationDir", "moduleSuffixes", "noEmit", "outDir",
+  "resolveJsonModule", "resolvePackageJsonExports", "resolvePackageJsonImports", "rootDir", "rootDirs",
+] as const;
 
 /** Top-level tsconfig/jsconfig entries that change which files are in a program. */
 const SIGNIFICANT_TSCONFIG_FIELDS = Object.freeze([
@@ -42,12 +32,9 @@ const SIGNIFICANT_TSCONFIG_FIELDS = Object.freeze([
 ] as const);
 
 /** `package.json` entries that change module resolution or project layout. */
-const SIGNIFICANT_PACKAGE_FIELDS = Object.freeze([
-  "exports",
-  "imports",
-  "type",
-  "workspaces",
-] as const);
+const SIGNIFICANT_PACKAGE_FIELDS = [
+  "exports", "imports", "type", "workspaces", "name", "main", "types", "typings", "tsconfig",
+] as const;
 
 /** Dependency maps whose **names** shape resolution; their versions do not. */
 const DEPENDENCY_FIELDS = Object.freeze([
@@ -79,16 +66,15 @@ export function graphConfigKind(path: string): GraphConfigKind {
 export function graphConfigIdentity(path: string, source: string): string {
   const kind = graphConfigKind(path);
   if (kind === "unknown") return source;
-  const parsed = parseJsonWithComments(path, source);
+  const parsed = parseJsonWithComments(source);
   if (parsed === undefined) return source;
   const projected = kind === "package" ? projectPackage(parsed) : projectTsconfig(parsed);
   return projected === undefined ? source : canonicalize(projected);
 }
 
 /** tsconfig is JSON with comments and trailing commas; byte comparison is not parsing. */
-function parseJsonWithComments(path: string, source: string): unknown {
-  // JSONC's strings must be preserved before removing comments or commas.
-  // Unusual or malformed syntax goes through the original compiler parser.
+function parseJsonWithComments(source: string): unknown {
+  // Preserve JSONC's strings before removing comments or commas.
   try {
     const commentsRemoved = source.replace(/^\uFEFF/u, "").replace(
       /"(?:\\[\s\S]|[^"\\])*"|\/\/[^\r\n\u2028\u2029]*|\/\*[\s\S]*?\*\//gu,
@@ -101,17 +87,14 @@ function parseJsonWithComments(path: string, source: string): unknown {
         return previous && !"[{,:".includes(previous) ? "" : token;
       });
     return JSON.parse(json, (key, value: unknown) => {
-      // The original object converter has special prototype-key semantics.
-      if (key === "__proto__") throw new Error("Use the original config parser.");
+      if (key === "__proto__" || (typeof value === "number" && !Number.isFinite(value))) {
+        throw new Error("Unsupported config value.");
+      }
       return value;
     });
   } catch {
-    // Keep the compiler's exact accepted syntax and error behavior.
+    return undefined;
   }
-  const ts: typeof import("typescript") = require("typescript");
-  const result = ts.parseConfigFileTextToJson(path, source);
-  if (result.error || result.config === undefined) return undefined;
-  return result.config;
 }
 
 function projectTsconfig(config: unknown): Record<string, unknown> | undefined {
@@ -123,8 +106,11 @@ function projectTsconfig(config: unknown): Record<string, unknown> | undefined {
   const options = config.compilerOptions;
   if (isPlainObject(options)) {
     const significant: Record<string, unknown> = {};
-    for (const option of SIGNIFICANT_COMPILER_OPTIONS) {
-      if (option in options) significant[option] = options[option];
+    for (const option of MODULE_RESOLUTION_OPTIONS) {
+      if (option in options) {
+        // Equal-length path patterns are tried in declaration order.
+        significant[option] = option === "paths" ? JSON.stringify(options[option]) : options[option];
+      }
     }
     if (Object.keys(significant).length > 0) projected.compilerOptions = significant;
   } else if (options !== undefined) {
@@ -139,7 +125,11 @@ function projectPackage(config: unknown): Record<string, unknown> | undefined {
   if (!isPlainObject(config)) return undefined;
   const projected: Record<string, unknown> = {};
   for (const field of SIGNIFICANT_PACKAGE_FIELDS) {
-    if (field in config) projected[field] = config[field];
+    if (field in config) {
+      // Package conditions are first-match, even in nested target objects.
+      projected[field] = field === "imports" || field === "exports"
+        ? JSON.stringify(config[field]) : config[field];
+    }
   }
   // A dependency's presence can change resolution; its version cannot change
   // anything this graph extracts, and versions are what actually move.

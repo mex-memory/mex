@@ -1,5 +1,5 @@
 import fs, { type Stats } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 /**
  * Source bytes one maintenance operation has already read, by file identity.
@@ -117,6 +117,44 @@ export function rememberDigest(path: string, stat: Identity, digest: string): vo
  * directories all keep their identity would list the same paths again.
  */
 let walks: Map<string, { paths: string[]; directories: Map<string, string> }> | null = null;
+const MAX_OBSERVED_DIRECTORIES = 8192;
+const MAX_OBSERVED_PATHS = 20_000;
+
+interface RecordedWalk { key: string; paths: string[]; directories: Array<[string, string]> }
+
+/** Native maintenance can persist the unfiltered walks in its audited snapshot. */
+export function graphWalkObservations(root: string): RecordedWalk[] {
+  return [...walks ?? []].flatMap(([key, walk]) => {
+    if (!walkBelongsTo(root, key) || walk.paths.length > MAX_OBSERVED_PATHS || walk.directories.size > MAX_OBSERVED_DIRECTORIES) return [];
+    const record = { key, paths: walk.paths, directories: [...walk.directories] };
+    return reusableWalk(root, record) ? [record] : [];
+  });
+}
+
+/** A restored walk still rechecks every directory before admitting its paths. */
+export function restoreGraphWalkObservations(root: string, records: RecordedWalk[]): void {
+  for (const record of records.slice(0, 4)) {
+    if (reusableWalk(root, record)) rememberWalk(record.key, record.paths, new Map(record.directories));
+  }
+}
+
+function walkBelongsTo(root: string, key: string): boolean {
+  const [, options] = JSON.parse(key) as [unknown, { cwd?: unknown }];
+  return options.cwd === root;
+}
+
+function reusableWalk(root: string, record: RecordedWalk): boolean {
+  if (!walkBelongsTo(root, record.key) || record.paths.length > MAX_OBSERVED_PATHS
+    || record.directories.length > MAX_OBSERVED_DIRECTORIES || !record.directories.some(([dir]) => dir === root)) return false;
+  if (record.paths.some(path => isAbsolute(path) || path.split("/").some(part => !part || part === "." || part === ".."))) return false;
+  return record.directories.every(([dir, identity]) => {
+    const path = relative(root, dir);
+    if (isAbsolute(path) || path.split(/[\\/]/, 1)[0] === "..") return false;
+    const [changeTime] = identity.split(":").slice(-1);
+    // A coarse timestamp cannot disprove two edits in one filesystem tick.
+    return /^-?\d+$/u.test(changeTime ?? "") && BigInt(changeTime!) % 1_000_000n !== 0n;
+  });
+}
 
 /** The `fs` for one corpus walk that records the directories it lists, or null outside an operation. */
 export function recordingWalkFs(directories: Map<string, string>): typeof fs | null {
@@ -152,8 +190,8 @@ export function rememberWalk(key: string, paths: readonly string[], directories:
 
 function identityOf(path: string): string | null {
   try {
-    const stat = fs.lstatSync(path);
-    return stat.isDirectory() && !stat.isSymbolicLink() ? key(stat) : null;
+    const stat = fs.lstatSync(path, { bigint: true });
+    return stat.isDirectory() ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : null;
   } catch {
     return null;
   }

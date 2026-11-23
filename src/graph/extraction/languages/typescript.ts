@@ -67,13 +67,13 @@ class TsFamilyWalker {
   ) {}
 
   run(root: TSNode): { nodes: ExtractedNode[]; edges: ExtractedEdge[] } {
-    // A `file` node roots every file's containment tree. Its id is a stable
-    // `file:<path>` (import resolution binds module specifiers to it).
-    const fileId = `file:${this.filePath}`;
+    const fileName = baseName(this.filePath);
+    const fileId = generateNodeId(this.filePath, "file", fileName, this.filePath, "source-file");
     this.nodes.push({
       id: fileId,
+      identityKey: canonicalNodeIdentity(this.filePath, "file", this.filePath, "source-file"),
       kind: "file",
-      name: baseName(this.filePath),
+      name: fileName,
       qualifiedName: this.filePath,
       filePath: this.filePath,
       language: this.language,
@@ -105,6 +105,7 @@ class TsFamilyWalker {
     if (type === "interface_declaration") return this.extractInterface(node);
     if (type === "enum_declaration") return this.extractEnum(node);
     if (type === "type_alias_declaration") return this.extractTypeAlias(node);
+    if (CALL_TYPES.has(type)) return this.extractCall(node, this.scopeStack.at(-1)!);
     if (VARIABLE_DECL_TYPES.has(type) && this.atModuleScope()) {
       return this.extractVariableDeclaration(node);
     }
@@ -364,32 +365,43 @@ class TsFamilyWalker {
     if (!sourceNode) return;
     const specifier = getNodeText(sourceNode, this.source).replace(/['"]/g, "");
     if (!specifier) return;
-    const fileId = `file:${this.filePath}`;
+    const fileId = this.scopeStack[0]!;
+    const clause = node.namedChildren.find((child) => child.type === "import_clause");
+    const named = clause?.namedChildren.find((child) => child.type === "named_imports");
+    const bindings: Array<{ importedName: string; localName: string }> = [];
+    if (named && !node.children.some((child) => child.type === "type")) {
+      for (const child of named.namedChildren) {
+        if (child.type !== "import_specifier" || child.children.some((part) => part.type === "type")) continue;
+        const imported = getChildByField(child, "name");
+        if (!imported) continue;
+        const local = getChildByField(child, "alias") ?? imported;
+        bindings.push({ importedName: getNodeText(imported, this.source), localName: getNodeText(local, this.source) });
+      }
+    }
     // File-level dependency on the imported module. The engine resolves the
     // specifier to the imported file's `file:` node.
-    this.addRef(fileId, specifier, "imports", node);
+    this.addRef(fileId, specifier, "imports", node, bindings.length ? { bindings } : undefined);
   }
 
   private extractReExport(node: TSNode): void {
     const sourceNode = getChildByField(node, "source");
     if (!sourceNode) return;
     const specifier = getNodeText(sourceNode, this.source).replace(/['"]/g, "");
-    if (specifier) this.addRef(`file:${this.filePath}`, specifier, "imports", node);
+    if (specifier) this.addRef(this.scopeStack[0]!, specifier, "imports", node);
   }
 
   /**
    * Walk a function/method/initializer body for the references it emits: calls,
    * instantiations, and any NAMED nested functions/classes (which become their
-   * own nodes). Anonymous callbacks are descended-through so their inner calls
-   * attribute to the enclosing symbol.
+   * own nodes). Each inline call argument gets its own callback node.
    */
   private walkBody(body: TSNode, ownerId: string): void {
     const type = body.type;
 
     if (CALL_TYPES.has(type)) {
-      this.extractCall(body, ownerId);
+      return this.extractCall(body, ownerId);
     } else if (NEW_TYPES.has(type)) {
-      this.extractInstantiation(body, ownerId);
+      return this.extractInstantiation(body, ownerId);
     } else if (FUNCTION_TYPES.has(type)) {
       // A named nested function declaration becomes its own node.
       this.scopeStack.push(ownerId);
@@ -409,33 +421,46 @@ class TsFamilyWalker {
   private extractCall(node: TSNode, ownerId: string): void {
     const fn = getChildByField(node, "function") ?? node.namedChild(0);
     let calleeName = "";
+    let metadata: Record<string, unknown> | undefined;
     if (fn) {
       if (fn.type === "member_expression") {
-        // `receiver.method()` — the method name is what resolves; keep the
-        // receiver as a hint only when it's a plain identifier (not this/super).
+        // Plain identifiers can name an imported namespace. Keep the
+        // receiver separately so a member never looks like a bare call.
         const property = getChildByField(fn, "property");
         const receiver = getChildByField(fn, "object");
         const method = property ? getNodeText(property, this.source) : "";
         if (method) {
-          const recvName =
-            receiver && receiver.type === "identifier"
-              ? getNodeText(receiver, this.source)
-              : "";
+          const recvName = receiver?.type === "identifier"
+            ? getNodeText(receiver, this.source)
+            : receiver && SKIP_RECEIVERS.has(receiver.type) ? receiver.type : undefined;
           calleeName = recvName && !SKIP_RECEIVERS.has(recvName) ? `${recvName}.${method}` : method;
+          metadata = { calledName: method, ...(recvName ? { receiver: recvName } : {}) };
         }
       } else {
         calleeName = getNodeText(fn, this.source);
       }
     }
-    if (calleeName) this.addRef(ownerId, calleeName, "calls", node);
-    // Still descend into the arguments for nested calls (`f(g())`).
+    if (calleeName) this.addRef(ownerId, calleeName, "calls", node, metadata);
+    if (fn) this.walkBody(fn, ownerId);
     const args = getChildByField(node, "arguments");
-    if (args) for (const child of args.namedChildren) this.walkBody(child, ownerId);
+    args?.namedChildren.forEach((child, index) => {
+      if (!FUNCTION_VALUE_TYPES.has(child.type)) {
+        this.walkBody(child, ownerId);
+        return;
+      }
+      const name = nameOf(child, this.source) || `<callback:${calleeName.slice(0, 100)}[${index}]>`;
+      this.scopeStack.push(ownerId);
+      this.extractFunction(child, name);
+      this.scopeStack.pop();
+    });
   }
 
   private extractInstantiation(node: TSNode, ownerId: string): void {
     const ctor = getChildByField(node, "constructor");
-    if (ctor) this.addRef(ownerId, baseTypeName(ctor, this.source), "instantiates", node);
+    if (ctor) {
+      this.addRef(ownerId, baseTypeName(ctor, this.source), "instantiates", node);
+      this.walkBody(ctor, ownerId);
+    }
     // Descend into constructor args for nested calls (`new Foo(bar())`).
     const args = getChildByField(node, "arguments");
     if (args) for (const child of args.namedChildren) this.walkBody(child, ownerId);
@@ -448,6 +473,7 @@ class TsFamilyWalker {
     targetName: string,
     kind: ExtractedEdge["kind"],
     node: TSNode,
+    metadata?: Record<string, unknown>,
   ): void {
     if (!targetName) return;
     this.edges.push({
@@ -456,6 +482,7 @@ class TsFamilyWalker {
       kind,
       line: node.startPosition.row,
       column: node.startPosition.column,
+      ...(metadata ? { metadata } : {}),
     });
   }
 }

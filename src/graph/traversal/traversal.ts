@@ -8,7 +8,7 @@
 // the targets of outgoing `calls` edges. Synchronous by design so the grounding
 // checker (Track B) can stay synchronous.
 
-import type { EdgeKind, GraphNode } from "../types.js";
+import { BASIC_RESOLUTION, type EdgeKind, type GraphNode } from "../types.js";
 import type { GraphNeighbor } from "../engine.js";
 import type { GraphStore } from "../db/store.js";
 
@@ -18,7 +18,7 @@ import type { GraphStore } from "../db/store.js";
  */
 export function getCallers(store: GraphStore, id: string): GraphNode[] {
   const edges = store.getIncomingEdges(id, ["calls"]);
-  return fetchEndpoints(store, edges.map((e) => e.source));
+  return fetchEndpoints(store, edges.filter((edge) => edge.resolutionMethod !== BASIC_RESOLUTION).map((edge) => edge.source));
 }
 
 /**
@@ -27,7 +27,7 @@ export function getCallers(store: GraphStore, id: string): GraphNode[] {
  */
 export function getCallees(store: GraphStore, id: string): GraphNode[] {
   const edges = store.getOutgoingEdges(id, ["calls"]);
-  return fetchEndpoints(store, edges.map((e) => e.target));
+  return fetchEndpoints(store, edges.filter((edge) => edge.resolutionMethod !== BASIC_RESOLUTION).map((edge) => edge.target));
 }
 
 /** Incoming typed relationships with their source nodes. */

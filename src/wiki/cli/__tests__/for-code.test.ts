@@ -14,8 +14,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createGraphEngine } from "../../../graph/index.js";
 import { openGraphDatabase } from "../../../graph/db/database.js";
-import { currentGraphPath } from "../../../graph/storage.js";
 import { openSqlite } from "../../../graph/db/sqlite.js";
+import { currentGraphPath } from "../../../graph/storage.js";
 import { FingerprintStore } from "../../../graph/fingerprint-store.js";
 import { MinHashReconciler } from "../../../graph/reconcile-engine.js";
 import { runGraphScope, type AgentCommandDeps } from "../../../graph/cli-agent.js";
@@ -31,7 +31,7 @@ const UNGROUNDED_ID = "mx_01KRMEXM00JAAVJPQVVRX8N56V";
 let root: string;
 let scaffoldRoot: string;
 let engine: GraphEngine;
-let db: ReturnType<typeof openSqlite>;
+let db: ReturnType<typeof openGraphDatabase>;
 let helperId: string;
 
 beforeAll(async () => {
@@ -49,7 +49,7 @@ beforeAll(async () => {
   helperId = engine.searchNodes("helper").find((node) => node.kind === "function")!.id;
 
   const graphDbPath = currentGraphPath(root);
-  const graphDb = openGraphDatabase(graphDbPath);
+  const graphDb = openGraphDatabase(graphDbPath, { readOnly: true, immutable: true });
   const grounding = deriveGrounding(
     createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(graphDb)), graphDb),
     helperId,
@@ -68,7 +68,7 @@ beforeAll(async () => {
     "utf-8",
   );
 
-  const liveDb = openGraphDatabase(graphDbPath);
+  const liveDb = openGraphDatabase(graphDbPath, { readOnly: true, immutable: true });
   const seam = createGroundingGraph(engine, new MinHashReconciler(new FingerprintStore(liveDb)), liveDb);
   rebuildWikiIndex({
     scaffoldRoot,
@@ -77,7 +77,7 @@ beforeAll(async () => {
   });
   liveDb.close();
 
-  db = openSqlite(graphDbPath);
+  db = openGraphDatabase(graphDbPath, { readOnly: true, immutable: true });
 }, 180000);
 
 afterAll(() => {

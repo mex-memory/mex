@@ -153,7 +153,7 @@ async function freshBuild(root: string): Promise<void> {
 }
 
 function withGraph<T>(root: string, body: (db: ReturnType<typeof openGraphDatabase>) => T): T {
-  const db = openGraphDatabase(currentGraphPath(root));
+  const db = openGraphDatabase(currentGraphPath(root), { readOnly: true, immutable: true });
   try {
     return body(db);
   } finally {

@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/mex-memory/mex/native/index/shift"
+	"github.com/mex-memory/mex/native/internal/sqliteuri"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
@@ -104,15 +104,6 @@ func HasIndex(directory, key string) bool {
 	return ok
 }
 
-func immutableURI(file string) string {
-	slash := filepath.ToSlash(file)
-	if !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-	u := url.URL{Scheme: "file", Path: slash, RawQuery: "mode=ro&immutable=1"}
-	return u.String()
-}
-
 // Reader answers the seven reads for one checkout. Close it when done.
 type Reader struct {
 	db         *sql.DB
@@ -138,12 +129,12 @@ func Open(recordDirectory, projectID, checkout string) (*Reader, error) {
 	if !ok {
 		return nil, ErrNoIndex
 	}
-	db, err := sql.Open("sqlite", immutableURI(filepath.Join(directory, pointer.Snapshot)))
+	db, err := sql.Open("sqlite", sqliteuri.Immutable(filepath.Join(directory, pointer.Snapshot)))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("ATTACH DATABASE ? AS base", immutableURI(filepath.Join(directory, pointer.Base))); err != nil {
+	if _, err := db.Exec("ATTACH DATABASE ? AS base", sqliteuri.Immutable(filepath.Join(directory, pointer.Base))); err != nil {
 		db.Close()
 		return nil, err
 	}

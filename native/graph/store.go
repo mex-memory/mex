@@ -4,13 +4,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/sqliteuri"
 	"github.com/mex-memory/mex/native/record/place"
 	_ "modernc.org/sqlite"
 )
@@ -50,6 +50,7 @@ type pointer struct {
 type Store struct {
 	db      *sql.DB
 	pointer pointer
+	v5      bool
 	// isTest marks test files; the file index knows them, the graph doesn't.
 	isTest   func(path string) bool
 	tests    map[string]bool
@@ -83,25 +84,30 @@ func OpenStore(recordDirectory, projectID, checkout string, isTest func(string) 
 		}
 		main = *p.Overlay
 	}
-	db, err := sql.Open("sqlite", immutableURI(filepath.Join(directory, main)))
+	file := filepath.Join(directory, main)
+	db, err := sql.Open("sqlite", sqliteuri.Immutable(file))
 	if err != nil {
 		return nil, err
 	}
 	// One connection: the TEMP views below live on it.
 	db.SetMaxOpenConns(1)
-	if p.Overlay != nil {
-		if err := installViews(db, filepath.Join(directory, p.Base)); err != nil {
-			db.Close()
-			return nil, err
+	var version int
+	if err = db.QueryRow("PRAGMA main.user_version").Scan(&version); err == nil {
+		switch {
+		case version == v5SchemaVersion:
+			err = installV5Views(db, file, filepath.Join(directory, p.Base), p.Overlay != nil)
+		case p.Overlay != nil:
+			err = installViews(db, filepath.Join(directory, p.Base))
 		}
-	} else if err := db.Ping(); err != nil {
+	}
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
 	if isTest == nil {
 		isTest = TestPath
 	}
-	return &Store{db: db, pointer: p, isTest: isTest, tests: map[string]bool{}, owners: map[string]*Symbol{}, hashes: map[string]string{}}, nil
+	return &Store{db: db, pointer: p, v5: version == v5SchemaVersion, isTest: isTest, tests: map[string]bool{}, owners: map[string]*Symbol{}, hashes: map[string]string{}}, nil
 }
 
 // testDirectory and testFile tell a test file by its path, as the file index
@@ -114,19 +120,7 @@ var (
 // TestPath tells a test file by its path alone.
 func TestPath(path string) bool { return testDirectory.MatchString(path) || testFile.MatchString(path) }
 
-func immutableURI(file string) string {
-	slash := filepath.ToSlash(file)
-	if !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-	u := url.URL{Scheme: "file", Path: slash, RawQuery: "mode=ro&immutable=1"}
-	return u.String()
-}
-
-// installViews makes the overlay connection read the union with its base,
-// as Node's installGraphViews does: base rows of files the overlay doesn't
-// shadow, plus the overlay's rows. Only the tables reads use are viewed.
-func installViews(db *sql.DB, base string) error {
+func attachOverlayBase(db *sql.DB, base string) error {
 	var named string
 	if err := db.QueryRow("SELECT value FROM main.overlay_info WHERE key='base'").Scan(&named); err != nil {
 		return err
@@ -134,7 +128,14 @@ func installViews(db *sql.DB, base string) error {
 	if named != filepath.Base(base) {
 		return ErrNoGraph
 	}
-	if _, err := db.Exec("ATTACH DATABASE ? AS base", immutableURI(base)); err != nil {
+	_, err := db.Exec("ATTACH DATABASE ? AS base", sqliteuri.Immutable(base))
+	return err
+}
+
+// installViews makes a v4 overlay connection read the union with its base,
+// as Node's installGraphViews does. Only the tables reads use are viewed.
+func installViews(db *sql.DB, base string) error {
+	if err := attachOverlayBase(db, base); err != nil {
 		return err
 	}
 	views := []struct{ table, column, shadow string }{
@@ -178,7 +179,7 @@ func (s *Store) BuiltHash(path string) (string, bool) {
 		return h, h != ""
 	}
 	var hash string
-	if err := s.db.QueryRow("SELECT content_hash FROM files WHERE path=?", path).Scan(&hash); err != nil || len(hash) < 32 {
+	if err := s.db.QueryRow("SELECT "+s.hashColumn()+" FROM files WHERE path=?", path).Scan(&hash); err != nil || len(hash) < 32 {
 		s.hashes[path] = ""
 		return "", false
 	}
@@ -192,7 +193,7 @@ func (s *Store) BuiltFiles() map[string]string {
 		return s.built
 	}
 	out := map[string]string{}
-	rows, err := s.db.Query("SELECT path, content_hash FROM files")
+	rows, err := s.db.Query("SELECT path, " + s.hashColumn() + " FROM files")
 	if err != nil {
 		return out
 	}
@@ -211,6 +212,13 @@ func (s *Store) BuiltFiles() map[string]string {
 
 const symbolColumns = `n.id, n.name, n.file_path, n.start_line, n.end_line, n.kind,
 	coalesce(n.is_exported,0), coalesce(n.signature,''), coalesce(n.body_hash,'')`
+
+func (s *Store) hashColumn() string {
+	if s.v5 {
+		return "lower(hex(content_hash))"
+	}
+	return "content_hash"
+}
 
 func scanSymbol(scan func(...any) error) (Symbol, error) {
 	var s Symbol
@@ -271,9 +279,10 @@ func (s *Store) Resolve(query string) ([]Symbol, error) {
 	if q.Name == "" {
 		return nil, nil
 	}
-	where, args := `n.name=? AND n.kind IN (`+definitionKinds+`)`, []any{q.Name}
+	selectNodes, pathColumn, kinds := s.definitionQuery()
+	where, args := `n.name=? AND n.kind IN (`+kinds+`)`, []any{q.Name}
 	if q.File != "" {
-		where += ` AND (n.file_path=? OR n.file_path LIKE ? ESCAPE '\')`
+		where += " AND (" + pathColumn + "=? OR " + pathColumn + ` LIKE ? ESCAPE '\')`
 		args = append(args, q.File, "%/"+likeEscape(q.File))
 	}
 	if q.Owner != "" {
@@ -281,27 +290,26 @@ func (s *Store) Resolve(query string) ([]Symbol, error) {
 		where += ` AND (n.qualified_name=? OR n.qualified_name LIKE ? ESCAPE '\')`
 		args = append(args, full, "%::"+likeEscape(full))
 	}
-	rows, err := s.db.Query(`SELECT `+symbolColumns+` FROM nodes n WHERE `+where+` ORDER BY n.file_path, n.start_line LIMIT 50`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Symbol
-	for rows.Next() {
-		sym, err := scanSymbol(rows.Scan)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, sym)
-	}
-	return out, rows.Err()
+	return s.symbols(selectNodes+" WHERE "+where+" ORDER BY "+pathColumn+", n.start_line LIMIT 50", args...)
 }
 
 // Declared is every definition in one file, as built, in line order: what
 // an edit to the file can be inside of, after the file index has let go of
 // the lines it changed.
 func (s *Store) Declared(path string) ([]Symbol, error) {
-	rows, err := s.db.Query(`SELECT `+symbolColumns+` FROM nodes n WHERE n.file_path=? AND n.kind IN (`+definitionKinds+`) ORDER BY n.start_line LIMIT 500`, path)
+	selectNodes, pathColumn, kinds := s.definitionQuery()
+	return s.symbols(selectNodes+" WHERE "+pathColumn+"=? AND n.kind IN ("+kinds+") ORDER BY n.start_line LIMIT 500", path)
+}
+
+func (s *Store) definitionQuery() (selectNodes, pathColumn, kinds string) {
+	if s.v5 {
+		return v5SelectSymbol, "n.path", "SELECT id FROM node_kinds WHERE name IN (" + definitionKinds + ")"
+	}
+	return "SELECT " + symbolColumns + " FROM nodes n", "n.file_path", definitionKinds
+}
+
+func (s *Store) symbols(query string, args ...any) ([]Symbol, error) {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -326,17 +334,23 @@ func likeEscape(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
+func (s *Store) qualifiedName(id string) string {
+	var name string
+	_ = s.nodeRow(id, "SELECT coalesce(qualified_name,'') FROM nodes WHERE id=?",
+		"SELECT n.qualified_name FROM nodes n WHERE "+v5PublicIDWhere).Scan(&name)
+	return name
+}
+
 // Selector is the shortest query that names this definition alone among
 // matches: its owner and name when that's enough, else its file and name.
 func (s *Store) Selector(sym Symbol, matches []Symbol) string {
-	var qualified string
-	if s.db.QueryRow("SELECT coalesce(qualified_name,'') FROM nodes WHERE id=?", sym.ID).Scan(&qualified) == nil && strings.Contains(qualified, "::") {
+	qualified := s.qualifiedName(sym.ID)
+	if strings.Contains(qualified, "::") {
 		dotted := strings.ReplaceAll(qualified, "::", ".")
 		if !strings.Contains(dotted, "<") {
 			n := 0
 			for _, m := range matches {
-				var other string
-				if s.db.QueryRow("SELECT coalesce(qualified_name,'') FROM nodes WHERE id=?", m.ID).Scan(&other) == nil && other == qualified {
+				if s.qualifiedName(m.ID) == qualified {
 					n++
 				}
 			}
@@ -358,8 +372,7 @@ func (s *Store) Selector(sym Symbol, matches []Symbol) string {
 	if qualified != "" && strings.Contains(qualified, "::") && !strings.Contains(qualified, "<") {
 		same := 0
 		for _, m := range matches {
-			var other string
-			if m.Path == sym.Path && s.db.QueryRow("SELECT coalesce(qualified_name,'') FROM nodes WHERE id=?", m.ID).Scan(&other) == nil && other == qualified {
+			if m.Path == sym.Path && s.qualifiedName(m.ID) == qualified {
 				same++
 			}
 		}
@@ -382,8 +395,8 @@ func (s *Store) Preferred(defs []Symbol, q Query) (Symbol, bool) {
 	var top, bodied []Symbol
 	for _, d := range defs {
 		var qualified, container string
-		if s.db.QueryRow(`SELECT coalesce(n.qualified_name,''), coalesce(c.kind,'') FROM nodes n
-			LEFT JOIN nodes c ON c.id = n.container_id WHERE n.id=?`, d.ID).Scan(&qualified, &container) != nil {
+		if s.nodeRow(d.ID, `SELECT coalesce(n.qualified_name,''), coalesce(c.kind,'') FROM nodes n
+			LEFT JOIN nodes c ON c.id = n.container_id WHERE n.id=?`, v5PreferredDetails).Scan(&qualified, &container) != nil {
 			return Symbol{}, false
 		}
 		if !strings.Contains(qualified, "::") {
@@ -404,7 +417,8 @@ func (s *Store) Preferred(defs []Symbol, q Query) (Symbol, bool) {
 
 // Node is one symbol by id.
 func (s *Store) Node(id string) (Symbol, bool) {
-	sym, err := scanSymbol(s.db.QueryRow(`SELECT `+symbolColumns+` FROM nodes n WHERE n.id=?`, id).Scan)
+	sym, err := scanSymbol(s.nodeRow(id, "SELECT "+symbolColumns+" FROM nodes n WHERE n.id=?",
+		v5SelectSymbol+" WHERE "+v5PublicIDWhere).Scan)
 	return sym, err == nil
 }
 
@@ -419,11 +433,7 @@ func (s *Store) owner(sym Symbol) *Symbol {
 	var found *Symbol
 	id := sym.ID
 	for depth := 0; depth < ownerDepth; depth++ {
-		var parent sql.NullString
-		if s.db.QueryRow("SELECT container_id FROM nodes WHERE id=?", id).Scan(&parent) != nil || !parent.Valid || parent.String == "" {
-			break
-		}
-		p, ok := s.Node(parent.String)
+		p, ok := s.parent(id)
 		if !ok || p.Kind == "file" {
 			break
 		}
@@ -435,6 +445,19 @@ func (s *Store) owner(sym Symbol) *Symbol {
 	}
 	s.owners[sym.ID] = found
 	return found
+}
+
+func (s *Store) parent(id string) (Symbol, bool) {
+	if s.v5 {
+		parent, err := scanSymbol(s.db.QueryRow(v5SelectSymbol+
+			" WHERE n.id=(SELECT n.parent FROM nodes n WHERE "+v5PublicIDWhere+")", v5IDArgs(id)...).Scan)
+		return parent, err == nil
+	}
+	var parent sql.NullString
+	if s.db.QueryRow("SELECT container_id FROM nodes WHERE id=?", id).Scan(&parent) != nil || !parent.Valid || parent.String == "" {
+		return Symbol{}, false
+	}
+	return s.Node(parent.String)
 }
 
 func (s *Store) test(path string) bool {
@@ -455,6 +478,9 @@ func (s *Store) test(path string) bool {
 // "ambiguous", since the type could have other implementations, but this is
 // the only one the graph holds. Those sites are marked Through.
 func (s *Store) Callers(id string) ([]Site, error) {
+	if s.v5 {
+		return s.v5Callers(id)
+	}
 	var name string
 	if s.db.QueryRow("SELECT name FROM nodes WHERE id=?", id).Scan(&name) != nil {
 		return nil, nil
@@ -464,6 +490,7 @@ func (s *Store) Callers(id string) ([]Site, error) {
 		SELECT `+symbolColumns+`, coalesce(e.line, n.start_line), e.kind, 0 FROM edges e
 		JOIN nodes n ON n.id = e.source
 		WHERE e.target=?1 AND e.kind IN ('calls','references')
+		AND e.resolution_method IS NOT 'basic'
 		UNION ALL
 		SELECT `+symbolColumns+`, u.line, 'calls', 1 FROM unresolved_refs u
 		JOIN nodes n ON n.id = u.from_node_id
@@ -483,11 +510,15 @@ func (s *Store) Callees(id string) ([]Site, error) {
 	if !ok {
 		return nil, nil
 	}
+	if s.v5 {
+		return s.v5Callees(from)
+	}
 	return s.sites(within+`SELECT * FROM (
 		SELECT `+symbolColumns+`, coalesce(e.line, 0), e.kind, 0 FROM edges e
 		JOIN nodes n ON n.id = e.target
 		WHERE e.source IN (SELECT id FROM inner) AND e.target NOT IN (SELECT id FROM inner)
 		AND e.kind IN ('calls','references')
+		AND e.resolution_method IS NOT 'basic'
 		UNION ALL
 		SELECT `+symbolColumns+`, u.line, 'calls', 1 FROM unresolved_refs u
 		JOIN nodes n ON n.id = json_extract(u.candidates, '$[0]')
@@ -571,7 +602,12 @@ func (s *Store) Tests(id string) ([]TestLink, error) {
 		named := c.Named()
 		if named.ID != id && !asked[named.ID] {
 			asked[named.ID] = true
-			through = append(through, named.ID)
+			if s.v5 {
+				_, digest, _ := strings.Cut(named.ID, ":")
+				through = append(through, v5PublicDigest(digest))
+			} else {
+				through = append(through, named.ID)
+			}
 		}
 	}
 	if len(through) == 0 {
@@ -580,11 +616,17 @@ func (s *Store) Tests(id string) ([]TestLink, error) {
 	if len(through) > 200 {
 		through = through[:200]
 	}
-	rows, err := s.db.Query(`SELECT `+symbolColumns+`, coalesce(e.line, n.start_line), coalesce(callee.name, '') FROM edges e
+	targets := "?" + strings.Repeat(",?", len(through)-1)
+	query := `SELECT ` + symbolColumns + `, coalesce(e.line, n.start_line), coalesce(callee.name, '') FROM edges e
 		JOIN nodes n ON n.id = e.source
 		LEFT JOIN nodes callee ON callee.id = e.target
-		WHERE e.target IN (?`+strings.Repeat(",?", len(through)-1)+`) AND e.kind='calls'
-		ORDER BY n.file_path, e.line LIMIT 500`, through...)
+		WHERE e.target IN (` + targets + `) AND e.kind='calls'
+		AND e.resolution_method IS NOT 'basic'
+		ORDER BY n.file_path, e.line LIMIT 500`
+	if s.v5 {
+		query = v5Tests(targets)
+	}
+	rows, err := s.db.Query(query, through...)
 	if err != nil {
 		return nil, err
 	}
@@ -618,6 +660,9 @@ func (s *Store) Tests(id string) ([]TestLink, error) {
 // Unresolved counts dynamic uses of the symbol's name the graph couldn't tie
 // to a definition: they may be callers the graph doesn't show.
 func (s *Store) Unresolved(id string) int {
+	if s.v5 {
+		return s.v5Unresolved(id)
+	}
 	sym, ok := s.Node(id)
 	if !ok {
 		return 0
@@ -635,6 +680,9 @@ func (s *Store) Unresolved(id string) int {
 // UnresolvedIn counts calls from inside a definition that the graph couldn't
 // resolve: callees it may not show.
 func (s *Store) UnresolvedIn(id string) int {
+	if s.v5 {
+		return s.v5UnresolvedIn(id)
+	}
 	var n int
 	if err := s.db.QueryRow(within+`SELECT count(*) FROM unresolved_refs
 		WHERE from_node_id IN (SELECT id FROM inner) AND status IN ('pending','ambiguous','unresolved')
@@ -644,8 +692,8 @@ func (s *Store) UnresolvedIn(id string) int {
 	return n
 }
 
-// Complete reports that the graph indexed every file it saw: nothing too
-// big, unreadable or failed to parse.
+// Complete reports that every file the graph saw has full coverage.
+// A basic file has an outline and name hints but leaves call resolution incomplete.
 func (s *Store) Complete() bool {
 	if s.complete != nil {
 		return *s.complete
@@ -699,11 +747,12 @@ func GlobPrefix(glob string) string {
 // callers. Complete reports that every file is indexed, so a count lower
 // than expected is proof and not a gap.
 func (s *Store) CallsBetween(fromPrefix, toPrefix string, from, to func(path string) bool) (n int, fromPath, toPath string, line int, complete bool, err error) {
-	rows, err := s.db.Query(`SELECT * FROM (
+	query := `SELECT * FROM (
 		SELECT src.file_path, dst.file_path, coalesce(e.line, 0) FROM nodes src
 		CROSS JOIN edges e ON e.source = src.id AND e.kind = 'calls'
 		CROSS JOIN nodes dst ON dst.id = e.target
 		WHERE src.file_path >= ?1 AND src.file_path < ?1 || char(1114111)
+		AND e.resolution_method IS NOT 'basic'
 		AND dst.file_path >= ?2 AND dst.file_path < ?2 || char(1114111) AND src.file_path <> dst.file_path
 		UNION ALL
 		SELECT src.file_path, dst.file_path, u.line FROM unresolved_refs u
@@ -712,7 +761,11 @@ func (s *Store) CallsBetween(fromPrefix, toPrefix string, from, to func(path str
 		WHERE u.file_path >= ?1 AND u.file_path < ?1 || char(1114111)
 		AND u.status = 'ambiguous' AND u.reference_kind = 'calls' AND json_valid(u.candidates) AND json_array_length(u.candidates) = 1
 		AND dst.file_path >= ?2 AND dst.file_path < ?2 || char(1114111) AND src.file_path <> dst.file_path
-	) ORDER BY 1, 3`, fromPrefix, toPrefix)
+	) ORDER BY 1, 3`
+	if s.v5 {
+		query = v5CallsBetween
+	}
+	rows, err := s.db.Query(query, fromPrefix, toPrefix)
 	if err != nil {
 		return 0, "", "", 0, false, err
 	}

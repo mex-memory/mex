@@ -38,7 +38,7 @@ export class BackgroundGraph {
     (await this.warm()).collect(directory);
   }
 
-  /** Publish waiting edits, keep the cap, queue cold refreshes and due checks. */
+  /** Run warm edits and queue refreshes for checkouts that cooled. */
   async run(now = Date.now()): Promise<void> {
     if (this.registry?.busy) await this.registry.run();
     if (now - this.lastChecks >= 60 * 60_000) {
@@ -74,11 +74,12 @@ export class BackgroundGraph {
         try { this.queue(this.writer, { kind: "graph-refresh", projectId, params: { checkout } }); } catch { /* the next cooling retries */ }
       },
       noteUsage: (projectId, checkout, result, cpuMs, rssMb, serverRssMb) => {
-        if (result.status === "unchanged") return;
+        if (result.status === "unchanged" && !result.engineUsage) return;
         try {
           recordBuildUsage(this.writer.db, {
             projectId, checkout, kind: "warm", files: result.files.length, wallMs: result.ms, cpuMs, peakRssMb: rssMb,
-            ...(serverRssMb !== undefined ? { serverRssMb } : {}), result: result.status === "published" ? "ok" : "failed",
+            ...(serverRssMb !== undefined ? { serverRssMb } : {}),
+            result: result.status === "published" ? "ok" : result.status === "cold" ? "failed" : "unchanged",
           });
         } catch { /* the usage log never stops an edit */ }
       },

@@ -1,5 +1,7 @@
 import { currentGraphPath } from "./storage.js";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
+import { readsV5Graph } from "./db/v5.js";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { SqliteDatabase } from "./db/sqlite.js";
 import {
@@ -10,9 +12,10 @@ import { isSupportedSourceFile } from "./extraction/grammars.js";
 
 export const GRAPH_COVERAGE_METADATA_KEY = "unindexed_source_coverage";
 export const COVERAGE_CACHE_LIMITS = Object.freeze({ directories: 2048, entries: 100_000, bytes: 512 * 1024 });
+export const V5_COVERAGE_CACHE_LIMITS = Object.freeze({ ...COVERAGE_CACHE_LIMITS, directories: 4096 });
 export type CoverageCacheLimits = { directories: number; entries: number; bytes: number };
 type DirectoryStamp = { path: string; stamp: string };
-interface CoverageCache {
+export interface CoverageCache {
   version: 1;
   policy: string;
   histogram: GraphCoverageHistogram;
@@ -109,6 +112,10 @@ export function captureGraphCoverage(root: string, limits: CoverageCacheLimits =
   } catch { return "null"; }
 }
 
+export function coveragePolicyHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 /** Legacy indexes have no coverage observation; distinguish them from an unreadable one. */
 export function hasGraphCoverageCache(db: SqliteDatabase): boolean {
   try {
@@ -141,8 +148,9 @@ export function readGraphCoverageObservation(
       .get(GRAPH_COVERAGE_METADATA_KEY, COVERAGE_CACHE_LIMITS.bytes) as { value?: unknown } | undefined;
     if (typeof row?.value !== "string" || Buffer.byteLength(row.value) > COVERAGE_CACHE_LIMITS.bytes) return null;
     const cache = JSON.parse(row.value) as CoverageCache | null;
-    if (!cache || cache.version !== 1 || cache.policy !== policy(root)
-      || !Array.isArray(cache.directories) || cache.directories.length > COVERAGE_CACHE_LIMITS.directories) return null;
+    const native = readsV5Graph(db);
+    if (!cache || cache.version !== 1 || cache.policy !== (native ? coveragePolicyHash(policy(root)) : policy(root))
+      || !Array.isArray(cache.directories) || cache.directories.length > (native ? V5_COVERAGE_CACHE_LIMITS : COVERAGE_CACHE_LIMITS).directories) return null;
     const histogram = cache.histogram;
     if (!histogram || !Number.isSafeInteger(histogram.total) || histogram.total < 0
       || histogram.total > GRAPH_COVERAGE_LIMITS.maxUnindexedFiles || typeof histogram.truncated !== "boolean"
@@ -180,6 +188,14 @@ export function readGraphCoverageObservation(
     }
     return { histogram, verified: true };
   } catch { return null; }
+}
+
+/** Reuse the last v5 build's histogram only when every covered directory still matches. */
+export function reuseV5Coverage(db: SqliteDatabase, root: string): CoverageCache | undefined {
+  const observed = readGraphCoverageObservation(db, root, { graphCurrent: true, verify: "always" });
+  if (!observed?.verified) return undefined;
+  const directories = db.prepare("SELECT path, stamp FROM main.coverage_directories").all() as DirectoryStamp[];
+  return { version: 1, policy: policy(root), histogram: observed.histogram, directories };
 }
 
 /** Exact counts only: a stale graph, changed directories, or unreadable metadata yields null. */

@@ -93,6 +93,11 @@ describe("who-calls falls back to recorded unresolved references", () => {
       expect(typeof row.fromNode).toBe("string");
     }
     expect(unresolved.map((row) => row.file)).toEqual(["src/first.ts", "src/second.ts"]);
+    const qualified = query(root, dbPath, "who-calls", "subject.markFailed")
+      .filter((row) => row.type === "unresolved-reference");
+    expect(qualified).toEqual(unresolved.map((row) => ({
+      ...row, target: "subject.markFailed", receiver: "subject", qualifier: "subject",
+    })));
 
     const summary = rows.at(-1)!;
     expect(summary).toMatchObject({ status: "partial", evidenceStrength: "weak", returnedNodes: 0 });

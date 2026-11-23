@@ -1,6 +1,5 @@
-import { basename } from "node:path";
 import { openSqlite, type SqliteDatabase } from "./db/sqlite.js";
-import { installGraphViews, OVERLAY_NAME } from "./overlay.js";
+import { installGraphViews } from "./overlay.js";
 import { currentGraphPath } from "./storage.js";
 
 /**
@@ -9,7 +8,7 @@ import { currentGraphPath } from "./storage.js";
  */
 export function openGraphFile(file: string): SqliteDatabase {
   const db = openSqlite(file, { readOnly: true, immutable: true });
-  try { if (OVERLAY_NAME.test(basename(file))) installGraphViews(db, file); }
+  try { installGraphViews(db, file); }
   catch (error) { db.close(); throw error; }
   return db;
 }
