@@ -84,12 +84,23 @@ Personal and shared learned rules follow the same table: a broken rule is withhe
 by a pointer ("MEX is re-checking a learned rule: `mex recall <id>`"), never served in full. The judge can confirm
 a rule and renew its baselines. When a symbol a rule names moves, the entry follows it.
 
-Agents can report a wrong rule with `mex wrong <id> "<reason>"`. From an agent this never retires anything: it asks
-MEX to re-check the rule and puts a proposed correction in Review. A learned pattern whose stops are pushed through
-or reported wrong more than 10% of the time, over at least 20 stops, stops firing and stays as text, with a Review
-item saying why. A rule with no check that can fail goes to Review after 90 days without confirmation; anchored
-rules have no time limit. (The reporting, the noise count and the weekly re-fetch land with the upkeep work of this
-release.)
+Agents can report a wrong rule with `mex wrong <id> "<reason>"`, and every rule file says so. A reason can be typed:
+`contradicted <file>:<line>` (a line in this checkout), `outdated`, `wrong-scope`, `noisy`, or free text. From an
+agent this never retires anything: it asks MEX to re-check the rule and puts a proposed correction in Review. From a
+person's own terminal it retires the rule, as before.
+
+A learned pattern whose stops are pushed through or reported wrong more than 10% of the time, over at least 20 stops,
+stops firing and stays as text, with a Review item saying why. The entry, its pattern and its proof are kept, and
+restoring it from Review starts the count again.
+
+The cited review comments are re-fetched weekly, 100 per request, within the automatic allowance. An edited comment
+sends the rule to the judge; a deleted one withholds it; a comment that can't be read this week is skipped, not
+counted as deleted.
+
+A rule with no check that reads the repository (URL sources alone don't count) goes to Review after 90 days without
+a tick or a judge confirmation. Anchored rules have no time limit. When the team retires a rule on the default
+branch, the person's copy learned from the same source is retired too, by id or by that source, never by a
+similar-sounding claim from another lesson on the same pull request.
 
 ## The review list
 
