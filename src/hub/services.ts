@@ -1533,7 +1533,7 @@ function projectGraphHealthStatus(
   return {
     id: "graph",
     label: "Code graph",
-    status: status.status === "fresh" && status.parseHealth.failed === 0 && !status.engineFallback
+    status: status.status === "fresh" && status.parseHealth.failed === 0
       ? "healthy"
       : "degraded",
     summary: graphHealthSummary(status) + (status.engineRuntime ? ` Graph engine used ${graphEngineRuntimeLabel(status.engineRuntime)}.` : ""),
