@@ -158,7 +158,9 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const kept = keptQuote(proof);
   const lint = proof.lint && !proven ? [`This repo's linter can enforce it: enable \`${proof.lint.rule}\` in \`${proof.lint.config}\`.`] : [];
   const alternatives = proof.alternatives.map(item => `Considered and ruled out: ${item.option} (${item.reason}).`);
-  const text = [proof.claim, ...proof.reasons, ...lint, ...alternatives].join(" ").slice(0, 1000);
+  // R6: a pattern still common at HEAD is a migration in progress. Say so, or the agent sees the old code and copies it.
+  const migration = proof.when.some(item => item.migration) ? ["Older code here still does this; don't add more."] : [];
+  const text = [proof.claim, ...proof.reasons, ...migration, ...lint, ...alternatives].join(" ").slice(0, 1000);
   const fixKinds = new Set(["rule", "pitfall", "decision"]);
   // R19: repeated support from one reviewer is that person's habit until the code proves it, a doc agrees, or a
   // person ticks it, so it waits for the tick rather than reaching sessions on support alone.
@@ -175,7 +177,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
     source: { type: sourceType, ref, ...(kept ? { quote: kept.quote, text: kept.text } : {}) },
     evidenceClass: sourceType, evidence: members.map(candidate => candidate.id).slice(0, 32),
     anchors: { scope: proof.scope, ...(proof.when.length ? { when: proof.when.map(({ type, match, pattern }) => ({ type, match, pattern })) } : {}) },
-    checks, model, label: label(cluster), status,
+    checks, model, label: `${label(cluster)}${migration.length ? " · migration in progress" : ""}`.slice(0, 80), status,
   };
   return { proposal, sources: members, status, proven };
 }

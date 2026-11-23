@@ -132,6 +132,10 @@ describe("proving a learned rule", () => {
     const two = clusterOf([thread(3, "packages/api/src/users.ts"), thread(40, "packages/api/src/orders.ts")]);
     const double = await proveEntry(draft(two), two, context({ patterns: fakePatterns(new Set(["console.log("])) }));
     expect(double.when[0]!.migration).toBe(true);
+    const routed = routeEntry(double, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proposal.label).toBe("Learned from 2 PRs, 1 maintainer · migration in progress");
+    expect(routed.proposal.text).toContain("Older code here still does this; don't add more.");
   });
 
   it("removes an unsupported clause and drops an entry whose claim is invented", async () => {
