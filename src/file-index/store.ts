@@ -15,7 +15,7 @@
  */
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { shortHash } from "../record/project.js";
@@ -170,9 +170,16 @@ CREATE INDEX paths_record ON paths(hash, lang);`;
 
 function stamp(): string { return `${Date.now().toString(36)}${process.pid.toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`; }
 
+function sqliteFile(file: string): string {
+  if (process.platform !== "win32" || file.startsWith("\\\\?\\")) return file;
+  const full = resolve(file);
+  // Node can create the directory past MAX_PATH. SQLite still needs the extended path or it cannot open the file.
+  return full.length >= 240 ? `\\\\?\\${full}` : file;
+}
+
 function createFile(file: string, schema: string): DatabaseSync {
   const { DatabaseSync } = sqliteModule();
-  const db = new DatabaseSync(file);
+  const db = new DatabaseSync(sqliteFile(file));
   db.exec("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA page_size=4096;");
   db.exec(schema);
   return db;

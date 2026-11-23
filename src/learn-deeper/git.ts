@@ -81,7 +81,7 @@ export async function clearLearningChecks(home: string, jobId: string): Promise<
   if (entries.length > 16 || entries.some(item => !item.isDirectory() || !/^batch-[A-Za-z0-9]{6}$/u.test(item.name))) {
     throw new Error("Learning's temporary check directory contains unexpected files.");
   }
-  for (const item of entries) await rm(join(root, item.name), { recursive: true, force: true });
+  for (const item of entries) await rm(join(root, item.name), { recursive: true, force: true, maxRetries: 5, retryDelay: 40 });
   await rmdir(root);
 }
 
@@ -254,7 +254,7 @@ export class PinnedTree {
     try {
       return await run(dir);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 });
       await rmdir(parent);
     }
   }

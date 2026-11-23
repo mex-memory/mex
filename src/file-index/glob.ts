@@ -7,8 +7,13 @@
  * means everything below. Every other character matches itself.
  */
 
+/** Checkout-relative spelling: forward slashes, the form scopes, fixtures and delivery share. */
+export function slashPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
 export function normalizeGlob(glob: string): string {
-  let value = glob.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+  let value = slashPath(glob).replace(/^(\.\/)+/, "").replace(/^\/+/, "");
   if (value === "") value = "**";
   if (value.endsWith("/")) value += "**";
   return value;
@@ -29,7 +34,8 @@ export function globToRegExp(glob: string): RegExp {
     out += segmentSource(segment);
     needSlash = true;
   });
-  return new RegExp(`^${out}$`);
+  // Windows checkouts compare paths without case. The same glob is case-sensitive on other systems.
+  return new RegExp(`^${out}$`, process.platform === "win32" ? "i" : "");
 }
 
 function segmentSource(segment: string): string {

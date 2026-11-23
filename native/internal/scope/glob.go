@@ -3,11 +3,13 @@ package scope
 
 import (
 	"regexp"
+	"runtime"
 	"strings"
 )
 
 // MatchesScope applies the file index's glob dialect without opening an index.
 func MatchesScope(scope, file string) bool {
+	file = strings.ReplaceAll(file, `\`, "/")
 	if len(scope) > 512 || len(file) > 4096 {
 		return false
 	}
@@ -74,7 +76,11 @@ func globRegexp(glob string) (*regexp.Regexp, error) {
 		out.WriteString(segmentSource(segment))
 		needSlash = true
 	}
-	return regexp.Compile("^" + out.String() + "$")
+	pattern := "^" + out.String() + "$"
+	if runtime.GOOS == "windows" {
+		pattern = "(?i)" + pattern
+	}
+	return regexp.Compile(pattern)
 }
 
 func segmentSource(segment string) string {

@@ -12,6 +12,7 @@ describe("layer A selection", () => {
     expect(isBroad("src/**/*.ts")).toBe(false);
     expect(isBroad("src/index.ts")).toBe(false);
     expect(areaOf("apps/api/**")).toBe("apps/api");
+    expect(areaOf("apps\\api\\**")).toBe("apps/api");
     expect(areaOf("**")).toBe("");
   });
 
