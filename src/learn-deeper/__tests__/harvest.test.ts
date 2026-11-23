@@ -24,7 +24,7 @@ const forkFixture = JSON.parse(readFileSync(new URL("fixtures/harvest/reviewed-c
 // Git subprocesses on Windows can queue behind parallel workers. These timeouts guard hangs.
 const GIT_FIXTURE_TIMEOUT = 45_000;
 let checkout: string, head: string, original: string, merge: string, attempt: string, revert: string, reland: string,
-  cause: string, discussionRevert: string;
+  cause: string, discussionRevert: string, squash: string, bodyRevert: string, branchOnly: string;
 let pinned: PinnedTree;
 
 const normalized = (value: string) => new Date(value).toISOString();
@@ -65,9 +65,16 @@ beforeAll(async () => {
   git(["fast-import", "--quiet"], [
     fixtureCommit(1, "Write the deployment guide", {
       "docs/deployment-guide.md": "# Development\n\n## Rollout\n\n"
-        + "Document each deployment step and record the verification from the running service. ".repeat(145),
+        + "Document each deployment step and record the verification from the running service. ".repeat(300),
     }),
     fixtureCommit(2, "Establish transports", {
+      "aaa/generated/client.ts": "export const version = 1;",
+      "aaa/transport.generated.ts": "export const version = 1;",
+      "aaa/transport.test.ts": "expect(transport()).toBe(1);",
+      "docs/html/topics/configuration.md": "# Configuration\n\nSet the port.\n\n## Development\n\nSee the repository.",
+      "docs/html/development/architecture/overview.rst": "Overview\n========\n\nThe transport queues requests before dispatch.",
+      "docs/working-on-transport.md": "# Maintaining the transport\n\nRun the smoke tests before changing the queue.",
+      "package-lock.json": "{}",
       "CODEOWNERS": "/src/changed.ts @fern-owner\n/src/new-name.ts @fiction/transport",
       "packages/transport/package.json": '{"name":"transport"}',
       "packages/transport/README.md": "# Transport\n\n## Usage\n\nCall the API.\n\n## Development\n\nBuild the test harness.",
@@ -77,6 +84,7 @@ beforeAll(async () => {
       ".cursor/rules/x.mdc": "# Development\n\nDo not learn this cursor rule file.",
       "docs/contributing.md": "# Contributing\n\n## Patches\n\nUse the smoke tests.",
       "src/retry.ts": "export const retried = 1;",
+      "src/secondary.ts": "export const secondary = 1;",
       "src/state.ts": "export const state = 'pending';",
       "src/changed.ts": reviewed,
       "src/unchanged.ts": variant("unchanged", "stable"),
@@ -84,17 +92,31 @@ beforeAll(async () => {
       "src/secret.ts": variant("secret", "fallback"),
       "src/old-name.ts": variant("renamed", "fallback"),
     }),
-    fixtureCommit(4, "Tune retries (#14)", { "src/retry.ts": "export const retried = 2;" }),
+    fixtureCommit(4, "Tune retries (#14)", { "src/retry.ts": "export const retried = 2;", "src/secondary.ts": "export const secondary = 2;" }),
+    fixtureCommit(5, "Try a queued transport", { "src/queue.ts": "export const enabled = false;" },
+      { parent: ":4", branch: "proposal" }),
     "done\n",
   ].join(""));
   attempt = git(["rev-parse", "HEAD"]);
+  branchOnly = git(["rev-parse", "refs/heads/proposal"]);
   git(["fast-import", "--quiet", "--export-marks=fixture-marks"], [
-    fixtureCommit(6, 'Revert "Tune retries (#14)" (#15)', { "src/retry.ts": "export const retried = 1;" },
+    fixtureCommit(6, 'Revert "Tune retries (#14)" (#15)', {
+      "aaa/generated/client.ts": "export const version = 2;",
+      "aaa/transport.generated.ts": "export const version = 2;",
+      "aaa/transport.test.ts": "expect(transport()).toBe(2);",
+      "docs/html/topics/configuration.md": "# Configuration\n\nSet the port and hostname.",
+      "package-lock.json": '{"lockfileVersion":3}',
+      "src/retry.ts": "export const retried = 1;",
+    },
       { parent: attempt, body: `This reverts commit ${attempt}.\n\nThe extra retry can repeat delivery.` }),
+    fixtureCommit(6, "Expand transport metadata (#23)", { "src/metadata.ts": "export const version = 1;" },
+      { mark: 23, body: `* Revert "Try a queued transport"\n\nThis reverts commit ${branchOnly}.` }),
     fixtureCommit(7, "Enable the buffered queue (#21)", { "src/queue.ts": "export const enabled = true;" }),
     fixtureCommit(8, "Re-land: Tune retries (#16)", { "src/retry.ts": "export const retried = conditionalRetry();" }),
     fixtureCommit(9, "Stop repeated writes caused by a stale state flag", { "src/state.ts": "export const state = 'recorded';" }),
     fixtureCommit(10, "Test the regression from a stale state", { "test/transport.test.ts": "expect(run()).toBe('recorded');" }),
+    fixtureCommit(10, "Restore the secondary retry limit", { "src/secondary.ts": "export const secondary = 1;" },
+      { mark: 24, body: `This reverts commit ${attempt}.\n\nThe secondary limit must stay at one.` }),
     fixtureCommit(11, 'Revert "Enable the buffered queue (#21)" (#22)', { "src/queue.ts": "export const enabled = false;" }),
     fixtureCommit(11, "Prepare a reviewed transport branch", {}, { parent: ":11", branch: "reviewed", mark: 12 }),
     fixtureCommit(13, "Wire the adapters (#31)", {
@@ -109,7 +131,8 @@ beforeAll(async () => {
   ].join(""));
   const marks = Object.fromEntries(readFileSync(join(checkout, "fixture-marks"), "utf8").trimEnd().split(/\r?\n/u)
     .map(line => line.split(" ")));
-  [revert, reland, cause, discussionRevert, original, merge, head] = [6, 8, 9, 11, 12, 13, 14].map(mark => marks[`:${mark}`]!);
+  [revert, reland, cause, discussionRevert, original, merge, head, squash, bodyRevert] =
+    [6, 8, 9, 11, 12, 13, 14, 23, 24].map(mark => marks[`:${mark}`]!);
   pinned = (await PinnedTree.open(checkout, head))!;
 }, GIT_FIXTURE_TIMEOUT);
 
@@ -118,7 +141,7 @@ afterAll(() => {
   if (checkout) rmSync(checkout, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false } = {}) {
+function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false, mergedCount = 1 } = {}) {
   const captures: string[] = [];
   const data = JSON.parse(raw.replaceAll("OID_ORIGINAL", original).replaceAll("OID_MERGE", merge));
   if (fork) {
@@ -138,7 +161,16 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
     data.merged.reviewThreads.nodes = data.merged.reviewThreads.nodes.slice(0, 4);
     for (const thread of data.merged.reviewThreads.nodes) thread.comments.nodes[0].diffHunk = "";
   }
-  const merged = [data.merged];
+  const merged = Array.from({ length: mergedCount }, (_, i) => {
+    if (!i) return data.merged;
+    const row = structuredClone(data.merged);
+    row.number += i;
+    for (const thread of row.reviewThreads.nodes) {
+      thread.id += `_${i}`;
+      for (const comment of thread.comments.nodes) comment.id += `_${i}`;
+    }
+    return row;
+  });
   if (weekly) for (const [number, day] of [[51, 21], [52, 27]]) merged.push({ ...data.merged, number,
     mergedAt: `2026-11-${day}T10:00:00Z`, reviewThreads: { nodes: [] } });
   const issues = issue ? [{ id: "I_fixture61", number: 61, title: "Do not support the older protocol",
@@ -285,12 +317,28 @@ describe("harvest", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("joins a local revert to its PR and re-land, and compares regions on their common path", async () => {
-    const { candidates } = await drain(options({ since: "2026-11-03T00:00:00Z", until: "2026-11-09T00:00:00Z" }), forge());
+    const { candidates, plan } = await drain(options({ since: "2026-11-03T00:00:00Z", until: "2026-11-09T00:00:00Z" }), forge());
+    expect(git(["cat-file", "-t", branchOnly])).toBe("commit");
+    expect(plan.inventory.local.revert.map(point => point.id)).toEqual([revert]);
+    expect(candidates.some(candidate => candidate.id === `git:revert:${squash}`)).toBe(false);
     expect(candidates.find(candidate => candidate.id === `git:revert:${revert}`)).toMatchObject({
-      id: `git:revert:${revert}`, text: "The extra retry can repeat delivery.",
+      id: `git:revert:${revert}`, path: "src/retry.ts", text: "The extra retry can repeat delivery.",
+      code: { before: { commit: attempt, text: "export const retried = 2;" },
+        after: { commit: revert, text: "export const retried = 1;" }, anchor: "export const retried = 2;" },
       related: { pulls: [15, 14, 16], commits: [attempt, reland],
         reland: { before: { commit: attempt, text: "export const retried = 2;" },
           after: { commit: reland, text: "export const retried = conditionalRetry();" } } },
+    });
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("accepts a body-only revert of an ancestor outside the inventory window", async () => {
+    const { candidates, plan } = await drain(options({ since: "2026-11-10T00:00:00Z", until: "2026-11-11T00:00:00Z" }), forge());
+    expect(plan.inventory.revertLinks[bodyRevert]?.original).toBe(attempt);
+    expect(candidates.find(candidate => candidate.kind === "revert")).toMatchObject({
+      id: `git:revert:${bodyRevert}`, path: "src/secondary.ts", text: "The secondary limit must stay at one.",
+      code: { before: { commit: git(["rev-parse", bodyRevert + "^"]), text: "export const secondary = 2;" },
+        after: { commit: bodyRevert, text: "export const secondary = 1;" }, anchor: "export const secondary = 2;" },
+      related: { commits: [attempt] },
     });
   }, GIT_FIXTURE_TIMEOUT);
 
@@ -299,6 +347,8 @@ describe("harvest", () => {
     const { candidates } = await drain(options({ since: "2026-11-11T00:00:00Z", until: "2026-11-12T00:00:00Z" }), deps);
     expect(candidates.find(candidate => candidate.id === `git:revert:${discussionRevert}`)).toMatchObject({
       text: "The queue started before the handshake completed.", nodeIds: ["PRR_revertReason"], related: { pulls: [22, 21] },
+      code: { before: { text: "export const enabled = true;" }, after: { text: "export const enabled = false;" },
+        anchor: "export const enabled = true;" },
     });
     expect(deps.captures.filter(query => query === "query HarvestRevertDiscussion")).toHaveLength(1);
   }, GIT_FIXTURE_TIMEOUT);
@@ -313,7 +363,7 @@ describe("harvest", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("splits contributor headings, tags package usage and excludes nested rule files", async () => {
-    const { candidates } = await drain(options({ since: "2026-11-02T00:00:00Z", until: "2026-11-03T00:00:00Z" }), forge());
+    const { candidates, plan } = await drain(options({ since: "2026-11-02T00:00:00Z", until: "2026-11-03T00:00:00Z" }), forge());
     expect(candidates.find(candidate => candidate.id.endsWith("#considered-options"))).toMatchObject({
       kind: "adr", document: { headings: ["Transport", "Considered options"], consumerUsage: false },
     });
@@ -321,6 +371,11 @@ describe("harvest", () => {
       kind: "doc", document: { headings: ["Transport", "Usage"], consumerUsage: true },
     });
     expect(candidates.some(candidate => /AGENTS|instructions\.md|\.cursor/u.test(candidate.id))).toBe(false);
+    const paths = plan.inventory.local.doc.map(point => point.id);
+    expect(paths).not.toContain("docs/html/topics/configuration.md");
+    expect(paths).toEqual(expect.arrayContaining(["docs/html/development/architecture/overview.rst", "docs/working-on-transport.md"]));
+    expect(candidates.find(candidate => candidate.path === "docs/html/development/architecture/overview.rst")?.text)
+      .toBe("The transport queues requests before dispatch.");
   }, GIT_FIXTURE_TIMEOUT);
 
   it("stops at the run allowance, resumes without duplicate IDs, and reads weekly points strictly newer", async () => {
@@ -349,10 +404,33 @@ describe("harvest", () => {
     expect(docs.candidates[0]?.kind).toBe("doc");
     expect(Buffer.byteLength(docs.candidates[0]!.text)).toBeGreaterThan(4_000);
     expect(docs.gaps).toContain("Learning reached its estimated token budget.");
+    expect(docs.spent).toBeGreaterThan(budget / 4);
+    expect(docs.spent).toBeLessThanOrEqual(budget);
     expect(reviews.candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(4);
     expect(reviews.candidates).toHaveLength(5);
     expect(reviews.gaps).not.toContain("Learning reached its estimated token budget.");
     expect(reviews.spent).toBeLessThan(docs.spent);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("caps document and ADR evidence across batches and keeps reading review threads", async () => {
+    const budget = 128_000;
+    const { candidates, batches } = await drain(options({ budget }), forge({ textOnly: true, mergedCount: 9 }));
+    const docs = candidates.filter(candidate => candidate.kind === "doc" || candidate.kind === "adr");
+    expect(docs.some(candidate => candidate.kind === "doc")).toBe(true);
+    expect(docs.some(candidate => candidate.kind === "adr")).toBe(true);
+    const size = docs.reduce(addHarvestEvidence, emptyHarvestEvidence);
+    expect(projectHarvestSpend(size, "claude")).toBeLessThanOrEqual(budget / 4);
+    const capped = batches.findIndex(batch => batch.gaps.includes("Contributor documents reached their share of the estimated token budget."));
+    expect(capped).toBeGreaterThanOrEqual(0);
+    expect(batches.slice(capped + 1).flatMap(batch => batch.candidates).some(candidate => candidate.kind === "review-thread")).toBe(true);
+    expect(candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(36);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("reserves budget for closed PRs even without merged PRs", async () => {
+    const { candidates, gaps } = await drain(options({ budget: 80_000 }), forge({ mergedCount: 0 }));
+    expect(candidates.some(candidate => candidate.kind === "doc" || candidate.kind === "adr")).toBe(false);
+    expect(candidates.some(candidate => candidate.kind === "closed-pr")).toBe(true);
+    expect(gaps).toContain("Contributor documents reached their share of the estimated token budget.");
   }, GIT_FIXTURE_TIMEOUT);
 
   it("keeps queued changes for a later run when the forge budget ends after search", async () => {
