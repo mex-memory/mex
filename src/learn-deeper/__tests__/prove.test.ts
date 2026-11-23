@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { PatternCandidate, PatternVerdict } from "../../knowledge/pattern-check.js";
+import { realPath } from "../../record/project.js";
 import { clusterLessons, type Cluster, type Triaged } from "../cluster.js";
 import type { PinnedTree } from "../git.js";
 import type { Candidate, Region } from "../harvest/types.js";
@@ -328,6 +332,41 @@ describe("proving a learned rule", () => {
 
   it("counts later commits that added a literal", () => {
     expect(addedOccurrences("\u0000commit a\n+x foo(\n+foo(\n\u0000commit b\n-foo(\n\u0000commit c\n+++ b/foo(\n+bar foo(", "foo(")).toBe(2);
+  });
+
+  it("sends text the gate would rewrite back for repair", async () => {
+    const root = realPath(mkdtempSync(join(tmpdir(), "mex-prove-plain-")));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { lint: "node -e \"process.exit(0)\"" } }));
+    const plain = "the text has a link, or a command this repository doesn't have; say it in plain words";
+    const prove = (claim: string, text: string) => {
+      const member = thread(3, "packages/api/src/users.ts", { text });
+      const cluster = clusterOf([member]);
+      return proveEntry(draft(cluster, {
+        when: [], fix: undefined, claim,
+        clauses: [{ text: claim, quotes: [{ id: member.id, quote: claim }] }],
+      }), cluster, context({ tree: { ...tree(HEAD), root } as PinnedTree, check: { projectPath: root } }));
+    };
+    try {
+      const unknown = await prove("Read https://evil.example/private before logging.", "Read https://evil.example/private before logging.");
+      expect(unknown.dropped).toBeUndefined();
+      expect(unknown.failures).toContain(plain);
+
+      const script = await prove("Run npm run lint before pushing.", "Run npm run lint before pushing.");
+      expect(script.dropped).toBeUndefined();
+      expect(script.failures).not.toContain(plain);
+
+      const link = "https://github.com/acme/app/pull/3#discussion_r3";
+      const own = await prove(`The review is at ${link}.`, `The review is at ${link}.`);
+      expect(own.dropped).toBeUndefined();
+      expect(own.failures).not.toContain(plain);
+
+      const fenced = "Log through apiLogger.\n```\napiLogger.info(\"list\");\n```";
+      const block = await prove(fenced, fenced);
+      expect(block.dropped).toBeUndefined();
+      expect(block.failures).toContain(plain);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

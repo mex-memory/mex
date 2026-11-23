@@ -16,6 +16,8 @@
 import { globToRegExp } from "../file-index/glob.js";
 import { checkPatterns, type PatternCandidate, type PatternVerdict } from "../knowledge/pattern-check.js";
 import type { GateContext } from "../knowledge/gate.js";
+import { sanitizeText } from "../knowledge/gates.js";
+import { references, type References } from "../knowledge/references.js";
 import { backedBy, writerMembers, type Cluster, type Triaged } from "./cluster.js";
 import { command, type PatternStage, type PinnedTree } from "./git.js";
 import { contrastive, safePath } from "./harvest/evidence.js";
@@ -425,5 +427,22 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
       }
     }
   }
+  // The gate saves no learned text it would have to change. Found here, the repair turn can still say it plainly.
+  const refs = referencesOf(context);
+  const links = new Set([...refs.links, ...[...members.values()].map(candidate => candidate.link)]);
+  const said = [result.claim, ...result.reasons, ...result.alternatives.flatMap(item => [item.option, item.reason])];
+  if (said.some(text => sanitizeText(text, { ...refs, links }) !== text)) {
+    failures.push("the text has a link, or a command this repository doesn't have; say it in plain words");
+  }
   return result;
+}
+
+const referenceCache = new WeakMap<ProofContext, References>();
+function referencesOf(context: ProofContext): References {
+  let refs = referenceCache.get(context);
+  // The repository the gate will read. The staged copy is a partial tree the
+  // pattern check deletes as soon as the proof returns, so it is the wrong place
+  // to look up this repo's scripts and links.
+  if (!refs) referenceCache.set(context, refs = references(context.tree.root));
+  return refs;
 }
