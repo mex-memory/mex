@@ -26,7 +26,12 @@ npx vitest run evaluate/arm/test/arm.test.mjs scripts/delivery-replay/cost.test.
 
 ## Run a private suite
 
-Build from the frozen MEX commit. Use the same machine and one pinned agent
+Build from the frozen MEX commit. A real chain needs MEX's native hook. Without
+its platform package, MEX installs a Node fallback that fails open and delivers
+nothing, and the harness refuses to start the MEX arm. In a source checkout,
+build it with `node scripts/build-hook-binaries.mjs --host` and link
+`npm/hook-<os>-<arch>` into `node_modules/mex-agent-hook-<os>-<arch>`. The
+manifest records the hook runtime. Use the same machine and one pinned agent
 version for both arms. Use a separate, private output directory for each chain.
 
 ```sh
@@ -41,7 +46,10 @@ or a Node executable and CLI entry script when the default is a batch shim.
 hash, the Node version, OS release and architecture. `--deps` can point to an
 already installed, read-only `node_modules` for the subject. Prepare dependencies
 outside the run. The sampler defaults to one second. Set `--sample-ms 0` to
-disable it for fixture checks.
+disable it for fixture checks. `--timeout-ms` limits each agent turn and each grader run.
+It defaults to five minutes, which a long task can exceed; a timeout stops the
+chain. The manifest records the limit, so use the same value for every chain
+you compare.
 
 The runner sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `MEX_HOME`, `HOME` and
 `USERPROFILE` in each arm. It also gives each arm its own app data, XDG

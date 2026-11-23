@@ -50,7 +50,7 @@ export async function runChain(options) {
   const profiles = [];
   const rows = [];
   const manifest = {
-    schemaVersion: 1, suite: suite.id, agent, model: pin.model, effort: pin.effort,
+    schemaVersion: 1, suite: suite.id, agent, model: pin.model, effort: pin.effort, timeoutMs,
     ...platformPin(), mexCommit: pin.mexCommit, mexVersion: pin.mexVersion, fixtures,
     mexCliSha256: createHash("sha256").update(readFileSync(cli)).digest("hex"),
     prices: { profile: prices.profile, date: prices.date, source: prices.source },
@@ -77,7 +77,8 @@ export async function runChain(options) {
       } else {
         const actual = await checkedRun(process.execPath, [cli, "--version"], { cwd: root, env, timeoutMs }, "MEX version check");
         if (actual.stdout.trim() !== pin.mexVersion) throw new Error("MEX version does not match the run pin");
-        profile.hooks = await preflightMex(profile, cli, adapter.hookAgent);
+        profile.hooks = await preflightMex(profile, cli, adapter.hookAgent, { requireNative: !fixtures });
+        manifest.hookRuntime = profile.hooks.runtime;
         exposeMex(profile, cli);
       }
     }
@@ -148,7 +149,7 @@ export async function main(argv) {
   const { values } = parseArgs({ args: argv, options: {
     agent: { type: "string" }, suite: { type: "string" }, subject: { type: "string" }, output: { type: "string" },
     pin: { type: "string" }, cli: { type: "string" }, deps: { type: "string" }, credentials: { type: "string" },
-    "sample-ms": { type: "string" },
+    "sample-ms": { type: "string" }, "timeout-ms": { type: "string" },
   } });
   if (!values.agent || !values.suite || !values.subject || !values.output || !values.pin) {
     throw new Error("Usage: node evaluate/arm/index.mjs --agent <claude|codex> --suite <json> --subject <repo> --output <new-directory> --pin <json>");
@@ -162,6 +163,7 @@ export async function main(argv) {
     depsDir: values.deps && resolve(values.deps),
     credentialFile: values.credentials && resolve(values.credentials),
     pin, command: pin.command ?? [adapter.executable], sampleMs: values["sample-ms"] === undefined ? undefined : Number(values["sample-ms"]),
+    timeoutMs: values["timeout-ms"] === undefined ? undefined : Number(values["timeout-ms"]),
   });
   process.stdout.write(result.reportText);
 }

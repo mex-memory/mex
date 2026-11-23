@@ -131,7 +131,12 @@ export async function checkedRun(command, args, options, label) {
   return result;
 }
 
-export async function preflightMex(profile, cli, id) {
+/**
+ * Install MEX in the arm and prove its SessionStart hook runs. `requireNative`
+ * refuses the Node fallback: it only fails open and delivers nothing, so a MEX
+ * arm on it would measure an arm without MEX.
+ */
+export async function preflightMex(profile, cli, id, { requireNative = false } = {}) {
   const { env, root } = profile;
   const result = await checkedRun(process.execPath, [cli, "install", "--json"], { cwd: root, env }, "MEX install");
   if (!JSON.parse(result.stdout).agents.includes(id)) throw new Error("MEX install did not register " + id);
@@ -159,6 +164,9 @@ export async function preflightMex(profile, cli, id) {
   const input = JSON.stringify({ session_id: "harness-preflight", cwd: root, source: "startup", hook_event_name: START }) + "\n";
   const { command, invocation } = startup;
   const [executable, ...args] = invocation;
+  if (requireNative && executable !== native) {
+    throw new Error("MEX installed its fail-open Node fallback, which delivers nothing. Build the native hook (node scripts/build-hook-binaries.mjs --host) and make its platform package resolvable from the MEX CLI");
+  }
   if (executable === native) {
     const nativeTest = await checkedRun(native, ["--self-test"], { cwd: root, env, timeoutMs: 5000 }, "MEX native self-test");
     if (JSON.parse(nativeTest.stdout).ok !== true) throw new Error("MEX native self-test did not report success");
@@ -167,8 +175,14 @@ export async function preflightMex(profile, cli, id) {
     ? ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command.commandWindows]
     : ["sh", "-c", command.command];
   const reply = await checkedRun(launch[0], launch.slice(1), { cwd: root, env, stdin: input, timeoutMs: 12000 }, "MEX SessionStart self-test");
-  if (JSON.stringify(JSON.parse(reply.stdout)) !== "{}") throw new Error("MEX SessionStart self-test did not return an empty reply");
-  return { settings, bytes };
+  // The arm root is not set up, so the native hook may tell the person MEX is
+  // off here. Anything that would reach the model fails the check.
+  const parsed = JSON.parse(reply.stdout);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || Object.keys(parsed).some(key => key !== "systemMessage")) {
+    throw new Error("MEX SessionStart self-test returned model context: " + reply.stdout.trim().slice(0, 300));
+  }
+  return { settings, bytes, runtime: executable === native ? "native" : "node" };
 }
 
 export const platformPin = () => ({ node: process.version, os: platform(), osRelease: release(), arch: arch() });

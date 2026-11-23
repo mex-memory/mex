@@ -74,7 +74,8 @@ describe.skipIf(process.env.MEX_ARM_RUN_DRY !== "1")("release harness dry chain"
     const options = fixtureOptions(fixtureRoot(), agent);
     const { manifest, report, replay, reportText } = await runChain(options);
     expect(manifest).toMatchObject({ agent, model: options.pin.model, effort: "medium", agentVersion: options.pin.version,
-      mexVersion: options.pin.mexVersion, mexCommit: options.pin.mexCommit, node: process.version, os: process.platform });
+      mexVersion: options.pin.mexVersion, mexCommit: options.pin.mexCommit, node: process.version, os: process.platform,
+      timeoutMs: options.timeoutMs ?? 300000 });
     expect(manifest.order).toEqual([
       { task: "first", arms: ["baseline", "mex"] }, { task: "second", arms: ["mex", "baseline"] },
     ]);
