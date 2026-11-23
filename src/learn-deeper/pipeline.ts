@@ -64,10 +64,13 @@ export const PIPELINE_LIMITS = {
  * Ranking matches clustering, without the strong bonus those items do not have.
  */
 export function earlyLessons(kept: readonly Triaged[], limit: number): { items: Triaged[]; waiting: boolean } {
-  const strong = kept.filter(item => item.candidate.signal === "strong").slice(0, limit);
+  // Issues are counted for the trial, and a doc is not one of the first rules.
+  // Grouping either here would pay for a comparison the early write then throws away.
+  const eligible = kept.filter(item => item.candidate.kind !== "issue" && item.candidate.kind !== "doc" && item.candidate.kind !== "adr");
+  const strong = eligible.filter(item => item.candidate.signal === "strong").slice(0, limit);
   if (strong.length) return { items: strong, waiting: false };
   const score = (item: Triaged) => (item.candidate.weights.actedOn ? 2 : 0) + (item.candidate.weights.familiar ? 1 : 0);
-  const ranked = [...kept].sort((a, b) => score(b) - score(a)
+  const ranked = [...eligible].sort((a, b) => score(b) - score(a)
     || b.candidate.at.localeCompare(a.candidate.at) || a.candidate.id.localeCompare(b.candidate.id));
   return { items: ranked.slice(0, limit), waiting: ranked.length > 0 };
 }
