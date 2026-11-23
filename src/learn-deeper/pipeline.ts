@@ -2,9 +2,8 @@
  * Learn deeper v2, phase by phase: harvest (no model) -> triage (cheap) -> first rules early -> cluster
  * (no model) -> write, prove, repair once, route and publish (best) -> finish.
  *
- * Each `runBatch` does one bounded unit, so a restart redoes at most one unit. Every model reply is saved
- * before its result is used, so an interruption never pays for the same call twice. All raw text the run
- * reads (candidates, triage replies, drafts) lives in job-scoped rows and is deleted when the run ends;
+ * Each `runBatch` does one bounded unit. A saved reply can be reused and an already charged call is
+ * never repeated. Raw text (candidates, triage replies, drafts) lives in job-scoped rows until cleanup;
  * only the published entries, their proofs and the kept quote remain.
  */
 import { mkdirSync } from "node:fs";
@@ -25,9 +24,11 @@ import { propose, type Proposal } from "../knowledge/gate.js";
 import { producerEntryId } from "../knowledge/producers.js";
 import { readNotes, snapshotNotes } from "../knowledge/personal-store.js";
 import { ModelWaitError, type runModel } from "../model-runner/index.js";
+import { recoverModelBatches, withModelJob } from "../model-runner/budget-queue.js";
 import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/consent.js";
 import type { BatchContext } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
+import { learningRunPrefix } from "../record/learning-rows.js";
 import { shortHash } from "../record/project.js";
 import { applyDocQuota, clusterLessons, matchEarlier, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
@@ -111,8 +112,7 @@ export interface PipelineInput {
   gaps: Set<string>;
 }
 
-const prefix = (job: { id: string }) => `learning.deep.v2.${job.id}.`;
-const key = (job: { id: string }, name: string) => `${prefix(job)}${name}`;
+const key = (job: { id: string }, name: string) => learningRunPrefix(job.id) + name;
 export function publishedBatch(reader: { setting(scope: string, key: string): string | undefined | null }, job: Context["job"]): boolean {
   if (!job.checkpoint || !job.project_id) return false;
   const state = JSON.parse(job.checkpoint).v2 as PipelineState | undefined;
@@ -131,12 +131,6 @@ function save({ writer, job }: Context, name: string, value: unknown): void {
 function load<T>(context: Context, name: string): T | undefined {
   const raw = context.writer.setting(context.job.project_id!, key(context.job, name));
   return raw ? JSON.parse(raw) as T : undefined;
-}
-/** Remove every job-scoped row: the raw text of the run. Called when the run ends, however it ends. */
-export function clearRunRows(db: { prepare(sql: string): unknown }, project: string, jobId: string): void {
-  // Job ids carry no LIKE wildcards, but escape them anyway so a prefix can never widen the delete.
-  const like = prefix({ id: jobId }).replace(/[%_!]/gu, char => "!" + char) + "%";
-  (db.prepare("DELETE FROM settings WHERE scope=? AND key LIKE ? ESCAPE '!'") as { run(...args: unknown[]): unknown }).run(project, like);
 }
 
 /** One learned entry of a run, as the review list shows it (job E2; the Hub's Review page reads the same rows). */
@@ -186,29 +180,42 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   }
   const { writer, job } = context;
   const stage = `call.${name}`;
-  const started = load<{ lastBatch: number; spent: number }>(context, stage);
-  if (started && writer.db.prepare("SELECT 1 FROM model_batches WHERE job_id=? AND id>? AND state='done' AND charged_units>0 LIMIT 1")
-    .get(job.id, started.lastBatch)) {
+  const started = load<{ lastBatch: number }>(context, stage);
+  const attempts = writer.db.prepare(`SELECT id,state,charged_units FROM model_batches
+    WHERE job_id=? AND (charged_units>0 OR state='running')
+    AND (json_extract(pricing,'$.stage')=? OR (json_extract(pricing,'$.stage') IS NULL AND id>?))
+    ORDER BY charged_units DESC LIMIT 1`);
+  // Untagged old admissions can only be matched with the saved attempt boundary.
+  const findAttempt = () => attempts.get(job.id, stage, started?.lastBatch ?? null);
+  let prior = findAttempt();
+  // A dead running row must become charged before deciding whether to retry.
+  if (prior?.state === "running") {
+    recoverModelBatches(writer);
+    prior = findAttempt();
+  }
+  if (prior?.charged_units) {
     // The runner recorded the charge but died before saving the answer.
     input.gaps.add("A paid model reply could not be recovered after an interruption.");
-    const reply: Reply = { text: "", lost: true, model: { id: "unknown", version: "unknown" }, tokens: Math.max(0, recordedModelSpend(writer, job.id) - started.spent) };
+    const reply: Reply = { text: "", lost: true, model: { id: "unknown", version: "unknown" }, tokens: recordedModelSpend(writer, job.id, Number(prior.id)) };
     save(context, `reply.${name}`, reply);
     return reply;
   }
+  if (prior?.state === "running") throw new ModelWaitError("queue");
   const spent = recordedModelSpend(writer, job.id);
   const estimate = promptEstimate(prompt, plan.agent, role === "cheap" ? 0 : rules);
   // Procedure naming is a trial on the automatic allowance, not part of the consented quote.
   const procedure = name.startsWith("procedure.");
   if (!weekly && !procedure && tokenCount(estimate) > plan.ceiling - spent) throw new ModelWaitError("cap", CEILING_WAIT);
   if (weekly && sessionsActive(writer, deps.now())) throw new AgentActive();
-  const lastBatch = Number(writer.db.prepare("SELECT max(id) id FROM model_batches WHERE job_id=?").get(job.id)?.id ?? 0);
-  save(context, stage, { lastBatch, spent });
+  const lastBatch = started?.lastBatch ?? Number(writer.db.prepare("SELECT max(id) id FROM model_batches WHERE job_id=?").get(job.id)?.id ?? 0);
+  save(context, stage, started ?? { lastBatch });
   const reply = await deps.tree.withCheckFiles(writer.location.home, job.id, [], async executionDirectory => {
-    const output = await deps.model({
+    const output = await withModelJob({ jobId: job.id, batch: job.batch, projectId: job.project_id,
+      recordHome: writer.location.home, stage }, () => deps.model({
       agent: plan.agent, setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
       purpose: procedure ? "learn-deeper-procedure" : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
       ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
-    });
+    }));
     const { writerModel } = await import("./job.js");
     const reply: Reply = { text: output.text, model: writerModel(output), tokens: Math.max(0, recordedModelSpend(writer, job.id) - spent) };
     save(context, `reply.${name}`, reply);
