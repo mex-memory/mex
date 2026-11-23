@@ -853,3 +853,25 @@ func TestNoChannelSendsAndRecordsNothing(t *testing.T) {
 	ctx := f.send(f.event(contract.PostToolBatch, read(p, "export const pool = 1")))
 	mustHave(t, ctx, "never close it here")
 }
+
+// Entry scopes are written the way git lists a file. On Windows the record
+// lower-cases paths, and a rule for UserPage.tsx matched nothing.
+func TestRelToKeepsTheFileSystemsSpelling(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src", "UserPages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"CONTRIBUTING.md", "src/UserPages/List.tsx", "src/plain.ts"} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(name)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"CONTRIBUTING.md", "src/UserPages/List.tsx", "src/plain.ts", "src/UserPages/NotYet.tsx", "NotYet.md"} {
+		if got, ok := relTo(root, filepath.Join(root, filepath.FromSlash(name))); !ok || got != name {
+			t.Errorf("%s became %q (%v)", name, got, ok)
+		}
+	}
+	if got, ok := relTo(root, filepath.Join(filepath.Dir(root), "Outside.ts")); ok {
+		t.Errorf("a file outside the checkout became %q", got)
+	}
+}
