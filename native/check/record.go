@@ -92,7 +92,7 @@ func (ev *Evaluator) Record(kind, role string, target map[string]any, when ...en
 		if ev.index == nil {
 			return Check{}, fmt.Errorf("%w: symbol checks need the file index", ErrNotRecordable)
 		}
-		fp, res, ok := ev.fingerprint(file, str(target, "symbol"))
+		fp, res, ok := ev.fingerprint(file, str(target, "symbol"), "")
 		if !ok {
 			return Check{}, fmt.Errorf("%w: %s", ErrNotRecordable, res.Reason)
 		}

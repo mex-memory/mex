@@ -164,7 +164,7 @@ func (ev *Evaluator) floor(c Check, inputs map[string]string) []string {
 	for path, want := range c.Files {
 		r := ev.files.read(path)
 		inputs[path] = inputState(r)
-		if r.hash != want {
+		if !r.same(want) {
 			changed = append(changed, path)
 		}
 	}

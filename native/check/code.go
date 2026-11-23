@@ -1,6 +1,7 @@
 package check
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -94,7 +95,7 @@ func (ev *Evaluator) symbolCheck(c Check) CheckResult {
 	if ev.index == nil {
 		return CheckResult{Status: Floor, Reason: "no file index for symbol checks"}
 	}
-	fp, res, ok := ev.fingerprint(file, symbol)
+	fp, res, ok := ev.fingerprint(file, symbol, want)
 	if ok {
 		if fp == want {
 			return CheckResult{Status: Pass, Now: fp}
@@ -111,8 +112,9 @@ func (ev *Evaluator) symbolCheck(c Check) CheckResult {
 }
 
 // fingerprint finds a symbol in a file through the index and fingerprints
-// its current text.
-func (ev *Evaluator) fingerprint(file, symbol string) (string, CheckResult, bool) {
+// its current text. A fingerprint recorded in a checkout with CRLF line endings
+// before they were left out still matches there.
+func (ev *Evaluator) fingerprint(file, symbol, want string) (string, CheckResult, bool) {
 	data, res, ok := ev.readTarget(file)
 	if !ok {
 		return "", res, false
@@ -134,6 +136,9 @@ func (ev *Evaluator) fingerprint(file, symbol string) (string, CheckResult, bool
 		return "", CheckResult{Status: Floor, Reason: file + " changed since the last parse"}, false
 	}
 	start, end := overloadSpan(outline.Symbols, at)
+	if matchesFingerprint(data, languageOf(file), start, end, s.Kind, s.Name, want) {
+		return want, CheckResult{}, true
+	}
 	return fingerprintSpan(data, languageOf(file), start, end, s.Kind, s.Name), CheckResult{}, true
 }
 
@@ -215,7 +220,7 @@ func (ev *Evaluator) relink(file, symbol, want string) (SymbolRelink, bool) {
 		}
 		tried++
 		r := ev.files.read(path)
-		return r.err == nil && fingerprintSpan(r.data, languageOf(path), start, end, symKind, symName) == want
+		return r.err == nil && matchesFingerprint(r.data, languageOf(path), start, end, symKind, symName, want)
 	}
 	if hits, err := ev.index.SymbolsNamed(name); err == nil {
 		for _, h := range hits {
@@ -257,6 +262,16 @@ func qualifiedSymbol(symbols []index.Symbol, i int) string {
 // is left out so a rename keeps the fingerprint; the kind is kept in the
 // clear so re-linking compares like with like.
 func fingerprintSpan(data []byte, lang language, start, end int, kind, name string) string {
+	// A string or comment over several lines must read the same however git checked the file out.
+	return fingerprintText(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), lang, start, end, kind, name)
+}
+
+func matchesFingerprint(data []byte, lang language, start, end int, kind, name, want string) bool {
+	return fingerprintSpan(data, lang, start, end, kind, name) == want ||
+		bytes.Contains(data, []byte("\r\n")) && fingerprintText(data, lang, start, end, kind, name) == want
+}
+
+func fingerprintText(data []byte, lang language, start, end int, kind, name string) string {
 	h := sha256.New()
 	toks := tokenize(data, lang)
 	var kept []token

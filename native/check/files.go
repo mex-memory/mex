@@ -1,6 +1,7 @@
 package check
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -99,6 +100,16 @@ func (f *files) load(path string) fileRead {
 		return fileRead{err: errUnreadable}
 	}
 	return fileRead{data: data, hash: hashBytes(data)}
+}
+
+// same reports whether the file still has the recorded content. A checkout may
+// give the same commit other line endings than the ones it was recorded with.
+func (r fileRead) same(want string) bool {
+	if r.hash == want || r.err != nil {
+		return r.hash == want
+	}
+	lf := bytes.ReplaceAll(r.data, []byte("\r\n"), []byte("\n"))
+	return hashBytes(lf) == want || hashBytes(bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n"))) == want
 }
 
 func hashBytes(data []byte) string {
