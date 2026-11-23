@@ -58,6 +58,7 @@ it("reads past commits' added lines with their line numbers", () => {
   const edits = parseEdits(["\u0000commit abc", "diff --git a/src/x.ts b/src/x.ts", "--- a/src/x.ts", "+++ b/src/x.ts", "@@ -3,0 +4,2 @@",
     "+console.log(a)", "+keep()", "\u0000commit def", "diff --git a/old.ts b/old.ts", "+++ /dev/null"].join("\n"));
   expect(edits).toEqual([{ commit: "abc", path: "src/x.ts", added: "console.log(a)\nkeep()\n", removed: "", addedLines: [{ line: 4, text: "console.log(a)" }, { line: 5, text: "keep()" }] }]);
+  expect(parseEdits(["\u0000commit abc", "+++ b/src\\api.ts", "@@ -0,0 +1,1 @@", "+x"].join("\n"))[0]?.path).toBe("src/api.ts");
 });
 
 it("lists learned rules, shows what would have stopped the person's own commits, and applies ticks", async () => {
@@ -77,6 +78,7 @@ it("lists learned rules, shows what would have stopped the person's own commits,
   expect(text).toContain("[x] 1. Log through apiLogger");
   expect(text).toContain("[ ] 2. Read config");
   expect(text).toMatch(/Rule 1 would have stopped an edit at [0-9a-f]{7} src\/api\.ts:2/u);
+  expect(text).toContain("Hypothetical replay");
   expect(parseEntry(readFileSync(notePath(b.entryId), "utf8")).mex.status).toBe("active");
   // Reviewed once: the next `mex` doesn't ask again.
   expect(await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "enter" })).toBeUndefined();
@@ -95,6 +97,17 @@ it("drops the unticked rules, and asks nothing without a terminal", async () => 
   // Retired with a tombstone: hidden everywhere, and never proposed again.
   expect(writer.setting(project, `knowledge.retired.${a.entryId}`)).toBeTruthy();
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("retired");
+});
+
+it("lists a review row from a weekly run that failed", async () => {
+  const [a] = await propose([learned("w", "Use the pooled client in src.", "new Client(", "proposed")], options());
+  if (a?.status !== "accepted") throw new Error(JSON.stringify(a));
+  const id = await finishedRun([{ id: a.entryId, claim: "Use the pooled client in src.", status: "proposed" }]);
+  writer.db.prepare("UPDATE jobs SET kind='learn-deeper-weekly', state='failed', reason='the run stopped' WHERE id=?").run(id);
+  const lines: string[] = [];
+  expect(await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { color: false, ascii: true } as never,
+    interactive: true, env: process.env, home, keys: async () => "q" })).toBeUndefined();
+  expect(lines.join("\n")).toContain("Use the pooled client");
 });
 
 it("leaves everything as it is when the person decides later", async () => {
@@ -127,6 +140,9 @@ it("checks a waiting rule with the person's agent, read-only, only after they ap
 
 it("ignores a verify answer that cites no real place in the code", () => {
   expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src/missing.ts:3"] }), root)).toBeUndefined();
+  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["package.json"] }), root)).toBeUndefined();
+  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src:1"] }), root)).toBeUndefined();
+  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src/api.ts:99"] }), root)).toBeUndefined();
   expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["package.json:1"] }), root)).toMatchObject({ verdict: "drop", evidence: ["package.json:1"] });
   expect(parseVerify("not json", root)).toBeUndefined();
 });
