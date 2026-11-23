@@ -10,6 +10,10 @@ const MAX_BLOB_READS = 96;
 const MAX_REGION = 8 << 10;
 const MAX_HUNK = 64 << 10;
 const MAX_ANCHOR_LINES = 16;
+const MAX_DIFF_LINES = 20_000;
+const MAX_DIFF_GAP = 60;
+const DIFF_CONTEXT = 3;
+const lineContent = /[\p{L}\p{N}_]/u;
 const normalize = (line: string) => line.replace(/\s+/gu, "");
 const same = (a: string[], b: string[]) => a.length === b.length && a.every((line, i) => normalize(line) === normalize(b[i]!));
 const splitLines = (text: string) => text === "" ? [] : text.replace(/\r\n/gu, "\n").replace(/\n$/u, "").split("\n");
@@ -53,10 +57,11 @@ export class RegionReader {
   }
 }
 
-interface Span { lines: string[]; offset: number; first: number; last: number; }
+interface Span { lines: string[]; offset: number; first: number; last: number; context?: number; }
 
 function cut(path: string, commit: string, span: Span, gaps: Gaps): Region | undefined {
-  const from = Math.max(0, span.first - CONTEXT), to = Math.min(span.lines.length, span.last + CONTEXT);
+  const context = span.context ?? CONTEXT;
+  const from = Math.max(0, span.first - context), to = Math.min(span.lines.length, span.last + context);
   const text = span.lines.slice(from, to).join("\n");
   if (!text || Buffer.byteLength(text) > MAX_REGION) return undefined;
   if (safeRaw(text) !== text) { gaps.withheld(true); return undefined; }
@@ -91,7 +96,7 @@ export function hunkSpan(hunk: string, side: string, first: number, last: number
 function anchors(lines: string[], near: number, direction: -1 | 1): string[][] {
   const neighbors = direction === -1 ? lines.slice(Math.max(0, near - 8), near).reverse() : lines.slice(near, near + 8);
   const keys = neighbors.map(normalize);
-  return [3, 2, 1].filter(size => size <= keys.length && keys.slice(0, size).some(key => /[\p{L}\p{N}_]/u.test(key)))
+  return [3, 2, 1].filter(size => size <= keys.length && keys.slice(0, size).some(key => lineContent.test(key)))
     .map(size => direction === -1 ? keys.slice(0, size).reverse() : keys.slice(0, size));
 }
 
@@ -128,6 +133,80 @@ export function align(span: Span, lines: string[]): Span | undefined {
     if (adjacent.length === 1) return at(adjacent[0]!, adjacent[0]! + width);
     if (adjacent.length > 1) return undefined;
   }
+}
+
+interface LinePair { before: number; after: number; }
+
+function uniquePositions(lines: string[]): Map<string, number> {
+  const positions = new Map<string, number>();
+  for (const [index, line] of lines.entries()) {
+    // Structural lines can extend a match, but cannot establish one on their own.
+    if (lineContent.test(line)) positions.set(line, positions.has(line) ? -1 : index);
+  }
+  return positions;
+}
+
+function orderedAnchors(before: string[], after: string[]): LinePair[] {
+  const afterPositions = uniquePositions(after);
+  const pairs: LinePair[] = [];
+  for (const [line, left] of uniquePositions(before)) {
+    const right = afterPositions.get(line);
+    if (left >= 0 && right !== undefined && right >= 0) pairs.push({ before: left, after: right });
+  }
+  // Keep the lowest ending position for each run length so matches can't cross.
+  const tails: number[] = [];
+  const previous: number[] = [];
+  for (const [index, pair] of pairs.entries()) {
+    let low = 0, high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (pairs[tails[middle]!]!.after < pair.after) low = middle + 1;
+      else high = middle;
+    }
+    previous[index] = tails[low - 1] ?? -1;
+    tails[low] = index;
+  }
+  const anchors: LinePair[] = [];
+  for (let index = tails.at(-1) ?? -1; index >= 0; index = previous[index]!) anchors.push(pairs[index]!);
+  return anchors.reverse();
+}
+
+function mapSpan(span: Span, lines: string[]): Span | undefined {
+  if (span.lines.length > MAX_DIFF_LINES || lines.length > MAX_DIFF_LINES) return align(span, lines);
+  const before = span.lines.map(normalize), after = lines.map(normalize);
+  const at = (first: number, last: number): Span => ({ lines, offset: 0, first, last, context: DIFF_CONTEXT });
+  if (before.length === after.length && before.every((line, i) => line === after[i])) return at(span.first, span.last);
+
+  const anchors = orderedAnchors(before, after);
+  if (!anchors.length) return undefined;
+  const mapped = new Int32Array(before.length).fill(-1);
+  let left = 0, right = 0;
+  // Extend into each gap from both ends without crossing another match.
+  for (const anchor of [...anchors, { before: before.length, after: after.length }]) {
+    while (left < anchor.before && right < anchor.after && before[left] === after[right]) mapped[left++] = right++;
+    let i = anchor.before - 1, j = anchor.after - 1;
+    while (i >= left && j >= right && before[i] === after[j]) mapped[i--] = j--;
+    if (anchor.before < before.length) mapped[anchor.before] = anchor.after;
+    left = anchor.before + 1;
+    right = anchor.after + 1;
+  }
+
+  const { first, last } = span;
+  const start = mapped[first] ?? -1;
+  if (first < last && start >= 0 && mapped.subarray(first, last).every((line, i) => line === start + i)) {
+    return at(start, start + last - first);
+  }
+
+  let above = first - 1, below = last;
+  while (above >= 0 && first - above <= MAX_DIFF_GAP && mapped[above] === -1) above--;
+  while (below < before.length && below - last < MAX_DIFF_GAP && mapped[below] === -1) below++;
+  if (first - above > MAX_DIFF_GAP || below - last >= MAX_DIFF_GAP) return undefined;
+  // A range touching a file boundary can use that edge as one flank.
+  if ((above < 0 && first !== 0) || (below === before.length && last !== before.length)
+    || (above < 0 && below === before.length)) return undefined;
+  const from = above < 0 ? -1 : mapped[above]!;
+  const to = below === before.length ? after.length : mapped[below]!;
+  if (to - from <= MAX_DIFF_GAP) return at(from + 1, to);
 }
 
 export interface ReviewLocation {
@@ -181,8 +260,9 @@ Promise<{ code?: Candidate["code"]; actedOn: boolean; withheld?: boolean }> {
   let afterPath = path;
   if (merge) {
     const merged = await reader.read(merge, path);
-    if (merged) afterSpan = align(context, merged);
+    if (merged) afterSpan = span === hunkCode ? align(context, merged) : mapSpan(span, merged);
     else {
+      // A short mapped interval alone doesn't establish which changed path is a rename.
       const matches: Array<{ path: string; span: Span }> = [];
       for (const renamed of where.changedPaths.filter(changed => changed !== path).slice(0, 12)) {
         const revised = await reader.read(merge, renamed);
@@ -196,10 +276,11 @@ Promise<{ code?: Candidate["code"]; actedOn: boolean; withheld?: boolean }> {
       : "Some merged review files were unavailable and had no unique rename.");
   } else gaps.messages.add("Some reviews had no readable merge commit.");
 
-  if (head === merge && code.after) code.head = code.after;
-  else {
+  if (head === merge) {
+    if (code.after) code.head = code.after;
+  } else if (afterSpan) {
     const current = await reader.read(head, afterPath);
-    const location = current && align(afterSpan ?? span, current);
+    const location = current && mapSpan(afterSpan, current);
     if (location) code.head = cut(afterPath, head, location, gaps);
   }
   // Insertions beside the anchor can widen the bracket without changing any

@@ -2,7 +2,7 @@ import { isTestFile } from "../../file-index/classify.js";
 import { command, PinnedTree } from "../git.js";
 import { Reviewers } from "../reviewers.js";
 import { sourceDigest, validAt } from "../source.js";
-import { docKind, documentCandidates } from "./documents.js";
+import { docKind, documentCandidates, documentPathKind } from "./documents.js";
 import { cleanText, newCandidate, safePath, safeRaw, type Gaps } from "./evidence.js";
 import { commitRegions, oid, type RegionReader } from "./regions.js";
 import type { Candidate, HarvestOptions, HarvestPlan, HarvestPoint, HarvestSource } from "./types.js";
@@ -16,12 +16,20 @@ const codeExtension = /\.(?:[cm]?[jt]sx?|pyi?|rs|go|rb|php|java|kt|kts|cs|fs|vb|
 
 interface Commit { id: string; at: string; parent?: string; subject: string; body: string; paths: string[]; }
 type LocalSource = keyof HarvestPlan["inventory"]["local"];
-const isRevert = (record: Commit) => revertSubject.test(record.subject) || revertsCommit.test(record.body);
+
+async function bodyRevertTarget(root: string, record: Commit): Promise<string | undefined> {
+  const target = revertsCommit.exec(record.body)?.[1]?.toLowerCase();
+  if (!target || !record.parent) return undefined;
+  // Check the branch as it stood before the revert, even when the object is
+  // present on a side branch or the original precedes the inventory window.
+  const ancestor = await command(root, "git", ["merge-base", "--is-ancestor", target, record.parent]);
+  return ancestor === undefined ? undefined : target;
+}
 
 export function productionPath(path: string): boolean {
   return safePath(path) && codeExtension.test(path) && !isTestFile(path)
-    && !/(?:^|\/)(?:\.[^/]+|docs?|examples?|fixtures?|testdata|mocks?|benchmarks?|vendor|node_modules|config|configs|scripts)\//iu.test(path)
-    && !/(?:^|\/)(?:[^/]+[._-](?:config|conf|test|spec|mock)|(?:config|setup|conftest)|test_[^/]+)\.[^/]+$|_test\.go$/iu.test(path);
+    && !/(?:^|\/)(?:\.[^/]+|docs?|examples?|fixtures?|testdata|mocks?|benchmarks?|vendor|node_modules|config|configs|scripts|build|dist|generated|__generated__)\//iu.test(path)
+    && !/(?:^|\/)(?:[^/]+[._-](?:config|conf|test|spec|mock|gen|generated|min)|(?:config|setup|conftest)|test_[^/]+)\.[^/]+$|_(?:test|gen)\.go$|\.pb\.go$/iu.test(path);
 }
 
 export function pullNumber(subject: string, body = ""): number | undefined {
@@ -68,10 +76,11 @@ Promise<Omit<HarvestPlan["inventory"], "bands">> {
   const subjectsById = new Map(commits.map(commit => [commit.id, commit.subject]));
   const paths = new Map<string, { count: number; at: string }>();
   for (const commit of [...commits].reverse()) {
-    if (isRevert(commit)) {
+    const subject = revertSubject.exec(commit.subject)?.[1];
+    const target = await bodyRevertTarget(options.checkout, commit);
+    if (subject || target) {
       local.revert.push({ id: commit.id, at: commit.at });
-      const subject = revertSubject.exec(commit.subject)?.[1];
-      revertLinks[commit.id] = { original: revertsCommit.exec(commit.body)?.[1] ?? (subject && bySubject.get(subjectKey(subject))) };
+      revertLinks[commit.id] = { original: target ?? (subject && bySubject.get(subjectKey(subject))) };
     } else {
       rememberSubject(commit, bySubject);
       if (cause.test(commit.subject + "\n" + commit.body) && commit.paths.some(productionPath)) {
@@ -81,8 +90,8 @@ Promise<Omit<HarvestPlan["inventory"], "bands">> {
   }
   bySubject.clear();
   for (const commit of commits) {
-    if (isRevert(commit)) {
-      const link = revertLinks[commit.id]!;
+    const link = revertLinks[commit.id];
+    if (link) {
       const original = link.original;
       const subject = revertSubject.exec(commit.subject)?.[1]
         ?? (original ? subjectsById.get(original) : undefined);
@@ -95,9 +104,18 @@ Promise<Omit<HarvestPlan["inventory"], "bands">> {
     if (!seen) paths.set(path, { count: 1, at: commit.at });
     else seen.count++;
   }
+  const checkHeadings: HarvestPoint[] = [];
   for (const [path, meta] of paths) {
-    const kind = tree.has(path) && docKind(path);
-    if (kind) local[kind].push({ id: path, at: meta.at });
+    const kind = tree.has(path) && documentPathKind(path);
+    const point = { id: path, at: meta.at };
+    if (kind === "heading") checkHeadings.push(point);
+    else if (kind) local[kind].push(point);
+  }
+  // Only ambiguous paths need a blob read. Bound the number of Git processes in flight.
+  for (let offset = 0; offset < checkHeadings.length; offset += 8) {
+    const batch = checkHeadings.slice(offset, offset + 8);
+    const kinds = await Promise.all(batch.map(async ({ id }) => docKind(id, await tree.read(id))));
+    for (const [i, kind] of kinds.entries()) if (kind) local[kind].push(batch[i]!);
   }
   const hotPaths = [...paths].filter(([path, meta]) => meta.count >= 2 && productionPath(path) && tree.has(path))
     .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0], "en")).slice(0, 128).map(([path]) => path);
@@ -130,11 +148,15 @@ export interface RevertEvidence { record: Commit; original?: Commit; reland?: Co
 
 export async function readRevert(plan: HarvestPlan, point: HarvestPoint): Promise<RevertEvidence | undefined> {
   const record = await commitAt(plan.checkout, point.id);
-  if (!record || !isRevert(record)) return undefined;
+  if (!record) return undefined;
+  const subject = revertSubject.exec(record.subject)?.[1];
+  const target = await bodyRevertTarget(plan.checkout, record);
+  if (!subject && !target) return undefined;
   const link = plan.inventory.revertLinks[point.id];
-  const originalId = link?.original ?? revertsCommit.exec(record.body)?.[1];
+  const mentioned = revertsCommit.exec(record.body)?.[1]?.toLowerCase();
+  const originalId = target ?? (link?.original !== mentioned ? link?.original : undefined);
   const original = originalId ? await commitAt(plan.checkout, originalId) : undefined;
-  const attempted = original ? pullNumber(original.subject, original.body) : pullNumber(revertSubject.exec(record.subject)?.[1] ?? "");
+  const attempted = original ? pullNumber(original.subject, original.body) : pullNumber(subject ?? "");
   const revertPull = pullNumber(record.subject, record.body);
   const relandId = link?.reland;
   const reland = relandId ? await commitAt(plan.checkout, relandId) : undefined;
@@ -179,6 +201,9 @@ export async function localCandidates(plan: HarvestPlan, source: HarvestSource, 
   const text = cleanText(raw, gaps, reviewers);
   if (!text) return [];
   if (!reason && !discussion) gaps.messages.add("Some reverts had no recorded reason.");
+  const paths = await changedPaths(plan.checkout, record);
+  const path = paths[0];
+  const code = path && record.parent ? await commitRegions(reader, path, record.parent, record.id, gaps) : undefined;
   const related: NonNullable<Candidate["related"]> = { pulls, commits: [original?.id, reland?.id].filter((id): id is string => !!id) };
   if (original && reland) {
     const originalPaths = new Set(await changedPaths(plan.checkout, original));
@@ -190,7 +215,8 @@ export async function localCandidates(plan: HarvestPlan, source: HarvestSource, 
     if (!related.reland) gaps.messages.add("Some re-lands had no readable contrast on a common path.");
   }
   return [newCandidate({ id: `git:revert:${point.id}`, kind: "revert", link: `https://github.com/${plan.source.slug}/commit/${point.id}`, at: point.at,
-    hash: sourceDigest(raw), text, related, ...(!reason && discussion
+    hash: sourceDigest(raw), text, related, path, code: code?.before || code?.after ? code : undefined, changedPaths: paths.slice(0, 12),
+    ...(!reason && discussion
       ? { nodeIds: discussion.nodeIds, reviewers: discussion.reviewers, commentHashes: discussion.commentHashes }
       : { nodeIds: [], reviewers: [] }) })];
 }
