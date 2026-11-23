@@ -56,6 +56,8 @@ describe("model selection", () => {
     expect(buildModelCommand("claude","",{role:"cheap",access:"read",maxTurns:500}).args).toContain("20");
     const codex = buildModelCommand("codex","-",{role:"cheap",access:"read"});
     expect(codex.args[codex.args.indexOf("--sandbox")+1]).toBe("read-only");
+    expect(codex.args).toEqual(expect.arrayContaining(["--ignore-user-config", 'approval_policy="never"', 'web_search="disabled"', "mcp_servers={}"]));
+    expect(codex.args).not.toContain("--max-turns");
     // The default stays tool-less.
     expect(buildModelCommand("claude","",{role:"cheap"}).args[buildModelCommand("claude","",{role:"cheap"}).args.indexOf("--tools")+1]).toBe("");
   });
@@ -106,6 +108,36 @@ describe("one-shot model runner with fake agents", () => {
     const absent=transport(`process.stdin.resume();process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));`);
     await expect(runModel({agent:"codex",prompt:"task",projectRoot:root,purpose:"test",__internal:{spawn:absent}})).rejects.toMatchObject({category:"protocol"});
   });
+  it("counts distinct Codex tool items and keeps the completed answer below the cap", async () => {
+    const root = fixture();
+    const item = { id: "item_1", type: "command_execution" };
+    const events = ["started", "updated", "completed"].map(phase => ({ type: `item.${phase}`, item }));
+    const spawn = transport(`process.stdin.resume(); process.stdout.write(${JSON.stringify([...events, ...done("codex")].map(e => JSON.stringify(e)).join("\n"))});`);
+    const result = await runModel({ agent: "codex", prompt: "task", projectRoot: root, purpose: "verify.test",
+      readOnlyTools: { maxTurns: 2 }, __internal: { spawn } });
+    expect(result.text).toBe("answer");
+    expect(saved()).toHaveLength(1);
+  });
+
+  it("terminates Codex at the tool cap, discards its answer and records reported usage", async () => {
+    const root = fixture();
+    const [partial, usage] = done("codex", '{"verdict":"keep"}');
+    const events = [
+      { type: "thread.started", thread_id: "verify-fixture" },
+      { type: "turn.started" },
+      { type: "item.started", item: { id: "item_1", type: "command_execution" } },
+      { type: "item.completed", item: { id: "item_1", type: "command_execution" } },
+      partial, usage,
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_2", type: "mcp_tool_call" } },
+    ];
+    const spawn = transport(`process.stdin.resume(); process.stdout.write(${JSON.stringify(events.map(e => JSON.stringify(e)).join("\n") + "\n")}); setInterval(() => {}, 1000);`);
+    await expect(runModel({ agent: "codex", prompt: "task", projectRoot: root, purpose: "verify.test", timeoutMs: 10_000,
+      readOnlyTools: { maxTurns: 2 }, __internal: { spawn, onSpawn: pid => pids.push(pid) } })).rejects.toMatchObject({ category: "tool_limit" });
+    expect(saved()).toEqual([expect.objectContaining({ purpose: "verify.test", input: 10, cache_read: 4, output: 3,
+      estimated: 0, session_id: "verify-fixture" })]);
+  });
+
   it("bounds total wall time even when stdout keeps refreshing inactivity", async () => {
     const root=fixture();
     const spawn=transport(`process.stdin.resume();setInterval(()=>{process.stdout.write('{"type":"tick"}');process.stdout.write(String.fromCharCode(10));},5);`);

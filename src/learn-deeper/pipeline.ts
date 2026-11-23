@@ -10,7 +10,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { automaticWorkEnabled, checkoutOn } from "../controls/index.js";
-import { claimHash } from "../knowledge/state.js";
+import { claimHash, localSettings, retiredClaimHashes, tombstone } from "../knowledge/state.js";
+import { learnedRefused, learnedRefusalKey, learnedWaitingKey } from "../knowledge/mutations.js";
 import { sourceDigest, type Repository } from "./source.js";
 import { existingKnowledge } from "./existing-knowledge.js";
 import { branchScope, staleDoc } from "./history-docs.js";
@@ -19,13 +20,14 @@ import { z } from "zod";
 import { buildIndex } from "../file-index/build.js";
 import { indexDirectory } from "../file-index/store.js";
 import { registerLiterals } from "../knowledge/check.js";
-import { parseEntry, serializeEntry, type KnowledgeEntry } from "../knowledge/entry.js";
+import { isLearnedEntry, parseEntry, serializeEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { propose, type Proposal } from "../knowledge/gate.js";
 import { producerEntryId } from "../knowledge/producers.js";
 import { readNotes, snapshotNotes } from "../knowledge/personal-store.js";
 import { ModelWaitError, type runModel } from "../model-runner/index.js";
 import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/consent.js";
 import type { BatchContext } from "../record/jobs.js";
+import type { RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
 import { applyDocQuota, clusterLessons, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
@@ -141,7 +143,17 @@ export interface ReviewRow {
 /** The review rows of one learning run; this row is not job-scoped, so it outlives the run's raw text. */
 export const reviewRowsKey = (jobId: string) => `learning.deep.review.${jobId}`;
 export function reviewRows(reader: { setting(scope: string, key: string): string | undefined | null }, project: string, jobId: string): ReviewRow[] {
-  try { return JSON.parse(reader.setting(project, reviewRowsKey(jobId)) ?? "[]") as ReviewRow[]; } catch { return []; }
+  try {
+    const key = reviewRowsKey(jobId);
+    return [...JSON.parse(reader.setting(project, key + ".overflow") ?? "[]"), ...JSON.parse(reader.setting(project, key) ?? "[]")] as ReviewRow[];
+  } catch { return []; }
+}
+
+function saveReviewRows(set: ReturnType<RecordWriter["db"]["prepare"]>, project: string, jobId: string, rows: ReviewRow[]): void {
+  const key = reviewRowsKey(jobId);
+  // Older readers still see the newest 200. The terminal can review the whole run.
+  set.run(project, key, JSON.stringify(rows.slice(-200)));
+  if (rows.length > 200) set.run(project, key + ".overflow", JSON.stringify(rows.slice(0, -200)));
 }
 
 /** Split a harvest batch into chunks a triage call can take. */
@@ -201,21 +213,52 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   return reply;
 }
 
-/** This producer's earlier lessons, retired ones included: a lesson someone dropped is never proposed again (R20). */
-function earlierEntries(context: Context, plan: LearningPlan): Array<EarlierLearned & { retired: boolean }> {
-  const project = context.job.project_id!;
-  const out: Array<EarlierLearned & { retired: boolean }> = [];
-  for (const [id, raw] of snapshotNotes(context.writer, project).files) {
-    const proof = learningProof(plan, raw, context.writer.setting(project, noteKey(id)));
-    if (!proof) continue;
+type PriorLesson = EarlierLearned & { refused: boolean; waiting: boolean };
+
+function earlierEntries(writer: RecordWriter, project: string, plan: LearningPlan): PriorLesson[] {
+  const out: PriorLesson[] = [];
+  for (const [id, raw] of snapshotNotes(writer, project).files) {
     try {
       const entry = parseEntry(raw);
-      if (entry.mex.source.type === "person") continue;
+      if (!isLearnedEntry(entry.mex)) continue;
+      const refused = !!tombstone(writer, project, id) || learnedRefused(writer, project, entry, raw) || entry.mex.status === "retired";
+      const proof = learningProof(plan, raw, writer.setting(project, noteKey(id)));
+      // Refusals survive status changes and rewritten receipts.
+      if (!refused && !proof) continue;
       out.push({ id, text: entry.text, scope: entry.mex.scope, patterns: (entry.mex.when ?? []).map(item => item.pattern),
-        retired: entry.mex.status === "retired", support: proof.support });
-    } catch { /* an unreadable note is no earlier lesson */ }
+        refused, waiting: entry.mex.status === "proposed" && !!writer.setting(project, learnedWaitingKey(id)), support: proof?.support });
+    } catch { /* An unreadable note is no earlier lesson. */ }
   }
-  return out;
+  // An overlapping live rule must not hide an earlier refusal.
+  return out.sort((a, b) => Number(b.refused) - Number(a.refused));
+}
+
+function clusterEntryId(plan: LearningPlan, cluster: Cluster): string {
+  return producerEntryId("learn-deeper", JSON.stringify([plan.origin.host, plan.origin.slug.toLowerCase(), "lesson", cluster.key]));
+}
+
+const clusterAliasKey = (id: string) => `learning.deep.cluster.${id}`;
+
+function reviewRefusals(writer: RecordWriter, project: string, plan: LearningPlan) {
+  const earlier = earlierEntries(writer, project, plan);
+  const refused = earlier.filter(entry => entry.refused);
+  const refusedIds = new Set(refused.map(entry => entry.id));
+  const claims = retiredClaimHashes(writer, project);
+  for (const row of localSettings(writer, project, learnedRefusalKey(""), 512)) {
+    for (const hash of z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/u)).max(2).parse(JSON.parse(row.value))) claims.add(hash);
+  }
+  const idRefused = (id: string | undefined) => !!id &&
+    (refusedIds.has(id) || !!writer.setting(project, learnedRefusalKey(id)) || !!tombstone(writer, project, id));
+  return {
+    earlier,
+    claim: (text: string) => claims.has(claimHash(text)),
+    cluster(cluster: Cluster, rematch = false): boolean {
+      const id = clusterEntryId(plan, cluster);
+      return idRefused(cluster.earlier) || idRefused(id) || idRefused(writer.setting(project, clusterAliasKey(id)))
+        || cluster.members.some(member => claims.has(claimHash(member.triage.lesson)))
+        || (rematch && refused.length > 0 && clusterLessons(cluster.members, { earlier: refused }).some(group => group.earlier !== undefined));
+    },
+  };
 }
 
 function candidateRef(plan: LearningPlan, candidate: Candidate): SourceRef {
@@ -245,6 +288,7 @@ function proofDropReason(reason: string): string {
 async function writeUnit(input: PipelineInput, state: PipelineState, name: string, clusters: Cluster[]): Promise<number> {
   const { context, plan, deps } = input;
   const counts: Record<string, number> = {};
+  const project = context.job.project_id!;
   // A unit published before an interruption is finished: never publish or pay for it twice.
   if (!clusters.length) return 0;
   const saved = load<{ accepted: number; counts: Record<string, number>; gaps: string[] }>(context, `${name}.done`);
@@ -253,6 +297,14 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     for (const gap of saved.gaps) input.gaps.add(gap);
     return saved.accepted;
   }
+  const refusals = reviewRefusals(context.writer, project, plan);
+  const allowed = clusters.filter(cluster => !refusals.cluster(cluster, true));
+  add(counts, "cluster.forgotten", clusters.length - allowed.length);
+  if (!allowed.length) {
+    add(state.counts, "cluster.forgotten", clusters.length);
+    return 0;
+  }
+  clusters = allowed;
   const writerContext: WriterContext = { linters: linters(deps.tree) };
   const first = await call(input, `${name}.write`, writerPrompt(clusters, writerContext), "best", clusters.length);
   add(counts, "tokens.write", first.tokens);
@@ -276,11 +328,10 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     }
     const model = repair?.model ?? first.model;
     const routed = proofs.map(proof => ({ proof, routed: routeEntry(proof, plan.origin, model) }));
-    const project = context.job.project_id!;
     const team = input.weekly ? await readTeamCoverage(plan.checkout, plan.head, plan.since) : undefined;
     const duplicate = await existingKnowledge(deps.tree);
     const before = snapshotNotes(context.writer, project).files;
-    const proposals: Proposal[] = [];
+    let proposals: Proposal[] = [];
     const carry = new Map<string, { entry: KnowledgeEntry; raw: string; proposal: Proposal }>();
     const sources = new Map<Proposal, Candidate[]>();
     const routedOf = new Map<Proposal, { proof: ProofResult; proven: boolean }>();
@@ -291,6 +342,10 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         continue;
       }
       const claim = claimHash(item.proposal.text);
+      if (refusals.claim(item.proposal.text) || refusals.claim(proof.claim)) {
+        add(counts, "cluster.forgotten");
+        continue;
+      }
       if (team?.retired.has(claim) || team?.claimed.has(claim)) { add(counts, "team-covered"); continue; }
       if (!proof.cluster.earlier && duplicate(item.proposal.text, proof.claim)) {
         add(counts, "duplicate-existing");
@@ -317,7 +372,10 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
       await buildIndex({ root: checked.checkTree!, projectId: checked.checkIndex.projectId, recordDirectory: checked.checkIndex.recordDirectory, workers: 0 });
     }
     let acceptedCount = 0;
-    await propose(proposals, {
+    // A review can be saved while the writer or the check evaluator is running.
+    // Recheck under the gate's writer lock, then retry only the unaffected proposals.
+    let blocked = new Set<Proposal>();
+    const publish = () => propose(proposals, {
       projectPath: plan.checkout, home: context.writer.location.home, ...checked,
       validate(gate) {
         const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(context.job.id);
@@ -326,6 +384,12 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
           || checkout?.project_id !== project || !checkoutOn(checkout, deps.now()) || !automaticWorkEnabled(gate, project, deps.now())) {
           throw new Error("Learning lost its job before saving.");
         }
+        const current = reviewRefusals(gate, project, plan);
+        blocked = new Set([...proposals, ...[...carry.values()].map(item => item.proposal)].filter(proposal => {
+          const cluster = routedOf.get(proposal)!.proof.cluster;
+          return current.cluster(cluster, true) || current.claim(proposal.text) || current.claim(proposal.oneLine ?? "");
+        }));
+        if (blocked.size) throw new Error("The review changed before learning could save.");
       },
       onAccepted(gate, accepted, gated) {
 
@@ -356,6 +420,10 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
           const cluster = proposal && routedOf.get(proposal)?.proof.cluster;
           const support = cluster && { pulls: cluster.pulls.slice(-256), commits: cluster.commits.slice(-256),
             reviewers: (cluster.reviewerKeys ?? []).slice(-256) };
+          if (cluster) {
+            const derivedId = clusterEntryId(plan, cluster);
+            if (derivedId !== item.entryId) set.run(project, clusterAliasKey(derivedId), item.entryId);
+          }
           const proof = proposal && routedOf.get(proposal);
           const issues = members.filter(candidate => candidate.kind === "issue").length;
           const linter = proof?.proof.lint && !proof.proven
@@ -378,7 +446,6 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         }
 
         // The review list's rows: no source text, only what the person decides on. Kept after the run's cleanup.
-        const reviewKey = reviewRowsKey(context.job.id);
         const rows = new Map(reviewRows(gate, project, context.job.id).map(row => [row.entryId, row]));
         for (const item of savedEntries) {
           const proposal = proposalOf.get(item.entryId);
@@ -393,18 +460,32 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
             support: cluster.support, reviewers: cluster.reviewers, proven, status: item.entry.mex.status,
             route: routed.proof.draft.route, signal: cluster.strong ? "strong" : "weak", link: proposal.source.ref });
         }
-        set.run(project, reviewKey, JSON.stringify([...rows.values()].slice(-200)));
+        saveReviewRows(set, project, context.job.id, [...rows.values()]);
         for (const result of gated) if (result.status === "dropped") add(counts, `gate-dropped.${result.reason}`);
         set.run(project, key(context.job, `${name}.done`), JSON.stringify({ accepted: acceptedCount, counts, gaps: [...input.gaps] }));
       },
     });
+    for (;;) {
+      try {
+        await publish();
+        break;
+      } catch (error) {
+        if (!blocked.size) throw error;
+        add(counts, "cluster.forgotten", blocked.size);
+        proposals = proposals.filter(proposal => !blocked.has(proposal));
+        for (const [id, item] of carry) if (blocked.has(item.proposal)) carry.delete(id);
+        blocked.clear();
+      }
+    }
     for (const [counted, n] of Object.entries(counts)) add(state.counts, counted, n);
     return { acceptedCount };
   });
 
   const firstPass = await verify();
   if (firstPass.failing === undefined) return firstPass.acceptedCount;
-  const failing = firstPass.failing;
+  const current = reviewRefusals(context.writer, project, plan);
+  const failing = firstPass.failing.filter(proof => !current.cluster(proof.cluster, true) && !current.claim(proof.claim));
+  if (!failing.length) return (await verify({ entries: [], model: first.model })).acceptedCount ?? 0;
   let repair = { entries: [] as WriterEntry[], model: first.model };
   // Close the staged proof tree before opening the model's separate, empty workspace.
   try {
@@ -505,7 +586,8 @@ async function writeProcedure(input: PipelineInput, project: string, index: numb
   const previous = load<number>(context, `${name}.done`);
   if (previous !== undefined) return previous;
   const id = producerEntryId("learn-deeper", JSON.stringify([plan.origin, "procedure", sample.roles]));
-  if (snapshotNotes(context.writer, project).files.has(id)) return 0;
+  if (tombstone(context.writer, project, id) || context.writer.setting(project, learnedRefusalKey(id))
+    || snapshotNotes(context.writer, project).files.has(id)) return 0;
   const reply = await call(input, name, sample.prompt, "cheap", 0);
   const proposal = procedureProposal(sample, reply.text, reply.model, plan);
   if (!proposal) return 0;
@@ -520,11 +602,10 @@ async function writeProcedure(input: PipelineInput, project: string, index: numb
       count = accepted.length;
       const set = gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
       for (const item of accepted) {
-        const reviewKey = reviewRowsKey(context.job.id);
         const rows = reviewRows(gate, project, context.job.id);
         rows.push({ entryId: item.entryId, claim: item.entry.mex.one_line, label: proposal.label!, support: sample.commits.length,
           reviewers: 0, proven: false, status: "proposed", route: "procedure", signal: "weak", link: proposal.source.ref });
-        set.run(project, reviewKey, JSON.stringify(rows.slice(-200)));
+        saveReviewRows(set, project, context.job.id, rows);
         set.run(project, key(context.job, `trial.${item.entryId}`), JSON.stringify({ id: item.entryId, procedure: true }));
         set.run(project, noteKey(item.entryId), makeNoteProof(plan, serializeEntry(item.entry), []));
       }
@@ -584,8 +665,9 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
         const byId = new Map(candidates.map(candidate => [candidate.id, candidate]));
         const strong: Triaged[] = outcome.results.filter(result => result.keep && byId.get(result.id)?.signal === "strong")
           .map(result => ({ candidate: byId.get(result.id)!, triage: result })).slice(0, PIPELINE_LIMITS.earlyRules);
-        const earlier = earlierEntries(context, plan);
-        const clusters = clusterLessons(strong, { earlier }).filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs" && !cluster.earlier);
+        const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
+        const clusters = clusterLessons(strong, { earlier: refusals.earlier })
+          .filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs" && !cluster.earlier && !refusals.cluster(cluster));
         if (clusters.length) {
           progress(`Writing the first ${clusters.length} rules`);
           results = await writeUnit(input, state, "early", clusters);
@@ -608,14 +690,14 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
         }
       }
       const early = new Set(load<string[]>(context, "early.members") ?? []);
-      const earlier = earlierEntries(context, plan);
-      const retired = new Set(earlier.filter(entry => entry.retired).map(entry => entry.id));
-      const clusters = applyDocQuota(clusterLessons(items, { earlier }), 0.25, hasReviewHistory(plan, state));
+      const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
+      const waiting = new Set(refusals.earlier.filter(entry => entry.waiting).map(entry => entry.id));
+      const clusters = clusterLessons(items, { earlier: refusals.earlier });
       for (const cluster of clusters) add(state.counts, `cluster.${cluster.decision}`);
-      const forgotten = clusters.filter(cluster => cluster.earlier && retired.has(cluster.earlier));
-      add(state.counts, "cluster.forgotten", forgotten.length);
-      // A single strong item already written early needs no second call; a dropped lesson is never written again.
-      const write = clusters.filter(cluster => cluster.decision !== "drop" && !(cluster.earlier && retired.has(cluster.earlier))
+      const eligible = clusters.filter(cluster => !refusals.cluster(cluster));
+      add(state.counts, "cluster.forgotten", clusters.length - eligible.length);
+      const write = applyDocQuota(eligible, 0.25, hasReviewHistory(plan, state)).filter(cluster => cluster.decision !== "drop"
+        && !(cluster.earlier && waiting.has(cluster.earlier) && cluster.pulls.length < 2)
         && !(cluster.earlier && cluster.members.every(member => early.has(member.candidate.id))));
       // Count accepted review and history entries before spending on docs.
       const writerContext = { linters: linters(deps.tree) };

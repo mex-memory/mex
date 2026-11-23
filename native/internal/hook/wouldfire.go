@@ -17,7 +17,7 @@ type wouldFireRequest struct {
 	Edits   []delivery.WouldFireEdit `json:"edits"`
 }
 
-// wouldFire replays a person's past edits through the speed bump's matching
+// wouldFire replays a person's past edits through the delivery matchers
 // at $0, for the review list at the end of a learning run. It reads no files,
 // opens no database and never denies anything.
 func wouldFire(stdin io.Reader, stdout io.Writer) int {

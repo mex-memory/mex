@@ -11,3 +11,12 @@ export class ModelRunError extends Error {
     this.name = "ModelRunError";
   }
 }
+
+export class ModelToolLimitError extends Error {
+  readonly category = "tool_limit";
+
+  constructor() {
+    super("The model command reached its tool-call limit.");
+    this.name = "ModelToolLimitError";
+  }
+}
