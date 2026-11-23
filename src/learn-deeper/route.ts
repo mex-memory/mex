@@ -16,7 +16,7 @@ import { KNOWLEDGE_LIMITS } from "../knowledge/entry.js";
 import type { Proposal, ProposedCheck } from "../knowledge/gate.js";
 import type { Cluster } from "./cluster.js";
 import type { Candidate, Region } from "./harvest/types.js";
-import type { ProofResult } from "./prove.js";
+import type { ProofResult, ProvenPattern } from "./prove.js";
 import { commonFolder } from "./prove.js";
 import type { WriterModel } from "./entries.js";
 
@@ -106,28 +106,39 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const glob = checkGlob(proof.scope);
   const paired = proof.when.filter(item => item.pairs.length);
   const alternativesOnly = proof.when.filter(item => !item.pairs.length);
+  // One fixture per pattern, holding only the pairs that pattern was proven on: the evaluator requires every pair
+  // in a fixture to satisfy every trigger it proves, and a pattern need not match every member's code. A pattern
+  // whose fixture can't be stored (no single scope, or over the entry's size budget) isn't kept: nothing could
+  // recheck it.
+  const stored: ProvenPattern[] = [];
+  const fixtures: ProposedCheck[] = [];
   let bytes = 0;
-  // Each surviving pattern separated the same evidence pairs, so one fixture can recheck all of them.
-  const fixturePairs = glob && paired.length ? paired[0]!.pairs.slice(0, 3).flatMap(at => {
-    const pair = proof.pairs[at]!;
-    const before = trimRegion(pair.before, ROUTE_LIMITS.fixtureLines, pair.anchor);
-    const after = trimRegion(pair.after, ROUTE_LIMITS.fixtureLines);
-    const size = Buffer.byteLength(before.text) + Buffer.byteLength(after.text);
-    if (bytes + size > ROUTE_LIMITS.fixtureBytes) return [];
-    bytes += size;
-    return [{ path: pair.after.path, commit: pair.after.commit,
-      before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
-      after: { start: after.start, end: after.end, text: after.text, hash: after.hash } }];
-  }) : [];
-  const proven = fixturePairs.length > 0;
-  const when = proven ? [...paired, ...alternativesOnly] : alternativesOnly;
+  if (glob) for (const item of paired) {
+    const pairs = item.pairs.slice(0, 3).flatMap(at => {
+      const pair = proof.pairs[at]!;
+      const before = trimRegion(pair.before, ROUTE_LIMITS.fixtureLines, pair.anchor);
+      const after = trimRegion(pair.after, ROUTE_LIMITS.fixtureLines);
+      const size = Buffer.byteLength(before.text) + Buffer.byteLength(after.text);
+      if (bytes + size > ROUTE_LIMITS.fixtureBytes) return [];
+      bytes += size;
+      return [{ path: pair.after.path, commit: pair.after.commit,
+        before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
+        after: { start: after.start, end: after.end, text: after.text, hash: after.hash } }];
+    });
+    if (!pairs.length) continue;
+    // `proves` indexes the entry's final `when`, which lists the stored patterns first.
+    fixtures.push({ kind: "fixture", role: "complete", target: { pairs, proves: [stored.length] }, saw: { ok: true } } as ProposedCheck);
+    stored.push(item);
+  }
+  const proven = stored.length > 0;
+  const when = [...stored, ...alternativesOnly];
 
   if (proven && glob) {
-    checks.push({ kind: "fixture", role: "complete", target: { pairs: fixturePairs, proves: paired.map((_, i) => i) }, saw: { ok: true } } as ProposedCheck);
+    checks.push(...fixtures);
     if (proof.fixLiteral) {
       checks.push({ kind: "pattern", role: "complete", target: { scope: glob, pattern: proof.fixLiteral, match: "literal", expect: "present" } } as ProposedCheck);
     }
-    for (const item of paired) {
+    for (const item of stored) {
       if (item.type === "anti" && item.match === "literal") {
         checks.push({ kind: "pattern", role: "supporting", target: { scope: glob, pattern: item.pattern, match: "literal", expect: "at-most" } } as ProposedCheck);
       }
@@ -156,8 +167,12 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const kept = keptQuote(proof);
   const lint = proof.lint && !proven ? [`This repo's linter can enforce it: enable \`${proof.lint.rule}\` in \`${proof.lint.config}\`.`] : [];
   const alternatives = proof.alternatives.map(item => `Considered and ruled out: ${item.option} (${item.reason}).`);
-  const text = [proof.claim, ...proof.reasons, ...lint, ...alternatives].join(" ").slice(0, 1000);
+  // R6: a pattern still common at HEAD is a migration in progress. Say so, or the agent sees the old code and copies it.
+  const migration = stored.some(item => item.migration) ? ["Older code here still does this; don't add more."] : [];
+  const text = [proof.claim, ...proof.reasons, ...migration, ...lint, ...alternatives].join(" ").slice(0, 1000);
   const fixKinds = new Set(["rule", "pitfall", "decision"]);
+  // R19: repeated support from one reviewer is that person's habit until the code proves it, a doc agrees, or a
+  // person ticks it, so it waits for the tick rather than reaching sessions on support alone.
   const corroborated = cluster.decision === "write" && (cluster.source !== "review" || cluster.reviewers >= 2 || docs.length > 0);
   const status = (corroborated || proven) && !proof.notAlwaysFollowed ? "active" : "proposed";
   const key = JSON.stringify([plan.host, plan.slug.toLowerCase(), "lesson", cluster.key]);
@@ -169,7 +184,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
     source: { type: sourceType, ref, ...(kept ? { quote: kept.quote, text: kept.text } : {}) },
     evidenceClass: sourceType, evidence: members.map(candidate => candidate.id).slice(0, 32),
     anchors: { scope: proof.scope, ...(when.length ? { when: when.map(({ type, match, pattern }) => ({ type, match, pattern })) } : {}) },
-    checks, model, label: label(cluster), status,
+    checks, model, label: `${label(cluster)}${migration.length ? " · migration in progress" : ""}`.slice(0, 80), status,
   };
   return { proposal, sources: members, status, proven };
 }

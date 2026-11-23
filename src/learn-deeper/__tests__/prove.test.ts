@@ -160,6 +160,10 @@ describe("proving a learned rule", () => {
     const two = clusterOf([thread(3, "packages/api/src/users.ts"), thread(40, "packages/api/src/orders.ts")]);
     const double = await proveEntry(draft(two), two, context({ patterns: fakePatterns(new Set(["console.log("])) }));
     expect(double.when[0]!.migration).toBe(true);
+    const routed = routeEntry(double, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proposal.label).toBe("Learned from 2 PRs, 1 maintainer · migration in progress");
+    expect(routed.proposal.text).toContain("Older code here still does this; don't add more.");
   });
 
   it("removes an unsupported clause and drops an entry whose claim is invented", async () => {
@@ -183,6 +187,22 @@ describe("proving a learned rule", () => {
     expect(proof.notAlwaysFollowed).toBe(true);
     const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
     expect("dropped" in routed ? "" : routed.status).toBe("proposed");
+  });
+
+  it("doesn't pre-tick an unproven lesson that only one reviewer kept asking for", async () => {
+    const prose = (cluster: Cluster) => draft(cluster, { when: [], fix: undefined });
+    const plan = { host: "github.com", slug: "acme/app" }, model = { id: "best", version: "test" };
+    const solo = clusterOf([thread(3, "packages/api/src/users.ts"), thread(40, "packages/api/src/orders.ts")]);
+    expect(solo.decision).toBe("write");
+    const alone = routeEntry(await proveEntry(prose(solo), solo, context()), plan, model);
+    if ("dropped" in alone) throw new Error(alone.dropped);
+    expect([alone.status, alone.proposal.label]).toEqual(["proposed", "Learned from 2 PRs, 1 maintainer"]);
+    const team = clusterOf([thread(3, "packages/api/src/users.ts"), thread(40, "packages/api/src/orders.ts", { reviewers: ["r2"] })]);
+    const agreed = routeEntry(await proveEntry(prose(team), team, context()), plan, model);
+    expect("dropped" in agreed ? agreed.dropped : agreed.status).toBe("active");
+    // Proven against the code, one reviewer is enough.
+    const proven = routeEntry(await proveEntry(draft(solo), solo, context()), plan, model);
+    expect("dropped" in proven ? proven.dropped : [proven.status, proven.proven]).toEqual(["active", true]);
   });
 
   it("drops a ruled-out lesson without a maintainer's contrastive reason", async () => {
