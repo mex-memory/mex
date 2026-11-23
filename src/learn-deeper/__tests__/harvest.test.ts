@@ -147,9 +147,9 @@ afterAll(() => {
 
 const CHOSEN = "We chose one adapter name rather than two.";
 
-function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false, mergedCount = 1,
+function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false, mergedCount = 1, deep = false,
   merged: mergedRow = {}, closed: closedRow = {} }: {
-    paging?: boolean; weekly?: boolean; issue?: boolean; reverts?: boolean; textOnly?: boolean; fork?: boolean; mergedCount?: number;
+    paging?: boolean; deep?: boolean; weekly?: boolean; issue?: boolean; reverts?: boolean; textOnly?: boolean; fork?: boolean; mergedCount?: number;
     merged?: object; closed?: object;
   } = {}) {
   const captures: string[] = [];
@@ -219,8 +219,14 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
       })) });
     }
     if (query.includes("HarvestThreadPages(")) {
+      const rest = data.merged.reviewThreads.nodes.slice(4);
+      if (deep) {
+        // Page after page: the last thread is on the third, and the pages never end.
+        const at = Number(/^page-(\d+)$/u.exec(variables.a0 ?? "")?.[1] ?? 1);
+        return Response.json({ data: { repository: { p0: { reviewThreads: { nodes: at === 3 ? [{ ...data.merged.reviewThreads.nodes[0], id: "PRRT_fixture9" }] : [], totalCount: 99, pageInfo: { hasNextPage: true, endCursor: `page-${at + 1}` } } } } } });
+      }
       expect(variables.a0).toBe("fixture-page");
-      return Response.json({ data: { repository: { p0: { reviewThreads: { nodes: data.merged.reviewThreads.nodes.slice(4),
+      return Response.json({ data: { repository: { p0: { reviewThreads: { nodes: rest,
         totalCount: 13, pageInfo: { hasNextPage: false } } } } } });
     }
     if (query.includes("HarvestRevertDiscussion(")) {
@@ -241,7 +247,7 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
         const nodes = row.reviewThreads.nodes.slice(0, 4);
         for (let i = 0; i < 8; i++) nodes.push({ ...nodes[0], id: `PRRT_decoy${i}`,
           comments: { nodes: [{ ...nodes[0].comments.nodes[0], isCopilotCodeReview: true }] } });
-        return [`p${index}`, { ...row, reviewThreads: { nodes, totalCount: 13, pageInfo: { hasNextPage: true, endCursor: "fixture-page" } } }];
+        return [`p${index}`, { ...row, reviewThreads: { nodes, totalCount: deep ? 99 : 13, pageInfo: { hasNextPage: true, endCursor: "fixture-page" } } }];
       }
       return [`p${index}`, row ?? null];
     }));
@@ -437,6 +443,18 @@ describe("harvest", () => {
     expect(capped).toBeGreaterThanOrEqual(0);
     expect(batches.slice(capped + 1).flatMap(batch => batch.candidates).some(candidate => candidate.kind === "review-thread")).toBe(true);
     expect(candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(36);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("reads a long change's threads page by page, and stops at the fifth", async () => {
+    const deps = forge({ paging: true, deep: true });
+    const { candidates, gaps } = await drain(options(reviewWindow), deps);
+    expect(candidates.some(candidate => candidate.id === "gh:thread:PRRT_fixture9")).toBe(true);
+    expect(deps.captures.filter(query => query === "query HarvestThreadPages")).toHaveLength(4);
+    expect(gaps.some(gap => /^The thread page limit left \d+ review threads unread\.$/u.test(gap))).toBe(true);
+    // Nothing is asked for once the request budget is spent.
+    const short = forge({ paging: true, deep: true });
+    await drain(options({ ...reviewWindow, requestBudget: 4 }), short);
+    expect(short.captures.filter(query => query === "query HarvestThreadPages").length).toBeLessThan(2);
   }, GIT_FIXTURE_TIMEOUT);
 
   it("gives docs and descriptions the same share on either agent", async () => {

@@ -8,6 +8,8 @@ import { MAX_BLOB, oid, reviewRegions, type ReadReviewedFile, type RegionReader 
 import type { Candidate, ForgeSource, HarvestDeps, HarvestPlan, HarvestPoint, SearchPage } from "./types.js";
 
 const THREAD_PAGE = 12;
+// Beyond this a change is mostly a bot's remarks.
+const THREAD_PAGES = 5;
 const COMMENT_PAGE = 12;
 const REPLIES = 4;
 const FILE_PAGE = 24;
@@ -260,7 +262,7 @@ export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pa
     ${fields.join("\n")}
   }}`, { owner, name })).repository);
   if (!data) throw new SourceError("unavailable");
-  const extra: Array<{ index: number; number: number; after: string }> = [];
+  let extra: Array<{ index: number; number: number; after: string }> = [];
   const result = items.flatMap((item, index) => {
     const row = object(data[`p${index}`]);
     const at = timestamp(item.source === "merged" ? row?.mergedAt : row?.closedAt);
@@ -270,10 +272,10 @@ export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pa
     }
     addDiscussionGaps(row, gaps);
     const page = connection(row.reviewThreads);
-    if (page.more && pageMore() && page.end) extra.push({ index, number: row.number, after: page.end });
+    if (page.more && page.end) extra.push({ index, number: row.number, after: page.end });
     return [{ item, row, threads: page.nodes }];
   });
-  if (extra.length) {
+  for (let pages = 1; extra.length && pages < THREAD_PAGES && pageMore(); pages++) {
     const query = extra.map(({ index, number }) => `p${index}:pullRequest(number:${number}){
       reviewThreads(first:${THREAD_PAGE},after:$a${index}){totalCount pageInfo{hasNextPage endCursor} nodes{${threadFields}}}
     }`).join("\n");
@@ -283,11 +285,15 @@ export async function changes(client: Client, items: ForgeItem[], gaps: Gaps, pa
       repository(owner:$owner,name:$name){${query}}
     }`, { owner, name, ...vars })).repository);
     if (!more) throw new SourceError("unavailable");
-    for (const { index, number } of extra) {
+    const read = extra;
+    extra = [];
+    for (const { index, number, after } of read) {
       const change = result.find(({ item }) => item.point.id === String(number) && item.source === "merged");
       const row = object(more[`p${index}`]);
       if (!row?.reviewThreads || !change) throw new SourceError("unavailable");
-      change.threads.push(...connection(row.reviewThreads).nodes);
+      const page = connection(row.reviewThreads);
+      change.threads.push(...page.nodes);
+      if (page.more && page.end && page.end !== after) extra.push({ index, number, after: page.end });
     }
   }
   let cut = 0;
