@@ -32,7 +32,8 @@ for (const home of new Set(Object.values(activeHomes))) {
   writeFileSync(file, token);
 }
 const credential = agent === "claude" ? join(env.CLAUDE_CONFIG_DIR, ".credentials.json") : join(env.CODEX_HOME, "auth.json");
-const credentialHash = createHash("sha256").update(readFileSync(credential)).digest("hex");
+const credentialHash = createHash("sha256").update(agent === "claude" && env.CLAUDE_CODE_OAUTH_TOKEN && !existsSync(credential)
+  ? env.CLAUDE_CODE_OAUTH_TOKEN : readFileSync(credential)).digest("hex");
 if (existsSync(join(cwd, "check.mjs"))) throw new Error("Hidden tests were available to the agent");
 if (mode === "sample") await setTimeout(1500);
 if (resumed && !existsSync(transcript)) throw new Error("Cannot resume a missing session");

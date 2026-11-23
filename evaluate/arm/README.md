@@ -66,8 +66,12 @@ Pass a file named `.credentials.json` for Claude Code or `auth.json` for Codex.
 The harness copies its bytes without parsing or logging them and unlinks the
 two copies when the chain finishes or throws. On macOS, Claude Code logins in
 Keychain do not provide a file for this workflow. The harness does not read,
-export or modify Keychain credentials. Use a file-backed login on a separate
-runner for the Claude Code arm if the login is Keychain-only. The offline
+export or modify Keychain credentials. Instead, run `claude setup-token` to
+make a long-lived token for your Claude subscription, save it in a file, and
+pass `--oauth-token-file <file>` in place of `--credentials`. The harness puts
+the token only into each arm's `CLAUDE_CODE_OAUTH_TOKEN`. It never writes or
+logs it, the graders don't get it, and the manifest records only that a token
+was used. The offline
 fixture needs no login.
 
 ## Suite format

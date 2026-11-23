@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runChain } from "../index.mjs";
 import { adapters } from "../lib/agents.mjs";
+import { clearCredentials, useOAuthToken } from "../lib/arms.mjs";
 import { buildReport, renderReport } from "../lib/report.mjs";
 import { loadSuite } from "../lib/suite.mjs";
 import { records, sessionUsage } from "../lib/usage.mjs";
@@ -20,8 +21,54 @@ function checkCredentialCleanup(options) {
     expect(existsSync(join(homes, root, "claude", ".credentials.json"))).toBe(false);
     expect(existsSync(join(homes, root, "codex", "auth.json"))).toBe(false);
   }
-  expect(existsSync(options.credentialFile)).toBe(true);
+  expect(existsSync(options.tokenFile ?? options.credentialFile)).toBe(true);
 }
+
+function filesIn(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+    const path = join(dir, entry.name);
+    return entry.isDirectory() ? filesIn(path) : entry.isFile() ? [path] : [];
+  });
+}
+
+describe("release harness Claude Code token", () => {
+  it("puts the token only in the arm environment and clears it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "mex-arm-token-"));
+    const token = "sk-ant-oat01-" + "a".repeat(40);
+    const file = join(dir, "token");
+    writeFileSync(file, token + "\n", { mode: 0o600 });
+    const profile = { env: { CLAUDE_CONFIG_DIR: join(dir, "claude"), CODEX_HOME: join(dir, "codex") } };
+    useOAuthToken(profile, file);
+    expect(profile.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
+    expect(readdirSync(dir)).toEqual(["token"]);
+    clearCredentials(profile);
+    expect(profile.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    writeFileSync(file, token.slice(0, 30) + "  \n" + token.slice(30) + "\n");
+    useOAuthToken(profile, file);
+    expect(profile.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
+    clearCredentials(profile);
+    for (const bad of [" \n", token + "\u00e9"]) {
+      writeFileSync(file, bad);
+      let error;
+      try { useOAuthToken(profile, file); } catch (caught) { error = caught; }
+      expect(error.message).toBe("The Claude Code token file does not hold one token");
+      expect(error.message).not.toContain(token);
+    }
+    const link = join(dir, "link");
+    symlinkSync(file, link);
+    expect(() => useOAuthToken(profile, link)).toThrow("Could not read the Claude Code token file");
+    expect(profile.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    unlinkSync(link);
+    unlinkSync(file);
+    rmdirSync(dir);
+  });
+
+  it("refuses a token file for Codex or beside a credential file", async () => {
+    const options = { agent: "codex", tokenFile: "/missing/token", pin: {}, command: ["x"] };
+    await expect(runChain({ ...options, pin: { model: "m", effort: "e", version: "v", mexVersion: "1", mexCommit: "a".repeat(40) } }))
+      .rejects.toThrow("A token file is for Claude Code");
+  });
+});
 
 describe("release harness native token accounting", () => {
   it("uses final Claude counts per message and request", () => {
@@ -130,6 +177,22 @@ describe.skipIf(process.env.MEX_ARM_RUN_DRY !== "1")("release harness dry chain"
       expect(Object.values(second.canaries).every(value => value === first.token)).toBe(true);
     }
     checkCredentialCleanup(options);
+  }, 45_000);
+
+  it("runs a Claude Code chain on a subscription token without writing it anywhere", async () => {
+    const options = fixtureOptions(fixtureRoot(), "claude", "ok", 0, { token: true });
+    const token = readFileSync(options.tokenFile, "utf8").trim();
+    const { manifest, replay } = await runChain(options);
+    expect(manifest.credential).toBe("oauth-token");
+    for (const row of replay.sessions) {
+      for (const event of records(join(options.output, "replay", row.file)).filter(e => e.type === "fixture_observation")) {
+        expect(event.credentialHash).toBe(options.credentialHash);
+      }
+    }
+    checkCredentialCleanup(options);
+    for (const file of filesIn(options.output)) {
+      if (statSync(file).size < 64 << 20) expect(readFileSync(file, "latin1").includes(token), file).toBe(false);
+    }
   }, 45_000);
 
   it.each(["claude", "codex"])("unlinks the %s copies in both homes when a resumed turn fails", async agent => {

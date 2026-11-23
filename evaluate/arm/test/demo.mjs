@@ -15,7 +15,7 @@ export function fixtureRoot(parent = process.env.MEX_ARM_TEST_TMP ?? tmpdir()) {
   return realpathSync.native(mkdtempSync(join(parent, "arm-")));
 }
 
-export function fixtureOptions(root, agent, mode = "ok", sampleMs = 0) {
+export function fixtureOptions(root, agent, mode = "ok", sampleMs = 0, { token = false } = {}) {
   const subjectRoot = join(root, "subject");
   mkdirSync(subjectRoot, { recursive: true });
   git(subjectRoot, ["init", "-q"]);
@@ -29,12 +29,13 @@ export function fixtureOptions(root, agent, mode = "ok", sampleMs = 0) {
   copyFileSync(fixture("fixtures/hidden/check.mjs"), join(subjectRoot, "check.mjs"));
   git(subjectRoot, ["add", "check.mjs"]);
   commit("Add the hidden fixture check");
-  const credentialFile = join(root, agent === "claude" ? ".credentials.json" : "auth.json");
-  const bytes = Buffer.from([0x00, 0x80, 0x0d, 0x0a, 0xff, 0x20]);
-  writeFileSync(credentialFile, bytes, { mode: 0o600 });
+  const credentialFile = token ? undefined : join(root, agent === "claude" ? ".credentials.json" : "auth.json");
+  const tokenFile = token ? join(root, "claude-token") : undefined;
+  const bytes = token ? Buffer.from("sk-ant-oat01-fixture-" + "x".repeat(40)) : Buffer.from([0x00, 0x80, 0x0d, 0x0a, 0xff, 0x20]);
+  writeFileSync(token ? tokenFile : credentialFile, token ? Buffer.concat([bytes, Buffer.from("\n")]) : bytes, { mode: 0o600 });
   return {
     agent, cli, fixtures: true, sampleMs,
-    suiteFile: fixture("fixtures/dry.json"), subjectRoot, output: join(root, "output"), credentialFile,
+    suiteFile: fixture("fixtures/dry.json"), subjectRoot, output: join(root, "output"), credentialFile, tokenFile,
     credentialHash: createHash("sha256").update(bytes).digest("hex"),
     command: [process.execPath, fixture("fake-agent.mjs"), agent, mode],
     pin: {

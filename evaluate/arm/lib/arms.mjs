@@ -69,7 +69,27 @@ export function copyCredential(profile, agent, source) {
   }
 }
 
+// A Claude Code subscription login from `claude setup-token`. The token goes
+// only into this arm's environment: never into a file, a log or an error, and
+// the graders build their own environment without it.
+const OAUTH_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+
+export function useOAuthToken(profile, source) {
+  let token;
+  try {
+    const file = lstatSync(source);
+    if (!file.isFile() || file.isSymbolicLink() || file.size > 4096) throw new Error();
+    // A token never holds whitespace; a pasted one can wrap across lines.
+    token = readFileSync(source, "utf8").replace(/\s+/g, "");
+  } catch {
+    throw new Error("Could not read the Claude Code token file");
+  }
+  if (token.length < 20 || !/^[\x21-\x7e]+$/.test(token)) throw new Error("The Claude Code token file does not hold one token");
+  profile.env[OAUTH_ENV] = token;
+}
+
 export function clearCredentials(profile) {
+  delete profile.env[OAUTH_ENV];
   const failures = [];
   for (const file of credentials(profile.env)) {
     try { unlinkSync(file); }

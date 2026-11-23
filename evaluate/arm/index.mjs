@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { prices } from "../../scripts/delivery-replay/cost.mjs";
 import { exportReplay } from "./export-replay.mjs";
 import { readSession, requireAdapter, runTurn, versionOf } from "./lib/agents.mjs";
-import { checkBaseline, checkedRun, clearCredentials, copyCredential, exposeMex, isolatedPath, makeArm, platformPin, preflightMex } from "./lib/arms.mjs";
+import { checkBaseline, checkedRun, clearCredentials, copyCredential, exposeMex, isolatedPath, makeArm, platformPin, preflightMex, useOAuthToken } from "./lib/arms.mjs";
 import { grade } from "./lib/grader.mjs";
 import { buildReport, renderReport } from "./lib/report.mjs";
 import { startSampler } from "./lib/resources.mjs";
@@ -26,7 +26,7 @@ function taskBases(suite, subjectRoot) {
 }
 
 export async function runChain(options) {
-  const { agent, pin, command, suiteFile, subjectRoot, output, cli, depsDir, credentialFile,
+  const { agent, pin, command, suiteFile, subjectRoot, output, cli, depsDir, credentialFile, tokenFile,
     timeoutMs = 300000, sampleMs = 1000, fixtures = false } = options;
   const adapter = requireAdapter(agent);
   if (!pin || ![pin.model, pin.effort, pin.version, pin.mexVersion].every(value => typeof value === "string" && value)
@@ -35,7 +35,8 @@ export async function runChain(options) {
       || !Number.isInteger(timeoutMs) || timeoutMs <= 0 || !Number.isInteger(sampleMs) || sampleMs < 0) {
     throw new Error("Run needs a command, positive timeout, sample interval, and pinned versions, model, effort and MEX commit");
   }
-  if (!fixtures && !credentialFile) throw new Error("A file credential is required for a real chain");
+  if (tokenFile && (agent !== "claude" || credentialFile)) throw new Error("A token file is for Claude Code, in place of a credential file");
+  if (!fixtures && !credentialFile && !tokenFile) throw new Error("A file credential or a Claude Code token file is required for a real chain");
   const suite = loadSuite(suiteFile);
   const tasks = taskBases(suite, subjectRoot);
   const setupBase = suite.setupBase ? resolveCommit(subjectRoot, suite.setupBase) : tasks[0].base;
@@ -51,6 +52,7 @@ export async function runChain(options) {
   const rows = [];
   const manifest = {
     schemaVersion: 1, suite: suite.id, agent, model: pin.model, effort: pin.effort, timeoutMs,
+    credential: tokenFile ? "oauth-token" : credentialFile ? "file" : "none",
     ...platformPin(), mexCommit: pin.mexCommit, mexVersion: pin.mexVersion, fixtures,
     mexCliSha256: createHash("sha256").update(readFileSync(cli)).digest("hex"),
     prices: { profile: prices.profile, date: prices.date, source: prices.source },
@@ -69,6 +71,7 @@ export async function runChain(options) {
         env.MEX_BACKGROUND_IDLE_MS = "5000";
       }
       copyCredential(profile, agent, credentialFile);
+      if (tokenFile) useOAuthToken(profile, tokenFile);
       adapter.configure(profile, pin);
       const version = await versionOf(command, profile, pin);
       manifest.agentVersion = version;
@@ -149,7 +152,7 @@ export async function main(argv) {
   const { values } = parseArgs({ args: argv, options: {
     agent: { type: "string" }, suite: { type: "string" }, subject: { type: "string" }, output: { type: "string" },
     pin: { type: "string" }, cli: { type: "string" }, deps: { type: "string" }, credentials: { type: "string" },
-    "sample-ms": { type: "string" }, "timeout-ms": { type: "string" },
+    "sample-ms": { type: "string" }, "timeout-ms": { type: "string" }, "oauth-token-file": { type: "string" },
   } });
   if (!values.agent || !values.suite || !values.subject || !values.output || !values.pin) {
     throw new Error("Usage: node evaluate/arm/index.mjs --agent <claude|codex> --suite <json> --subject <repo> --output <new-directory> --pin <json>");
@@ -162,6 +165,7 @@ export async function main(argv) {
     cli: values.cli ? resolve(values.cli) : fileURLToPath(new URL("../../dist/cli.js", import.meta.url)),
     depsDir: values.deps && resolve(values.deps),
     credentialFile: values.credentials && resolve(values.credentials),
+    tokenFile: values["oauth-token-file"] && resolve(values["oauth-token-file"]),
     pin, command: pin.command ?? [adapter.executable], sampleMs: values["sample-ms"] === undefined ? undefined : Number(values["sample-ms"]),
     timeoutMs: values["timeout-ms"] === undefined ? undefined : Number(values["timeout-ms"]),
   });
