@@ -24,6 +24,7 @@ import { applyDocQuota, clusterLessons, type Cluster, type EarlierLearned, type 
 import { learningProof, makeNoteProof, noteKey, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
 import { harvestBatch } from "./harvest/index.js";
+import { networkGroups, networkProofKey } from "./network-proof.js";
 import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harvest/types.js";
 import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
 import { gitHistory, proveEntry, type ProofContext, type ProofResult } from "./prove.js";
@@ -240,9 +241,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
           const refs: SourceRef[] = members.slice(0, 8).map(candidate => ({ id: candidate.id, hash: candidate.hash, link: candidate.link }));
           const day = members.map(candidate => candidate.at.slice(0, 10)).sort().at(-1) ?? plan.until.slice(0, 10);
           set.run(project, noteKey(item.entry.mex.id), makeNoteProof(plan, serializeEntry(item.entry), refs, day));
-          // Per-comment node ids and hashes, for the weekly network pass (job E1 reads this row).
-          set.run(project, `learning.deep.nodes.${item.entry.mex.id}`, JSON.stringify(members.flatMap(candidate =>
-            candidate.nodeIds.map(id => ({ id, hash: candidate.commentHashes?.[id] ?? candidate.hash, link: candidate.link }))).slice(0, 32)));
+          set.run(project, networkProofKey(item.entry.mex.id), JSON.stringify(networkGroups(item.entry, members)));
         }
         set.run(project, key(context.job, `${name}.done`), JSON.stringify({ at: deps.now(), summary: summarizeResults(gated) }));
         // The review list's rows: no source text, only what the person decides on. Kept after the run's cleanup.

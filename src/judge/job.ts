@@ -219,6 +219,11 @@ function idle(writer: RecordWriter, params: JudgeParams, immediate = false): boo
 export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind<JudgeParams, JudgeCheckpoint> {
   return {
     name: "judge", label: "Knowledge judge", scope: "project", sideEffects: "idempotent",
+    joins(open, params) {
+      if (!params.report) return true;
+      const saved = JSON.parse(open.params) as JudgeParams;
+      return saved.checkout === params.checkout && open.state !== "running";
+    },
     async runBatch({ params, checkpoint, writer, job, progress, immediate }: BatchContext<JudgeParams, JudgeCheckpoint>) {
       const projectId = job.project_id!;
       if (!allowed(writer, params, projectId)) return { checkpoint: checkpoint ?? { position: await position(params.checkout), skipped: [], gaps: false }, wait: "Waiting: MEX is off here" };

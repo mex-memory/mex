@@ -326,7 +326,7 @@ func backticked(s string) []string {
 var promptWordRE = lazy(`(?i)\b(test|tests|testing|build|lint|typecheck|type-check|format|migrate|deploy|bench|benchmark)\b`)
 
 // moments finds the candidates for one tool call in one snapshot.
-func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool) []candidate {
+func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool, suppressed func(string, string) bool) []candidate {
 	var out []candidate
 	readText := ""
 	if v.name == contract.ToolRead && v.output != nil {
@@ -349,11 +349,15 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			out = append(out, candidate{item: it, moment: moment, tier: tier, exempt: exempt, reserve: reserve, rel: v.rel})
 		}
 		if e.Learned() {
+			prose := false
 			if learnedProse(e) && v.rel != "" && ((v.name == contract.ToolRead && !v.failed) || isEdit(v)) && inScope(it, v.rel) {
+				prose = len(e.When) == 0 || suppressed(v.project, e.ID)
+			}
+			if prose {
 				out = append(out, candidate{item: it, moment: momentAnchor, tier: scopeTier(it, v.rel), rel: v.rel,
 					exempt: true, anchorRelease: true, anchorPaths: []string{v.rel}})
 			}
-			if e.Kind != "decision" || !isEdit(v) {
+			if prose || e.Kind != "decision" || !isEdit(v) {
 				continue
 			}
 		}
@@ -428,7 +432,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 // promptMoments: a typed prompt that names a rejected option brings its
 // decision; one that asks to test or build brings the matching recipe.
 func learnedProse(e *entries.Entry) bool {
-	if e.Status != "active" || len(e.When) != 0 {
+	if e.Status != "active" {
 		return false
 	}
 	switch e.Kind {

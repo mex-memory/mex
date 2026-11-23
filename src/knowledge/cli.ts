@@ -220,7 +220,7 @@ export function buildKnowledgeCommands(): Command[] {
       });
     });
   const retire = (["wrong", "forget"] as const).map(action => new Command(action)
-    .description(action === "wrong" ? "Retire an incorrect note and keep its reason" : "Hide a note permanently, keeping a local tombstone")
+    .description(action === "wrong" ? "Report or retire an incorrect note" : "Hide a note permanently, keeping a local tombstone")
     .argument("<id>", "Stable entry id")
     // `mex forget <id>` is what MEX tells people after an agent saves a note,
     // so forget's reason is optional; wrong keeps it, since the reason is the point.
@@ -233,9 +233,23 @@ export function buildKnowledgeCommands(): Command[] {
       const reason = given?.trim() ? given : "Removed with mex forget";
       await run(opts.json, async () => {
         if (opts.allAlong && action !== "wrong") throw new KnowledgeError("INVALID_ENTRY", "--all-along is only valid with mex wrong.");
+        const options = { projectPath: process.cwd() };
+        if (action === "wrong") {
+          const { isAgentCaller } = await import("../repo-start/caller.js");
+          const { parseWrongReason, reportWrong } = await import("./agent-report.js");
+          const { knowledgeProject } = await import("./context.js");
+          const agent = isAgentCaller();
+          const parsed = parseWrongReason(reason, knowledgeProject(options).root, agent);
+          if (agent) {
+            const job = await reportWrong(id, parsed, options);
+            if (opts.json) console.log(JSON.stringify({ ok: true, id, status: "proposed", reason: parsed.reason, kind: parsed.kind, job }));
+            else console.log("MEX will re-check this rule; nothing was retired.");
+            (await import("../record/background.js")).ensureBackground();
+            return;
+          }
+        }
         const { forget, wrong } = await import("./mutations.js");
         const { expand } = await import("./store.js");
-        const options = { projectPath: process.cwd() };
         let current;
         try { current = expand(id, options); }
         catch (error) {

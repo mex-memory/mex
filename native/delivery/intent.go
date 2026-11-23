@@ -165,7 +165,9 @@ func deliveredObservations(h *record.Hooks, ev contract.Event, g *group) ([]reco
 						if kind == "wrong" {
 							command = "mex wrong "
 						}
-						if strings.TrimSpace(v.command) == command+row.EntryID {
+						actual := strings.TrimSpace(v.command)
+						expected := command + row.EntryID
+						if actual == expected || kind == "wrong" && (strings.HasPrefix(actual, expected+" ") || strings.HasPrefix(actual, expected+"\t")) {
 							kinds[kind] = true
 						}
 					}

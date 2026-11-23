@@ -63,6 +63,7 @@ async function prepare(selector: string, action: ReviewAction, text: string | un
   let group: ReviewGroup;
   try { group = choose(snapshotReview(reader, project.projectId, project.location.home, project.root, deps.clock()), selector); }
   finally { reader.close(); }
+  if (group.upkeep) throw new KnowledgeError("INVALID_OPTION", "Use the action on this local Review card.");
   const notes = readNotes(project.location.home, project.projectId);
   let entry = group.entry, team: TeamPreview | undefined, names: string | undefined;
   const at = await position(project.root);

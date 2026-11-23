@@ -30,7 +30,7 @@ function item(c: Candidate): string {
 }
 
 function frame(format: NativeFormat, area: string): { head: string; tail: string } {
-  const title = `${area ? `# MEX rules for ${area}` : "# MEX rules"}\n\n${PRECEDENCE_LINE}`;
+  const title = `${area ? `# MEX rules for ${area}` : "# MEX rules"}\n\n${PRECEDENCE_LINE}\nReport a wrong rule with \`mex wrong <id> "<reason>"\`.`;
   if (format === "claude-rules" && area) {
     return { head: `---\npaths:\n  - "${area}/**"\n---\n${GENERATED_LINE}\n${title}\n\n`, tail: "" };
   }

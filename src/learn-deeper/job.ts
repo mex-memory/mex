@@ -13,7 +13,7 @@ import type { RecordWriter } from "../record/index.js";
 import { refreshOwnUsage } from "../record/own-usage.js";
 import { readConflict } from "../review/conflicts.js";
 import { ANCHOR_KINDS, githubReviewLines, withVerifiedAnchors, type AnchorKind, type AnchorResult, type CheckContext, type ReadReviewLines } from "./anchors.js";
-import { coverageKey, learningProof, makeNoteProof, noteKey, saveSourceReads, SourceRef, sourceRead, sourceRef, type TeamCoverage } from "./coverage.js";
+import { coverageKey, learningProof, makeNoteProof, noteKey, saveSourceReads, SourceRef, sourceRead, sourceRef, teamRetired, type TeamCoverage } from "./coverage.js";
 import { filteringPrompt, hasLearningEvidence, prepareEntries, RejectionReason, retryPrompt, selectedSources, ValidationDiagnostics, writingPrompt,
   type EarlierEntry, type PreparedEntry, type WriterModel } from "./entries.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
@@ -235,9 +235,9 @@ async function gateRound(context: Context, plan: LearningPlan, key: string, entr
 
     await propose(candidates, {
       projectPath: plan.checkout, home: writer.location.home, ...checked,
-      ...(team?.retired.size ? { sweep: { producer: "learn-deeper" as const,
+      ...(team?.retiredIds.size || team?.retired.size ? { sweep: { producer: "learn-deeper" as const,
         includes: (entry: KnowledgeEntry) => {
-          const retired = team.retired.has(claimHash(entry.text));
+          const retired = teamRetired(team, entry, notes.get(entry.mex.id), writer.setting(project, noteKey(entry.mex.id)));
           if (retired) swept.add(entry.mex.id);
           return retired;
         },

@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +11,34 @@ import (
 	"github.com/mex-memory/mex/native/record"
 	"path/filepath"
 )
+
+func TestSuppressedLearnedBumpDeliversScopedProse(t *testing.T) {
+	f := newFixture(t)
+	f.entry(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
+		producer: "learn-deeper", oneLine: "Use the stable accessor.", when: []string{"anti:oldAccessor()"}, level: "personal"})
+	f.verdict("mx_review1", held)
+	f.start("startup")
+	db, err := sql.Open("sqlite", filepath.Join(f.dir, "record.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE settings (scope TEXT,key TEXT,value TEXT); INSERT INTO settings VALUES ('project','learning.noise.mx_review1','{"stops":20,"ignored":3,"at":"2026-11-23T00:00:00Z"}')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := edited(f, "src/example.ts", "", "oldAccessor()")
+	if reply := preEdit(f, call); reply.Decision != "" {
+		t.Fatalf("suppressed rule stopped an edit: %+v", reply)
+	}
+	mustHave(t, f.send(f.event(contract.PostToolBatch, read(f.file("src/example.ts", ""), ""))), "Use the stable accessor.")
+	if _, err := db.Exec("DELETE FROM settings"); err != nil {
+		t.Fatal(err)
+	}
+	if reply := preEdit(f, call); reply.Decision != contract.Deny {
+		t.Fatalf("restored rule did not stop the edit: %+v", reply)
+	}
+}
 
 func TestLearnedBumpShowsFixAndRecordsTheOverride(t *testing.T) {
 	f := newFixture(t)

@@ -1,7 +1,7 @@
 import { object, positive, rows, SourceError } from "../forge.js";
 import { Reviewers } from "../reviewers.js";
-import { repository, sourceDigest, validAt, type SourceWindow } from "../source.js";
-import { cleanText, newCandidate, PR_BYTES, reviewerKey, safePath, safeRaw, type Gaps } from "./evidence.js";
+import { repository, validAt, type SourceWindow } from "../source.js";
+import { cleanText, evidenceDigest, newCandidate, PR_BYTES, reviewerKey, safePath, safeRaw, type Gaps } from "./evidence.js";
 import type { Familiarity } from "./familiarity.js";
 import { MAX_BLOB, oid, reviewRegions, type ReadReviewedFile, type RegionReader } from "./regions.js";
 import type { Candidate, ForgeSource, HarvestDeps, HarvestPlan, HarvestPoint, SearchPage } from "./types.js";
@@ -151,7 +151,7 @@ Promise<Array<{ count: number; points: HarvestPoint[]; next?: string }>> {
 }
 
 interface Comment { id: string; databaseId?: string; at: string; raw: string; login: string; }
-export interface Discussion { raw: string; reviewers: string[]; nodeIds: string[]; commentHashes: Record<string, string>; }
+export interface Discussion { raw: string; bodies: string[]; reviewers: string[]; nodeIds: string[]; commentHashes: Record<string, string>; }
 
 function directPermission(row: Raw, login: string): boolean | undefined {
   if (typeof row.authorCanPushToRepository === "boolean") return row.authorCanPushToRepository;
@@ -205,8 +205,9 @@ export class ReviewRead {
 
   discussion(comments: Comment[]): Discussion {
     const used = [...new Map(comments.map(comment => [comment.id, comment])).values()];
-    return { raw: used.map(comment => comment.raw).join("\n\n"), reviewers: [...new Set(used.map(comment => reviewerKey(this.client.repo.slug, comment.login)))],
-      nodeIds: used.map(comment => comment.id), commentHashes: Object.fromEntries(used.map(comment => [comment.id, sourceDigest(comment.raw)])) };
+    const bodies = used.map(comment => comment.raw);
+    return { raw: bodies.join("\n\n"), bodies, reviewers: [...new Set(used.map(comment => reviewerKey(this.client.repo.slug, comment.login)))],
+      nodeIds: used.map(comment => comment.id), commentHashes: Object.fromEntries(used.map(comment => [comment.id, evidenceDigest([comment.raw])])) };
   }
 }
 
@@ -364,13 +365,15 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     const description = prText && comments.length ? "\n\n" + prText : prText ?? "";
     const text = cleanText(followed.raw + description, gaps, read.reviewers);
     if (!text) return [];
-    return [newCandidate({ ...base, ...followedFields(followed), id: `gh:${source}:${pull}`, kind: source === "closed" ? "closed-pr" : "issue",
-      link, hash: sourceDigest(followed.raw + (prText ? "\n\n" + rawDescription : "")), text, prText }, { smallPr })];
+    const node = nodeId(row.id);
+    const nodeIds = prText ? [...followed.nodeIds, node ?? ""] : followed.nodeIds;
+    return [newCandidate({ ...base, ...followedFields(followed), nodeIds, id: `gh:${source}:${pull}`, kind: source === "closed" ? "closed-pr" : "issue",
+      link, hash: evidenceDigest(prText ? [...followed.bodies, rawDescription] : followed.bodies), text, prText }, { smallPr })];
   }
 
   const candidates: Candidate[] = [];
   if (prText && person(row.author)?.human) candidates.push(newCandidate({ ...base, id: `gh:pr:${pull}`, kind: "pr-text", link,
-    text: prText, prText, hash: sourceDigest(rawDescription), nodeIds: [], reviewers: [] }, { smallPr }));
+    text: prText, prText, hash: evidenceDigest([rawDescription]), nodeIds: [nodeId(row.id) ?? ""], reviewers: [] }, { smallPr }));
   for (const thread of threads) {
     const { row: position, root, path, id, comments } = thread;
     const followed = read.discussion(comments);
@@ -393,7 +396,7 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
       || afterPath !== undefined && afterPath !== path && familiarity.knows(comment.login, afterPath, pull, point.at));
     const number = comments[0]?.databaseId;
     candidates.push(newCandidate({ ...base, ...followedFields(followed), id: `gh:thread:${id}`, kind: "review-thread",
-      link: number ? `${link}#discussion_r${number}` : link, path, text, prText, hash: sourceDigest(followed.raw), code: location.code },
+      link: number ? `${link}#discussion_r${number}` : link, path, text, prText, hash: evidenceDigest(followed.bodies), code: location.code },
     { actedOn: location.actedOn, familiar, smallPr, hotUnknown: plan.inventory.hotPaths.includes(afterPath ?? path)
       && !deps.knownPaths?.has(afterPath ?? path) }));
   }

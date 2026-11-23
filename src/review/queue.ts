@@ -13,9 +13,12 @@ import { learningMetadata } from "../filter/metadata.js";
 import { sharingEnabled } from "../filter/repository.js";
 import { repoVocabulary, type RepoVocabulary } from "../filter/privacy.js";
 import { rows, storedItems, groupId, reviewEligible, legacyJudge, ReviewOffer, REVIEW_DAYS, REVIEW_VISIBLE, type ReviewRow, type StoredReview, type ReviewReader } from "./state.js";
+import { UpkeepReview, upkeepPrefix } from "../knowledge/upkeep.js";
+import { readCandidate } from "../judge/evidence.js";
+import { assertNoSecrets } from "../knowledge/gates.js";
 
 export interface ReviewMember { row: ReviewRow; item: StoredReview; revision: string; }
-export interface ReviewCard { id: string; entry: KnowledgeEntry; reason: string; sources: number; createdAt: string; expiresAt: string; checkedByModel: boolean; conflictsWith?: string[]; }
+export interface ReviewCard { id: string; entry: KnowledgeEntry; reason: string; sources: number; createdAt: string; expiresAt: string; checkedByModel: boolean; conflictsWith?: string[]; upkeep?: "noise" | "age" | "report"; }
 export interface ReviewGroup extends ReviewCard { members: ReviewMember[]; conflict?: StoredConflict; }
 export function memberRevision(row: ReviewRow, item: StoredReview): string { return hash(JSON.stringify([row, item])); }
 export function canonicalBytes(home: string, project: string, item: StoredReview): string | undefined {
@@ -32,6 +35,24 @@ export function canonicalBytes(home: string, project: string, item: StoredReview
 }
 export function snapshotReview(reader: ReviewReader, project: string, home: string, root: string, now = Date.now()): ReviewGroup[] {
   const pending = rows(reader, project);
+  const upkeep = pending.flatMap((row): ReviewGroup[] => {
+    if (!row.id.startsWith(upkeepPrefix)) return [];
+    const created = Date.parse(row.created_at), expires = created + REVIEW_DAYS * 86400000;
+    if (!Number.isFinite(created) || created > now || now >= expires || reader.setting(project, `knowledge.retired.${row.entry_id}`)) return [];
+    try {
+      const data = UpkeepReview.parse(JSON.parse(reader.setting(project, row.id) ?? "null"));
+      if (data.checkout !== root || data.id !== row.entry_id) return [];
+      if (data.kind === "age") {
+        const verified = JSON.parse(reader.setting(project, `knowledge.verified.${data.id}`) ?? "null");
+        if ((verified?.how === "person" || verified?.how === "judge") && Date.parse(verified.at) >= created) return [];
+      }
+      const found = readCandidate(data, root, home, project);
+      if (!found || hash(found.content) !== data.entryHash) return [];
+      assertNoSecrets(found.content);
+      return [{ id: row.id, entry: found.entry, reason: row.reason, sources: 1, createdAt: row.created_at,
+        expiresAt: new Date(expires).toISOString(), checkedByModel: false, upkeep: data.kind, members: [] }];
+    } catch { return []; }
+  });
   const conflicts = pending.flatMap((row): ReviewGroup[] => {
     const created = Date.parse(row.created_at), expires = created + REVIEW_DAYS * 86400000;
     if (row.reason !== "contradiction" || !Number.isFinite(created) || created > now || now >= expires) return [];
@@ -41,7 +62,7 @@ export function snapshotReview(reader: ReviewReader, project: string, home: stri
       expiresAt: new Date(expires).toISOString(), checkedByModel: !!conflict.entry.mex.source.model,
       conflictsWith: [...new Set(conflict.conflicts.map(other => other.id))], conflict, members: [] }];
   });
-  if (!sharingEnabled(reader, project, root)) return conflicts;
+  if (!sharingEnabled(reader, project, root)) return [...conflicts, ...upkeep];
   const stored = storedItems(reader, project), all = new Map<string, ReviewMember>();
   for (const row of pending.filter(row => row.reason !== "contradiction")) { const item = stored.get(row.id) ?? legacyJudge(reader, row); if (item) all.set(row.id, { row, item, revision: memberRevision(row, item) }); }
   // Compatibility for offers created before the Review writer was installed.
@@ -93,7 +114,7 @@ export function snapshotReview(reader: ReviewReader, project: string, home: stri
     group.createdAt = new Date(created).toISOString(); group.expiresAt = new Date(created + REVIEW_DAYS * 86400000).toISOString();
     return [group];
   }).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  return [...conflicts, ...shareable];
+  return [...conflicts, ...upkeep, ...shareable];
 }
 export function reviewQueue(options: KnowledgeOptions, now = Date.now()): { items: ReviewCard[]; waiting: number; hidden: number } {
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
