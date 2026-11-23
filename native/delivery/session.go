@@ -67,12 +67,13 @@ func lifecycleBlock(h *record.Hooks, ev contract.Event, env Environment, reason 
 }
 
 type known struct {
-	snap  *entries.Snapshot
-	byID  map[string]*entries.Item
-	senv  *shapeEnv
-	h     *record.Hooks
-	ev    contract.Event
-	cache map[string]string
+	snap        *entries.Snapshot
+	byID        map[string]*entries.Item
+	senv        *shapeEnv
+	retirements entries.Retirements
+	h           *record.Hooks
+	ev          contract.Event
+	cache       map[string]string
 }
 
 func loadKnown(h *record.Hooks, ev contract.Event, env Environment) (*known, error) {
@@ -81,6 +82,7 @@ func loadKnown(h *record.Hooks, ev contract.Event, env Environment) (*known, err
 		return nil, err
 	}
 	k := &known{snap: &snap, byID: map[string]*entries.Item{}, senv: &shapeEnv{recordDirectory: env.RecordDirectory, project: ev.ProjectID, checkout: ev.Checkout, hooks: h}, h: h, ev: ev, cache: map[string]string{}}
+	k.retirements.Directory = env.RecordDirectory
 	for i := range snap.Items {
 		k.byID[snap.Items[i].Entry.ID] = &snap.Items[i]
 	}
@@ -89,6 +91,11 @@ func loadKnown(h *record.Hooks, ev contract.Event, env Environment) (*known, err
 		k.byID[it.Entry.ID] = &it
 	}
 	return k, nil
+}
+
+func (k *known) close() {
+	k.senv.close()
+	k.retirements.Close()
 }
 
 func (k *known) verdict(id string) string {
@@ -108,7 +115,7 @@ func (k *known) verdict(id string) string {
 // a pointer or a re-derived recipe, or nothing when the verdict withholds it.
 func (k *known) oneLine(id, moment string) (shaped, bool) {
 	it := k.byID[id]
-	if it == nil || it.Entry.Learned() {
+	if it == nil || it.Entry.Learned() || !k.retirements.Allows(k.ev.ProjectID, it) {
 		return shaped{}, false
 	}
 	s := shape(candidate{item: it, moment: moment, tier: tierFile, exempt: true}, k.verdict(id), k.senv)
@@ -164,13 +171,13 @@ func recovery(h *record.Hooks, ev contract.Event, env Environment, previous, bud
 	if err != nil {
 		return "", err
 	}
-	defer k.senv.close()
+	defer k.close()
 	var plan []planned
 	var rest []string
 	for i := len(given) - 1; i >= 0; i-- { // newest first
 		g := given[i]
 		it := k.byID[g.EntryID]
-		if it != nil && it.Entry.Learned() {
+		if it != nil && (it.Entry.Learned() || !k.retirements.Allows(ev.ProjectID, it)) {
 			continue
 		}
 		if it == nil || !coversAny(it, files) {
@@ -230,7 +237,7 @@ func resumeCorrections(h *record.Hooks, ev contract.Event, env Environment) (str
 	if err != nil {
 		return "", err
 	}
-	defer k.senv.close()
+	defer k.close()
 	var plan []planned
 	used := 0
 	for _, g := range given {
@@ -238,6 +245,9 @@ func resumeCorrections(h *record.Hooks, ev contract.Event, env Environment) (str
 			continue
 		}
 		it := k.byID[g.EntryID]
+		if it != nil && !k.retirements.Allows(ev.ProjectID, it) {
+			continue
+		}
 		var p planned
 		switch {
 		case it == nil || k.verdict(g.EntryID) == broken:
@@ -279,7 +289,7 @@ func subagentStartBrief(h *record.Hooks, ev contract.Event, env Environment) (st
 	if err != nil {
 		return "", err
 	}
-	defer k.senv.close()
+	defer k.close()
 	var plan []planned
 	used := entries.EstimateTokens(brief.Priority)
 	for i := len(given) - 1; i >= 0; i-- {
