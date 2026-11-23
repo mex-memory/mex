@@ -30,7 +30,18 @@ const ForgeSource = SourceRef.refine(source => {
 });
 const Shared = z.object({ id: EntryIdSchema, claim: hash, sources: z.array(ForgeSource).max(8) }).strict();
 export type SharedCoverage = z.infer<typeof Shared>;
-const manifest = z.object({ version: z.literal(1), rule_files: z.array(z.unknown()).max(10_000), learn_deeper: z.array(Shared).max(2048).optional() }).passthrough();
+const portableNetwork = z.object({
+  id: EntryIdSchema,
+  url: z.string().max(2048),
+  hash,
+  nodes: z.array(z.string().regex(/^[A-Za-z0-9_+/=-]{1,200}$/u)).max(64),
+  commentHashes: z.record(z.string().regex(/^[A-Za-z0-9_+/=-]{1,200}$/u), hash).optional(),
+}).strict();
+const manifest = z.object({
+  version: z.literal(1), rule_files: z.array(z.unknown()).max(10_000),
+  learn_deeper: z.array(Shared).max(2048).optional(),
+  learn_deeper_network: z.array(portableNetwork).max(2048).optional(),
+}).passthrough();
 
 export function parseManifest(raw: string | undefined): z.infer<typeof manifest> | undefined {
   if (raw === undefined) return undefined;

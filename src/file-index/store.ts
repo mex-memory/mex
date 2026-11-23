@@ -16,7 +16,7 @@
 import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { shortHash } from "../record/project.js";
@@ -186,13 +186,20 @@ function waitForSharing(attempt: number): void {
   while (Date.now() < until) { /* the other opener closes within a moment */ }
 }
 
+function sqliteFile(file: string): string {
+  if (process.platform !== "win32" || file.startsWith("\\\\?\\")) return file;
+  const full = resolve(file);
+  // Node can create the directory past MAX_PATH. SQLite still needs the extended path or it cannot open the file.
+  return full.length >= 240 ? `\\\\?\\${full}` : file;
+}
+
 function createFile(file: string, schema: string): DatabaseSync {
   const { DatabaseSync } = sqliteModule();
   let last: unknown;
   for (let attempt = 0; ; attempt++) {
     let db: DatabaseSync | undefined;
     try {
-      db = new DatabaseSync(file);
+      db = new DatabaseSync(sqliteFile(file));
       db.exec("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA page_size=4096;");
       db.exec(schema);
       return db;

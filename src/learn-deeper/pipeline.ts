@@ -41,6 +41,8 @@ import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harve
 import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
 import { gitHistory, proveEntry, quoteChecks, type ProofContext, type ProofJudgment, type ProofResult } from "./prove.js";
 import { LESSON_PAIR_BATCH, MEANING_PURPOSE, meaningPrompt, meaningVerdicts, type MeaningQuestion, type MeaningVerdict } from "./meaning.js";
+import { dispositionKey, mergeDispositions, readDispositions, type CandidateDisposition } from "./dispositions.js";
+import { preserveWaiting } from "./review-policy.js";
 import { routeEntry } from "./route.js";
 import { parseTriage, triageCounts, triagePrompt, type TriageResult } from "./triage.js";
 import { packClusters, parseWriter, repairPrompt, writerPrompt, type WriterContext, type WriterEntry } from "./write.js";
@@ -61,6 +63,8 @@ export const PIPELINE_LIMITS = {
 /**
  * What the first triage batch writes. Strong kept items go out as usual. When that batch kept
  * none, the early writer call still runs, on the best-supported kept items, and they wait for a tick.
+ * A kept item with no acted-on or familiar support is not evidence yet: it stays for the full window
+ * instead of spending a writer call the later pass would drop.
  * Ranking matches clustering, without the strong bonus those items do not have.
  */
 export function earlyLessons(kept: readonly Triaged[], limit: number): { items: Triaged[]; waiting: boolean } {
@@ -70,7 +74,7 @@ export function earlyLessons(kept: readonly Triaged[], limit: number): { items: 
   const strong = eligible.filter(item => item.candidate.signal === "strong").slice(0, limit);
   if (strong.length) return { items: strong, waiting: false };
   const score = (item: Triaged) => (item.candidate.weights.actedOn ? 2 : 0) + (item.candidate.weights.familiar ? 1 : 0);
-  const ranked = [...eligible].sort((a, b) => score(b) - score(a)
+  const ranked = eligible.filter(item => score(item) > 0).sort((a, b) => score(b) - score(a)
     || b.candidate.at.localeCompare(a.candidate.at) || a.candidate.id.localeCompare(b.candidate.id));
   return { items: ranked.slice(0, limit), waiting: ranked.length > 0 };
 }
@@ -168,6 +172,19 @@ function save({ writer, job }: Context, name: string, value: unknown): void {
 function load<T>(context: Context, name: string): T | undefined {
   const raw = context.writer.setting(context.job.project_id!, key(context.job, name));
   return raw ? JSON.parse(raw) as T : undefined;
+}
+
+/** A durable per-candidate reason. The key is not job-scoped, so cleanup keeps it. */
+function noteDispositions(context: Context, rows: readonly CandidateDisposition[]): void {
+  if (!rows.length || !context.job.project_id) return;
+  const project = context.job.project_id;
+  const stored = dispositionKey(context.job.id);
+  const merged = mergeDispositions(readDispositions(context.writer.setting(project, stored)), rows);
+  const saved = context.writer.db.prepare(`INSERT INTO settings(scope,key,value)
+    SELECT ?,?,? FROM jobs WHERE id=? AND owner=? AND state='running'
+    ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value`)
+    .run(project, stored, JSON.stringify(merged), context.job.id, context.job.owner);
+  if (!saved.changes) throw new Error("Learning lost its job before saving.");
 }
 
 /** One learned entry of a run, as the review list shows it (job E2; the Hub's Review page reads the same rows). */
@@ -446,6 +463,8 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   }
   const refusals = reviewRefusals(context.writer, project, plan);
   const allowed = clusters.filter(cluster => !refusals.cluster(cluster));
+  noteDispositions(context, clusters.filter(cluster => !allowed.includes(cluster)).flatMap(cluster =>
+    cluster.members.map(member => ({ id: member.candidate.id, disposition: "dropped" as const, detail: "refused" }))));
   add(counts, "cluster.forgotten", clusters.length - allowed.length);
   if (!allowed.length) {
     add(state.counts, "cluster.forgotten", clusters.length);
@@ -457,6 +476,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   const writerContext: WriterContext = { linters: linters(deps.tree),
     refused: new Map([...near].map(([cluster, entries]) => [cluster, entries.map(entry => entry.claim ?? entry.text)])) };
   let first = await call(input, `${name}.write`, writerPrompt(clusters, writerContext), "best", clusters.length);
+  if (first.lost) noteDispositions(context, clusters.flatMap(cluster => cluster.members.map(member => ({ id: member.candidate.id, disposition: "interrupted" as const }))));
   add(counts, "tokens.write", first.tokens);
   const byKey = new Map(clusters.map(cluster => [cluster.key, cluster]));
   let parsed = parseWriter(first.text, clusters);
@@ -504,7 +524,9 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
       if (refusedDraft(proof.draft)) { add(counts, "cluster.forgotten"); continue; }
       if ("dropped" in item) {
         add(counts, "dropped");
-        add(counts, `proof-dropped.${proofDropReason(item.dropped)}`);
+        const detail = proofDropReason(item.dropped);
+        add(counts, `proof-dropped.${detail}`);
+        noteDispositions(context, proof.cluster.members.map(member => ({ id: member.candidate.id, disposition: "proof-downgrade", detail })));
         continue;
       }
       const claim = claimHash(item.proposal.text);
@@ -517,6 +539,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
       if (team?.retired.has(claim) || team?.claimed.has(claim)) { add(counts, "team-covered"); continue; }
       if (!proof.cluster.earlier && duplicate(item.proposal.text, proof.claim)) {
         add(counts, "duplicate-existing");
+        noteDispositions(context, proof.cluster.members.map(member => ({ id: member.candidate.id, disposition: "duplicate" })));
         continue;
       }
       if (proof.draft.route === "decision" || proof.draft.route === "ruled-out") {
@@ -877,6 +900,7 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       const reply = await call(input, `triage.${state.triaged}`, triagePrompt(candidates), "cheap", 0);
       add(state.counts, "tokens.triage", reply.tokens);
       const outcome = parseTriage(reply.text, candidates);
+      if (reply.lost) noteDispositions(context, candidates.map(candidate => ({ id: candidate.id, disposition: "interrupted" as const })));
       if (outcome.missing.length && !reply.lost) {
         // What the reply left out, or all of an unreadable one, is asked for once more. The cursor is already past it.
         const left = candidates.filter(candidate => outcome.missing.includes(candidate.id));
@@ -896,12 +920,17 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       const issueIds = new Set(candidates.filter(candidate => candidate.kind === "issue").map(candidate => candidate.id));
       add(state.counts, "trial.issues", outcome.results.filter(result => result.keep && issueIds.has(result.id)).length);
       for (const [category, n] of Object.entries(dropped)) add(state.counts, `triage-dropped.${category}`, n);
+      noteDispositions(context, [
+        ...outcome.results.filter(result => !result.keep).map(result => ({ id: result.id, disposition: "dropped" as const, detail: result.category })),
+        ...outcome.missing.map(id => ({ id, disposition: "bad-output" as const })),
+      ]);
       add(state.counts, "triage-missing", outcome.missing.length);
       state.triaged++;
       let results = 0;
       if (!state.early) {
         // First rules early. Strong items of this batch are written now. A batch that kept none
-        // still spends the early writer call on its best-supported items, saved as waiting rules.
+        // still spends the early writer call on kept items that were acted on or are familiar,
+        // saved as waiting rules. An unsupported keep stays for the full window.
         const byId = new Map(candidates.map(candidate => [candidate.id, candidate]));
         const kept: Triaged[] = outcome.results.flatMap(result => {
           const candidate = byId.get(result.id);
@@ -948,7 +977,16 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       for (const cluster of clusters) add(state.counts, `cluster.${cluster.decision}`);
       const eligible = clusters.filter(cluster => !refusals.cluster(cluster));
       add(state.counts, "cluster.forgotten", clusters.length - eligible.length);
-      const write = applyDocQuota(eligible, 0.25, hasReviewHistory(plan, state)).filter(cluster => cluster.decision !== "drop"
+      noteDispositions(context, clusters.filter(cluster => !eligible.includes(cluster)).flatMap(cluster =>
+        cluster.members.map(member => ({ id: member.candidate.id, disposition: "dropped" as const, detail: "refused" }))));
+      const held = applyDocQuota(eligible, 0.25, hasReviewHistory(plan, state)).map(cluster => preserveWaiting(cluster, waiting));
+      noteDispositions(context, [
+        ...held.filter(cluster => alreadyWrittenEarly(cluster, early)).flatMap(cluster =>
+          cluster.members.map(member => ({ id: member.candidate.id, disposition: "earlier-suppressed" as const }))),
+        ...held.filter(cluster => cluster.why === "over the docs quota").flatMap(cluster =>
+          cluster.members.map(member => ({ id: member.candidate.id, disposition: "quota" as const }))),
+      ]);
+      const write = held.filter(cluster => cluster.decision !== "drop"
         && !(cluster.earlier && waiting.has(cluster.earlier) && cluster.pulls.length < 2)
         // Written early already, kept or not: the same evidence would be paid for twice.
         && !alreadyWrittenEarly(cluster, early));
@@ -966,6 +1004,8 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       if (!clusters) throw new Error("The run's sources were cleared. Start a new quote to learn again.");
       const quota = Math.max(0, Math.floor((state.counts["saved-other"] ?? 0) / 3) - (state.counts["saved-docs"] ?? 0));
       const selected = hasReviewHistory(plan, state) && clusters[0]?.source === "docs" ? clusters.slice(0, quota) : clusters;
+      noteDispositions(context, clusters.slice(selected.length).flatMap(cluster =>
+        cluster.members.map(member => ({ id: member.candidate.id, disposition: "quota" as const }))));
       add(state.counts, "doc-quota", clusters.length - selected.length);
       progress(`Writing and checking ${selected.length} lessons`);
       const results = await writeUnit(input, state, `batch.${state.written}`, selected);

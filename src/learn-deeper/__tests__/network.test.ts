@@ -9,7 +9,7 @@ import { serializeEntry, type EntryCheck } from "../../knowledge/entry.js";
 import { queueJob } from "../../record/background.js";
 import { openRecord } from "../../record/index.js";
 import { ownerId, registerJobKind, runOneBatch } from "../../record/jobs.js";
-import { ForgeClient } from "../forge.js";
+import { ForgeClient, SourceError } from "../forge.js";
 import { evidenceDigest } from "../harvest/index.js";
 import { networkGroups, networkProofKey, networkRowKey, NETWORK_KIND, type NetworkGroup } from "../network-proof.js";
 import { networkKind, networkObservations } from "../network.js";
@@ -100,6 +100,77 @@ it("leaves mismatched and inaccessible groups unchecked, and batches up to 100 n
   const graphql = vi.fn(async (_query, { ids }: { ids: string[] }) => ({ nodes: ids.map(id => ({ id, body: id })) }));
   expect((await networkObservations({ graphql: graphql as ForgeClient["graphql"] }, groups)).map(item => item.state)).toEqual(["same", "same"]);
   expect(graphql.mock.calls.map(([, { ids }]) => ids.length)).toEqual([100, 1]);
+});
+
+it("records unavailable when a complete source cannot be read, and floors a stale same", async () => {
+  vi.stubEnv("MEX_HOOK_BINARY", binary);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mex-net-")));
+  const checkout = join(root, "repo"), home = join(root, "home");
+  mkdirSync(checkout);
+  const writer = openRecord({ projectPath: checkout, home, create: true });
+  const registered = writer.checkout(checkout)!;
+  const project = registered.project_id;
+  const denied = new ForgeClient(repo, "fixture", async () => { throw new SourceError("unavailable"); });
+  try {
+    const notes = join(writer.location.home, "projects", project, "notes");
+    mkdirSync(notes, { recursive: true });
+    const { id, state: _state, ...group } = cases[0]!;
+    const saved = entry(id, { source: { type: "review", ref: url, producer: "learn-deeper" }, evidence: "review", checks: [check(group.url, group.hash)] });
+    writeFileSync(join(notes, id + ".md"), serializeEntry(saved));
+    writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, networkProofKey(id), JSON.stringify([group]));
+    registerJobKind(networkKind(() => at, async () => denied));
+    queueJob(writer, { kind: NETWORK_KIND, projectId: project, params: {
+      checkout: registered.path, origin: repo, source: repo, visibility: "public", agent: "codex", setup: "best-only", preferred: [],
+      head: "a".repeat(40), since: new Date(at).toISOString(), due: at,
+    } });
+    const owner = ownerId("background");
+    expect(await runOneBatch(writer, owner)).toBe("ran");
+    expect(JSON.parse(writer.setting(project, networkRowKey(group.url, group.hash))!).state).toBe("unavailable");
+    writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?").run(JSON.stringify({ state: "same", at: "2020-01-01T00:00:00.000Z" }), project, networkRowKey(group.url, group.hash));
+    const stale = await evaluate({ checkout: registered.path, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory });
+    expect(stale.results?.[0]?.checks[0]).toMatchObject({ status: "floor", reason: "the linked source check is stale" });
+    writer.db.prepare("UPDATE settings SET value=? WHERE scope=? AND key=?").run(JSON.stringify({ state: "unavailable", at: new Date(at).toISOString() }), project, networkRowKey(group.url, group.hash));
+    const unread = await evaluate({ checkout: registered.path, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory });
+    expect(unread.results?.[0]?.checks[0]).toMatchObject({ status: "floor", reason: "the linked source could not be read" });
+  } finally {
+    registerJobKind(networkKind());
+    writer.close();
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+it("imports portable node ids and notices one changed comment", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mex-net-share-")));
+  const checkout = join(root, "repo"), home = join(root, "home");
+  mkdirSync(join(checkout, ".mex"), { recursive: true });
+  const hash = evidenceDigest(["kept"]);
+  writeFileSync(join(checkout, ".mex", "sources.json"), JSON.stringify({ version: 1, rule_files: [], learn_deeper_network: [
+    { id: "mx_net009", url, hash, nodes: ["IC_fixture"], commentHashes: { IC_fixture: evidenceDigest(["kept"]) } },
+  ] }));
+  const writer = openRecord({ projectPath: checkout, home, create: true });
+  const registered = writer.checkout(checkout)!;
+  const graphql = vi.fn(async (_query: string, input: { ids: string[] }) => ({ nodes: input.ids.map(id => ({ id, body: "kept" })) }));
+  const client = new ForgeClient(repo, "fixture", async (_input, options) => {
+    if (options?.method !== "POST") return Response.json({ full_name: repo.slug });
+    const request = JSON.parse(String(options.body));
+    return Response.json({ data: await graphql(request.query, request.variables) });
+  });
+  try {
+    registerJobKind(networkKind(() => at, async () => client));
+    queueJob(writer, { kind: NETWORK_KIND, projectId: registered.project_id, params: {
+      checkout: registered.path, origin: repo, source: repo, visibility: "public", agent: "codex", setup: "best-only", preferred: [],
+      head: "a".repeat(40), since: new Date(at).toISOString(), due: at,
+    } });
+    expect(await runOneBatch(writer, ownerId("background"))).toBe("ran");
+    expect(JSON.parse(writer.setting(registered.project_id, networkProofKey("mx_net009"))!)[0].nodes).toEqual(["IC_fixture"]);
+    const changed = await networkObservations({ graphql: async (_query, input: { ids: string[] }) => ({ nodes: input.ids.map(id => ({ id, body: "edited" })) }) },
+      [{ url, hash, nodes: ["IC_fixture"], complete: true, commentHashes: { IC_fixture: evidenceDigest(["kept"]) } }]);
+    expect(changed.map(item => item.state)).toEqual(["edited"]);
+  } finally {
+    registerJobKind(networkKind());
+    writer.close();
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 it("stores only the groups behind the saved URL checks and marks oversized groups incomplete", () => {

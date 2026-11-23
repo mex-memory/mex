@@ -19,6 +19,7 @@ import { checkPatterns, type PatternCandidate } from "../knowledge/pattern-check
 import type { GateContext } from "../knowledge/gate.js";
 import { sanitizeText } from "../knowledge/gates.js";
 import { references, type References } from "../knowledge/references.js";
+import { linterRuleEnabled } from "./linter-config.js";
 import { backedBy, writerMembers, type Cluster, type Triaged } from "./cluster.js";
 import { command, type PatternStage, type PinnedTree } from "./git.js";
 import { contrastive, safePath } from "./harvest/evidence.js";
@@ -418,12 +419,16 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
       result.when = [];
     }
   }
-  // Trial: a lesson the repo's linter already has a rule for becomes "enable rule X", unless it's already enabled.
+  // Trial: suggest enabling a rule only when a parsed config shows it is not enforced.
+  // A name in a comment, or the absence of any rules table, is not evidence the rule exists or is on.
   if (draft.lint) {
     const config = await context.tree.read(draft.lint.config);
     if (config === undefined) failures.push(`the linter config ${draft.lint.config} isn't in the repo`);
-    else if (config.includes(draft.lint.rule)) return drop(`the linter config already names ${draft.lint.rule}`);
-    else result.lint = draft.lint;
+    else {
+      const enabled = linterRuleEnabled(config, draft.lint.rule);
+      if (enabled === true) return drop(`the linter config already names ${draft.lint.rule}`);
+      if (enabled === false) result.lint = draft.lint;
+    }
   }
   // An untested alternative may explain a decision. Only an ordinary
   // rejected pattern with a contrasting code pair can stop edits.

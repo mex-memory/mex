@@ -80,9 +80,13 @@ describe("scope globs", () => {
     ["**", "anything/at/all", true],
     ["", "x", true],
     ["./src/*.ts", "src/a.ts", true],
+    ["src\\**", "src/a.ts", true],
   ];
   it.each(cases)("%s against %s is %s", (glob, path, expected) => {
     expect(globToRegExp(glob).test(path)).toBe(expected);
+  });
+  it("folds case only on Windows", () => {
+    expect(globToRegExp("src/**").test("Src/A.ts")).toBe(process.platform === "win32");
   });
   it("finds the literal prefix for a range scan", () => {
     expect(globPrefix("apps/api/**")).toBe("apps/api/");

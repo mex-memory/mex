@@ -44,7 +44,7 @@ const PAGE_SIZE = 5;
 async function pending(writer: RecordWriter, projectId: string): Promise<Pending | undefined> {
   const [{ reviewRows, reviewRowsKey }, { snapshotNotes }, { parseEntry, isLearnedEntry }, { learnedRefused, learnedReviewedKey, learnedWaitingKey }] = await Promise.all([
     import("../learn-deeper/pipeline.js"), import("../knowledge/personal-store.js"), import("../knowledge/entry.js"), import("../knowledge/mutations.js")]);
-  const jobs = writer.db.prepare(`SELECT id FROM jobs WHERE kind='learn-deeper' AND project_id=? AND state IN ('done','done with gaps')
+  const jobs = writer.db.prepare(`SELECT id FROM jobs WHERE kind IN ('learn-deeper','learn-deeper-weekly') AND project_id=? AND state IN ('done','done with gaps','failed','cancelled')
     AND EXISTS (SELECT 1 FROM settings WHERE scope=jobs.project_id AND key=? || jobs.id AND value<>'[]')
     AND NOT EXISTS (SELECT 1 FROM settings WHERE scope=jobs.project_id AND key=? || jobs.id)
     ORDER BY finished_at DESC, id DESC`).all(projectId, reviewRowsKey(""), learnedReviewedKey("")) as Array<{ id: string }>;
@@ -117,6 +117,7 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   }
   const items = [...list.items].sort((a, b) => Number(a.row.route === "process-rule") - Number(b.row.route === "process-rule"));
   const decisions: Decision[] = items.map(({ entry }) => entry.mex.status === "active" ? "keep" : "wait");
+  const rewrites = new Map<string, string>();
   const waiting = decisions.filter(decision => decision === "wait").length;
   out([`Learn deeper learned ${items.length} ${items.length === 1 ? "rule" : "rules"} from your team.`,
     ...(waiting ? [`${waiting} ${waiting === 1 ? "waits" : "wait"} for your tick.`] : [])]);
@@ -127,7 +128,7 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
       const index = items.findIndex(({ row }) => row.entryId === item.entryId);
       if (index < 0) continue;
       const where = clean(`${item.commit.slice(0, 7)} ${item.path}${item.line ? `:${item.line}` : ""}`, context.mode.ascii);
-      out([`Rule ${index + 1} would have ${item.kind === "show" ? "been shown" : "stopped an edit"} at ${where}.`]);
+      out([`Rule ${index + 1} would have ${item.kind === "show" ? "been shown" : "stopped an edit"} at ${where}. Hypothetical replay of past commits, not an observed stop.`]);
     }
   } catch { /* A replay can be unavailable when git or the hook is missing. */ }
 
@@ -166,7 +167,7 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
     if (!item) continue;
     if (key === "v") {
       if (item.entry.mex.status !== "proposed") continue;
-      const result = await verifyOne(context, item.entry, next, out);
+      const result = await verifyOne(context, item.entry, next, out, rewrites);
       if (result === "quit") return undefined;
       if (!result) continue;
       decisions[index] = result;
@@ -178,7 +179,8 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
     import("../knowledge/mutations.js"), import("../knowledge/native-queue.js")]);
   const options = { projectPath: context.root, ...(context.home ? { home: context.home } : {}) };
   const reviewed = items.map(({ row, raw }, i) => ({ id: row.entryId, raw, support: row.support,
-    decision: drop && decisions[i] === "wait" ? "drop" as const : decisions[i]! }));
+    decision: drop && decisions[i] === "wait" ? "drop" as const : decisions[i]!,
+    ...(rewrites.get(row.entryId) ? { rewrite: rewrites.get(row.entryId) } : {}) }));
   let result;
   try { result = finishLearnedReview(list.jobId, context.projectId, reviewed, options); }
   catch {
@@ -188,19 +190,32 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   queueNativeRebuild(context.root, { local: true });
   const { kept, waiting: waits, dropped } = result;
   out([`Kept ${kept}${waits ? `, ${waits} waiting` : ""}${dropped ? `, dropped ${dropped}` : ""}. Use \`mex recall <id>\` to see a kept rule.`]);
+  if (waits || dropped) {
+    try {
+      const [{ expandTeam }, { sessionsActive }, { reviewBoundaryNotes }, { openRecord }] = await Promise.all([
+        import("../knowledge/team.js"), import("../learn-deeper/weekly-schedule.js"), import("../learn-deeper/review-policy.js"), import("../record/index.js")]);
+      const shared = reviewed.filter(item => item.decision !== "keep").map(item => item.id).filter(id => {
+        try { return !!expandTeam(id, options); } catch { return false; }
+      });
+      const record = openRecord(context.home ? { home: context.home, projectPath: context.root } : { projectPath: context.root });
+      let sessionActive = false;
+      try { sessionActive = sessionsActive(record, Date.now()); } finally { record.close(); }
+      out(reviewBoundaryNotes(shared, sessionActive));
+    } catch { /* The review is already saved. */ }
+  }
   return result;
 }
 
 /** Queue the check's recommendation alongside the person's other decisions. */
 async function verifyOne(context: ReviewListContext, entry: KnowledgeEntry, next: () => Promise<string>,
-  out: (lines: string[]) => void): Promise<Decision | "quit" | undefined> {
-  const [{ chooseAgent }, { verifyRule, VERIFY_ESTIMATE, VERIFY_TURNS, VERIFY_TIMEOUT_MS }, { runModel, ModelRunError, ModelToolLimitError }] = await Promise.all([
-    import("../learn-deeper/offer.js"), import("../learn-deeper/verify.js"), import("../model-runner/index.js")]);
+  out: (lines: string[]) => void, rewrites: Map<string, string>): Promise<Decision | "quit" | undefined> {
+  const [{ chooseAgent }, { verifyRule, VERIFY_ESTIMATE, VERIFY_CEILING, VERIFY_TURNS, VERIFY_TIMEOUT_MS }, { runModel, ModelRunError, ModelToolLimitError }, { gateEntry }, { references }] = await Promise.all([
+    import("../learn-deeper/offer.js"), import("../learn-deeper/verify.js"), import("../model-runner/index.js"), import("../knowledge/gates.js"), import("../knowledge/references.js")]);
   const agent = chooseAgent(context.projectId);
   if (!agent) { out(["Checking a rule needs Claude Code or Codex on PATH."]); return undefined; }
   const claim = clean(entry.mex.one_line, context.mode.ascii);
   out([`Ask ${agent === "claude" ? "Claude Code" : "Codex"} to check "${claim}"?`,
-    `Read-only, up to ${VERIFY_TURNS} ${agent === "codex" ? "tool calls" : "turns"} or ${VERIFY_TIMEOUT_MS / 60_000} minutes. About ${VERIFY_ESTIMATE.toLocaleString("en-US")} tokens, estimated.`,
+    `Read-only, up to ${VERIFY_TURNS} ${agent === "codex" ? "tool calls" : "turns"} or ${VERIFY_TIMEOUT_MS / 60_000} minutes. About ${VERIFY_ESTIMATE.toLocaleString("en-US")} tokens, estimated. The ceiling is ${VERIFY_CEILING.toLocaleString("en-US")} tokens; an answer over it is discarded.`,
     "Enter checks it. q leaves the review. Any other key cancels the check."]);
   const consent = await next();
   if (consent === "q" || consent === "quit") return "quit";
@@ -215,11 +230,30 @@ async function verifyOne(context: ReviewListContext, entry: KnowledgeEntry, next
   }
   if (!answer) { out(["The check returned no usable answer."]); return undefined; }
   const where = clean(answer.evidence.slice(0, 3).join(", "), context.mode.ascii);
-  if (answer.verdict === "keep" || answer.verdict === "drop") {
-    out([`Suggested decision: ${answer.verdict} (${where}). Review it before saving.`]);
-    return answer.verdict;
+  const source = references(context.root);
+  if (answer.verdict === "keep") {
+    try { gateEntry({ ...entry, mex: { ...entry.mex, status: "active" } }, source); }
+    catch {
+      out([`The check suggested keep (${where}), and the producer gate did not accept the rule. It stays waiting.`]);
+      return undefined;
+    }
+    out([`Suggested decision: keep (${where}). Review it before saving.`]);
+    return "keep";
   }
-  const suggested = clean(answer.text ?? "", context.mode.ascii);
-  out([`Suggested wording: ${suggested || "(none)"} (${where}). Use \`mex edit ${entry.mex.id}\` if you agree.`]);
-  return undefined;
+  if (answer.verdict === "drop") {
+    out([`Suggested decision: drop (${where}). Saving retires the rule.`]);
+    return "drop";
+  }
+  const suggested = answer.text?.trim();
+  if (!suggested) { out([`The check suggested a rewrite (${where}) and gave no wording.`]); return undefined; }
+  try {
+    const text = suggested.replace(/\s+/gu, " ");
+    gateEntry({ ...entry, text, mex: { ...entry.mex, one_line: text.slice(0, 1024), status: "proposed" } }, source);
+    rewrites.set(entry.mex.id, text);
+  } catch {
+    out([`The check suggested a rewrite (${where}), and the producer gate did not accept that wording.`]);
+    return undefined;
+  }
+  out([`Suggested wording is staged (${where}). Saving keeps it waiting until you tick it.`]);
+  return "wait";
 }

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { openRecord, type RecordWriter } from "../record/index.js";
-import { assertPersonQuote, EntryIdSchema, isLearnedEntry, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
+import { assertPersonQuote, EntryIdSchema, isLearnedEntry, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile, replaceEntryFile } from "./files.js";
 import { personalSnapshot, type KnowledgeOptions, type NoteInput, type PersonalEntry } from "./store.js";
 import { references } from "./references.js";
@@ -216,6 +216,8 @@ export interface LearnedReviewDecision {
   raw: string;
   decision: "keep" | "wait" | "drop";
   support: number;
+  /** A verify rewrite the producer gate already accepted. Saved as waiting, not as an edit command. */
+  rewrite?: string;
 }
 
 /** Apply the whole review or leave it pending if any entry changed while it was open. */
@@ -230,10 +232,24 @@ export function finishLearnedReview(jobId: string, project: string, decisions: r
     const files = new Map(before.files);
     const metadata: Array<() => void> = [];
     const outcome = { kept: 0, waiting: 0, dropped: 0 };
-    for (const { id, raw, decision, support } of decisions) {
+    for (const { id, raw, decision, rewrite } of decisions) {
       if (before.files.get(id) !== raw || tombstone(writer, project, id)) throw stale();
       const entry = parseEntry(raw);
       if (entry.mex.id !== id || !isLearnedEntry(entry.mex) || entry.mex.status === "retired" || learnedRefused(writer, project, entry, raw)) throw stale();
+      if (decision === "wait" && rewrite) {
+        const text = rewrite.trim().replace(/\s+/gu, " ");
+        const changed: KnowledgeEntry = { ...entry, text, mex: { ...entry.mex, one_line: text.slice(0, KNOWLEDGE_LIMITS.oneLineCharacters), status: "proposed" } };
+        const gated = gateEntry(changed, references(options.projectPath));
+        const after = serializeEntry(gated);
+        outcome.waiting++;
+        files.set(id, after);
+        metadata.push(() => {
+          putSetting(writer, project, learnedWaitingKey(id), "true");
+          const proof = noteReceipt(writer, project, id);
+          if (proof?.hash === sourceDigest(raw)) putSetting(writer, project, noteKey(id), JSON.stringify({ ...proof, hash: sourceDigest(after) }));
+        });
+        continue;
+      }
       if (decision === "drop") {
         const retired = { reason: "Dropped on the learn-deeper review list", by: "mex forget", at: now.toISOString().slice(0, 10) };
         outcome.dropped++;
@@ -248,7 +264,8 @@ export function finishLearnedReview(jobId: string, project: string, decisions: r
         const after = serializeEntry({ ...entry, mex: { ...entry.mex, status } });
         files.set(id, after);
         metadata.push(() => recordStatusChange(writer, project, entry, raw, after, status, now));
-      } else if (decision === "wait" && support < 2) {
+      } else if (decision === "wait") {
+        // Any support count. A later weekly run must not switch this on without a tick.
         metadata.push(() => putSetting(writer, project, learnedWaitingKey(id), "true"));
       }
     }

@@ -11,6 +11,7 @@
  * - every learned entry has at least one check.
  */
 import { createHash } from "node:crypto";
+import { slashPath } from "../file-index/glob.js";
 import { hasSecret } from "../knowledge/gates.js";
 import { KNOWLEDGE_LIMITS } from "../knowledge/entry.js";
 import type { Proposal, ProposedCheck } from "../knowledge/gate.js";
@@ -116,7 +117,8 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const { cluster, draft } = proof;
   const members = cluster.members.map(member => member.candidate);
   const checks: ProposedCheck[] = [];
-  for (const scope of proof.scope) checks.push({ kind: "scope", role: "complete", target: { glob: scope } } as ProposedCheck);
+  const scopes = proof.scope.map(slashPath);
+  for (const scope of scopes) checks.push({ kind: "scope", role: "complete", target: { glob: scope } } as ProposedCheck);
   const reviews = members.filter(candidate => candidate.link.startsWith("https://github.com/") && pullLink(candidate));
   for (const candidate of [...new Map(reviews.map(candidate => [candidate.link + "\n" + candidate.hash, candidate])).values()].slice(0, ROUTE_LIMITS.sourceChecks)) {
     checks.push({ kind: "source", role: "supporting", target: { url: candidate.link }, saw: { hash: candidate.hash } } as ProposedCheck);
@@ -134,7 +136,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   let bytes = 0;
   if (stop && proof.fix && proof.fixLiteral) {
     patternChecks.push({ kind: "pattern", role: "complete", target: {
-      scope: proof.fix.path, pattern: proof.fixLiteral, match: "literal", expect: "present",
+      scope: slashPath(proof.fix.path), pattern: proof.fixLiteral, match: "literal", expect: "present",
     } } as ProposedCheck);
     // Store a fixture whole or stay with prose. A narrowed, different sample
     // would no longer represent all the pairs selected for the check.
@@ -144,14 +146,19 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
         const pair = proof.pairs[at]!;
         const before = trimRegion(pair.before, ROUTE_LIMITS.fixtureLines, pair.anchor);
         const after = trimRegion(pair.after, ROUTE_LIMITS.fixtureLines);
-        return { path: pair.after.path, commit: pair.after.commit,
+        return { path: slashPath(pair.after.path), commit: pair.after.commit,
           before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
           after: { start: after.start, end: after.end, text: after.text, hash: after.hash } };
       });
       const size = pairs.reduce((sum, pair) => sum + Buffer.byteLength(pair.before.text) + Buffer.byteLength(pair.after.text), 0);
-      const baselines = item.type === stop ? proof.scope.map(scope => ({ kind: "pattern", role: "supporting", target: {
-        scope, pattern: item.pattern, match: item.match, expect: "at-most",
-      } } as ProposedCheck)) : [];
+      const baselines: ProposedCheck[] = [];
+      // Keep the stop count and the presence of a literal fixed form as separate observations.
+      if (item.type === stop || item.match === "literal") {
+        const expect = item.type === stop ? "at-most" : "present";
+        for (const scope of scopes) baselines.push({ kind: "pattern", role: "supporting", target: {
+          scope, pattern: item.pattern, match: item.match, expect,
+        } } as ProposedCheck);
+      }
       if (!pairs.length || bytes + size > ROUTE_LIMITS.fixtureBytes || checks.length + patternChecks.length + baselines.length + 1 > 32) continue;
       bytes += size;
       patternChecks.push({ kind: "fixture", role: "complete", target: { pairs, proves: [stored.length] }, saw: { ok: true } } as ProposedCheck, ...baselines);
@@ -186,10 +193,10 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
     producer: "learn-deeper", ...(cluster.earlier ? { id: cluster.earlier } : { key }),
     kind: draft.kind as Proposal["kind"], text, oneLine: proof.claim.slice(0, KNOWLEDGE_LIMITS.oneLineCharacters),
     ...(draft.aliases.length ? { aliases: draft.aliases } : {}),
-    ...(proof.fix && fixKinds.has(draft.kind) ? { fix: proof.fix } : {}),
+    ...(proof.fix && fixKinds.has(draft.kind) ? { fix: { ...proof.fix, path: slashPath(proof.fix.path) } } : {}),
     source: { type: sourceType, ref, ...(kept ? { quote: kept.quote, text: kept.text } : {}) },
     evidenceClass: sourceType, evidence: members.map(candidate => candidate.id).slice(0, 32),
-    anchors: { scope: proof.scope, ...(stored.length ? { when: stored.map(({ type, match, pattern }) => ({ type, match, pattern })) } : {}) },
+    anchors: { scope: scopes, ...(stored.length ? { when: stored.map(({ type, match, pattern }) => ({ type, match, pattern })) } : {}) },
     checks, model, label: `${label(cluster)}${migration.length ? " · migration in progress" : ""}`.slice(0, 80), status,
   };
   return { proposal, sources: members, status, proven };

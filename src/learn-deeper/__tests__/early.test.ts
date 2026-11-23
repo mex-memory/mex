@@ -26,15 +26,20 @@ describe("first rules when the first batch has no strong item", () => {
     expect(picked.items.map(item => item.candidate.id)).toEqual(["s"]);
   });
 
-  it("leaves an issue to be counted instead of writing it as a first rule", () => {
-    const issue = item({ id: "issue", lesson: "Require the version handshake." });
+  it("leaves issues and docs for the full window", () => {
+    const issue = item({ id: "issue", lesson: "Require the version handshake.", strong: true });
     issue.candidate.kind = "issue";
     issue.candidate.pull = undefined;
     const picked = earlyLessons([issue], 5);
     expect(picked).toEqual({ items: [], waiting: false });
-    const doc = item({ id: "doc", lesson: "Run the unit tests before pushing." });
+    const doc = item({ id: "doc", lesson: "Run the unit tests before pushing.", actedOn: true });
     doc.candidate.kind = "doc";
     expect(earlyLessons([doc], 5)).toEqual({ items: [], waiting: false });
+  });
+
+  it("leaves a kept item with no support for the full window", () => {
+    const bare = item({ id: "bare", lesson: "Rename this local before merging." });
+    expect(earlyLessons([bare], 5)).toEqual({ items: [], waiting: false });
   });
 
   it("writes the best-supported kept items as waiting rules when nothing strong was kept", () => {

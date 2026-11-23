@@ -496,6 +496,37 @@ describe("trials", () => {
     expect((await proveEntry(entry, cluster, context({ tree: tree(enabled) }))).dropped).toMatch(/already names no-console/u);
   });
 
+  it("does not treat a comment or an off switch as an enabled linter rule", async () => {
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
+    const entry = draft(cluster, { when: [], fix: undefined, lint: { config: ".eslintrc.json", rule: "no-console" } });
+    const off = await proveEntry(entry, cluster, context({ tree: tree({ ...HEAD, ".eslintrc.json": "{ \"rules\": { \"no-console\": \"off\" } }\n" }) }));
+    expect(off.dropped).toBeUndefined();
+    expect(off.lint).toEqual({ config: ".eslintrc.json", rule: "no-console" });
+    const comment = await proveEntry(entry, cluster, context({ tree: tree({ ...HEAD, ".eslintrc.json": "// no-console is the name people use\n" }) }));
+    expect(comment.dropped).toBeUndefined();
+    expect(comment.lint).toBeUndefined();
+  });
+
+  it("stores a count for a required literal as well as the anti-pattern", async () => {
+    const cluster = clusterOf([thread(4, "packages/api/src/users.ts"), thread(6, "packages/api/src/orders.ts")]);
+    const entry = draft(cluster, {
+      when: [
+        { type: "anti", match: "literal", pattern: "console.log(" },
+        { type: "required", match: "literal", pattern: "apiLogger.info(" },
+      ],
+    });
+    const proof = await proveEntry(entry, cluster, context());
+    const routed = routeEntry(proof, plan, model);
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proven).toBe(true);
+    expect(routed.proposal.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "pattern", role: "supporting",
+        target: { scope: "packages/api/**", pattern: "console.log(", match: "literal", expect: "at-most" } }),
+      expect.objectContaining({ kind: "pattern", role: "supporting",
+        target: { scope: "packages/api/**", pattern: "apiLogger.info(", match: "literal", expect: "present" } }),
+    ]));
+  });
+
   it("keeps a sourced alternative as prose until a rejected pattern passes contrast", async () => {
     const reason = thread(5, "packages/api/src/users.ts", { kind: "closed-pr", text: "Dates use date-fns, not moment. We decided against moment because it is too large." });
     const cluster = clusterOf([reason], "Dates use date-fns, not moment.");

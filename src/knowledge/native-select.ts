@@ -50,5 +50,6 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
 
 /** The folder an area covers: "" for the whole repo. */
 export function areaOf(scope: string): string {
-  return scope === "**" ? "" : scope.slice(0, -"/**".length);
+  const normalized = scope.replace(/\\/g, "/");
+  return normalized === "**" ? "" : normalized.slice(0, -"/**".length);
 }

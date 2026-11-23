@@ -90,7 +90,7 @@ Nothing learned goes into the session-start brief.
 
 Personal and shared learned rules follow the same table: a broken rule is withheld, and a changed one is replaced
 by a pointer ("MEX is re-checking a learned rule: `mex recall <id>`"), never served in full. The judge can confirm
-a rule and renew its baselines. When a symbol a rule names moves, the entry follows it.
+a rule and renew the baselines of the checks that failed. When a symbol a rule names moves, the entry follows it.
 
 Agents can report a wrong rule with `mex wrong <id> "<reason>"`, and every rule file says so. A reason can be typed:
 `contradicted <file>:<line>` (a line in this checkout), `rejected-by-ci`, `not-applicable`, or free text. From an
@@ -103,7 +103,16 @@ restoring it from Review starts the count again.
 
 The cited review comments are re-fetched weekly, 100 per request, within the automatic allowance. An edited or
 deleted comment makes the rule changed: it goes to the judge, and agents get a pointer instead of the rule until then.
-A comment that can't be read this week is skipped, not counted as deleted.
+When a complete group cannot be read, or the reply does not include every node, the observation is `unavailable`
+with the time it was attempted. An `unavailable` source is not treated as edited, and a `same` observation older
+than 14 days is stale. An incomplete group is left unwritten. A shared copy can carry the node ids and optional
+per-node hashes beside the manifest, without adding fields to a source a current reader already accepts. A checkout
+that has no local group imports that list the next time the network pass starts.
+
+A judge confirmation that a rule is still true re-records the baselines of the checks that failed: a pattern count,
+a quote or source hash, and the file hashes the check already names. A passing check is left as it was. A required
+literal is stored with its own pattern count, so a migration can be seen as the anti-pattern rising and the required
+form falling.
 
 A rule with no check that reads the repository (URL sources alone don't count) goes to Review after 90 days without
 a tick, a judge confirmation or a recorded follow. Nothing records a follow for a prose rule, because a delivery can't
@@ -117,18 +126,41 @@ why, fix and source. A lesson from one pull request waits for a tick regardless 
 goes to the next page and on the last one saves every decision together, `d` there drops the unticked, and `q` leaves
 without saving anything. If an entry changed meanwhile, nothing is saved and the list is shown again next time.
 
-A dropped rule is retired and its drop recorded in one step, so nothing delivers it again. A later lesson that is
-clearly the same is refused before the writer is paid, and one with the same trigger under other words is never
-saved. A lesson that is only about the same thing may be a different one: it is written with the dropped rules in
-view and waits for a tick, even when the code proves it. A rule the person unticked is never switched on by later
-evidence; a single-signal rule left waiting is listed again once a second pull request supports it.
+A person can leave an item waiting without refusing it. Enter on a row that is already proposed records a wait at
+any support count. That wait is not a refusal: the claim is not tombstoned, and a different lesson is not forgotten.
+Later weekly evidence may add support and list the item again, and the entry stays proposed until the person ticks
+it. Dropping a rule retires it. Unticking a rule that was already in force is a refusal, and a later lesson that is
+clearly the same is refused before the writer is paid. A lesson that is only about the same thing may be a different
+one: it is written with the dropped rules in view and waits for a tick, even when the code proves it.
+
+After a wait or a drop, the terminal says when a shared team copy is a separate copy and is unchanged, and that rule
+text an agent has already loaded stays until that agent starts again. Generated rule files are rebuilt when no agent
+session is running. Recall of a proposed or retired learned entry says the same. The Hub screen is deferred; it reads
+the same `learning.deep.review.<jobId>` rows the terminal lists, including rows from a weekly, failed, or cancelled run.
 
 `v` then a number offers to have the person's own agent read the checkout, read-only, and say whether a waiting rule
-holds; the estimate is shown first. It stops after 8 tool calls or two minutes, and a stopped run gives no answer.
+holds; the estimate is shown first, and so is the ceiling of 1.5 times that estimate. An answer over the ceiling is
+discarded and is not a review decision. One response already in flight can still be billed. The check stops after 8
+tool calls or two minutes, and a stopped run gives no answer. Evidence has to name a file in the checkout and a line
+that file contains. Keep is staged only when the producer gate accepts the rule as active. A rewrite is staged only
+when the gate accepts the new wording, and saving it leaves the rule waiting for a tick. A wording the gate rejects
+stays as it was. Drop remains the person's retirement on save.
 
 The list also replays the person's last 20 commits in the repository, by their git email, through delivery's own
 matching, at no cost: up to three lines on which rules would have stopped an edit, then which would have been shown
-when a file was touched.
+when a file was touched. Those lines are a hypothetical replay of past commits, not an observed stop. Paths from
+that replay are stored with forward slashes. On Windows, scope matching follows the checkout's spelling without
+regard to case. A scope is still stored with forward slashes.
+
+Each candidate that does not become a saved rule keeps a disposition outside the rows deleted at the end of the run:
+dropped, quota, bad output, an earlier unit already written, a proof downgrade, a duplicate, or an interrupted call
+whose answer was lost. The receipt stores ids and a short reason, not the source text.
+
+A linter name in a comment, or a file that is not a rules table, is not proof the rule exists or is enabled. An
+explicit off setting is not enabled. A rules table that does not list the rule can still suggest enabling it.
+Follow and ignore for issues, linter suggestions, and alternatives are counted from the settled delivery of that
+entry. An edit that matches more than one learned procedure is not counted as a follow for any of them. Real-agent
+metrics for this beta wait until the audit's other blockers are confirmed on their own.
 
 Without a terminal (an agent, a script, CI) nothing is asked; the next `mex` in a terminal asks.
 
@@ -153,11 +185,11 @@ and the IDs of entries the trials saved. Delivery outcomes are counted separatel
 | Trial | Setting and default | Cost | How outcomes are counted |
 | --- | --- | --- | --- |
 | Prose checks after Stop | `learning.stopCheck`, off | One cheap call for up to three scoped rules and up to 12 KiB of diff. Runs when agents are idle, within the 3% automatic allowance | The next prompt gets each pointer once. Recall or a change to the flagged line counts as followed. A delivered pointer with neither counts as ignored when the observation ends |
-| Procedures from Git history | `learning.procedures`, off | Up to five cheap calls within the 3% automatic allowance. The estimate includes them when enabled | A procedure waits for a tick. After it fires on file creation, the delivery receipt counts a successful edit in another role as followed. A settled delivery without one counts as ignored |
+| Procedures from Git history | `learning.procedures`, off | Up to five cheap calls within the 3% automatic allowance. The estimate includes them when enabled | A procedure waits for a tick. After it fires on file creation, the delivery receipt counts a successful edit in another role as followed, and only when that edit matches this procedure alone. A settled delivery without one counts as ignored |
 | Rejected alternatives | Included in learn deeper | Part of the writer call | The learning receipt counts alternatives present in the saved text. Speed bump receipts distinguish edits that heed the bump from explicit overrides by entry ID |
 | PR Decisions section | `learning.prDecisions`, off | No extra model call. The instruction adds one line to local generated rule files | Among PR descriptions read, count those with and without a nonempty Decisions section. The count describes adoption in that sample |
-| Linter suggestions | Included in learn deeper | Part of the writer call | The receipt counts saved suggestions to enable a linter rule. Speed bump outcomes can be read by entry ID when a bump fires |
-| Closed issues | `learning.deep.issues`, off | Qualifying issues spend from the learning estimate | The receipt counts issue sources kept after sorting. For saved entries with issue evidence, read the usual delivery receipts by entry ID |
+| Linter suggestions | Included in learn deeper | Part of the writer call | The receipt counts saved suggestions to enable a linter rule. A settled delivery of that entry counts as followed or ignored. A name in a comment is not treated as enabled |
+| Closed issues | `learning.deep.issues`, off | Qualifying issues spend from the learning estimate | The receipt counts issue sources kept after sorting. A settled delivery of a saved entry with issue evidence counts as followed or ignored |
 
 Stop records paths and rule IDs and returns before the background job runs. The job checks the diff in an empty
 private directory and keeps diff text in memory for the call. Each pointer stores the rule ID, location and line

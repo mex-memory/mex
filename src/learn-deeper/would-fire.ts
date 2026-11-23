@@ -10,7 +10,7 @@ import { command } from "./git.js";
 export const WOULD_FIRE_LIMITS = { commits: 20, files: 200, lines: 3, logBytes: 4 << 20 } as const;
 
 export interface PastEdit { commit: string; path: string; added: string; removed: string; addedLines: Array<{ line: number; text: string }> }
-export interface WouldFireLine { entryId: string; commit: string; path: string; kind: "stop" | "show"; line?: number }
+export interface WouldFireLine { entryId: string; commit: string; path: string; kind: "stop" | "show"; line?: number; hypothetical: true }
 
 /** Parse `git log -p -U0` output (commits marked with a NUL line) into one edit per changed file. */
 export function parseEdits(log: string): PastEdit[] {
@@ -21,7 +21,7 @@ export function parseEdits(log: string): PastEdit[] {
     if (line.startsWith("\u0000commit ")) { commit = line.slice(8).trim(); current = undefined; continue; }
     if (line.startsWith("diff --git ")) { current = undefined; continue; }
     if (!current && line.startsWith("+++ ")) {
-      const path = line.slice(4).replace(/^b\//u, "").trimEnd();
+      const path = line.slice(4).replace(/^b\//u, "").trimEnd().replace(/\\/g, "/");
       if (path === "/dev/null" || !commit) { current = undefined; continue; }
       current = { commit, path, added: "", removed: "", addedLines: [] };
       edits.push(current);
@@ -92,11 +92,11 @@ export function wouldFire(entryFiles: readonly string[], edits: readonly PastEdi
       seen.add(match.entry);
       const item = { entryId: match.entry, commit: match.commit, path: match.path };
       if (match.type === "anchor-touch") {
-        shown.push({ ...item, kind: "show" });
+        shown.push({ ...item, kind: "show", hypothetical: true });
       } else {
         const edit = edits.find(edit => edit.commit === match.commit && edit.path === match.path);
         const line = edit?.addedLines.find(item => match.pattern && item.text.includes(match.pattern))?.line ?? edit?.addedLines[0]?.line;
-        stops.push({ ...item, kind: "stop", ...(line ? { line } : {}) });
+        stops.push({ ...item, kind: "stop", hypothetical: true, ...(line ? { line } : {}) });
       }
     }
   }

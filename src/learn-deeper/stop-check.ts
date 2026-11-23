@@ -21,6 +21,7 @@ import { registerJobKind, type EnqueueOptions, type EnqueueResult, type JobKind 
 import { shortHash } from "../record/project.js";
 import { command, PinnedTree, repoPath, revision } from "./git.js";
 import { promptEstimate } from "./plan.js";
+import { recordTrialDeliveryOutcomes } from "./trial-outcomes.js";
 import { sessionsActive } from "./weekly-schedule.js";
 import { replyJson } from "./reply.js";
 
@@ -214,6 +215,7 @@ function eachFile(writer: RecordWriter, folder: string, suffix: string, read: (f
 /** Same hook request handoff as the judge, with its own opt-in queue and spend. */
 export function queueStopChecks(writer: RecordWriter, queue: (writer: RecordWriter, options: EnqueueOptions) => EnqueueResult, now = Date.now()): void {
   settleStopChecks(writer, now);
+  recordTrialDeliveryOutcomes(writer);
   eachFile(writer, PENDING, ".json", (file, name) => {
     const raw = readBoundedTextFile(file, 16 << 10);
     if (!raw) return;

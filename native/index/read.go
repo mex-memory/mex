@@ -10,6 +10,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -318,7 +320,19 @@ func (r *Reader) scoped(glob string) ([]pathRow, error) {
 		return nil, err
 	}
 	prefix := globPrefix(glob)
-	var rows *sql.Rows
+	out, err := r.scopedQuery(pattern, prefix)
+	if err != nil || len(out) > 0 || prefix == "" || runtime.GOOS != "windows" {
+		return out, err
+	}
+	// The prefix range is case-sensitive, so Src/ is missing when the scope says src/.
+	return r.scopedQuery(pattern, "")
+}
+
+func (r *Reader) scopedQuery(pattern *regexp.Regexp, prefix string) ([]pathRow, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
 	if prefix != "" {
 		rows, err = r.db.Query("SELECT path,hash,lang,is_test,mtime_ns,reason FROM paths WHERE path>=? AND path<? ORDER BY path", prefix, prefix+"\U0010FFFF")
 	} else {
@@ -334,7 +348,7 @@ func (r *Reader) scoped(glob string) ([]pathRow, error) {
 		if err := rows.Scan(&row.path, &row.hash, &row.lang, &row.isTest, &row.mtime, &row.why); err != nil {
 			return nil, err
 		}
-		if pattern.MatchString(row.path) {
+		if pattern.MatchString(strings.ReplaceAll(row.path, `\`, "/")) {
 			out = append(out, row)
 		}
 	}

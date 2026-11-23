@@ -10,7 +10,9 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { MANIFEST_BYTES, MANIFEST_PATH, parseManifest, type SharedCoverage } from "../learn-deeper/coverage.js";
+import { openRecordReadOnly } from "../record/index.js";
 import { absolutePath } from "../record/project.js";
+import { networkProofKey, readNetworkGroups } from "../learn-deeper/network-proof.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { KnowledgeError } from "./contract.js";
 import { isLearnedEntry, serializeEntry } from "./entry.js";
@@ -56,13 +58,32 @@ function writeConfig(worktree: string): void {
 }
 
 /** What was read to build the team's knowledge, so teammates don't pay to read it again. */
-function writeSources(worktree: string, approved: SharedCoverage[]): void {
+function sharedNetwork(options: KnowledgeOptions, approved: SharedCoverage[]): Array<{ id: string; url: string; hash: string; nodes: string[]; commentHashes?: Record<string, string> }> {
+  if (!approved.length) return [];
+  let project;
+  try { project = knowledgeProject(options); } catch { return []; }
+  let reader;
+  try { reader = openRecordReadOnly(options); } catch { return []; }
+  if (!reader) return [];
+  try {
+    const rows = [];
+    for (const item of approved) {
+      for (const group of readNetworkGroups(reader.setting(project.projectId, networkProofKey(item.id)) ?? "[]")) {
+        rows.push({ id: item.id, url: group.url, hash: group.hash, nodes: group.nodes, ...(group.commentHashes ? { commentHashes: group.commentHashes } : {}) });
+      }
+    }
+    return rows.slice(0, 2048);
+  } finally { reader.close(); }
+}
+
+function writeSources(worktree: string, approved: SharedCoverage[], network: ReturnType<typeof sharedNetwork> = []): void {
   const scan = scanRuleFiles(worktree);
   const path = join(worktree, MANIFEST_PATH);
   const existing = parseManifest(readBoundedTextFile(path, MANIFEST_BYTES));
   const coverage = [...new Map([...(existing?.learn_deeper ?? []), ...approved].map(item => [item.id, item])).values()];
   const sources = { ...existing, version: 1, rule_files: scan.files.map(f => ({ path: f.path, hash: f.hash, agents: f.agents })),
-    ...(coverage.length ? { learn_deeper: coverage } : {}) };
+    ...(coverage.length ? { learn_deeper: coverage } : {}),
+    ...(network.length ? { learn_deeper_network: network } : {}) };
   parseManifest(`${JSON.stringify(sources, null, 2)}\n`);
   writeMetadata(path, sources);
 }
@@ -70,7 +91,7 @@ function writeSources(worktree: string, approved: SharedCoverage[]): void {
 /** Shared metadata and native files, also used by upgrade's reviewed worktree. */
 export function writeSharedKnowledgeFiles(options: KnowledgeOptions, approved: SharedCoverage[] = []): string[] {
   writeConfig(options.projectPath);
-  writeSources(options.projectPath, approved);
+  writeSources(options.projectPath, approved, sharedNetwork(options, approved));
   const native = rebuildNative(options, { sharedOnly: true, force: true });
   return [".mex/config.json", ".mex/sources.json", ...(existsSync(join(options.projectPath, ".mex/native.json")) ? [".mex/native.json"] : []), ...native.written ?? [], ...native.removed ?? [], ...native.unchanged ?? []];
 }
