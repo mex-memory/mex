@@ -310,8 +310,11 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
         failures.push(`${label} does not separate its flag and ok examples`);
         continue;
       }
-      if (proven.length !== real.length) {
-        failures.push(`${label} isn't proven on every pair: ${[...new Set(real.map(o => o.verdict?.reason).filter(Boolean))].join("; ")}`);
+      // A pair the pattern misses isn't counter-evidence: that member may show the lesson in another shape. The
+      // counter-evidence is a match in fixed code or the "ok" example, checked above. The fixture keeps only the
+      // pairs the pattern was proven on.
+      if (!proven.length) {
+        failures.push(`${label} isn't proven on any pair: ${[...new Set(real.map(o => o.verdict?.reason).filter(Boolean))].join("; ")}`);
         continue;
       }
       const migration = common.length > 0;
@@ -344,14 +347,21 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     else {
       result.fix = fix;
       const before = pairs.map(pair => pair.before.text).join("\n");
+      let introduced = 0, absent = 0;
       for (const literal of literalCandidates(fix.snippet, before)) {
-        if (await presentInScope(context.tree, result.scope, literal) === true) { result.fixLiteral = literal; break; }
+        introduced++;
+        const present = await presentInScope(context.tree, result.scope, literal);
+        if (present === true) { result.fixLiteral = literal; break; }
+        if (present === false) absent++;
+      }
+      // Code the fix introduced that is gone from its scope today means the team moved on: the pattern would stop
+      // edits in favour of a fix nobody uses. A fix that only removes code (`it.only` → `it`) introduces nothing to
+      // pin; its pattern stays, held by the fixture, the scope and the anti-pattern's count.
+      if (draft.route === "code-rule" && result.when.length && introduced > 0 && absent === introduced) {
+        failures.push("the code the fix introduced isn't in scope today, so the team may have moved on");
+        result.when = [];
       }
     }
-  }
-  if (draft.route === "code-rule" && result.when.length && !result.fixLiteral) {
-    failures.push("the fix has no identifying literal in scope today");
-    result.when = [];
   }
   // Trial: a lesson the repo's linter already has a rule for becomes "enable rule X", unless it's already enabled.
   if (draft.lint) {

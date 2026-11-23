@@ -93,12 +93,12 @@ For each entry:
 - route: code-rule (code an agent could write wrongly), process-rule (git, branches, commit or PR text, changelogs, releases, "run X before pushing"), decision (an approach the team chose), ruled-out (an approach the team tried or proposed and rejected), pitfall (a trap with a known cause), procedure (steps that go together).
 - kind: rule, decision, pitfall, procedure or recipe.
 - claim: the rule in one plain line. why: the reason, one or two sentences, only what the evidence says.
-- clauses: split the claim and the why into clauses; each clause cites 1–4 exact quotes, copied character for character from a member's text, prText, or a code line (without its "N| " prefix), with that member's id. A clause the evidence doesn't say must not be written.
+- clauses: split the claim and the why into clauses. The claim's clauses come first, and each one's text is copied exactly from the claim, so together they make up the whole claim; then the why's clauses. Each clause cites 1–4 exact quotes, copied character for character from a member's text, prText, or a code line (without its "N| " prefix), with that member's id. A clause the evidence doesn't say must not be written; a claim any part of which no quote supports is dropped.
 - scope: the narrowest repository paths or globs the rule governs (files, else their folder with /**). For a process-rule use ["**"]. Leave [] when unsure.
 - when (code-rule, ruled-out, pitfall only): patterns that catch the mistake in an edit. type anti = the code the reviewer objected to, required = the fixed form, rejected = the rejected approach coming back. Prefer match literal: an exact snippet that names a real identifier, import or call from the "before" code (anti) or the "after" code (required), at least 4 characters, not a whole line of punctuation. Use match structural only when it names an identifier. Give no pattern rather than a guess: "no code anchor" is a correct and common answer.
 - symbol: a function, class or constant the rule is about, as {file, name}, only if it appears in the code shown.
 - fix: for a code-rule, the lines of an "after" block that show the team's fixed form, as {pair, start, end} using that block's line numbers; at most 10 lines.
-- examples: one short code line the rule should flag and one it should not.
+- examples: required with a when: one short code line the pattern must catch (flag) and the fixed line it must not catch (ok). A pattern that misses its own flag line or catches its ok line is removed.
 - aliases: short phrases someone might search for.
 - lint: when this lesson is an existing rule of the repo's linter (${context.linters.length ? context.linters.join(", ") : "none found"}), name {config, rule} instead of a pattern.
 - until: only when the evidence ties the rule to a version ("removed in v5"): {file, pointer, version}, for example {"file":"package.json","pointer":"/version","version":"5.0.0"}.

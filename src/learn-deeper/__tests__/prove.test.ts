@@ -118,7 +118,7 @@ describe("proving a learned rule", () => {
   });
 
 
-  it("drops a pattern after it misses one reviewed region even if the other pair proves it", async () => {
+  it("keeps a pattern proven on one pair when another member shows the lesson in another shape, and stores only that pair", async () => {
     const path = "packages/api/src/orders.ts";
     const other = thread(9, path, { code: {
       before: region(path, 4, "make()"),
@@ -126,8 +126,33 @@ describe("proving a learned rule", () => {
     } });
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts"), other]);
     const proof = await proveEntry(draft(cluster), cluster, context());
-    expect(proof.when).toEqual([]);
-    expect(proof.failures.join(" ")).toContain("isn't proven on every pair");
+    expect(proof.when).toHaveLength(1);
+    const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    const fixtures = routed.proposal.checks!.filter(check => check.kind === "fixture") as unknown as Array<{ target: { pairs: Array<{ path: string }>; proves: number[] } }>;
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0]!.target.proves).toEqual([0]);
+    expect(fixtures[0]!.target.pairs.map(pair => pair.path)).toEqual(["packages/api/src/users.ts"]);
+  });
+
+  it("keeps the pattern of a fix that only removes code, and drops it when the code a fix introduced is gone today", async () => {
+    const path = "packages/api/src/users.ts";
+    const removal = thread(5, path, { code: {
+      before: region(path, 10, "export function list() {\n  console.log(\"list\");\n  return rows;\n}"),
+      after: region(path, 10, "export function list() {\n  return rows;\n}"),
+      anchor: "  console.log(\"list\");",
+    } });
+    const cleanup = clusterOf([removal]);
+    const kept = await proveEntry(draft(cleanup, { fix: { pair: 0, start: 10, end: 11 }, examples: { flag: "console.log(user)", ok: "return rows" } }),
+      cleanup, context());
+    expect(kept.when.map(item => item.pattern)).toEqual(["console.log("]);
+    expect(kept.fixLiteral).toBeUndefined();
+    // The fix called apiLogger.info, and nothing in scope calls it today: the team moved on.
+    const moved = clusterOf([thread(3, path)]);
+    const gone = await proveEntry(draft(moved), moved, context({ tree: tree({ ...HEAD,
+      [path]: "export function list() { logger.write(\"list\"); }\n", "packages/api/src/orders.ts": "export function make() {}\n" }) }));
+    expect(gone.when).toEqual([]);
+    expect(gone.failures.join(" ")).toMatch(/the code the fix introduced isn't in scope today/u);
   });
 
   it("requires the flag example to demonstrate the pattern", async () => {
