@@ -224,7 +224,9 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
       const body = file ? readBoundedTextFile(file, 1024 * 1024) : p.source.text;
       if (!normalize(quote) || !body) return drop("quote-not-found");
       if (isLearnedEntry(entry.mex)) {
-        if (gated.mex.source.quote !== quote || !body.includes(quote)) return drop("quote-not-found");
+        if (!body.includes(quote)) return drop("quote-not-found");
+        // The claim was proven without it: a quote that can't be kept as it was said is left out.
+        if (gated.mex.source.quote !== quote) delete gated.mex.source.quote;
       } else if (!normalize(body).includes(normalize(quote))) return drop("quote-not-found");
     } catch { return drop("quote-not-found"); }
   }

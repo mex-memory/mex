@@ -6,7 +6,7 @@ import type { PinnedTree } from "../git.js";
 import type { Candidate, Region } from "../harvest/types.js";
 import { PIPELINE_LIMITS } from "../pipeline.js";
 import { addedOccurrences, proveEntry, processConfirmed, type ProofContext } from "../prove.js";
-import { routeEntry } from "../route.js";
+import { keptQuote, routeEntry } from "../route.js";
 import { parseTriage } from "../triage.js";
 import { packClusters, parseWriter, type WriterEntry } from "../write.js";
 
@@ -80,6 +80,17 @@ function draft(cluster: Cluster, over: Partial<WriterEntry> = {}): WriterEntry {
 
 const context = (over: Partial<ProofContext> = {}): ProofContext => ({
   tree: tree(HEAD), check: { projectPath: "." }, patterns: fakePatterns(), history: async () => "", ...over,
+});
+
+it("keeps a quote that runs over a line break, as the gate will look for it", () => {
+  const proof = (text: string, quote: string) => ({ cluster: { members: [{ candidate: { id: "doc:CONTRIBUTING.md#style", text } }] },
+    quotes: [{ id: "doc:CONTRIBUTING.md#style", quote }] }) as unknown as Parameters<typeof keptQuote>[0];
+  for (const quote of ["Handlers use the api\nlogger, never console.", "Handlers use the api logger,  never console."]) {
+    const kept = keptQuote(proof("# Style\n\nHandlers use the api\n  logger, never console.\n", quote))!;
+    expect(kept.quote).toBe("Handlers use the api logger, never console.");
+    expect(kept.text).toContain(kept.quote);
+  }
+  expect(keptQuote(proof("Handlers use the api logger.", "Handlers use console."))).toBeUndefined();
 });
 
 describe("proving a learned rule", () => {

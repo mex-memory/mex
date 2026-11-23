@@ -530,6 +530,8 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         }
         saveReviewRows(set, project, context.job.id, [...rows.values()]);
         for (const result of gated) if (result.status === "dropped") add(counts, `gate-dropped.${result.reason}`);
+        const unchecked = gated.filter(result => result.status === "dropped" && result.reason === "checks-unavailable").length;
+        if (unchecked) input.gaps.add(`${unchecked} ${unchecked === 1 ? "lesson" : "lessons"} could not be checked, so nothing was saved from ${unchecked === 1 ? "it" : "them"}.`);
         set.run(project, key(context.job, `${name}.done`), JSON.stringify({ accepted: acceptedCount, counts, gaps: [...input.gaps] }));
       },
     });

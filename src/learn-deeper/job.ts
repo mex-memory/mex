@@ -8,6 +8,7 @@ import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/co
 import { registerJobKind, type BatchContext, type BatchResult, type JobKind } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
 import { refreshOwnUsage } from "../record/own-usage.js";
+import { nativeBinary } from "../knowledge/check.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
 import { clearLearningChecks, origin, PinnedTree } from "./git.js";
 import { hosts } from "./hosts.js";
@@ -159,6 +160,8 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       if (weekly && weeklySchedule(writer, project) !== JSON.stringify(weekly)) return { checkpoint: state, done: true, summary: "A newer weekly schedule is in effect." };
       if (!learningOn(writer, project, params.checkout, now)) return { checkpoint: state, wait: "Waiting: MEX is off here" };
       if (weekly && sessionsActive(writer, now)) return waitForIdle(state, now);
+      // Without it nothing that is paid for could be checked, or saved.
+      if (!nativeBinary()) return { checkpoint: { ...state, retryAt: now + 60_000 }, wait: "Waiting: learning needs the installed check evaluator" };
       await clearLearningChecks(writer.location.home, job.id);
       recoverNotes(writer, project);
       try {

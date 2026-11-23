@@ -60,11 +60,13 @@ export function keptQuote(proof: ProofResult): { quote: string; text: string } |
   for (const { id, quote } of proof.quotes) {
     const candidate = members.get(id);
     if (!candidate) continue;
-    const prose = [candidate.text, candidate.prText].find(text => text?.replace(/\s+/gu, " ").includes(quote.replace(/\s+/gu, " ")));
+    // One spacing on both sides: a quote may run over a line break, and is kept on one line.
+    const prose = [candidate.text, candidate.prText].map(text => text?.replace(/\s+/gu, " ").trim())
+      .find(text => text?.includes(quote.replace(/\s+/gu, " ").trim()));
     if (!prose) continue;
     const words = quote.trim().split(/\s+/u);
     const cut = words.slice(0, ROUTE_LIMITS.quoteWords).join(" ");
-    if (cut && !hasSecret(cut) && prose.replace(/\s+/gu, " ").includes(cut)) return { quote: cut, text: prose };
+    if (cut && !hasSecret(cut) && prose.includes(cut)) return { quote: cut, text: prose };
   }
   return undefined;
 }

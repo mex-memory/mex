@@ -85,6 +85,11 @@ describe("producer validation", () => {
     const long = Array.from({ length: 26 }, () => "word").join(" ");
     expect(await save(learned(long, long))).toMatchObject({ reason: "invalid" });
     expect(await save(learned("Use checks.", "Use  checks."))).toMatchObject({ reason: "quote-not-found" });
+    // A quote naming a command nobody can verify is left out. The lesson was proven without it.
+    const named = "Run `npm run absent` first.";
+    const saved = await save(learned(named, named));
+    if (saved.status !== "accepted") throw new Error(JSON.stringify(saved));
+    expect(expandPersonal(saved.entryId, context).entry.mex.source.quote).toBeUndefined();
     const secret = "password=abcdefgh12345678";
     expect(await save(learned(secret, secret))).toMatchObject({ reason: "secret" });
   });
