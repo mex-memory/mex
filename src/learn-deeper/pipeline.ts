@@ -552,8 +552,10 @@ async function writeUnbacked(input: PipelineInput, state: PipelineState, name: s
   const early = new Set(load<string[]>(input.context, "early.members") ?? []);
   const items = (load<Triaged[]>(input.context, `${name}.unbacked`) ?? []).filter(item => !early.has(item.candidate.id));
   if (!items.length) return 0;
-  const refusals = reviewRefusals(input.context.writer, input.context.job.project_id!, input.plan);
-  const clusters = clusterLessons(items, { earlier: refusals.earlier }).filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs");
+  // No earlier entry is matched, and the key is its own: these were grouped with a rule they didn't back, so they must
+  // not be saved over it. The gate still drops a lesson that turns out to repeat one.
+  const clusters = clusterLessons(items).filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs")
+    .map(cluster => ({ ...cluster, key: sourceDigest(`own:${cluster.key}`).slice(7, 31) }));
   if (!load(input.context, `${name}.own.done`)) add(state.counts, "cluster.unbacked", items.length);
   return writeUnit(input, state, `${name}.own`, clusters);
 }
