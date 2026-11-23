@@ -381,6 +381,9 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         add(counts, "duplicate-existing");
         continue;
       }
+      if (proof.draft.route === "decision" || proof.draft.route === "ruled-out") {
+        item.proposal.decisionPairing = proof.draft.route;
+      }
       sources.set(item.proposal, item.sources);
       routedOf.set(item.proposal, { proof, proven: item.proven });
       const id = proof.cluster.earlier;
