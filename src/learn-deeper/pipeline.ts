@@ -29,7 +29,7 @@ import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/co
 import type { BatchContext } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
-import { applyDocQuota, clusterLessons, matchEarlier, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
+import { applyDocQuota, clusterLessons, matchEarlier, type Cluster, type ClusterOptions, type EarlierLearned, type Triaged } from "./cluster.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
 import { procedureProposal, procedureSamples, type ProcedureSample } from "./procedures.js";
@@ -55,6 +55,34 @@ export const PIPELINE_LIMITS = {
   /** Files staged for the native matcher's area check and the gate's observations. */
   stagedFiles: 2000,
 } as const;
+
+/**
+ * What the first triage batch writes. Strong kept items go out as usual. When that batch kept
+ * none, the early writer call still runs, on the best-supported kept items, and they wait for a tick.
+ * Ranking matches clustering, without the strong bonus those items do not have.
+ */
+export function earlyLessons(kept: readonly Triaged[], limit: number): { items: Triaged[]; waiting: boolean } {
+  const strong = kept.filter(item => item.candidate.signal === "strong").slice(0, limit);
+  if (strong.length) return { items: strong, waiting: false };
+  const score = (item: Triaged) => (item.candidate.weights.actedOn ? 2 : 0) + (item.candidate.weights.familiar ? 1 : 0);
+  const ranked = [...kept].sort((a, b) => score(b) - score(a)
+    || b.candidate.at.localeCompare(a.candidate.at) || a.candidate.id.localeCompare(b.candidate.id));
+  return { items: ranked.slice(0, limit), waiting: ranked.length > 0 };
+}
+
+/** Clusters for that early write. A weak lesson becomes a waiting rule instead of being dropped. */
+export function earlyClusters(items: readonly Triaged[], waiting: boolean, options?: ClusterOptions): Cluster[] {
+  return clusterLessons(items, options)
+    .filter(cluster => (waiting || cluster.decision !== "drop") && cluster.source !== "docs" && !cluster.earlier)
+    .map(cluster => waiting && cluster.decision === "drop"
+      ? { ...cluster, decision: "propose", waiting: true, why: "best supported in a first batch with no strong signal" }
+      : cluster);
+}
+
+/** Every member was already in the early write, so a later write would pay for the same evidence. */
+export function alreadyWrittenEarly(cluster: Cluster, early: ReadonlySet<string>): boolean {
+  return cluster.members.every(member => early.has(member.candidate.id));
+}
 
 export const Phase = z.enum(["harvest", "triage", "cluster", "write", "finish"]);
 export const trialReceiptKey = (jobId: string) => `learning.deep.trials.${jobId}`;
@@ -774,15 +802,19 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       state.triaged++;
       let results = 0;
       if (!state.early) {
-        // First rules early: the strongest single items of the first batch, written now.
+        // First rules early. Strong items of this batch are written now. A batch that kept none
+        // still spends the early writer call on its best-supported items, saved as waiting rules.
         const byId = new Map(candidates.map(candidate => [candidate.id, candidate]));
-        const strong: Triaged[] = outcome.results.filter(result => result.keep && byId.get(result.id)?.signal === "strong")
-          .map(result => ({ candidate: byId.get(result.id)!, triage: result })).slice(0, PIPELINE_LIMITS.earlyRules);
+        const kept: Triaged[] = outcome.results.flatMap(result => {
+          const candidate = byId.get(result.id);
+          return result.keep && candidate ? [{ candidate, triage: result }] : [];
+        });
+        const picked = earlyLessons(kept, PIPELINE_LIMITS.earlyRules);
         const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
-        const clusters = clusterLessons(strong, { earlier: refusals.earlier })
-          .filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs" && !cluster.earlier && !refusals.cluster(cluster));
+        const clusters = earlyClusters(picked.items, picked.waiting, { earlier: refusals.earlier })
+          .filter(cluster => !refusals.cluster(cluster));
         if (clusters.length) {
-          progress(`Writing the first ${clusters.length} rules`);
+          progress(picked.waiting ? `Writing the first ${clusters.length} rules, waiting for a tick` : `Writing the first ${clusters.length} rules`);
           results = await writeUnit(input, state, "early", clusters);
           save(context, "early.members", clusters.flatMap(cluster => cluster.members.map(member => member.candidate.id)));
         }
@@ -812,7 +844,7 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       const write = applyDocQuota(eligible, 0.25, hasReviewHistory(plan, state)).filter(cluster => cluster.decision !== "drop"
         && !(cluster.earlier && waiting.has(cluster.earlier) && cluster.pulls.length < 2)
         // Written early already, kept or not: the same evidence would be paid for twice.
-        && !cluster.members.every(member => early.has(member.candidate.id)));
+        && !alreadyWrittenEarly(cluster, early));
       // Count accepted review and history entries before spending on docs.
       const writerContext = { linters: linters(deps.tree) };
       const batches = [write.filter(cluster => cluster.source !== "docs"), write.filter(cluster => cluster.source === "docs")]

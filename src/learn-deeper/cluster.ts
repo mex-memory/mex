@@ -50,6 +50,11 @@ export interface Cluster {
   decision: ClusterDecision;
   /** Why the decision was made, for the receipt. */
   why: string;
+  /**
+   * Written from a first batch that had no strong item. Listed for a tick, and not delivered,
+   * even when a fixture proves the wording.
+   */
+  waiting?: boolean;
 }
 
 /** Thresholds, tuned on the lesson table in cluster.test.ts. */
@@ -292,6 +297,9 @@ export function backedBy(cluster: Cluster, ids: ReadonlySet<string>): Cluster {
   if (members.length === cluster.members.length) return cluster;
   const backed = total(members.map(item => ({ item, identifiers: new Set(identifiersOf(item)) })),
     cluster.earlier ? { id: cluster.earlier, support: cluster.prior } : undefined);
+  // A waiting rule stays waiting when only some of its members back the claim. Recomputing would
+  // call the same evidence a drop and the early writer call would have saved nothing.
+  if (cluster.waiting) return { ...backed, key: cluster.key, waiting: true, decision: "propose", why: cluster.why };
   return { ...backed, key: cluster.key };
 }
 
