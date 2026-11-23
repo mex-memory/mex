@@ -672,7 +672,8 @@ it("withholds private and historical docs and applies pinned duplicate checks", 
   mkdirSync(join(repo, ".claude", "rules"), { recursive: true });
   writeFileSync(join(repo, ".claude", "rules", "large.md"), "# Large\n" + "x".repeat(1 << 20) + "\n");
   mkdirSync(join(repo, "docs"));
-  writeFileSync(join(repo, "docs", "historical.md"), "# Historical guide\n\nThis document is historical.\n\nNEVER_USE_OLD_RENDERER.\n");
+  // A contributor guide (only those are read under docs/) that marks itself historical.
+  writeFileSync(join(repo, "docs", "historical.md"), "# Historical development guide\n\nThis document is historical.\n\nNEVER_USE_OLD_RENDERER.\n");
   writeFileSync(join(repo, "docs", "private.md"), "# Development\n\n<private>WITHHOLD_THIS_TEXT</private>\n");
   writeFileSync(join(repo, path), doc(quote + "\n" + duplicate));
   commit("Pin the rules and contributor guides");
