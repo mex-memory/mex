@@ -56,12 +56,14 @@ export function checkPatterns(candidates: readonly PatternCandidate[], scope: re
   const target = options.checkTree && options.checkIndex
     ? { checkout: options.checkTree, project_id: options.checkIndex.projectId, record_directory: options.checkIndex.recordDirectory }
     : liveTarget(options);
+  // Reading a scope of a thousand files takes tens of seconds on a slow disk. Only background learning waits for it,
+  // and a check cut short would cost a good rule its pattern.
   const run = spawnSync(binary, ["--pattern-check"], {
     input: JSON.stringify({
       ...target, scope,
       candidates: candidates.map(c => ({ type: c.type, match: c.match, pattern: c.pattern, objected: c.objected, fixed: c.fixed, anchor: c.anchor ?? "" })),
     }),
-    encoding: "utf8", timeout: 30_000, windowsHide: true, maxBuffer: 1 << 20,
+    encoding: "utf8", timeout: 120_000, windowsHide: true, maxBuffer: 1 << 20,
     env: { ...(options.env ?? process.env), MEX_BACKGROUND: "1" },
   });
   try {
