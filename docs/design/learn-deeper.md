@@ -93,14 +93,13 @@ A learned pattern whose stops are pushed through or reported wrong more than 10%
 stops firing and stays as text, with a Review item saying why. The entry, its pattern and its proof are kept, and
 restoring it from Review starts the count again.
 
-The cited review comments are re-fetched weekly, 100 per request, within the automatic allowance. An edited comment
-sends the rule to the judge; a deleted one withholds it; a comment that can't be read this week is skipped, not
-counted as deleted.
+The cited review comments are re-fetched weekly, 100 per request, within the automatic allowance. An edited or
+deleted comment makes the rule changed: it goes to the judge, and agents get a pointer instead of the rule until then.
+A comment that can't be read this week is skipped, not counted as deleted.
 
 A rule with no check that reads the repository (URL sources alone don't count) goes to Review after 90 days without
 a tick or a judge confirmation. Anchored rules have no time limit. When the team retires a rule on the default
-branch, the person's copy learned from the same source is retired too, by id or by that source, never by a
-similar-sounding claim from another lesson on the same pull request.
+branch, the person's copy is retired too: by id, by the source both were learned from, or by exactly the same claim.
 
 ## The review list
 
