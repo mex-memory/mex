@@ -29,7 +29,7 @@ import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/co
 import type { BatchContext } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
-import { applyDocQuota, clusterLessons, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
+import { applyDocQuota, clusterLessons, matchEarlier, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
 import { hasDecisionsSection } from "./harvest/forge.js";
@@ -225,7 +225,7 @@ function earlierEntries(writer: RecordWriter, project: string, plan: LearningPla
       const proof = learningProof(plan, raw, writer.setting(project, noteKey(id)));
       // Refusals survive status changes and rewritten receipts.
       if (!refused && !proof) continue;
-      out.push({ id, text: entry.text, scope: entry.mex.scope, patterns: (entry.mex.when ?? []).map(item => item.pattern),
+      out.push({ id, text: entry.text, claim: entry.mex.one_line, scope: entry.mex.scope, patterns: (entry.mex.when ?? []).map(item => item.pattern),
         refused, waiting: entry.mex.status === "proposed" && !!writer.setting(project, learnedWaitingKey(id)), support: proof?.support });
     } catch { /* An unreadable note is no earlier lesson. */ }
   }
@@ -238,6 +238,13 @@ function clusterEntryId(plan: LearningPlan, cluster: Cluster): string {
 }
 
 const clusterAliasKey = (id: string) => `learning.deep.cluster.${id}`;
+
+/** Whether two scope globs can cover the same file, judged by their fixed leading folders. */
+function scopesMeet(a: string, b: string): boolean {
+  const fixed = (glob: string) => glob.split(/[*?[{]/u, 1)[0]!;
+  const [x, y] = [fixed(a), fixed(b)];
+  return x.startsWith(y) || y.startsWith(x);
+}
 
 function reviewRefusals(writer: RecordWriter, project: string, plan: LearningPlan) {
   const earlier = earlierEntries(writer, project, plan);
@@ -252,11 +259,26 @@ function reviewRefusals(writer: RecordWriter, project: string, plan: LearningPla
   return {
     earlier,
     claim: (text: string) => claims.has(claimHash(text)),
-    cluster(cluster: Cluster, rematch = false): boolean {
+    /** Clearly the lesson someone refused: nothing is spent on it. */
+    cluster(cluster: Cluster): boolean {
       const id = clusterEntryId(plan, cluster);
       return idRefused(cluster.earlier) || idRefused(id) || idRefused(writer.setting(project, clusterAliasKey(id)))
         || cluster.members.some(member => claims.has(claimHash(member.triage.lesson)))
-        || (rematch && refused.length > 0 && clusterLessons(cluster.members, { earlier: refused }).some(group => group.earlier !== undefined));
+        || refused.some(entry => matchEarlier(cluster, entry) === "same");
+    },
+    /**
+     * Refused rules about the same thing, when this isn't clearly one of them. The lesson may be a different one,
+     * so it is written, but the writer is told what was refused and the result waits for a tick.
+     */
+    related(cluster: Cluster): PriorLesson[] {
+      return refused.filter(entry => matchEarlier(cluster, entry) === "related").slice(0, 8);
+    },
+    /** The trigger of a refused rule coming back under other words: it would stop the edits the person refused. */
+    trigger(when: ReadonlyArray<{ type: string; pattern: string }> | undefined, scope: readonly string[]): boolean {
+      // A narrower or broader spelling of it stops the same edits.
+      const meets = (a: string, b: string) => a.includes(b) || b.includes(a);
+      return (when ?? []).some(item => item.type !== "required" && refused.some(entry => entry.patterns.some(pattern => meets(pattern, item.pattern))
+        && entry.scope.some(a => scope.some(b => scopesMeet(a, b)))));
     },
   };
 }
@@ -298,14 +320,17 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     return saved.accepted;
   }
   const refusals = reviewRefusals(context.writer, project, plan);
-  const allowed = clusters.filter(cluster => !refusals.cluster(cluster, true));
+  const allowed = clusters.filter(cluster => !refusals.cluster(cluster));
   add(counts, "cluster.forgotten", clusters.length - allowed.length);
   if (!allowed.length) {
     add(state.counts, "cluster.forgotten", clusters.length);
     return 0;
   }
   clusters = allowed;
-  const writerContext: WriterContext = { linters: linters(deps.tree) };
+  const near = new Map(clusters.map(cluster => [cluster.key, refusals.related(cluster)] as const).filter(([, entries]) => entries.length));
+  add(counts, "cluster.near-refused", near.size);
+  const writerContext: WriterContext = { linters: linters(deps.tree),
+    refused: new Map([...near].map(([cluster, entries]) => [cluster, entries.map(entry => entry.claim ?? entry.text)])) };
   const first = await call(input, `${name}.write`, writerPrompt(clusters, writerContext), "best", clusters.length);
   add(counts, "tokens.write", first.tokens);
   const byKey = new Map(clusters.map(cluster => [cluster.key, cluster]));
@@ -342,10 +367,12 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         continue;
       }
       const claim = claimHash(item.proposal.text);
-      if (refusals.claim(item.proposal.text) || refusals.claim(proof.claim)) {
+      if (refusals.claim(item.proposal.text) || refusals.claim(proof.claim) || refusals.trigger(item.proposal.anchors?.when, proof.scope)) {
         add(counts, "cluster.forgotten");
         continue;
       }
+      // About something the person refused a rule on: a person decides, even when the code proves it.
+      if (near.has(proof.cluster.key)) item.proposal.status = "proposed";
       if (team?.retired.has(claim) || team?.claimed.has(claim)) { add(counts, "team-covered"); continue; }
       if (!proof.cluster.earlier && duplicate(item.proposal.text, proof.claim)) {
         add(counts, "duplicate-existing");
@@ -375,6 +402,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     // A review can be saved while the writer or the check evaluator is running.
     // Recheck under the gate's writer lock, then retry only the unaffected proposals.
     let blocked = new Set<Proposal>();
+    const held = new Set<Proposal>();
     const publish = () => propose(proposals, {
       projectPath: plan.checkout, home: context.writer.location.home, ...checked,
       validate(gate) {
@@ -387,9 +415,14 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         const current = reviewRefusals(gate, project, plan);
         blocked = new Set([...proposals, ...[...carry.values()].map(item => item.proposal)].filter(proposal => {
           const cluster = routedOf.get(proposal)!.proof.cluster;
-          return current.cluster(cluster, true) || current.claim(proposal.text) || current.claim(proposal.oneLine ?? "");
+          return current.cluster(cluster) || current.claim(proposal.text) || current.claim(proposal.oneLine ?? "")
+            || current.trigger(proposal.anchors?.when, proposal.anchors?.scope ?? []);
         }));
-        if (blocked.size) throw new Error("The review changed before learning could save.");
+        // A rule refused while the writer ran: a lesson about the same thing is kept, but not switched on.
+        for (const proposal of proposals) {
+          if (proposal.status !== "proposed" && !blocked.has(proposal) && current.related(routedOf.get(proposal)!.proof.cluster).length) held.add(proposal);
+        }
+        if (blocked.size || held.size) throw new Error("The review changed before learning could save.");
       },
       onAccepted(gate, accepted, gated) {
 
@@ -470,8 +503,10 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         await publish();
         break;
       } catch (error) {
-        if (!blocked.size) throw error;
-        add(counts, "cluster.forgotten", blocked.size);
+        if (!blocked.size && !held.size) throw error;
+        for (const proposal of held) proposal.status = "proposed";
+        held.clear();
+        if (blocked.size) add(counts, "cluster.forgotten", blocked.size);
         proposals = proposals.filter(proposal => !blocked.has(proposal));
         for (const [id, item] of carry) if (blocked.has(item.proposal)) carry.delete(id);
         blocked.clear();
@@ -484,7 +519,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   const firstPass = await verify();
   if (firstPass.failing === undefined) return firstPass.acceptedCount;
   const current = reviewRefusals(context.writer, project, plan);
-  const failing = firstPass.failing.filter(proof => !current.cluster(proof.cluster, true) && !current.claim(proof.claim));
+  const failing = firstPass.failing.filter(proof => !current.cluster(proof.cluster) && !current.claim(proof.claim));
   if (!failing.length) return (await verify({ entries: [], model: first.model })).acceptedCount ?? 0;
   let repair = { entries: [] as WriterEntry[], model: first.model };
   // Close the staged proof tree before opening the model's separate, empty workspace.
@@ -706,7 +741,8 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       add(state.counts, "cluster.forgotten", clusters.length - eligible.length);
       const write = applyDocQuota(eligible, 0.25, hasReviewHistory(plan, state)).filter(cluster => cluster.decision !== "drop"
         && !(cluster.earlier && waiting.has(cluster.earlier) && cluster.pulls.length < 2)
-        && !(cluster.earlier && cluster.members.every(member => early.has(member.candidate.id))));
+        // Written early already, kept or not: the same evidence would be paid for twice.
+        && !cluster.members.every(member => early.has(member.candidate.id)));
       // Count accepted review and history entries before spending on docs.
       const writerContext = { linters: linters(deps.tree) };
       const batches = [write.filter(cluster => cluster.source !== "docs"), write.filter(cluster => cluster.source === "docs")]

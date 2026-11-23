@@ -466,10 +466,11 @@ it("uses shared full receipts before triage and respects a deleted legacy rule",
     const job = due(writer, old, now);
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 0 });
-    expect(model).toHaveBeenCalledTimes(2);
+    // The lesson is the retired rule word for word, so it is refused before the writer is paid.
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter"]);
     expect(notes(writer, job).map(entry => entry.mex.status)).toEqual(["retired"]);
     expect(writer.setting(project, noteKey(seeded.entryId))).toBeUndefined();
-    expect(state(done).v2.counts).toMatchObject({ "covered-sources": 1, "team-covered": 1 });
+    expect(state(done).v2.counts).toMatchObject({ "covered-sources": 1, "cluster.forgotten": 1 });
   } finally { writer.close(); }
 }, 75_000);
 
