@@ -1,19 +1,22 @@
 import { resolve } from "node:path";
 import { jsonLines, object } from "../record/usage.js";
-import { buildModelCommand } from "./command.js";
-import { ModelRunError } from "./errors.js";
+import { buildModelCommand, readOnlyLimit } from "./command.js";
+import { ModelRunError, ModelToolLimitError } from "./errors.js";
 import { selectModel, type ModelAgent, type ModelSelection } from "./models.js";
 import { runModelProcess, MAX_PROCESS_TIMEOUT_MS, type ModelProcessOptions, type ModelProcessResult } from "./process.js";
 import type { AutomaticModelBatch } from "./budget-queue.js";
 import type { ConsentedModelBatch } from "./consent.js";
 
-export { ModelRunError } from "./errors.js";
+export { ModelRunError, ModelToolLimitError } from "./errors.js";
 export { ModelWaitError } from "./budget-queue.js";
 export { AGENT_MODELS, DEFAULT_MODELS, selectModel } from "./models.js";
 export type { AgentModelTable, ModelAgent, ModelRole, ModelSetup, ModelTable } from "./models.js";
 export const MAX_MODEL_PROMPT_BYTES = 1024 * 1024;
 export const MAX_MODEL_RESULT_BYTES = 1024 * 1024;
 export const MAX_MODEL_STREAM_BYTES = 8 * 1024 * 1024;
+
+const CODEX_TOOL_ITEMS = new Set(["command_execution", "file_change", "mcp_tool_call", "collab_tool_call",
+  "tool_call", "web_search", "dynamic_tool_call", "image_view", "image_generation", "todo_list"]);
 
 export interface ModelRequest extends ModelSelection {
   agent: ModelAgent;
@@ -57,16 +60,30 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
   request.signal?.addEventListener("abort", abort, { once: true });
   if (request.signal?.aborted) controller.abort();
   let text = "", hasResult = false, streamBytes = 0;
-  let outputError: "output" | "protocol" | undefined;
+  let streamFailure: "output" | "protocol" | "tool_limit" | undefined;
+  const tools = request.agent === "codex" && request.readOnlyTools ? new Set<string>() : undefined;
+  const toolLimit = readOnlyLimit(request.readOnlyTools?.maxTurns);
+  const stop = (reason: NonNullable<typeof streamFailure>) => {
+    streamFailure ??= reason;
+    controller.abort();
+  };
   const decoder = jsonLines(event => {
+    if (controller.signal.aborted) return;
     const item = object(event.item);
+    if (tools && typeof event.type === "string" && event.type.startsWith("item.")
+      && item && typeof item.type === "string" && CODEX_TOOL_ITEMS.has(item.type)) {
+      // Some calls only emit a completion. A start/update/completion trio is still one call.
+      if (typeof item.id !== "string" || !item.id) { stop("protocol"); return; }
+      tools.add(item.id);
+      if (tools.size >= toolLimit) { stop("tool_limit"); return; }
+    }
     const next = request.agent === "claude" && event.type === "result" ? event.result
       : request.agent === "codex" && event.type === "item.completed" && item?.type === "agent_message" ? item.text : undefined;
     if (typeof next !== "string") return;
-    if (Buffer.byteLength(next) > MAX_MODEL_RESULT_BYTES) { outputError = "output"; controller.abort(); return; }
+    if (Buffer.byteLength(next) > MAX_MODEL_RESULT_BYTES) { stop("output"); return; }
     // The terminal reply replaces intermediate assistant messages.
     text = next; hasResult = true;
-  }, () => { outputError = "protocol"; controller.abort(); }, MAX_MODEL_STREAM_BYTES);
+  }, () => stop("protocol"), MAX_MODEL_STREAM_BYTES);
   try {
     const invocation = buildModelCommand(request.agent, request.agent === "claude" ? "" : "-", { ...request, access: request.readOnlyTools ? "read" : "text", maxTurns: request.readOnlyTools?.maxTurns });
     const timeout = request.timeoutMs ?? 5 * 60_000;
@@ -78,16 +95,18 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
       totalTimeoutMs: Number.isFinite(timeout) ? Math.max(1, Math.min(MAX_PROCESS_TIMEOUT_MS, timeout)) : MAX_PROCESS_TIMEOUT_MS,
       onStdoutChunk: chunk => {
         streamBytes += chunk.length;
-        if (streamBytes > MAX_MODEL_STREAM_BYTES) { outputError = "output"; controller.abort(); }
+        if (streamBytes > MAX_MODEL_STREAM_BYTES) stop("output");
         else decoder.write(chunk);
       }, __internal: request.__internal,
     });
     decoder.end();
-    if (outputError) throw new ModelRunError(outputError, request.agent);
-    if (!hasResult) throw new ModelRunError("protocol", request.agent);
+    if (streamFailure || !hasResult) throw new ModelRunError("protocol", request.agent);
     return { ...result, text, selectedModel: model };
   } catch (error) {
-    if (outputError && !request.signal?.aborted) throw new ModelRunError(outputError, request.agent);
+    if (streamFailure && !request.signal?.aborted) {
+      if (streamFailure === "tool_limit") throw new ModelToolLimitError();
+      throw new ModelRunError(streamFailure, request.agent);
+    }
     throw error;
   } finally { request.signal?.removeEventListener("abort", abort); }
 }

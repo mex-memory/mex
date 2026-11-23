@@ -3,13 +3,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseEntry } from "../../knowledge/entry.js";
+import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
 import { propose, type Proposal } from "../../knowledge/gate.js";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob } from "../../record/jobs.js";
 import { reviewRowsKey, type ReviewRow } from "../../learn-deeper/pipeline.js";
 import { parseEdits } from "../../learn-deeper/would-fire.js";
-import { parseVerify } from "../../learn-deeper/verify.js";
+import { parseVerify, VERIFY_TIMEOUT_MS } from "../../learn-deeper/verify.js";
+import { learnedRefusalKey, learnedReviewedKey } from "../../knowledge/mutations.js";
 import { ZERO } from "../../record/usage.js";
 import { reviewLearned } from "../review-list.js";
 
@@ -75,7 +76,7 @@ it("lists learned rules, shows what would have stopped the person's own commits,
   const text = lines.join("\n");
   expect(text).toContain("[x] 1. Log through apiLogger");
   expect(text).toContain("[ ] 2. Read config");
-  expect(text).toMatch(/Would have stopped your own last commits:\n\s+[0-9a-f]{7} src\/api\.ts:2 · rule 1/u);
+  expect(text).toMatch(/Rule 1 would have stopped an edit at [0-9a-f]{7} src\/api\.ts:2/u);
   expect(parseEntry(readFileSync(notePath(b.entryId), "utf8")).mex.status).toBe("active");
   // Reviewed once: the next `mex` doesn't ask again.
   expect(await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "enter" })).toBeUndefined();
@@ -93,6 +94,7 @@ it("drops the unticked rules, and asks nothing without a terminal", async () => 
   expect(result).toEqual({ kept: 0, waiting: 0, dropped: 1 });
   // Retired with a tombstone: hidden everywhere, and never proposed again.
   expect(writer.setting(project, `knowledge.retired.${a.entryId}`)).toBeTruthy();
+  expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("retired");
 });
 
 it("leaves everything as it is when the person decides later", async () => {
@@ -108,15 +110,16 @@ it("checks a waiting rule with the person's agent, read-only, only after they ap
   if (a?.status !== "accepted") throw new Error(JSON.stringify(a));
   await finishedRun([{ id: a.entryId, claim: "Use the pooled client in src.", status: "proposed" }]);
   vi.spyOn(await import("../../learn-deeper/offer.js"), "chooseAgent").mockReturnValue("claude");
-  const model = vi.fn(async (request: { readOnlyTools?: unknown; executionDirectory?: string }) => {
+  const model = vi.fn(async (request: { readOnlyTools?: unknown; executionDirectory?: string; timeoutMs?: number }) => {
     expect(request.readOnlyTools).toEqual({ maxTurns: 8 });
     expect(request.executionDirectory).toBe(root);
+    expect(request.timeoutMs).toBe(VERIFY_TIMEOUT_MS);
     return { text: JSON.stringify({ verdict: "keep", evidence: ["src/api.ts:1"] }), selectedModel: "fixture", usage: { ...ZERO, model: "fixture", estimated: false } };
   });
   const keys = ["v", "1", "enter", "enter"], lines: string[] = [];
   const result = await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { color: false, ascii: true } as never,
     interactive: true, env: process.env, home, keys: async () => keys.shift()!, model: model as never });
-  expect(lines.join(" ")).toMatch(/About 40,000 tokens of your plan, estimated/u);
+  expect(lines.join(" ").replace(/ +/gu, " ")).toMatch(/About 40,000 tokens, estimated/u);
   expect(model).toHaveBeenCalledTimes(1);
   expect(result).toEqual({ kept: 1, waiting: 0, dropped: 0 });
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("active");
@@ -126,4 +129,95 @@ it("ignores a verify answer that cites no real place in the code", () => {
   expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src/missing.ts:3"] }), root)).toBeUndefined();
   expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["package.json:1"] }), root)).toMatchObject({ verdict: "drop", evidence: ["package.json:1"] });
   expect(parseVerify("not json", root)).toBeUndefined();
+});
+
+it("pages through every rule and saves all choices only on the last page", async () => {
+  const proposals = Array.from({ length: 12 }, (_, i) =>
+    learned(`page-${i}`, `Use adapter ${i + 1} when serving its endpoint.`, `specificAdapter${i + 1}(`, "active"));
+  const rows = (await propose(proposals, options())).map((result, i) => {
+    if (result.status !== "accepted") throw new Error(JSON.stringify(result));
+    return { id: result.entryId, claim: proposals[i]!.oneLine!, status: "active" as const };
+  });
+  const job = await finishedRun(rows);
+  const lines: string[] = [];
+  const review = (keys: string[]) => reviewLearned({ root, projectId: project, write: line => lines.push(line),
+    mode: { plain: true, color: false, ascii: true, width: 80 }, interactive: true, env: process.env, home,
+    keys: async () => keys.shift() ?? "quit" });
+
+  expect(await review(["1", "d", "enter", "1", "q"])).toBeUndefined();
+  expect(writer.setting(project, learnedReviewedKey(job))).toBeUndefined();
+  expect(writer.setting(project, learnedRefusalKey(rows[0]!.id))).toBeUndefined();
+  expect(rows.every(({ id }) => parseEntry(readFileSync(notePath(id), "utf8")).mex.status === "active")).toBe(true);
+
+  expect(await review(["1", "enter", "enter", "2", "enter"])).toEqual({ kept: 10, waiting: 2, dropped: 0 });
+  expect(lines).toContain("Learn deeper learned 12 rules from your team.");
+  expect(lines).toContain("Page 3 of 3");
+  expect(lines.join("\n")).toContain("[ ] 2. Use adapter 12 when serving its endpoint. (rule 12)");
+  expect(writer.setting(project, learnedReviewedKey(job))).toBeTruthy();
+  for (const row of [rows[0]!, rows[11]!]) {
+    expect(parseEntry(readFileSync(notePath(row.id), "utf8")).mex.status).toBe("proposed");
+    expect(writer.setting(project, learnedRefusalKey(row.id))).toBeTruthy();
+  }
+});
+
+it("renders the entry rationale, short fix and source safely at 80 columns", async () => {
+  const [result] = await propose([learned("details", "Use the checked decoder.", "bareDecode(", "proposed")], options());
+  if (result?.status !== "accepted") throw new Error(JSON.stringify(result));
+  const raw = readFileSync(notePath(result.entryId), "utf8");
+  const entry = parseEntry(raw);
+  entry.text = "Use the checked decoder. It handles caf\u00e9 records and \x1b[31mrecovers\x1b[0m safely. " + "More context. ".repeat(8);
+  entry.mex.fix = { snippet: "return checkedDecode(record);", path: "src/api.ts", commit: git("rev-parse", "HEAD"), lines: "1-1" };
+  writeFileSync(notePath(result.entryId), serializeEntry(entry));
+  await finishedRun([{ id: result.entryId, claim: "Old receipt claim", status: "proposed" }]);
+  const lines: string[] = [];
+  await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { plain: true, color: false, ascii: true, width: 80 },
+    interactive: true, env: process.env, home, keys: async () => "q" });
+  expect(lines).toContain("[ ] 1. Use the checked decoder.");
+  expect(lines.join(" ")).toContain("Why: It handles cafe records and recovers safely.");
+  expect(lines).toContain("    Fix: return checkedDecode(record);");
+  expect(lines).toContain("    Source: https://github.com/acme/app/pull/1");
+  expect(lines.every(line => line.length <= 80 && /^[ -~]*$/u.test(line))).toBe(true);
+  expect(lines.join(" ")).not.toContain("Old receipt claim");
+});
+
+it.each(["keep", "drop"] as const)("leaves a verify recommendation to %s unapplied on quit", async verdict => {
+  const [entry] = await propose([learned("verify-quit", "Use the checked loader.", "bareLoad(", "proposed")], options());
+  if (entry?.status !== "accepted") throw new Error(JSON.stringify(entry));
+  const job = await finishedRun([{ id: entry.entryId, claim: "Use the checked loader.", status: "proposed" }]);
+  const choose = vi.spyOn(await import("../../learn-deeper/offer.js"), "chooseAgent").mockReturnValue("codex");
+  const model: NonNullable<Parameters<typeof reviewLearned>[0]["model"]> = async () => ({
+    text: JSON.stringify({ verdict, evidence: ["src/api.ts:1"] }), selectedModel: "fixture", usage: { ...ZERO, model: "fixture", estimated: false },
+  });
+  const keys = ["v", "1", "enter", "q"];
+  try {
+    expect(await reviewLearned({ root, projectId: project, write: () => {}, mode: { plain: true, color: false, ascii: true, width: 80 },
+      interactive: true, env: process.env, home, model, keys: async () => keys.shift() ?? "quit" })).toBeUndefined();
+  } finally { choose.mockRestore(); }
+  expect(parseEntry(readFileSync(notePath(entry.entryId), "utf8")).mex.status).toBe("proposed");
+  expect(writer.setting(project, `knowledge.retired.${entry.entryId}`)).toBeUndefined();
+  expect(writer.setting(project, learnedReviewedKey(job))).toBeUndefined();
+});
+
+it("leaves the whole review pending if an entry changes before saving", async () => {
+  const rows = (await propose([learned("stale1", "Use client A for mail.", "new MailClient(", "proposed"),
+    learned("stale2", "Use client B for photos.", "new PhotoClient(", "proposed")], options())).map(result => {
+    if (result.status !== "accepted") throw new Error(JSON.stringify(result));
+    return { id: result.entryId, claim: "", status: "proposed" as const };
+  });
+  const job = await finishedRun(rows);
+  const lines: string[] = [];
+  const keys = ["1", "2", "enter"];
+  expect(await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { plain: true, ascii: true, color: false, width: 80 },
+    interactive: true, env: process.env, home, keys: async () => {
+      const key = keys.shift() ?? "quit";
+      if (key === "enter") {
+        const file = notePath(rows[1]!.id);
+        const entry = parseEntry(readFileSync(file, "utf8"));
+        writeFileSync(file, serializeEntry({ ...entry, text: entry.text + " A teammate added context." }));
+      }
+      return key;
+    } })).toBeUndefined();
+  expect(lines).toContain("Could not save the review. Run mex to open it again.");
+  expect(writer.setting(project, learnedReviewedKey(job))).toBeUndefined();
+  expect(rows.every(({ id }) => parseEntry(readFileSync(notePath(id), "utf8")).mex.status === "proposed")).toBe(true);
 });

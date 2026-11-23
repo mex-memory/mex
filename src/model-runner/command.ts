@@ -14,6 +14,9 @@ export interface ModelCommandOptions extends ModelSelection {
 /** The only tools a read-only call gets: it can look through the checkout and change nothing. */
 export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"] as const;
 export const READ_ONLY_TURNS = 8;
+export function readOnlyLimit(maxTurns = READ_ONLY_TURNS): number {
+  return Math.max(1, Math.min(Number.isFinite(maxTurns) ? Math.trunc(maxTurns) : READ_ONLY_TURNS, 20));
+}
 
 /** Per-run flags only: never edits user config or replaces subscription credentials. */
 export function buildModelCommand(agent: ModelAgent, instruction: string, options: ModelCommandOptions = {}): AgentCommand {
@@ -25,7 +28,7 @@ export function buildModelCommand(agent: ModelAgent, instruction: string, option
       "--system-prompt", MODEL_SYSTEM_PROMPT,
       ...(workspace ? ["--permission-mode", "acceptEdits", "--allowedTools", (options.allowedTools ?? []).join(",")]
         : options.access === "read" ? ["--tools", READ_ONLY_TOOLS.join(","), "--allowedTools", READ_ONLY_TOOLS.join(","),
-          "--max-turns", String(Math.max(1, Math.min(options.maxTurns ?? READ_ONLY_TURNS, 20)))]
+          "--max-turns", String(readOnlyLimit(options.maxTurns))]
           : ["--tools", ""]),
       "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
     env: { MEX_BACKGROUND: "1" },
@@ -36,6 +39,7 @@ export function buildModelCommand(agent: ModelAgent, instruction: string, option
       "-c", "project_doc_max_bytes=0",
       "-c", "memories.generate_memories=false", "-c", "memories.use_memories=false",
       "--sandbox", workspace ? "workspace-write" : "read-only", "--model", model,
+      ...(options.access === "read" ? ["--ignore-user-config", "-c", 'approval_policy="never"', "-c", 'web_search="disabled"', "-c", "mcp_servers={}"] : []),
       ...(options.allowNonGit ? ["--skip-git-repo-check"] : []), instruction],
     env: { MEX_BACKGROUND: "1" },
   };

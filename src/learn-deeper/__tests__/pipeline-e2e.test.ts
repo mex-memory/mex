@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, afterEach, expect, it, vi } from "vitest";
-import { parseEntry } from "../../knowledge/entry.js";
+import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
 import { snapshotNotes } from "../../knowledge/personal-store.js";
 import { buildIndex } from "../../file-index/build.js";
 import type { runModel } from "../../model-runner/index.js";
@@ -11,12 +11,16 @@ import { queueJob } from "../../record/background.js";
 import { openRecord } from "../../record/index.js";
 import { ownerId, registerJobKind, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { ZERO } from "../../record/usage.js";
+import { saveTombstone } from "../../knowledge/state.js";
+import { forget, learnedRefusalKey } from "../../knowledge/mutations.js";
+import { reviewLearned } from "../../repo-start/review-list.js";
 import { runRepoStart } from "../../repo-start/command.js";
 import { ForgeClient } from "../forge.js";
 import { planHarvest } from "../harvest/index.js";
 import { createLearnKind } from "../job.js";
 import { LEARN_KIND, Plan } from "../plan.js";
-import { reviewRows } from "../pipeline.js";
+import { CURSOR_KEY, reviewRows } from "../pipeline.js";
+import { noteKey } from "../coverage.js";
 
 // This repo and the recorded thread are the seed for the joined fixture test (release-01).
 const recorded = readFileSync(new URL("./fixtures/harvest/changes.json", import.meta.url), "utf8");
@@ -63,7 +67,7 @@ afterEach(() => {
   rmSync(fixture, { recursive: true, force: true });
 });
 
-function recordedForge() {
+function recordedForge(numbers = [31, 40], repeatedAt = "2026-11-13T09:59:59Z") {
   const { merged } = JSON.parse(recorded.replaceAll("OID_ORIGINAL", originalHead).replaceAll("OID_MERGE", mergedHead));
   merged.changedFiles = 1;
   merged.files.nodes = [{ path }];
@@ -71,7 +75,7 @@ function recordedForge() {
   merged.reviewThreads.totalCount = 1;
   const repeated = structuredClone(merged);
   repeated.number = 40;
-  repeated.mergedAt = repeated.closedAt = "2026-11-13T09:59:59Z";
+  repeated.mergedAt = repeated.closedAt = repeatedAt;
   repeated.body = "";
   const thread = repeated.reviewThreads.nodes[0];
   thread.id = "PRRT_fixture_repeat";
@@ -89,8 +93,9 @@ function recordedForge() {
     if (query.includes("HarvestSearch(")) {
       return Response.json({ data: Object.fromEntries(Object.entries(variables).filter(([key]) => /^q\d+$/u.test(key)).map(([key, term]) => {
         const dates = /merged:([^ ]+)\.\.([^ ]+)$/u.exec(term);
-        const inWindow = dates && Date.parse(merged.mergedAt) >= Date.parse(dates[1]!) && Date.parse(merged.mergedAt) <= Date.parse(dates[2]!);
-        return [`s${key.slice(1)}`, { issueCount: inWindow ? 2 : 0, nodes: inWindow ? [merged, repeated] : [], pageInfo: { hasNextPage: false } }];
+        const nodes = [merged, repeated].filter(pr => numbers.includes(pr.number) && dates
+          && Date.parse(pr.mergedAt) >= Date.parse(dates[1]!) && Date.parse(pr.mergedAt) <= Date.parse(dates[2]!));
+        return [`s${key.slice(1)}`, { issueCount: nodes.length, nodes, pageInfo: { hasNextPage: false } }];
       })) });
     }
     expect(query).toMatch(/p0:pullRequest\(number:(?:31|40)\)/u);
@@ -178,5 +183,104 @@ it("harvests a recorded review, stops an edit with the team's fix, and withholds
     await index();
     hook("second", "SessionStart", { source: "startup" });
     expect(hook("second", "PreToolUse", edit("transport"))).not.toContain("deny");
+  } finally { writer.close(); }
+}, 120_000);
+
+it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting"] as const)("honors %s when a different PR rewords a lesson", async decision => {
+  await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
+  const writer = openRecord();
+  try {
+    const { path: checkout, project_id: project } = writer.checkout(realpathSync(repo))!;
+    writer.db.prepare("UPDATE checkouts SET state='on' WHERE path=?").run(checkout);
+    await buildIndex({ root: checkout, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
+
+    async function learn(second: boolean) {
+      const start = second ? "2026-11-14" : "2026-11-01";
+      const end = second ? "2026-11-20" : "2026-11-13";
+      const window = { since: `${start}T00:00:00.000Z`, until: `${end}T23:59:59.000Z` };
+      const pr = second ? 40 : 31;
+      const forge = recordedForge([pr], "2026-11-14T10:00:00Z");
+      const id = second ? repeatedId : candidateId;
+      const wording = second ? "In changedEntry, route fallback calls through the stable adapter." : claim;
+      const proven = second || decision !== "leave waiting";
+      const model = vi.fn<typeof runModel>(async request => {
+        if (request.purpose === "learn-deeper-filter") {
+          const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
+          return reply({ results: items.map(item => ({ id: item.id, keep: item.id === id, category: "api-use", lesson: wording })) });
+        }
+        const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
+        return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim: wording, scope: [path],
+          clauses: [{ text: wording, quotes: [{ id, quote: "Prefer the stable adapter over the fallback." }] }],
+          ...(proven ? { when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
+            fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } } : {}) }] });
+      });
+      // Separate quotes for the two windows. Neither a cursor nor a seen-source receipt can hide PR 40.
+      writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, CURSOR_KEY);
+      const harvest = await planHarvest({ checkout, head: mergedHead, source: origin, agent: "codex", ...window }, { client: forge.client });
+      const plan = Plan.parse({ checkout, head: mergedHead, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
+        ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
+      const { job } = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan });
+      registerJobKind(createLearnKind({ model, client: async () => forge.client }));
+      const row = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
+      const owner = ownerId("foreground");
+      for (let i = 0; i < 12 && row().state === "queued"; i++) await runOneBatch(writer, owner, { only: new Set([job.id]) });
+      const result = row();
+      expect(result.state, result.reason ?? "").toMatch(/^done/u);
+      const counts = JSON.parse(result.checkpoint!).v2.counts;
+      expect(counts).toMatchObject({ "harvested.review-thread": 1, "triage-kept": 1 });
+      expect(forge.fetch.mock.calls.some(([, init]) => String(init?.body).includes(`p0:pullRequest(number:${pr})`))).toBe(true);
+      return { result, counts, model, rows: reviewRows(writer, project, job.id), wording };
+    }
+
+    const first = await learn(false);
+    expect(first.rows).toHaveLength(1);
+    const id = first.rows[0]!.entryId;
+    expect(first.rows[0]).toMatchObject({ support: 1, status: decision === "leave waiting" ? "proposed" : "active" });
+    if (decision === "forget") {
+      forget(id, "Dropped the lesson", { projectPath: checkout, home: writer.location.home });
+      expect(writer.setting(project, `knowledge.retired.${id}`)).toBeTruthy();
+    } else if (decision === "legacy forget") {
+      const entry = parseEntry(snapshotNotes(writer, project).files.get(id)!);
+      writer.db.exec("BEGIN IMMEDIATE");
+      saveTombstone(writer, project, entry, { reason: "Dropped before the entry was updated", by: "mex forget", at: "2026-11-14" });
+      writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, noteKey(id));
+      writer.db.exec("COMMIT");
+    } else if (decision === "legacy untick") {
+      const entry = parseEntry(snapshotNotes(writer, project).files.get(id)!);
+      writeFileSync(join(writer.location.home, "projects", project, "notes", `${id}.md`),
+        serializeEntry({ ...entry, mex: { ...entry.mex, status: "proposed" } }));
+    } else {
+      const keys = decision === "untick" ? ["1", "enter"] : ["enter"];
+      expect(await reviewLearned({ root: checkout, projectId: project, write: () => {}, mode: { plain: true, ascii: true, color: false, width: 80 },
+        interactive: true, env: process.env, home: writer.location.home, keys: async () => keys.shift() ?? "quit" })).toEqual({ kept: 0, waiting: 1, dropped: 0 });
+      expect(!!writer.setting(project, learnedRefusalKey(id))).toBe(decision === "untick");
+    }
+
+    const before = [...snapshotNotes(writer, project).files];
+    const later = await learn(true);
+    expect(later.wording).not.toBe(claim);
+    const after = [...snapshotNotes(writer, project).files];
+    if (decision === "leave waiting") {
+      expect(later.rows).toMatchObject([{ entryId: id, claim: later.wording, support: 2, status: "active" }]);
+      expect(later.model.mock.calls.some(([request]) => request.purpose === LEARN_KIND)).toBe(true);
+      expect(parseEntry(new Map(after).get(id)!).mex.status).toBe("active");
+    } else {
+      expect(later.model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter"]);
+      expect(later.counts).toMatchObject({ "cluster.forgotten": 1 });
+      expect(later.counts["tokens.write"] ?? 0).toBe(0);
+      expect(later.result.results).toBe(0);
+      expect(later.rows).toEqual([]);
+      expect(after).toEqual(before);
+      expect(parseEntry(new Map(after).get(id)!).mex.status).toBe(
+        decision === "forget" ? "retired" : decision === "legacy forget" ? "active" : "proposed");
+      if (decision === "legacy forget") return;
+
+      const hook = (event: string, payload: Record<string, unknown>) => execFileSync(binary, ["claude-code", event], {
+        encoding: "utf8", timeout: 20_000, input: JSON.stringify({ session_id: "after-review", cwd: checkout, hook_event_name: event, ...payload }),
+      });
+      hook("SessionStart", { source: "startup" });
+      expect(hook("PreToolUse", { tool_name: "Edit", tool_input: { file_path: join(checkout, path),
+        old_string: "  return stable(label);", new_string: "  return fallback(label);" } })).not.toContain("deny");
+    }
   } finally { writer.close(); }
 }, 120_000);
