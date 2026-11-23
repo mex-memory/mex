@@ -15,6 +15,7 @@
  * A pattern that fails stays out: the entry is still useful as prose, and a weak pattern is never shipped.
  */
 import { globToRegExp } from "../file-index/glob.js";
+import { linterRuleEnabled } from "./linter-config.js";
 import { checkPatterns, type PatternCandidate, type PatternVerdict } from "../knowledge/pattern-check.js";
 import type { GateContext } from "../knowledge/gate.js";
 import { sanitizeText } from "../knowledge/gates.js";
@@ -404,12 +405,16 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
       }
     }
   }
-  // Trial: a lesson the repo's linter already has a rule for becomes "enable rule X", unless it's already enabled.
+  // Trial: suggest enabling a rule only when a parsed config shows it is not enforced.
+  // A name in a comment, or the absence of any rules table, is not evidence the rule exists or is on.
   if (draft.lint) {
     const config = await context.tree.read(draft.lint.config);
     if (config === undefined) failures.push(`the linter config ${draft.lint.config} isn't in the repo`);
-    else if (config.includes(draft.lint.rule)) return drop(`the linter config already names ${draft.lint.rule}`);
-    else result.lint = draft.lint;
+    else {
+      const enabled = linterRuleEnabled(config, draft.lint.rule);
+      if (enabled === true) return drop(`the linter config already names ${draft.lint.rule}`);
+      if (enabled === false) result.lint = draft.lint;
+    }
   }
   // Trial: alternatives a decision beat. A rejected option still in use today isn't ruled out: the team may have changed course.
   if (draft.alternatives?.length && (draft.route === "decision" || draft.route === "ruled-out")) {

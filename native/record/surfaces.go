@@ -155,6 +155,26 @@ type SurfaceTool struct {
 
 // Acted is deliberately positive evidence. Unknown outcomes and missing edit
 // text never prove avoidance. Paths must already be checkout-relative.
+func scopedSurfaceTool(project, checkout string, raw SurfaceTool, sessionProject, sessionCheckout string) (SurfaceTool, bool) {
+	if len(raw.Scoped) > 0 {
+		scoped, ok := raw.Scoped[project+"\n"+checkout]
+		return scoped, ok
+	}
+	return raw, project == sessionProject && checkout == sessionCheckout
+}
+
+// LearnedProcedureConflict is true when one edit matches more than one learned procedure.
+// None of those procedures may record the edit as their own follow.
+func LearnedProcedureConflict(targets []SurfaceTarget, tool SurfaceTool) bool {
+	n := 0
+	for _, target := range targets {
+		if strings.HasPrefix(target.Origin, "learned-procedure") && Acted("edit", target, tool) {
+			n++
+		}
+	}
+	return n > 1
+}
+
 func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 	command := func() bool {
 		for _, c := range target.Commands {
@@ -213,7 +233,7 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 	case "prompt-anchor", "prompt-vocabulary":
 		return (tool.Open || tool.Edit) && namedTouch()
 	case "read-pitfall", "read-risk", "edit", "area-digest":
-		if surface == "edit" && target.Origin == "learned-procedure" {
+		if surface == "edit" && strings.HasPrefix(target.Origin, "learned-procedure") {
 			return tool.Edit && scopeTouch()
 		}
 		if !tool.Edit || !touch() {
@@ -588,7 +608,27 @@ func settleSurfaceWindows(ctx context.Context, c *sql.Conn, req DeliveryRequest,
 				}
 			}
 			if Acted(p.surface, target, tool) {
-				acted = 1
+				skip := false
+				if strings.HasPrefix(target.Origin, "learned-procedure") && offset < len(req.SurfaceTools) {
+					matched := make([]SurfaceTarget, 0, 2)
+					for _, other := range pendingRows {
+						if other.surface != "edit" || e.ToolCalls+offset >= other.expires {
+							continue
+						}
+						var otherTarget SurfaceTarget
+						if json.Unmarshal([]byte(other.target), &otherTarget) != nil || !strings.HasPrefix(otherTarget.Origin, "learned-procedure") {
+							continue
+						}
+						otherTool, ok := scopedSurfaceTool(other.project, other.checkout, req.SurfaceTools[offset], req.Session.ProjectID, req.Session.Checkout)
+						if ok && Acted("edit", otherTarget, otherTool) {
+							matched = append(matched, otherTarget)
+						}
+					}
+					skip = LearnedProcedureConflict(matched, tool)
+				}
+				if !skip {
+					acted = 1
+				}
 			}
 			if tool.Success && tool.Edit && (p.surface == "read-pitfall" || p.surface == "read-risk" || p.surface == "edit") {
 				for _, path := range tool.Paths {
