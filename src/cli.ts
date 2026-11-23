@@ -170,7 +170,7 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
 program.hook("preAction", (_thisCommand, actionCommand) => {
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
-  if (family.name() === "sync" && family.opts().dryRun) return;
+  if (["sync", "learn"].includes(family.name()) && family.opts().dryRun) return;
   if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
   cliTelemetry.start(actionCommand);
 });
@@ -183,7 +183,7 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
     || family.name() === "status" || family.name() === "doctor"
     || (family.name() === "report" && (family.opts().ledger || family.opts().holdout))
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
-    || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
+    || (["install", "sync", "learn"].includes(family.name()) && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
   try {
     const { writeLauncher } = await import("./hooks/shim/launcher.js");
@@ -1100,12 +1100,29 @@ program
 
 program
   .command("learn")
-  .description("Review a quote for learning from past reviews and docs")
+  .description("Learn rules from past reviews, fixes and contributor docs after you approve an estimate")
   .option("--model-setup <setup>", "Choose mixed or best-only")
   .option("--raise-ceiling", "Review a higher token ceiling for a waiting learning job")
-  .option("--dry-run", "Preview without queuing learning")
-  .option("--sessions", "Also import eligible past sessions (off by default)")
-  .option("--no-weekly", "Approve a one-time run without enrolling in weekly refresh")
+  .option("--dry-run", "Read the source inventory and show the estimate without starting a job")
+  .addOption(new Option("--sessions").hideHelp())
+  .option("--no-weekly", "Run once without enrolling in weekly refresh")
+  .addHelpText("after", [
+    "",
+    "After a run finishes, run mex in a terminal to see the review list. Tick the",
+    "rules you want your agents to use. You can leave a rule unticked or drop it.",
+    "",
+    "Weekly refresh checks for new reviews and docs every 7–14 days when idle,",
+    "signed in, and within the 3% automatic allowance. Use --no-weekly for a",
+    "one-time run. To pause an existing refresh, mex off turns MEX off here.",
+    "",
+    "Project trials",
+    "  learning.stopCheck     Check scoped prose rules after an agent session.",
+    "  learning.procedures    Learn procedures from files that change together.",
+    "  learning.prDecisions   Ask for a Decisions section in PR descriptions.",
+    "  learning.deep.issues   Include qualifying closed issues as sources.",
+    "",
+    "Set a trial with mex config set <setting> <on|off> --project.",
+  ].join("\n"))
   .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }) => {
     try {
       const { runLearnCommand } = await import("./learn-deeper/offer.js");
@@ -1492,7 +1509,6 @@ const publicDescriptions: Record<string, string> = {
   recall: "Find a note by words, without a model call",
   expand: "Read a note, its source and its checks",
   edit: "Correct a note; preview changes to team entries",
-  wrong: "Retire an incorrect note and keep the reason",
   forget: "Remove a note from future sessions",
   check: "Check which notes still hold against the code",
   review: "Review learned notes before sharing them",

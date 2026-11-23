@@ -37,6 +37,7 @@ interface OfferOptions {
 }
 
 const count = (n: number) => n.toLocaleString("en-US");
+const counted = (n: number, singular: string, plural: string) => `${count(n)} ${n === 1 ? singular : plural}`;
 
 /** EOF and Ctrl+C close the offer without authorizing it. An Enter answer is explicit. */
 async function askEnter(lines: readonly string[], details: readonly string[], write: Print): Promise<boolean> {
@@ -132,11 +133,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       return;
     }
     const window = reviewWindow();
-    if (options.dryRun) {
-      write("Learn deeper dry run: nothing is read or spent. Run `mex learn` to see the estimate before anything starts.");
-      return;
-    }
-    const old = latestJob(reader, projectId);
+    const old = options.dryRun ? undefined : latestJob(reader, projectId);
     if (old && (!options.explicit || !["done", "done with gaps", "cancelled"].includes(old.state))) {
       if (options.explicit || !["done", "done with gaps", "cancelled"].includes(old.state)) showJob(reader, old, write);
       return;
@@ -146,44 +143,65 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       if (options.explicit) write("Learn deeper needs a github.com or gitlab.com origin remote.");
       return;
     }
-    if (!options.interactive) { write(`To approve learning from reviews and docs, run \`${LEARN_COMMAND}\` in a terminal.`); return; }
-    const agent = chooseAgent(projectId);
-    if (!agent || !nativeBinary()) {
-      write(`Learn deeper later: ${agent ? "MEX's native checker isn't installed, so learned rules can't be checked. Reinstall MEX, then run" : "Claude Code or Codex is needed on PATH. Then run"} \`${LEARN_COMMAND}\`.`);
+    if (!options.dryRun && !options.interactive) { write(`To approve learning from reviews and docs, run \`${LEARN_COMMAND}\` in a terminal.`); return; }
+    const selected = chooseAgent(projectId);
+    if (!options.dryRun && (!selected || !nativeBinary())) {
+      write(`Learn deeper later: ${selected ? "MEX's native checker isn't installed, so learned rules can't be checked. Reinstall MEX, then run" : "Claude Code or Codex is needed on PATH. Then run"} \`${LEARN_COMMAND}\`.`);
       return;
     }
+    // A preview without an installed runner uses the higher-overhead estimate.
+    const agent = selected ?? "codex";
     const head = await revision(root);
     const tree = head && await PinnedTree.open(root, head);
     if (!head || !tree) { write("Learn deeper later: the current Git revision couldn't be read."); return; }
     const forge = new ForgeClient(repo, await hostToken(root, repo));
     const access = await hosts[repo.host].access(forge);
-    const preferred = preferredFolders(projectId, root);
     // GitLab review mining comes in 0.9.1; its repos still learn from local history and contributor docs.
-    const harvest = await planHarvest({ checkout: root, head, source: access.source, agent, ...window,
-      issues: reader.setting(projectId, "learning.deep.issues") === "true" }, { client: repo.host === "github.com" ? harvestClient(forge, access.source) : undefined, tree }, savedCursor(reader, projectId));
-    const forgeCount = harvest.inventory.bands.reduce((sum, band) => sum + band.count, 0);
+    const issues = reader.setting(projectId, "learning.deep.issues") === "true";
+    const harvest = await planHarvest({ checkout: root, head, source: access.source, agent, ...window, issues },
+      { client: repo.host === "github.com" ? harvestClient(forge, access.source) : undefined, tree }, savedCursor(reader, projectId));
+    const pulls = harvest.inventory.bands.reduce((sum, band) => sum + (band.source === "issue" ? 0 : band.count), 0);
+    const closedIssues = harvest.inventory.bands.reduce((sum, band) => sum + (band.source === "issue" ? band.count : 0), 0);
     const local = harvest.inventory.local;
-    const localCount = local.revert.length + local.cause.length + local.adr.length + local.doc.length;
+    const fixes = local.revert.length + local.cause.length;
+    const docs = local.adr.length + local.doc.length;
     const procedures = reader.setting(projectId, "learning.procedures") === "true";
     const extra = procedures ? procedureEstimate(agent) : 0;
-    if (!forgeCount && !localCount && !procedures) {
-      write("Learn deeper found no reviews, past fixes or contributor docs to learn from here · $0, nothing started.");
+    const hasSources = pulls + closedIssues + fixes + docs > 0 || procedures;
+    const estimate = hasSources ? Math.max(1, harvest.estimate + extra) : 0;
+    const ceiling = hasSources ? Math.max(1, harvest.ceiling + quoteCeiling(extra)) : 0;
+    const gaps = harvest.gaps.map(gap => gap.slice(0, 180)).slice(0, 12);
+    const quote = [`Estimate ${count(estimate)} tokens · ceiling ${count(ceiling)} tokens.`];
+    if (procedures) quote.push("Includes an estimate for up to five cheap procedure calls within the 3% automatic allowance.");
+    const sources = [
+      `Counted ${counted(pulls, "merged or closed pull request", "merged or closed pull requests")}, ${counted(fixes, "revert or past fix", "reverts and past fixes")}, and ${counted(docs, "doc or decision record", "docs and decision records")}.`,
+      ...(issues ? [`Counted ${counted(closedIssues, "closed issue", "closed issues")} for the issues trial.`] : []),
+      ...gaps.map(gap => `Source gap: ${gap}`),
+    ];
+    if (options.dryRun) {
+      write(harvest.inventory.bands.length
+        ? "Learn deeper dry run. Read review history and local Git history. Spent no tokens."
+        : "Learn deeper dry run. Read local Git history. Spent no tokens.");
+      if (!selected && hasSources) write("The estimate assumes Codex because no supported model runner is installed.");
+      for (const line of [...quote, ...sources]) write(line);
+      return;
+    }
+    if (!hasSources) {
+      write("Learn deeper found no sources to learn from here · $0, nothing started.");
+      for (const line of [...quote, ...sources]) write(line);
       return;
     }
     const setup = options.modelSetup ?? "best-only";
-    const gaps = harvest.gaps.map(gap => gap.slice(0, 180)).slice(0, 12);
     plan = Plan.parse({ checkout: root, head, origin: repo, source: access.source, visibility: access.visibility, agent,
-      setup, ...window, preferred, pulls: [], docs: [], sessions: [], refresh: options.weekly !== false,
-      gaps, estimate: Math.max(1, harvest.estimate + extra), ceiling: Math.max(1, harvest.ceiling + quoteCeiling(extra)), harvest,
+      setup, ...window, preferred: preferredFolders(projectId, root), pulls: [], docs: [], sessions: [], refresh: options.weekly !== false,
+      gaps, estimate, ceiling, harvest,
       ...(procedures ? { procedures: true } : {}) });
-    const estimate = plan.estimate;
     refreshUsageForQuote();
     const minutes = Math.max(1, Math.ceil(estimate / 12_000));
     const share = usageShare(reader, agent, estimate);
     const lines = ["Learn from past reviews, fixes and contributor docs using your agent plan?",
       `About ${minutes} ${minutes === 1 ? "minute" : "minutes"} · ${share}.`,
-      `Estimate ${count(estimate)} tokens · ceiling ${count(plan.ceiling)} tokens.`];
-    if (procedures) lines.push("Includes an estimate for up to five cheap procedure calls within the 3% automatic allowance.");
+      ...quote];
     if (forge.anonymous) lines.push(`Fetching slowly without a ${repo.host === "github.com" ? "GitHub" : "GitLab"} login. Sign in with \`${repo.host === "github.com" ? "gh" : "glab"} auth login\` to speed it up.`);
     if (plan.visibility === "private") lines.push("Review and doc excerpts from this private repo will be sent to your selected agent account. Start only if your organization allows it.");
     if (plan.refresh) lines.push("After this run, MEX checks for new reviews and docs every 7–14 days when idle, signed in, and within the 3% automatic allowance. Use `mex learn --no-weekly` for a one-time run.");
@@ -191,7 +209,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       usedPercent: item.used_percent, status: item.status as PlanWindow["status"], resetsAt: item.resets_at,
     }));
     if (planWindow(windows, Date.now()).blocked) lines.push("Your agent's usage window needs to reset before model work can start.");
-    const details = [`Counted ${count(forgeCount)} merged or closed changes with discussion, ${count(local.revert.length + local.cause.length)} reverts and past fixes, and ${count(local.adr.length + local.doc.length)} docs and decision records.`,
+    const details = [...sources,
       `Agent: ${agent === "claude" ? "Claude Code" : "Codex"} · ${plan.setup === "mixed" ? "cheap sorting, best writer" : "best model"}.`,
       "Each learned rule is checked against the code that prompted it before it's kept.",
       "Checked rules reach your sessions as learned, not shared. See `mex jobs` for progress and pause or cancel."];
@@ -244,7 +262,7 @@ async function raiseCeiling(root: string, project: string, write: Print): Promis
 
 export async function runLearnCommand(options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }): Promise<void> {
   const project = knowledgeProject({ projectPath: process.cwd() });
-  const interactive = detectCaller() === "person";
+  const interactive = !options.dryRun && detectCaller() === "person";
   if (options.modelSetup !== undefined && !["mixed", "best-only"].includes(options.modelSetup)) throw new Error("Use --model-setup mixed or --model-setup best-only.");
   const reader = openRecordReadOnly();
   try {
