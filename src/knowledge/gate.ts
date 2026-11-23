@@ -311,10 +311,14 @@ export function observeProposalChecks(checks: readonly ProposedCheck[], request:
     }
     for (const [entry, inputs] of fixtures) {
       const recorded = inputs.map(check => ({ ...check, saw: { ok: true as const }, files: {} }));
-      const result = runNative(binary, { ...request, action: "evaluate-snapshot", files: {},
-        entry: serializeEntry({ ...entry, mex: { ...entry.mex, status: "active", checks: recorded } }) }) as unknown as {
-        result?: { checks: CheckResult[] };
-      };
+      let result: { result?: { checks: CheckResult[] } } = {};
+      try {
+        result = runNative(binary, { ...request, action: "evaluate-snapshot", files: {},
+          entry: serializeEntry({ ...entry, mex: { ...entry.mex, status: "active", checks: recorded } }) }) as unknown as typeof result;
+      } catch (error) {
+        // One entry the evaluator can't read is that entry's problem. An evaluator that gave no answer is everyone's.
+        if (!(error instanceof KnowledgeError) || error.code === "CHECKS_UNAVAILABLE") throw error;
+      }
       inputs.forEach((check, i) => {
         const outcome = result.result?.checks[i];
         special.set(check, outcome?.status === "pass" ? { check: recorded[i]! } : { reason: outcome?.reason ?? "The fixture could not be checked." });

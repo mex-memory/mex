@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseDocument, stringify } from "yaml";
+import { Document, parseDocument, visit as visitYaml } from "yaml";
 import { ENTRY_KINDS, KNOWLEDGE_LIMITS, KnowledgeError } from "./contract.js";
 import { PRODUCER_IDS } from "./producers.js";
 export { ENTRY_KINDS, KNOWLEDGE_LIMITS, KnowledgeError } from "./contract.js";
@@ -154,9 +154,17 @@ export function assertPersonQuote(entry: KnowledgeEntry, typedText: string): voi
     throw new KnowledgeError("UNVERIFIED_SOURCE", "The person quote was not found in the supplied typed text.");
   }
 }
+// The native parser takes no block that begins with a tab (any function body in a tab-indented repository), and reads
+// a Unicode line break as a new line. Both are written as one quoted line.
+const QUOTED = /^\s*\t|[\u0085\u2028\u2029\ufeff]/u;
+function frontmatter(mex: KnowledgeEntry["mex"]): string {
+  const document = new Document({ mex }, { aliasDuplicateObjects: false });
+  visitYaml(document, { Scalar(_key, node) { if (typeof node.value === "string" && QUOTED.test(node.value)) node.type = "QUOTE_DOUBLE"; } });
+  return document.toString({ lineWidth: 0 });
+}
 export function serializeEntry(input: KnowledgeEntry): string {
   const entry = validateEntry(input);
-  const content = `---\n${stringify({ mex: entry.mex }, { lineWidth: 0, aliasDuplicateObjects: false })}---\n${entry.text.trim()}\n`;
+  const content = `---\n${frontmatter(entry.mex)}---\n${entry.text.trim()}\n`;
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
   return content;
 }
@@ -165,13 +173,13 @@ export function parseEntry(content: string): KnowledgeEntry {
   const normalized = content.replace(/\r\n/g, "\n");
   const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/u.exec(normalized);
   if (!match) throw new KnowledgeError("INVALID_ENTRY", "Entry requires one YAML frontmatter block and its text.");
-  let frontmatter: unknown;
+  let parsed: unknown;
   try {
     const document = parseDocument(match[1], { uniqueKeys: true, strict: true });
     if (document.errors.length || document.warnings.length) throw new Error("Invalid YAML");
-    frontmatter = document.toJS({ maxAliasCount: 0 });
+    parsed = document.toJS({ maxAliasCount: 0 });
   } catch { throw new KnowledgeError("INVALID_ENTRY", "Entry frontmatter must be valid YAML without aliases or custom tags."); }
-  const envelope = z.object({ mex: metadata }).strict().safeParse(frontmatter);
+  const envelope = z.object({ mex: metadata }).strict().safeParse(parsed);
   if (!envelope.success) throw new KnowledgeError("INVALID_ENTRY", "Entry frontmatter contains invalid or unsupported fields.");
   return validateEntry({ ...envelope.data, text: match[2].trim() });
 }
