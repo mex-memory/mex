@@ -49,6 +49,11 @@ jobs:
       matrix:
         node-version: ['22.22.0', '24']
         shard: [1, 2]
+        include:
+          - node-version: '22.22.0'
+            native-engine: true
+          - node-version: '24'
+            native-engine: false
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -61,6 +66,26 @@ jobs:
         with:
           go-version-file: native/go.mod
           cache-dependency-path: native/go.sum
+      - name: Install the pinned Rust toolchain
+        if: matrix.native-engine
+        working-directory: native/engine
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@v4
+        if: matrix.native-engine
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/engine/target
+          key: rust-check-${{ runner.os }}-${{ hashFiles('native/engine/Cargo.lock', 'native/engine/rust-toolchain.toml') }}
+          restore-keys: rust-check-${{ runner.os }}-
+      - name: Build the release graph engine
+        if: matrix.native-engine
+        working-directory: native/engine
+        run: cargo build --locked --release
+      - name: Build the host Go hook
+        if: matrix.native-engine
+        run: node scripts/build-hook-binaries.mjs --host
       - run: npm ci --prefer-offline --no-audit --no-fund
       # Preserve the CLI suite's build condition and 240-second deadline, before
       # parallel suites consume the same dist workers and grammars.
@@ -69,10 +94,19 @@ jobs:
         timeout-minutes: 4
         env:
           NODE_ENV: test
-      - name: Test the completed app build
+      - name: Test with the native graph engine and real Go readers
+        if: matrix.native-engine
         run: npm run test -- --shard=${{ matrix.shard }}/2
         env:
           MEX_TEST_PREBUILT: '1'
+          MEX_GRAPH_ENGINE: ${{ github.workspace }}/native/engine/target/release/mex-graph
+          MEX_TEST_REAL_HOOK_BINARY: '1'
+      - name: Test the Node graph fallback
+        if: ${{ !matrix.native-engine }}
+        run: npm run test -- --shard=${{ matrix.shard }}/2
+        env:
+          MEX_TEST_PREBUILT: '1'
+          MEX_GRAPH_ENGINE: ${{ runner.temp }}/no-mex-graph.wasm
 
   package:
     needs: changes

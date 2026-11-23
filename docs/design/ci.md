@@ -8,7 +8,7 @@ advisory or path-filtered workflows.
 
 | Workflow | Checks | Triggers |
 | --- | --- | --- |
-| `ci.yml` | Node 22/24 suites (two shards each), types/packages/evaluators, three-OS Go, serial portability parts, browser and workflow lint | Every PR; `next`/`main` pushes |
+| `ci.yml` | Node 22/24 suites (two shards each), types/packages/evaluators, three-OS Go and Rust, serial portability tests, browser and workflow lint | Every PR and pushes to `next` or `main` |
 | `statechart-checker.yml` | Real TLC and packed skill on three OSes | Relevant source/skill/Hub/build/dependency PR paths; `next`/`main` pushes |
 | `release-performance.yml` | Pinned budgets and conditional fresh-runner confirmation | `next`/`main` pushes, 0.9 tags, manual; advisory; one tracking issue for red `next` results |
 | `gates.yml` | Seven release gates and three-OS `release-gates` verdict | Called by Release; manual once on `main` |
@@ -22,6 +22,14 @@ package; skill files, calibration JSON, code and workflow edits run full CI.
 Renames consider both paths. Pushes run everything. PR runs replace older runs;
 pushes retain a verdict per commit. Windows temporary files and caches use the
 fast `RUNNER_TEMP` disk before setup actions restore caches.
+
+Both Node 22 shards build `native/engine` in release mode with the pinned Rust
+toolchain and restore a cache for Cargo dependencies and build output. They
+also build the host Go hook for tests that open the packaged binary. The
+suite sets `MEX_GRAPH_ENGINE` to the release binary and
+`MEX_TEST_REAL_HOOK_BINARY=1`. The Go graph reader test compiles a real hook
+and reads the v5 graph published by the Rust engine. Both Node 24 shards
+select a missing WASI module to exercise the Node tree-sitter fallback.
 
 Treat a red check as a failure to investigate. If a test fails and passes on the
 same commit, fix its cause in the next PR touching it, or in a dedicated PR.
