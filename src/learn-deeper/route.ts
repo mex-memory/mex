@@ -104,38 +104,36 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const members = cluster.members.map(member => member.candidate);
   const checks: ProposedCheck[] = [];
   const glob = checkGlob(proof.scope);
-  // Proven means a pattern passed the before/after proof; a ruled-out alternative's pattern only has "unused today".
-  const proven = proof.when.some(item => item.pairs.length > 0);
+  const paired = proof.when.filter(item => item.pairs.length);
+  const alternativesOnly = proof.when.filter(item => !item.pairs.length);
+  let bytes = 0;
+  // Each surviving pattern separated the same evidence pairs, so one fixture can recheck all of them.
+  const fixturePairs = glob && paired.length ? paired[0]!.pairs.slice(0, 3).flatMap(at => {
+    const pair = proof.pairs[at]!;
+    const before = trimRegion(pair.before, ROUTE_LIMITS.fixtureLines, pair.anchor);
+    const after = trimRegion(pair.after, ROUTE_LIMITS.fixtureLines);
+    const size = Buffer.byteLength(before.text) + Buffer.byteLength(after.text);
+    if (bytes + size > ROUTE_LIMITS.fixtureBytes) return [];
+    bytes += size;
+    return [{ path: pair.after.path, commit: pair.after.commit,
+      before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
+      after: { start: after.start, end: after.end, text: after.text, hash: after.hash } }];
+  }) : [];
+  const proven = fixturePairs.length > 0;
+  const when = proven ? [...paired, ...alternativesOnly] : alternativesOnly;
 
   if (proven && glob) {
-    // One fixture per pattern, holding only the pairs that pattern was proven on: the evaluator requires every
-    // pair in a fixture to satisfy every trigger it proves. All fixtures share the entry's size budget.
-    let bytes = 0;
-    for (const [index, item] of proof.when.entries()) {
-      const fixturePairs = item.pairs.slice(0, 3).flatMap(at => {
-        const pair = proof.pairs[at]!;
-        const before = trimRegion(pair.before, ROUTE_LIMITS.fixtureLines, pair.anchor);
-        const after = trimRegion(pair.after, ROUTE_LIMITS.fixtureLines);
-        const size = Buffer.byteLength(before.text) + Buffer.byteLength(after.text);
-        if (bytes + size > ROUTE_LIMITS.fixtureBytes) return [];
-        bytes += size;
-        return [{ path: pair.after.path, commit: pair.after.commit, before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
-          after: { start: after.start, end: after.end, text: after.text, hash: after.hash } }];
-      });
-      if (fixturePairs.length) {
-        checks.push({ kind: "fixture", role: "complete", target: { pairs: fixturePairs, proves: [index] }, saw: { ok: true } } as ProposedCheck);
-      }
-    }
+    checks.push({ kind: "fixture", role: "complete", target: { pairs: fixturePairs, proves: paired.map((_, i) => i) }, saw: { ok: true } } as ProposedCheck);
     if (proof.fixLiteral) {
       checks.push({ kind: "pattern", role: "complete", target: { scope: glob, pattern: proof.fixLiteral, match: "literal", expect: "present" } } as ProposedCheck);
     }
-    for (const item of proof.when) {
+    for (const item of paired) {
       if (item.type === "anti" && item.match === "literal") {
         checks.push({ kind: "pattern", role: "supporting", target: { scope: glob, pattern: item.pattern, match: "literal", expect: "at-most" } } as ProposedCheck);
       }
     }
   }
-  if (glob) checks.push({ kind: "scope", role: "complete", target: { glob } } as ProposedCheck);
+  for (const scope of proof.scope) checks.push({ kind: "scope", role: "complete", target: { glob: scope } } as ProposedCheck);
   const reviews = members.filter(candidate => candidate.link.startsWith("https://github.com/") && pullLink(candidate));
   for (const candidate of [...new Map(reviews.map(candidate => [candidate.link, candidate])).values()].slice(0, ROUTE_LIMITS.sourceChecks)) {
     checks.push({ kind: "source", role: "supporting", target: { url: candidate.link }, saw: { hash: candidate.hash } } as ProposedCheck);
@@ -160,8 +158,8 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const alternatives = proof.alternatives.map(item => `Considered and ruled out: ${item.option} (${item.reason}).`);
   const text = [proof.claim, ...proof.reasons, ...lint, ...alternatives].join(" ").slice(0, 1000);
   const fixKinds = new Set(["rule", "pitfall", "decision"]);
-  const status = cluster.decision === "write" && !proof.notAlwaysFollowed ? "active"
-    : proven && !proof.notAlwaysFollowed ? "active" : "proposed";
+  const corroborated = cluster.decision === "write" && (cluster.source !== "review" || cluster.reviewers >= 2 || docs.length > 0);
+  const status = (corroborated || proven) && !proof.notAlwaysFollowed ? "active" : "proposed";
   const key = JSON.stringify([plan.host, plan.slug.toLowerCase(), "lesson", cluster.key]);
   const proposal: Proposal = {
     producer: "learn-deeper", ...(cluster.earlier ? { id: cluster.earlier } : { key }),
@@ -170,7 +168,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
     ...(proof.fix && fixKinds.has(draft.kind) ? { fix: proof.fix } : {}),
     source: { type: sourceType, ref, ...(kept ? { quote: kept.quote, text: kept.text } : {}) },
     evidenceClass: sourceType, evidence: members.map(candidate => candidate.id).slice(0, 32),
-    anchors: { scope: proof.scope, ...(proof.when.length ? { when: proof.when.map(({ type, match, pattern }) => ({ type, match, pattern })) } : {}) },
+    anchors: { scope: proof.scope, ...(when.length ? { when: when.map(({ type, match, pattern }) => ({ type, match, pattern })) } : {}) },
     checks, model, label: label(cluster), status,
   };
   return { proposal, sources: members, status, proven };

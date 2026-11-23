@@ -16,7 +16,7 @@
 import { globToRegExp } from "../file-index/glob.js";
 import { checkPatterns, type PatternCandidate, type PatternVerdict } from "../knowledge/pattern-check.js";
 import type { GateContext } from "../knowledge/gate.js";
-import type { Cluster, Triaged } from "./cluster.js";
+import { writerMembers, type Cluster, type Triaged } from "./cluster.js";
 import { command, type PinnedTree } from "./git.js";
 import type { Candidate } from "./harvest/types.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
@@ -31,8 +31,8 @@ export const PROOF_LIMITS = {
   /** Files read at HEAD when looking for the fix's identifying literal. */
   fixFiles: 400,
   minLiteral: 4,
-  /** Pairs a pattern is proven on: each costs two native checks, and the native side takes 64. */
-  proofPairs: 6,
+  /** Match the native request limit even when a cluster has several proof pairs. */
+  nativeCandidates: 64,
 } as const;
 
 export type ProvenPattern = NonNullable<WriterEntry["when"]>[number] & {
@@ -194,7 +194,8 @@ export function gitHistory(tree: PinnedTree) {
 export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: ProofContext): Promise<ProofResult> {
   const failures: string[] = [];
   const members = new Map(cluster.members.map((member: Triaged) => [member.candidate.id, member.candidate]));
-  const pairs = evidencePairs(cluster.members);
+  const shown = writerMembers(cluster);
+  const pairs = evidencePairs([...shown, ...cluster.members.filter(member => !shown.includes(member))]);
   const result: ProofResult = { cluster, draft, pairs, claim: draft.claim, reasons: [], quotes: [], scope: [], when: [], historyAdds: 0,
     notAlwaysFollowed: false, alternatives: [], failures };
   const drop = (why: string) => ({ ...result, dropped: why });
@@ -209,12 +210,19 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     if (quotes.length < clause.quotes.length) failures.push(`clause "${clause.text.slice(0, 80)}": ${clause.quotes.length - quotes.length} quote(s) not found in the cited evidence`);
     return { clause, quotes };
   });
-  const claimClause = supported.reduce<typeof supported[number] | undefined>((best, item) =>
-    !best || overlap(item.clause.text, draft.claim) > overlap(best.clause.text, draft.claim) ? item : best, undefined);
-  if (!claimClause || !claimClause.quotes.length) return drop("the claim isn't supported by a verbatim quote");
+  const claimText = squash(draft.claim);
+  const claimClauses = supported.filter(({ clause }) => {
+    const text = squash(clause.text).replace(/[.!?,;:]$/u, "");
+    return text.length > 0 && claimText.includes(text);
+  });
+  const covered = words(claimClauses.map(item => item.clause.text).join(" "));
+  if (!claimClauses.length || claimClauses.some(item => !item.quotes.length) || [...words(draft.claim)].some(word => !covered.has(word))) {
+    failures.push("the claim isn't supported by a verbatim quote");
+    return drop("the claim isn't supported by a verbatim quote");
+  }
   result.quotes = supported.flatMap(item => item.quotes);
-  // The reason is rebuilt from supported clauses only, never the writer's free text, and never a restated claim.
-  result.reasons = supported.filter(item => item !== claimClause && item.quotes.length && overlap(item.clause.text, draft.claim) < 0.9)
+  // Rebuild the reason from verified source clauses so a model-only explanation cannot reach delivery.
+  result.reasons = supported.filter(item => !claimClauses.includes(item) && item.quotes.length && overlap(item.clause.text, draft.claim) < 0.9)
     .map(item => item.clause.text);
 
   // Post-filters: a restated PR title or commit subject adds nothing.
@@ -230,7 +238,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   }
 
   // Scope: today's files only. Process rules are repo-wide once their words confirm it.
-  if (draft.route === "process-rule" && processConfirmed(draft)) result.scope = ["**"];
+  if (draft.route === "process-rule" && processConfirmed({ claim: result.claim, why: result.reasons.join(" ") })) result.scope = ["**"];
   else {
     if (draft.route === "process-rule") failures.push("routed as scoped prose: its words don't read as a process rule");
     const valid = draft.scope.filter(glob => glob !== "**" && !glob.startsWith("/") && !glob.includes("..") && scopeMatches(context.tree, glob));
@@ -258,7 +266,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     const run = context.patterns ?? checkPatterns;
     const candidates: PatternCandidate[] = [];
     const owner: Array<{ pattern: number; pair: number | "example"; probe?: true }> = [];
-    const proofPairs = pairs.slice(0, PROOF_LIMITS.proofPairs);
+    const proofPairs = pairs;
     for (const [i, item] of wanted.entries()) {
       for (const [p, pair] of proofPairs.entries()) {
         candidates.push({ ...item, objected: pair.before.text, fixed: pair.after.text, ...(pair.anchor ? { anchor: pair.anchor } : {}) });
@@ -274,8 +282,13 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
         owner.push({ pattern: i, pair: "example" });
       }
     }
-    const verdicts: Array<PatternVerdict | undefined> = candidates.length <= 64 ? run(candidates, result.scope, context.check) ?? [] : [];
-    if (!verdicts.length) failures.push("the pattern check couldn't run");
+    const verdicts: Array<PatternVerdict | undefined> = [];
+    for (let i = 0; i < candidates.length; i += PROOF_LIMITS.nativeCandidates) {
+      const batch = candidates.slice(i, i + PROOF_LIMITS.nativeCandidates);
+      const outcomes = run(batch, result.scope, context.check);
+      verdicts.push(...batch.map((_, at) => outcomes?.[at]));
+    }
+    if (!verdicts.some(Boolean)) failures.push("the pattern check couldn't run");
     for (const [i, item] of wanted.entries()) {
       const mine = owner.flatMap((o, k) => o.pattern === i ? [{ ...o, verdict: verdicts[k] }] : []);
       const real = mine.filter(o => o.pair !== "example" && !o.probe);
@@ -287,14 +300,18 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
       const common = real.filter(o => /^already in \d+ of/u.test(o.verdict?.reason ?? ""));
       const proven = real.filter(o => o.verdict?.keep || /^already in \d+ of/u.test(o.verdict?.reason ?? ""));
       const label = `${item.type} ${JSON.stringify(item.pattern)}`;
-      if (!verdicts.length) continue;
+      if (!mine.some(item => item.verdict)) continue;
       if (counter) {
         failures.push(item.type === "required" ? `${label} is already in the reviewed code of pair ${counter.pair}` : `${label} matches the fixed code of pair ${counter.pair}`);
         continue;
       }
       if (exampleCounter) { failures.push(`${label} matches its own "ok" example`); continue; }
-      if (!proven.length) {
-        failures.push(`${label} isn't proven on any pair: ${[...new Set(real.map(o => o.verdict?.reason).filter(Boolean))].join("; ")}`);
+      if (!example || !(example.verdict?.keep || /^already in \d+ of/u.test(example.verdict?.reason ?? ""))) {
+        failures.push(`${label} does not separate its flag and ok examples`);
+        continue;
+      }
+      if (proven.length !== real.length) {
+        failures.push(`${label} isn't proven on every pair: ${[...new Set(real.map(o => o.verdict?.reason).filter(Boolean))].join("; ")}`);
         continue;
       }
       const migration = common.length > 0;
@@ -331,6 +348,10 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
         if (await presentInScope(context.tree, result.scope, literal) === true) { result.fixLiteral = literal; break; }
       }
     }
+  }
+  if (draft.route === "code-rule" && result.when.length && !result.fixLiteral) {
+    failures.push("the fix has no identifying literal in scope today");
+    result.when = [];
   }
   // Trial: a lesson the repo's linter already has a rule for becomes "enable rule X", unless it's already enabled.
   if (draft.lint) {

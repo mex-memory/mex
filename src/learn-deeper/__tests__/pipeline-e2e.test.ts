@@ -1,13 +1,5 @@
-/**
- * Learn deeper v2 end to end, at $0: one harvested review thread (with the code as reviewed and the merged
- * fix) goes through triage, the first-rules-early write, clustering, the proof with the real native
- * matcher, routing and the producer gate. The published rule then stops an agent's edit through the real
- * speed bump with the team's fix, and is withheld once the code no longer has what the fix relies on.
- * This is the seed for the joined fixture test (release-01): it needs only the built hook and a git repo.
- */
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, afterEach, expect, it, vi } from "vitest";
@@ -20,17 +12,28 @@ import { openRecord } from "../../record/index.js";
 import { ownerId, registerJobKind, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { ZERO } from "../../record/usage.js";
 import { runRepoStart } from "../../repo-start/command.js";
-import type { Candidate } from "../harvest/types.js";
+import { ForgeClient } from "../forge.js";
+import { planHarvest } from "../harvest/index.js";
 import { createLearnKind } from "../job.js";
 import { LEARN_KIND, Plan } from "../plan.js";
 import { reviewRows } from "../pipeline.js";
 
-let suite: string, binary: string, fixture: string, repo: string;
+// This repo and the recorded thread are the seed for the joined fixture test (release-01).
+const recorded = readFileSync(new URL("./fixtures/harvest/changes.json", import.meta.url), "utf8");
+const reviewed: string[] = JSON.parse(recorded).originalLines;
+const path = "src/changed.ts";
+const origin = { host: "github.com" as const, slug: "acme/app" };
+const candidateId = "gh:thread:PRRT_fixture1";
+const repeatedId = "gh:thread:PRRT_fixture_repeat";
+const claim = "Use the stable adapter for changedEntry instead of calling fallback.";
+let suite: string, binary: string, fixture: string, repo: string, originalHead: string, mergedHead: string;
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
-const USERS = "import { apiLogger } from \"./log\";\nexport function list() {\n  apiLogger.info(\"list\");\n}\n";
-const REVIEWED = "import { apiLogger } from \"./log\";\nexport function list() {\n  console.log(\"list\");\n}";
-const COMMENT = "Please don't use console.log in the API: it skips our structured logs. Use apiLogger instead.";
+function commit(message: string, date: string) {
+  git("add", ".");
+  git("-c", "commit.gpgsign=false", "-c", `user.name=Fixture`, "-c", "user.email=fixture@example.invalid",
+    "commit", "-qm", message, "--date", date);
+  return git("rev-parse", "HEAD");
+}
 
 beforeAll(() => {
   suite = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-e2e-")));
@@ -40,105 +43,140 @@ beforeAll(() => {
 afterAll(() => rmSync(suite, { recursive: true, force: true }));
 beforeEach(() => {
   fixture = realpathSync(mkdtempSync(join(suite, "case-")));
-  repo = join(fixture, "repo"); mkdirSync(join(repo, "src", "api"), { recursive: true });
-  git("init", "-qb", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
+  repo = join(fixture, "repo");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  git("init", "-qb", "main");
   git("remote", "add", "origin", "https://github.com/acme/app.git");
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", scripts: { test: "node test.js" } }));
-  writeFileSync(join(repo, "src", "api", "log.ts"), "export const apiLogger = { info(message: string) { return message; } };\n");
-  writeFileSync(join(repo, "src", "api", "users.ts"), USERS);
-  git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture");
   for (const [key, value] of Object.entries({ MEX_HOME: fixture, MEX_BACKGROUND: "0", MEX_OFFLINE: "1", MEX_HOOK_BINARY: binary,
     CLAUDE_CONFIG_DIR: join(fixture, "claude"), CODEX_HOME: join(fixture, "codex") })) vi.stubEnv(key, value);
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", scripts: { test: "node test.js" } }));
+  vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-11T10:00:00Z");
+  writeFileSync(join(repo, path), reviewed.join("\n") + "\n");
+  originalHead = commit("Prepare the adapter change", "2026-11-11T10:00:00Z");
+  vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-13T10:00:00Z");
+  writeFileSync(join(repo, path), reviewed.join("\n").replace("fallback(label)", "stable(label)") + "\n");
+  mergedHead = commit("Wire the adapters (#31)", "2026-11-13T10:00:00Z");
 });
-afterEach(() => { vi.unstubAllEnvs(); rmSync(fixture, { recursive: true, force: true }); });
+afterEach(() => {
+  registerJobKind(createLearnKind());
+  vi.unstubAllEnvs();
+  rmSync(fixture, { recursive: true, force: true });
+});
 
-function thread(head: string): Candidate {
-  const region = (text: string, commit: string) => ({ path: "src/api/users.ts", commit, start: 1, end: text.split("\n").length, text, hash: sha(text) });
-  const after = USERS.trimEnd();
-  return {
-    id: "gh:thread:7", kind: "review-thread", link: "https://github.com/acme/app/pull/7#discussion_r7", hash: sha(COMMENT), nodeIds: ["PRRC_7"],
-    at: "2026-01-02T00:00:00Z", pull: 7, title: "List users", path: "src/api/users.ts", text: COMMENT,
-    code: { before: region(REVIEWED, "a".repeat(40)), after: region(after, head), head: region(after, head), anchor: "  console.log(\"list\");" },
-    reviewers: ["r1"], weights: { actedOn: true, familiar: true, guidelineLink: false, generalising: true, smallPr: true, hotUnknown: false },
-    signal: "strong", commentHashes: { PRRC_7: sha(COMMENT) },
-  };
+function recordedForge() {
+  const { merged } = JSON.parse(recorded.replaceAll("OID_ORIGINAL", originalHead).replaceAll("OID_MERGE", mergedHead));
+  merged.changedFiles = 1;
+  merged.files.nodes = [{ path }];
+  merged.reviewThreads.nodes = merged.reviewThreads.nodes.slice(0, 1);
+  merged.reviewThreads.totalCount = 1;
+  const repeated = structuredClone(merged);
+  repeated.number = 40;
+  repeated.mergedAt = repeated.closedAt = "2026-11-13T09:59:59Z";
+  repeated.body = "";
+  const thread = repeated.reviewThreads.nodes[0];
+  thread.id = "PRRT_fixture_repeat";
+  const comment = thread.comments.nodes[0];
+  comment.id = "PRRC_fixture_repeat";
+  comment.fullDatabaseId = "2040";
+  comment.body = comment.body.replace("Fern Example", "Cedar Example");
+  comment.author = { __typename: "User", login: "cedar-owner", name: "Cedar Example" };
+  comment.pullRequestReview.author.login = "cedar-owner";
+  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/acme/app") return Response.json({ full_name: "acme/app", private: false });
+    if (url.pathname !== "/graphql") throw Error(`Unexpected fixture path ${url.pathname}`);
+    const { query, variables }: { query: string; variables: Record<string, string> } = JSON.parse(String(init?.body));
+    if (query.includes("HarvestSearch(")) {
+      return Response.json({ data: Object.fromEntries(Object.entries(variables).filter(([key]) => /^q\d+$/u.test(key)).map(([key, term]) => {
+        const dates = /merged:([^ ]+)\.\.([^ ]+)$/u.exec(term);
+        const inWindow = dates && Date.parse(merged.mergedAt) >= Date.parse(dates[1]!) && Date.parse(merged.mergedAt) <= Date.parse(dates[2]!);
+        return [`s${key.slice(1)}`, { issueCount: inWindow ? 2 : 0, nodes: inWindow ? [merged, repeated] : [], pageInfo: { hasNextPage: false } }];
+      })) });
+    }
+    expect(query).toMatch(/p0:pullRequest\(number:(?:31|40)\)/u);
+    return Response.json({ data: { repository: { p0: query.includes("number:40") ? repeated : merged } } });
+  });
+  return { fetch, client: new ForgeClient(origin, "fixture-login", fetch) };
 }
 
 const reply = (value: unknown) => ({ text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } });
 
-it("learns a rule from one review thread, stops an edit with the team's fix, and withholds it when the fix is gone", async () => {
+it("harvests a recorded review, stops an edit with the team's fix, and withholds the rule when the fix is gone", async () => {
   await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
   const writer = openRecord();
   try {
-    const real = realpathSync(repo), head = git("rev-parse", "HEAD");
-    // The record keeps the checkout's canonical path (lower-cased on Windows); plans use that path, as the offer does.
-    const registered = writer.checkout(real)!, checkout = registered.path, project = registered.project_id;
-    // A person's `mex` turns MEX on for the checkout; a script's only registers it.
+    const real = realpathSync(repo);
+    const { path: checkout, project_id: project } = writer.checkout(real)!;
     writer.db.prepare("UPDATE checkouts SET state='on' WHERE path=?").run(checkout);
-    // Setup builds the file index in the background; build it here so scope and pattern checks can answer.
     const index = () => buildIndex({ root: real, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
     await index();
-    const plan = Plan.parse({ checkout, head, origin: { host: "github.com", slug: "acme/app" }, source: { host: "github.com", slug: "acme/app" },
-      visibility: "public", agent: "codex", setup: "best-only", since: "2025-06-01T00:00:00.000Z", until: new Date().toISOString(),
-      preferred: [], pulls: [], docs: [], sessions: [], refresh: false, gaps: [], estimate: 100_000, ceiling: 150_000, harvest: { mode: "backfill" } });
+    const forge = recordedForge();
+    const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
+    const harvest = await planHarvest({ checkout, head: mergedHead, source: origin, agent: "codex", ...window }, { client: forge.client });
+    const plan = Plan.parse({ checkout, head: mergedHead, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
+      ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
     const job = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan }).job;
-    // Start after the harvest (tested on its own): one chunk holding one review thread with its code.
-    writer.db.prepare("UPDATE jobs SET checkpoint=? WHERE id=?").run(JSON.stringify({ pull: 0, doc: 0, gaps: [],
-      v2: { phase: "triage", chunks: 1, triaged: 0, early: false, batches: 0, written: 0, counts: {} } }), job.id);
-    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(project, `learning.deep.v2.${job.id}.cand.0`, JSON.stringify([thread(head)]));
     const model = vi.fn<typeof runModel>(async request => {
+      expect(request.prompt).not.toMatch(/Fern Example|Cedar Example/u);
       if (request.purpose === "learn-deeper-filter") {
-        return reply({ results: [{ id: "gh:thread:7", keep: true, category: "api-use", lesson: "Log through `apiLogger` in src/api, not console.log." }] }) as never;
+        expect(request.prompt).not.toContain("return fallback(label);");
+        const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
+        return reply({ results: items.map(({ id }) => ({ id, keep: id === candidateId || id === repeatedId, category: "api-use", lesson: claim })) });
       }
       const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
-      // The writer sees the code as reviewed, numbered (inside the prompt's JSON, so quotes are escaped).
-      expect(request.prompt).toContain('3|   console.log(\\"list\\");');
-      return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim: "Log through apiLogger in src/api, not console.log.",
-        why: "console.log skips the structured logs.",
-        clauses: [{ text: "Log through apiLogger in src/api, not console.log.", quotes: [{ id: "gh:thread:7", quote: "Use apiLogger instead." }] },
-          { text: "console.log skips the structured logs.", quotes: [{ id: "gh:thread:7", quote: "it skips our structured logs" }] }],
-        scope: ["src/api/**"], when: [{ type: "anti", match: "literal", pattern: "console.log(" }],
-        fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "console.log(user)", ok: "apiLogger.info(user)" }, aliases: ["api logging"] }] }) as never;
+      expect(request.prompt).toContain("3|   return fallback(label);");
+      expect(request.prompt).toContain("3|   return stable(label);");
+      const repeat = request.prompt.includes(repeatedId);
+      return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim,
+        clauses: [{ text: claim, quotes: [{ id: repeat ? repeatedId : candidateId, quote: "Prefer the stable adapter over the fallback." }] }],
+        scope: [path], ...(!repeat ? { when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
+          fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } } : {}) }] });
     });
-    registerJobKind(createLearnKind({ model }));
-    for (let i = 0; i < 8; i++) {
-      const row = writer.db.prepare("SELECT state FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
-      if (["done", "done with gaps", "failed"].includes(row.state)) break;
-      await runOneBatch(writer, ownerId("foreground"), { only: new Set([job.id]) });
-    }
-    const done = writer.db.prepare("SELECT state,reason FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
+    registerJobKind(createLearnKind({ model, client: async () => forge.client }));
+    const row = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
+    const owner = ownerId("foreground");
+    await runOneBatch(writer, owner, { only: new Set([job.id]) }); // harvest
+    expect(model).not.toHaveBeenCalled();
+    expect(forge.fetch.mock.calls.some(([, init]) => String(init?.body).includes("p0:pullRequest(number:31)"))).toBe(true);
+    await runOneBatch(writer, owner, { only: new Set([job.id]) }); // triage and early publication
+    expect(row()).toMatchObject({ state: "queued", results: 1 });
+    expect(JSON.parse(row().checkpoint!).v2.phase).toBe("harvest");
+    const [early] = reviewRows(writer, project, job.id);
+    expect(early).toMatchObject({ support: 1, reviewers: 1, proven: true });
+    expect(forge.fetch.mock.calls.some(([, init]) => String(init?.body).includes("p0:pullRequest(number:40)"))).toBe(false);
+    for (let i = 0; i < 8 && row().state === "queued"; i++) await runOneBatch(writer, owner, { only: new Set([job.id]) });
+    const done = row();
     expect(done.state, String(done.reason)).toMatch(/^done/u);
-    expect(model).toHaveBeenCalledTimes(2); // triage, then the early write; clustering found nothing new to write
+    expect(model).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(done.checkpoint!).v2.counts).toMatchObject({ "harvested.review-thread": 2, "triage-kept": 2, saved: 2 });
     const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
     expect(learned).toHaveLength(1);
     const rule = learned[0]!;
+    expect(rule.mex.id).toBe(early!.entryId);
     expect(rule.mex.status).toBe("active");
-    expect(rule.mex.when).toEqual([{ type: "anti", match: "literal", pattern: "console.log(" }]);
-    expect(rule.mex.fix).toMatchObject({ snippet: "  apiLogger.info(\"list\");", path: "src/api/users.ts", lines: "3-3" });
+    expect(rule.mex.when).toEqual([{ type: "anti", match: "literal", pattern: "fallback(" }]);
+    expect(rule.mex.fix).toMatchObject({ snippet: "  return stable(label);", path, lines: "3-3" });
     expect(rule.mex.checks.map(check => `${check.kind}:${check.role}`)).toEqual(expect.arrayContaining(["fixture:complete", "pattern:complete", "scope:complete", "source:supporting"]));
-    expect(rule.mex.source.quote).toBeTruthy();
-    expect(reviewRows(writer, project, job.id)).toMatchObject([{ entryId: rule.mex.id, proven: true, status: "active" }]);
-    // The run's raw text is gone; the rule and its proof stay.
+    expect(rule.mex.source.quote).toBe("Prefer the stable adapter over the fallback.");
+    expect(reviewRows(writer, project, job.id)).toMatchObject([{ entryId: early!.entryId, claim, proven: true, support: 2, reviewers: 2,
+      status: "active", route: "code-rule", signal: "strong" }]);
     expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE ?").get(`learning.deep.v2.${job.id}.%`)?.n).toBe(0);
 
     const hook = (session: string, event: string, payload: Record<string, unknown> = {}) => execFileSync(binary, ["claude-code", event], {
-      encoding: "utf8", timeout: 20_000, env: { ...process.env, MEX_BACKGROUND: "0" },
-      input: JSON.stringify({ session_id: session, cwd: real, hook_event_name: event, ...payload }),
+      encoding: "utf8", timeout: 20_000, input: JSON.stringify({ session_id: session, cwd: real, hook_event_name: event, ...payload }),
     });
-    const edit = { tool_name: "Edit", tool_input: { file_path: join(real, "src", "api", "users.ts"), old_string: "  apiLogger.info(\"list\");", new_string: "  console.log(\"list\");" } };
-    hook("first", "SessionStart", { source: "startup" });
-    const stopped = hook("first", "PreToolUse", edit);
+    const edit = (from: string) => ({ tool_name: "Edit", tool_input: { file_path: join(real, path), old_string: `  return ${from}(label);`, new_string: "  return fallback(label);" } });
+    expect(hook("first", "SessionStart", { source: "startup" })).not.toContain(claim);
+    const stopped = hook("first", "PreToolUse", edit("stable"));
     expect(stopped).toContain("deny");
     expect(stopped).toContain("Do this instead");
-    expect(stopped).toContain("apiLogger.info(\\\"list\\\")");
+    expect(stopped).toContain("return stable(label);");
 
-    // The team moves off apiLogger: what the fix relied on is gone, so the rule is withheld.
-    writeFileSync(join(repo, "src", "api", "users.ts"), "import { log } from \"./log\";\nexport function list() {\n  log(\"list\");\n}\n");
-    writeFileSync(join(repo, "src", "api", "log.ts"), "export function log(message: string) { return message; }\n");
-    git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "switch loggers");
-    await index(); // the background refresh after HEAD moves
+    vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-19T10:00:00Z");
+    writeFileSync(join(repo, path), reviewed.join("\n").replace("fallback(label)", "transport(label)") + "\n");
+    commit("Switch adapters", "2026-11-19T10:00:00Z");
+    await index();
     hook("second", "SessionStart", { source: "startup" });
-    const later = { tool_name: "Edit", tool_input: { file_path: join(real, "src", "api", "users.ts"), old_string: "  log(\"list\");", new_string: "  console.log(\"list\");" } };
-    expect(hook("second", "PreToolUse", later)).not.toContain("deny");
+    expect(hook("second", "PreToolUse", edit("transport"))).not.toContain("deny");
   } finally { writer.close(); }
 }, 120_000);

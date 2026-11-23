@@ -17,6 +17,7 @@ import { hosts } from "./hosts.js";
 import { LEARN_COMMAND, LEARN_KIND, Plan, quoteCeiling,
   reviewWindow, type LearningPlan } from "./plan.js";
 import { planHarvest } from "./harvest/index.js";
+import { harvestClient, savedCursor } from "./pipeline.js";
 
 type Print = (line: string) => void;
 type Confirm = (lines: readonly string[], details: readonly string[]) => Promise<boolean>;
@@ -115,6 +116,11 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
   const { root, projectId, write } = options;
   // Test suites disable live model runs. Keep their free setup independent of host credentials as well.
   if ((process.env.MEX_SETUP_BACKGROUND_AGENTS === "0" && !options.confirm && !options.dryRun) || process.env.MEX_OFF === "1") return;
+  if (options.sessions) {
+    // Past-session learning has its own deferred bucket (D7): learn deeper reads reviews, past fixes and docs.
+    write("Past-session learning isn't available yet. Run `mex learn` without --sessions to learn from reviews, past fixes and docs.");
+    return;
+  }
   const reader = openRecordReadOnly();
   if (!reader) return;
   let plan: LearningPlan;
@@ -122,11 +128,6 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const checkout = reader.get<CheckoutRow>("SELECT state,off_until FROM checkouts WHERE path=? AND project_id=?", root, projectId);
     if (!checkout || !checkoutOn(checkout) || reader.setting("global", "enabled") === "false") {
       if (options.explicit) write("Learn deeper later: MEX is off here. Run `mex on` to turn it back on.");
-      return;
-    }
-    if (options.sessions) {
-      // Past-session learning has its own deferred bucket (D7): learn deeper reads reviews, past fixes and docs.
-      write("Past-session learning isn't available yet. Run `mex learn` without --sessions to learn from reviews, past fixes and docs.");
       return;
     }
     const window = reviewWindow();
@@ -158,7 +159,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const preferred = preferredFolders(projectId, root);
     // GitLab review mining comes in 0.9.1; its repos still learn from local history and contributor docs.
     const harvest = await planHarvest({ checkout: root, head, source: access.source, agent, ...window,
-      issues: reader.setting(projectId, "learning.deep.issues") === "true" }, { client: repo.host === "github.com" ? forge : undefined, tree });
+      issues: reader.setting(projectId, "learning.deep.issues") === "true" }, { client: repo.host === "github.com" ? harvestClient(forge, access.source) : undefined, tree }, savedCursor(reader, projectId));
     const forgeCount = harvest.inventory.bands.reduce((sum, band) => sum + band.count, 0);
     const local = harvest.inventory.local;
     const localCount = local.revert.length + local.cause.length + local.adr.length + local.doc.length;

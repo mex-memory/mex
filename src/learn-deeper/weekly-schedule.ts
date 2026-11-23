@@ -9,7 +9,7 @@ import type { EnqueueOptions, EnqueueResult } from "../record/jobs.js";
 import { LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
 
 export const WEEKLY_KIND = "learn-deeper-weekly";
-const SCHEDULE = "learning.deep.weekly";
+export const SCHEDULE = "learning.deep.weekly";
 const WAKE = "learning-refresh-due";
 export const DAY_MS = 86_400_000;
 const SESSION_IDLE_MS = 10 * 60_000;
@@ -69,7 +69,7 @@ export function sessionsActive(writer: RecordWriter, now: number): boolean {
   finally { hooks?.close(); }
 }
 
-function dueRows(writer: RecordWriter, until: number): Array<{ scope: string; value: string; due: number }> {
+function dueRows(writer: Pick<RecordWriter, "db">, until: number): Array<{ scope: string; value: string; due: number }> {
   return writer.db.prepare(`SELECT scope,value,json_extract(value,'$.due') due FROM settings
     WHERE key=? AND CASE WHEN json_valid(value) THEN json_type(value,'$.due')='integer' AND due BETWEEN 1 AND ? ELSE 0 END ORDER BY due LIMIT 32`)
     .all(SCHEDULE, until) as unknown as Array<{ scope: string; value: string; due: number }>;
@@ -81,7 +81,7 @@ export function weeklyWakeDue(home: string, now = Date.now()): boolean {
   catch { return false; }
 }
 
-export function publishWeeklyWake(writer: RecordWriter, earliest = 0): void {
+export function publishWeeklyWake(writer: { db: RecordWriter["db"]; location: Pick<RecordWriter["location"], "home"> }, earliest = 0): void {
   const path = join(writer.location.home, WAKE);
   const due = dueRows(writer, 8.64e15)[0]?.due;
   if (!due) { try { unlinkSync(path); } catch { /* no mirror yet */ } return; }

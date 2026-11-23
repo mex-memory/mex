@@ -3,12 +3,17 @@ import type { RecordWriter } from "../record/index.js";
 import { enqueueJob } from "../record/jobs.js";
 import { readTeamCoverage, type TeamCoverage } from "./coverage.js";
 import { ForgeClient, object, SourceError } from "./forge.js";
-import { command, PinnedTree } from "./git.js";
+import { PinnedTree } from "./git.js";
 import { hosts } from "./hosts.js";
-import { MAX_DOCS, Plan, quoteCeiling, quoteTokens, reviewWindow, type LearningPlan } from "./plan.js";
+import { Plan, reviewWindow, type LearningPlan } from "./plan.js";
 import type { WeeklySchedule } from "./weekly-schedule.js";
 
-const MAX_WEEKLY_PULLS = 24;
+import { harvestClient } from "./pipeline.js";
+import { planHarvest, type HarvestCursor } from "./harvest/index.js";
+import { propose } from "../knowledge/gate.js";
+import { claimHash } from "../knowledge/state.js";
+import type { BatchContext } from "../record/jobs.js";
+import { noteKey } from "./coverage.js";
 
 export class RefreshDeferred extends Error {}
 
@@ -35,24 +40,45 @@ export async function weeklySources(client: ForgeClient, schedule: WeeklySchedul
   return { tree, team };
 }
 
-export async function quoteRefresh(client: ForgeClient, schedule: WeeklySchedule, tree: PinnedTree, now: number): Promise<LearningPlan> {
-  const bounds = reviewWindow(new Date(now));
-  const window = { since: new Date(Math.max(Date.parse(bounds.since), Math.min(Date.parse(schedule.since), now - 1))).toISOString(), until: bounds.until };
-  const inventory = await hosts[schedule.origin.host].inventory(client, window, MAX_WEEKLY_PULLS);
-  if (!isDeepStrictEqual(inventory.source, schedule.source) || inventory.visibility !== schedule.visibility) {
-    throw new RefreshDeferred("Source access changed. Run `mex learn` to review a new quote before weekly learning continues.");
+export async function planWeekly(client: ForgeClient, schedule: WeeklySchedule, tree: PinnedTree, now: number,
+  cursor: HarvestCursor | undefined, issues: boolean): Promise<LearningPlan> {
+  const access = await hosts[schedule.origin.host].access(client);
+  if (!isDeepStrictEqual(access.source, schedule.source) || access.visibility !== schedule.visibility) {
+    throw new RefreshDeferred("Source access changed. Run mex learn to review a new quote before weekly learning continues.");
   }
-  const changes = schedule.head === tree.head ? "" : await command(schedule.checkout, "git", ["diff", "--name-only", "--no-renames", "-z", schedule.head, tree.head, "--"], undefined, 512 << 10);
-  const changed = changes === undefined ? undefined : new Set(changes.split("\0"));
-  const docs = tree.docs().filter(path => !changed || changed.has(path));
-  const gaps = [
-    ...(inventory.more ? ["Some merged changes were outside the weekly scan limit."] : []),
-    ...(docs.length > MAX_DOCS ? ["Some docs were outside the weekly scan limit."] : []),
-  ];
-  const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), schedule.agent, schedule.setup);
+  const bounds = reviewWindow(new Date(now));
+  const start = Math.min(Date.parse(schedule.since), Date.parse(cursor?.weekly?.window.since ?? schedule.since), now - 1);
+  const window = { since: new Date(Math.max(Date.parse(bounds.since), start)).toISOString(), until: bounds.until };
+  const harvest = await planHarvest({ checkout: schedule.checkout, head: tree.head, defaultHead: tree.head, source: schedule.source,
+    agent: schedule.agent, ...window, mode: "weekly", issues }, { client: harvestClient(client, schedule.source), tree }, cursor);
   return Plan.parse({ checkout: schedule.checkout, origin: schedule.origin, source: schedule.source, visibility: schedule.visibility,
-    agent: schedule.agent, setup: schedule.setup, preferred: schedule.preferred, head: tree.head, ...window, pulls: inventory.pulls,
-    docs: docs.slice(0, MAX_DOCS), gaps, estimate, ceiling: quoteCeiling(estimate) });
+    agent: schedule.agent, setup: schedule.setup, preferred: schedule.preferred, head: tree.head, ...window,
+    pulls: [], docs: [], gaps: harvest.gaps.slice(0, 12), estimate: Math.max(1, harvest.estimate), ceiling: Math.max(1, harvest.ceiling), harvest });
+}
+
+/** Carry over the legacy sweep by claim. The team may have deleted the rule before manifests existed. */
+export async function sweepWeeklyRetirements({ writer, job }: BatchContext, plan: LearningPlan, team: TeamCoverage): Promise<void> {
+  if (!team.retired.size) return;
+  const swept = new Set<string>();
+  await propose([], {
+    projectPath: plan.checkout, home: writer.location.home,
+    sweep: { producer: "learn-deeper",
+      includes(entry) {
+        const retired = team.retired.has(claimHash(entry.text));
+        if (retired) swept.add(entry.mex.id);
+        return retired;
+      },
+      tombstone: { reason: "The matching rule was retired on the default branch.", by: "mex learn" },
+    },
+    validate(gate) {
+      const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
+      if (live?.owner !== job.owner || live?.state !== "running") throw new Error("Learning lost its job before saving.");
+    },
+    onAccepted(gate) {
+      const remove = gate.db.prepare("DELETE FROM settings WHERE scope=? AND key=?");
+      for (const id of swept) remove.run(job.project_id!, noteKey(id));
+    },
+  });
 }
 
 export async function queuePatternRecount(writer: RecordWriter, project: string, checkout: string, team?: TeamCoverage): Promise<void> {

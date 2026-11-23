@@ -23,9 +23,9 @@ export function sourceRef(source: LearningSource): SourceRef {
   return source.kind === "docs" ? { id, hash, link, coverage: source.coverage } : { id, hash, link };
 }
 const ForgeSource = SourceRef.refine(source => {
-  const url = /^https:\/\/(github\.com|gitlab\.com)\/([^?#\s]+?)(?:\/-)?\/(?:blob\/|pull\/|merge_requests\/)[^?\s]+$/u.exec(source.link);
-  return !!url && !!repository(url[1]!, url[2]!) && (source.id.startsWith("doc:") ? repoPath(source.id.slice(4))
-    : /^(?:github:[a-z_-]+:\d+|gitlab:(?:note|description):\d+)$/u.test(source.id));
+  const url = /^https:\/\/(github\.com|gitlab\.com)\/([^?#\s]+?)(?:\/-)?\/(?:blob\/|pull\/|issues\/|merge_requests\/)[^?\s]+$/u.exec(source.link);
+  return !!url && !!repository(url[1]!, url[2]!) && (source.id.startsWith("doc:") ? repoPath(source.id.slice(4).split("#", 1)[0]!)
+    : /^(?:github:[a-z_-]+:\d+|gitlab:(?:note|description):\d+|gh:(?:thread|pr|closed|issue):[A-Za-z0-9_-]+)$/u.test(source.id));
 });
 const Shared = z.object({ id: EntryIdSchema, claim: hash, sources: z.array(ForgeSource).max(8) }).strict();
 export type SharedCoverage = z.infer<typeof Shared>;
@@ -41,8 +41,16 @@ export function parseManifest(raw: string | undefined): z.infer<typeof manifest>
   } catch { throw new KnowledgeError("LEARN_SOURCES", "The team's .mex/sources.json could not be read safely."); }
 }
 
+const LessonSupport = z.object({
+  pulls: z.array(z.number().int().positive()).max(256),
+  commits: z.array(z.string().regex(gitHash)).max(256),
+  reviewers: z.array(z.string().min(1).max(128)).max(256),
+}).strict();
+export type LessonSupport = z.infer<typeof LessonSupport>;
+
 const NoteProof = z.object({ origin: repositorySchema.optional(), source: repositorySchema, visibility: z.enum(["public", "private"]),
   hash, sources: z.array(ForgeSource).max(8).default([]),
+  support: LessonSupport.optional(),
   evidenceDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).optional() }).strict();
 export const noteKey = (id: string) => `learning.deep.note.${id}`;
 
@@ -60,9 +68,9 @@ export function learningProof(plan: LearningPlan, raw: string, value: string | u
     && (!proof.origin || isDeepStrictEqual(proof.origin, plan.origin)) ? proof : undefined;
 }
 
-export function makeNoteProof(plan: LearningPlan, raw: string, sources: SourceRef[], evidenceDay?: string): string {
+export function makeNoteProof(plan: LearningPlan, raw: string, sources: SourceRef[], evidenceDay?: string, support?: LessonSupport): string {
   return JSON.stringify({ origin: plan.origin, source: plan.source, visibility: plan.visibility, hash: sourceDigest(raw),
-    sources: sources.filter(source => ForgeSource.safeParse(source).success), evidenceDay });
+    sources: sources.filter(source => ForgeSource.safeParse(source).success), evidenceDay, support });
 }
 
 export function approvedCoverage(entry: KnowledgeEntry, raw: string, value: string | undefined, origin?: Repository): SharedCoverage {
@@ -87,7 +95,7 @@ export function sourceRead(store: Pick<RecordReader, "setting">, project: string
 
 export function saveSourceReads(writer: RecordWriter, project: string, plan: LearningPlan, sources: SourceRef[]): void {
   const set = writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
-  for (const source of sources) if (source.id.startsWith("doc:") || source.id.startsWith("github:") || source.id.startsWith("gitlab:")) {
+  for (const source of sources) if (source.id.startsWith("doc:") || source.id.startsWith("gh:") || source.id.startsWith("github:") || source.id.startsWith("gitlab:")) {
     set.run(project, localKey(plan, source), recordedSource(source));
   }
 }

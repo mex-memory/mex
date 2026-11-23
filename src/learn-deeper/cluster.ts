@@ -12,11 +12,12 @@
  * support to the entry that already holds it instead of becoming a duplicate.
  */
 import { createHash } from "node:crypto";
+import type { LessonSupport } from "./coverage.js";
 import type { Candidate, CandidateKind } from "./harvest/types.js";
 import type { TriageCategory, TriageResult } from "./triage.js";
 
 export interface Triaged { candidate: Candidate; triage: TriageResult }
-export interface EarlierLearned { id: string; text: string; scope: readonly string[]; patterns: readonly string[] }
+export interface EarlierLearned { id: string; text: string; scope: readonly string[]; patterns: readonly string[]; support?: LessonSupport }
 export type ClusterSource = "review" | "docs" | "history";
 export type ClusterDecision = "write" | "propose" | "drop";
 export interface Cluster {
@@ -25,6 +26,7 @@ export interface Cluster {
   pulls: number[];
   commits: string[];
   reviewers: number;
+  reviewerKeys?: string[];
   /** Distinct PRs, plus distinct commits for history items that have no PR. */
   support: number;
   strong: boolean;
@@ -193,7 +195,6 @@ function summarize(leader: Profile, members: Profile[], earlier: readonly Earlie
     for (const id of ids) identifiers.add(id);
     categories.set(item.triage.category, (categories.get(item.triage.category) ?? 0) + 1);
   }
-  const support = pulls.size + commits.size;
   const strong = members.some(member => member.item.candidate.signal === "strong");
   const source: ClusterSource = sources.has("review") ? "review" : sources.has("history") ? "history" : "docs";
   const category = [...categories].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
@@ -204,6 +205,10 @@ function summarize(leader: Profile, members: Profile[], earlier: readonly Earlie
         (typeof token === "string" ? token : token[0]).toLowerCase()).filter(id => id.length >= CLUSTER_LIMITS.minIdentifier)) };
     return matches(leaderProfile, profile, common) || matches(profile, leaderProfile, common);
   });
+  for (const pull of earlierMatch?.support?.pulls ?? []) pulls.add(pull);
+  for (const commit of earlierMatch?.support?.commits ?? []) commits.add(commit);
+  for (const reviewer of earlierMatch?.support?.reviewers ?? []) reviewers.add(reviewer);
+  const support = pulls.size + commits.size;
   const docs = source === "docs";
   const corroborated = sources.size > 1 && sources.has("docs");
   const decision: ClusterDecision = docs || support >= 2 || corroborated ? "write" : strong ? "propose" : "drop";
@@ -213,7 +218,7 @@ function summarize(leader: Profile, members: Profile[], earlier: readonly Earlie
   return {
     key: createHash("sha256").update(ids[0]!).digest("hex").slice(0, 24),
     members: members.map(member => member.item), pulls: [...pulls].sort((a, b) => a - b), commits: [...commits].sort(),
-    reviewers: reviewers.size, support, strong, source, category, files: [...files].sort(), identifiers: [...identifiers].sort(),
+    reviewers: reviewers.size, reviewerKeys: [...reviewers].sort(), support, strong, source, category, files: [...files].sort(), identifiers: [...identifiers].sort(),
     ...(earlierMatch ? { earlier: earlierMatch.id } : {}), decision, why,
   };
 }
@@ -240,11 +245,11 @@ export function writerMembers(cluster: Cluster): Triaged[] {
  * Docs are at most a quarter of a run's written entries unless the repo has no review history.
  * Returns the clusters to write, with the docs beyond the quota turned into drops.
  */
-export function applyDocQuota(clusters: readonly Cluster[], share = 0.25): Cluster[] {
+export function applyDocQuota(clusters: readonly Cluster[], share = 0.25, hasReviewHistory = false): Cluster[] {
   const written = clusters.filter(cluster => cluster.decision !== "drop");
   const nonDocs = written.filter(cluster => cluster.source !== "docs").length;
-  if (nonDocs === 0) return [...clusters];
-  const allowed = Math.max(1, Math.floor((share * nonDocs) / (1 - share)));
+  if (nonDocs === 0 && !hasReviewHistory && !clusters.some(cluster => cluster.source === "review")) return [...clusters];
+  const allowed = Math.floor((share * nonDocs) / (1 - share));
   let docs = 0;
   return clusters.map(cluster => {
     if (cluster.source !== "docs" || cluster.decision === "drop") return cluster;

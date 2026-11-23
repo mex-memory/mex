@@ -117,6 +117,34 @@ describe("proving a learned rule", () => {
     expect(proof.when).toEqual([]);
   });
 
+
+  it("drops a pattern after it misses one reviewed region even if the other pair proves it", async () => {
+    const path = "packages/api/src/orders.ts";
+    const other = thread(9, path, { code: {
+      before: region(path, 4, "make()"),
+      after: region(path, 4, "apiLogger.info(result)"),
+    } });
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts"), other]);
+    const proof = await proveEntry(draft(cluster), cluster, context());
+    expect(proof.when).toEqual([]);
+    expect(proof.failures.join(" ")).toContain("isn't proven on every pair");
+  });
+
+  it("requires the flag example to demonstrate the pattern", async () => {
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
+    const proof = await proveEntry(draft(cluster, { examples: { flag: "doWork()", ok: "apiLogger.info(user)" } }), cluster, context());
+    expect(proof.when).toEqual([]);
+    expect(proof.failures.join(" ")).toContain("does not separate its flag and ok examples");
+  });
+
+  it("drops a corroborated review claim when there is no supported scope", async () => {
+    const first = thread(3, "packages/api/src/users.ts", { path: undefined, code: undefined });
+    const second = thread(40, "packages/api/src/orders.ts", { path: undefined, code: undefined });
+    const cluster = clusterOf([first, second]);
+    const result = await proveEntry(draft(cluster, { scope: ["**"], when: [], fix: undefined }), cluster, context());
+    expect(result.dropped).toBe("nothing today for it to govern");
+  });
+
   it("rejects a pattern that matches its own ok example", async () => {
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
     const proof = await proveEntry(draft(cluster, { examples: { flag: "console.log(x)", ok: "console.log(x) // allowed in tests" } }), cluster, context());
@@ -160,7 +188,7 @@ describe("proving a learned rule", () => {
   it("drops a ruled-out lesson without a maintainer's contrastive reason", async () => {
     const closed = thread(12, "packages/api/src/users.ts", { kind: "closed-pr", text: "Closing this one." });
     const cluster = clusterOf([closed], "Don't add a second logger package.");
-    const proof = await proveEntry(draft(cluster, { route: "ruled-out", kind: "decision", when: [],
+    const proof = await proveEntry(draft(cluster, { route: "ruled-out", kind: "decision", when: [], claim: "Don't add a second logger.",
       clauses: [{ text: "Don't add a second logger.", quotes: [{ id: closed.id, quote: "Closing this one." }] }] }), cluster, context());
     expect(proof.dropped).toMatch(/contrastive/u);
   });
