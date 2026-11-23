@@ -1,5 +1,37 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`explains the learning review list, refresh, preview and project trials 1`] = `
+"Usage: mex learn [options]
+
+Learn rules from past reviews, fixes and contributor docs after you approve an
+estimate
+
+Options:
+  --model-setup <setup>  Choose mixed or best-only
+  --raise-ceiling        Review a higher token ceiling for a waiting learning
+                         job
+  --dry-run              Read the source inventory and show the estimate without
+                         starting a job
+  --no-weekly            Run once without enrolling in weekly refresh
+  -h, --help             display help for command
+
+After a run finishes, run mex in a terminal to see the review list. Tick the
+rules you want your agents to use. You can leave a rule unticked or drop it.
+
+Weekly refresh checks for new reviews and docs every 7–14 days when idle,
+signed in, and within the 3% automatic allowance. Use --no-weekly for a
+one-time run. To pause an existing refresh, mex off turns MEX off here.
+
+Project trials
+  learning.stopCheck     Check scoped prose rules after an agent session.
+  learning.procedures    Learn procedures from files that change together.
+  learning.prDecisions   Ask for a Decisions section in PR descriptions.
+  learning.deep.issues   Include qualifying closed issues as sources.
+
+Set a trial with mex config set <setting> <on|off> --project.
+"
+`;
+
 exports[`lists the project learning trials in config set help 1`] = `
 "Usage: mex config set [options] <key> <value>
 
@@ -48,8 +80,7 @@ Commands:
   expand [options] <id>                 Read a note, its source and its checks
   edit [options] <id> <text>            Correct a note; preview changes to team
                                         entries
-  wrong [options] <id> <reason>         Retire an incorrect note and keep the
-                                        reason
+  wrong [options] <id> <reason>         Report or retire an incorrect note
   forget [options] <id> [reason]        Remove a note from future sessions
   check [options]                       Check which notes still hold against the
                                         code
@@ -64,8 +95,9 @@ Commands:
   what [options]                        Show what MEX gave or held back this
                                         session
   brief [options]                       Preview what a new session will receive
-  learn [options]                       Review a quote for learning from past
-                                        reviews and docs
+  learn [options]                       Learn rules from past reviews, fixes and
+                                        contributor docs after you approve an
+                                        estimate
   jobs [options]                        List MEX's background jobs on this
                                         machine; pause, resume or cancel one
   config                                Change MEX settings
