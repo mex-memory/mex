@@ -190,7 +190,8 @@ export function openRecord(options: LocationOptions & { projectPath?: string; gi
     db.exec(`PRAGMA busy_timeout=${timeout}`);
     if (schemaVersion(db) > RECORD_SCHEMA_VERSION) throw newer("record.db", schemaVersion(db));
     // NORMAL sync in WAL: a crash loses nothing; a power loss can drop the last commits, and a job then redoes one batch.
-    db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON");
+    // Learning rows may be overwritten or deleted by any record writer.
+    db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
     migrateRecord(db);
     const writer = new RecordWriter(db, location);
     if (options.projectPath) {

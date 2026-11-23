@@ -22,7 +22,7 @@ const REASONS: Record<ModelWaitReason, string> = {
 export class ModelWaitError extends Error {
   constructor(readonly reason: ModelWaitReason, message = REASONS[reason]) { super(message); this.name = "ModelWaitError"; }
 }
-export interface ModelJobContext { jobId: string; batch: number; projectId: string | null; recordHome?: string; }
+export interface ModelJobContext { jobId: string; batch: number; projectId: string | null; recordHome?: string; stage?: string; }
 const context = new AsyncLocalStorage<ModelJobContext>();
 export function withModelJob<T>(job: ModelJobContext, work: () => T): T { return context.run(job, work); }
 export interface AutomaticModelBatch { estimate: Tokens; measuredUsageOnly?: boolean; }
@@ -157,7 +157,8 @@ export function enqueueModelBatch(writer: RecordWriter, request: BatchRequest, n
       VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?)`).run(request.agent, request.model, Number(!!request.automatic), owner, process.pid,
         projectId, job?.jobId ?? null, job?.batch ?? null, new Date(now).toISOString(), reserved,
         JSON.stringify({ profile: PRICE_PROFILE, weights, estimated: true, ...(reservation ? { tokenReservation: reservation } : {}),
-          ...(request.automatic?.measuredUsageOnly ? { measuredUsageOnly: true, automaticTokens: tokenCount(request.automatic.estimate) } : {}) }));
+          ...(request.automatic?.measuredUsageOnly ? { measuredUsageOnly: true, automaticTokens: tokenCount(request.automatic.estimate) } : {}),
+          ...(job?.stage ? { stage: job.stage } : {}) }));
     return row(writer, Number(result.lastInsertRowid))!;
   });
 }
@@ -201,13 +202,22 @@ function usageUnits(calls: readonly Usage[], selectedModel: string): number {
 }
 export function settleModelBatch(writer: RecordWriter, entry: ModelBatchRow, usage: Usage, recorded = true, observations: readonly UsageWindowObservation[] = []): void {
   let measured: number;
-  try { measured = usageUnits(usage.byModel ?? [usage], entry.requested_model); }
-  catch { measured = Number.MAX_SAFE_INTEGER; recorded = false; }
-  const charge = !recorded || usage.estimated ? Math.max(entry.reserved_units, measured) : measured;
+  let tokens: number;
+  const calls = usage.byModel ?? [usage];
+  try {
+    measured = usageUnits(calls, entry.requested_model);
+    tokens = calls.reduce((total, call) => sum(total, tokenCount(call)), 0);
+  } catch { measured = tokens = Number.MAX_SAFE_INTEGER; recorded = false; }
+  const uncertain = !recorded || usage.estimated || calls.some(call => call.estimated);
+  const charge = uncertain ? Math.max(entry.reserved_units, measured) : measured;
+  const pricing = JSON.parse(entry.pricing);
+  const reservedTokens = tokenReservation(entry.pricing)?.tokens ?? pricing.automaticTokens;
+  // A missing usage row must not discard measurements already seen by the runner.
+  if (reservedTokens !== undefined) pricing.settledTokens = uncertain ? Math.max(reservedTokens, tokens) : tokens;
   transaction(writer, () => {
     for (const observation of observations) saveUsageWindow(writer.db, observation);
-    const changed = writer.db.prepare("UPDATE model_batches SET state=?,charged_units=?,finished_at=? WHERE id=? AND owner=? AND state='running'")
-      .run(recorded ? "done" : "interrupted", charge, new Date().toISOString(), entry.id, entry.owner);
+    const changed = writer.db.prepare("UPDATE model_batches SET state=?,charged_units=?,pricing=?,finished_at=? WHERE id=? AND owner=? AND state='running'")
+      .run(recorded ? "done" : "interrupted", charge, JSON.stringify(pricing), new Date().toISOString(), entry.id, entry.owner);
     if (Number(changed.changes) !== 1) throw new ModelWaitError("storage");
   });
 }

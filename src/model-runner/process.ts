@@ -150,10 +150,10 @@ function runOwnedProcess(
         try { options.onUsage?.(decoder.usage); } catch { /* observation only */ }
       }
       const measured = accounting.finish();
-      const incomplete = !!options.consented && (!!failure || code !== 0 || !!signal || decoder.failed || !decoder.completed);
+      const incomplete = !!(options.consented || options.automatic) && (!!failure || code !== 0 || !!signal || decoder.failed || !decoder.completed);
       let recorded = true;
       for (const usage of measured.byModel ?? [measured]) {
-        const saved = recordModelCall({ ...usage, estimated: usage.estimated || incomplete, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.purpose, projectPath: cwd, batchId: admission?.id }, admission ? { home: admission.home } : {});
+        const saved = recordModelCall({ ...usage, estimated: usage.estimated || measured.estimated || incomplete, ...(measured.sessionId ? { sessionId: measured.sessionId } : {}), agent: tool, purpose: options.purpose, projectPath: cwd, batchId: admission?.id }, admission ? { home: admission.home } : {});
         recorded = saved && recorded;
       }
       try { admission?.finish({ ...measured, estimated: measured.estimated || incomplete }, recorded); } catch { warnUsageFailure(); }

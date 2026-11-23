@@ -5,6 +5,7 @@ import { JOB_STATES, type JobState, type RecordWriter, type RecordReader } from 
 import { recordCounterIn } from "../telemetry/store.js";
 import { automaticWorkEnabled } from "../controls/index.js";
 import { ModelWaitError, modelJobReady, recoverModelBatches, withModelJob } from "../model-runner/budget-queue.js";
+import { checkpointLearningRows } from "./learning-rows.js";
 
 /**
  * One job model for the whole machine, stored in record.db `jobs` / `job_results`.
@@ -88,7 +89,7 @@ export interface JobKind<P = unknown, C = unknown> {
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
   ready?(job: JobRow, writer: RecordWriter): boolean;
   /** Optional owned recovery metadata for a batch whose runner died. */
-  interrupted?(job: JobRow, writer: RecordWriter): Pick<Partial<JobRow>, "checkpoint" | "progress">;
+  interrupted?(job: JobRow, writer: RecordWriter, backgroundStartup: boolean): Pick<Partial<JobRow>, "checkpoint" | "progress">;
   /**
    * Called inside the state change when the job first reaches a terminal state (done, failed, cancelled),
    * to drop data the run kept only while it ran. Must be fast; a throw is ignored.
@@ -112,7 +113,12 @@ export function registeredJobKinds(): string[] { return [...kinds.keys()]; }
 function now(): string { return new Date().toISOString(); }
 function inTransaction<T>(db: DatabaseSync, work: () => T): T {
   db.exec("BEGIN IMMEDIATE");
-  try { const value = work(); db.exec("COMMIT"); return value; }
+  try {
+    const value = work();
+    db.exec("COMMIT");
+    checkpointLearningRows(db);
+    return value;
+  }
   catch (error) { try { db.exec("ROLLBACK"); } catch { /* already closed */ } throw error; }
 }
 function getJob(db: DatabaseSync, id: string): JobRow | undefined {
@@ -209,7 +215,7 @@ export function processAlive(pid: number): boolean {
  * A job left running by a runner that died goes back to the queue. Its last committed
  * checkpoint is where it resumes, so at most the batch in flight is redone.
  */
-export function recoverInterruptedJobs(writer: RecordWriter, self: string, alive: (pid: number) => boolean = processAlive): number {
+export function recoverInterruptedJobs(writer: RecordWriter, self: string, alive = processAlive, backgroundStartup = false): number {
   return inTransaction(writer.db, () => {
     const running = writer.db.prepare("SELECT * FROM jobs WHERE state='running'").all() as unknown as JobRow[];
     let recovered = 0;
@@ -218,8 +224,12 @@ export function recoverInterruptedJobs(writer: RecordWriter, self: string, alive
       const pid = job.owner ? ownerPid(job.owner) : undefined;
       if (pid !== undefined && pid !== process.pid && alive(pid)) continue;
       if (job.request === "cancel") setState(writer.db, job, "cancelled", { reason: null });
-      else if (job.request === "pause") setState(writer.db, job, "paused", { request: null });
-      else setState(writer.db, job, "queued", kinds.get(job.kind)?.interrupted?.(job, writer));
+      else {
+        const interrupted = kinds.get(job.kind)?.interrupted;
+        const fields = job.request !== "pause" || backgroundStartup ? interrupted?.(job, writer, backgroundStartup) : undefined;
+        if (job.request === "pause") setState(writer.db, job, "paused", { ...fields, request: null });
+        else setState(writer.db, job, "queued", fields);
+      }
       recovered++;
     }
     return recovered;

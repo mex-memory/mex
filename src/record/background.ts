@@ -5,6 +5,7 @@ import { VERSION } from "../version.js";
 import { openRecord, type RecordWriter } from "./index.js";
 import { recordLocation, type LocationOptions } from "./location.js";
 import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
+import { checkpointLearningRows } from "./learning-rows.js";
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queueBehindHead, queuePendingRefreshes } from "../file-index/pending.js";
@@ -259,8 +260,9 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     log(`started pid ${process.pid}, version ${VERSION}`);
     heartbeat = setInterval(() => { try { if (!beat()) held = false; } catch { /* next beat */ } }, settings.heartbeatMs);
     heartbeat.unref();
-    const recovered = recoverInterruptedJobs(writer, self);
-    if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
+    const recovered = recoverInterruptedJobs(writer, self, processAlive, true);
+    checkpointLearningRows(writer.db, true);
+    if (recovered) log(`recovered ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
     graph = new BackgroundGraph(writer, queueJob, log);
     let lastWork = clock();
     let lastTelemetry = -Infinity;
@@ -291,6 +293,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       // Code facts follow new commits: re-read a project's history once its HEAD has moved.
       if (clock() - lastFreshness >= 60_000) {
         lastFreshness = clock();
+        checkpointLearningRows(writer.db, true);
         try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
         // Commands that failed and then passed in a session become recipes.
         try { queuePendingFailPass(writer, queueJob); } catch { /* a missed pass waits for the next one */ }

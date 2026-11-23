@@ -7,13 +7,14 @@ import { ModelRunError, ModelWaitError, runModel, type ModelResult } from "../mo
 import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/consent.js";
 import { registerJobKind, type BatchContext, type BatchResult, type JobKind } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
+import { clearLearningRows } from "../record/learning-rows.js";
 import { refreshOwnUsage } from "../record/own-usage.js";
 import { nativeBinary } from "../knowledge/check.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
 import { clearLearningChecks, origin, PinnedTree } from "./git.js";
 import { hosts } from "./hosts.js";
 import { LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
-import { AgentActive, clearRunRows, CURSOR_KEY, harvestClient, initialState, PipelineState, publishedBatch, runPipelineBatch, savedCursor } from "./pipeline.js";
+import { AgentActive, CURSOR_KEY, harvestClient, initialState, PipelineState, publishedBatch, reviewRows, runPipelineBatch, savedCursor } from "./pipeline.js";
 import type { HarvestPlan } from "./harvest/types.js";
 import { planWeekly, queuePatternRecount, RefreshDeferred, sweepWeeklyRetirements, weeklySources } from "./weekly.js";
 import { DAY_MS, nextWeeklyAt, publishWeeklyWake, SCHEDULE, scheduleFromPlan, sessionsActive, WEEKLY_KIND, WeeklySchedule, weeklySchedule } from "./weekly-schedule.js";
@@ -26,7 +27,7 @@ const checkpointSchema = z.object({
   gaps: z.array(z.string().max(180)).max(24),
   retryAt: z.number().optional(), recovered: z.number().int().nonnegative().optional(),
   weeklyPlan: Plan.optional(), v2: PipelineState.optional(),
-  finish: z.boolean().optional(), home: z.string().optional(), weeklyDue: z.number().optional(),
+  finish: z.boolean().optional(), home: z.string().optional(), weeklyDue: z.number().optional(), rawPurged: z.literal(true).optional(),
 }).passthrough();
 type Checkpoint = z.infer<typeof checkpointSchema>;
 type Context = BatchContext<unknown, Checkpoint>;
@@ -114,7 +115,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
     ended(job, db) {
       const project = job.project_id;
       if (!project) return;
-      clearRunRows(db, project, job.id);
+      clearLearningRows(db, project, job.id);
       const state = checkpoint(job);
       if (!["done", "done with gaps"].includes(job.state)) return;
       const due = state.weeklyDue;
@@ -135,7 +136,18 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       const summary = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1", job.id)[0]?.summary;
       return { used: recordedModelSpend(reader, job.id), ceiling: weeklyMode ? undefined : Plan.parse(JSON.parse(job.params)).ceiling, summary };
     },
-    interrupted(job, writer) {
+    interrupted(job, writer, backgroundStartup) {
+      const project = job.project_id!;
+      if (backgroundStartup && clearLearningRows(writer.db, project, job.id)) {
+        const state = checkpoint(job);
+        // Harvest can be repeated for free. Once a model was admitted, the
+        // remaining input or answer may be gone, and replay could spend twice.
+        const admitted = writer.db.prepare("SELECT 1 FROM model_batches WHERE job_id=? AND admitted_at IS NOT NULL").get(job.id);
+        const saved = job.results || reviewRows(writer, project, job.id).length;
+        return admitted || saved
+          ? { checkpoint: JSON.stringify({ ...state, finish: false, rawPurged: true }), progress: "Finishing after interrupted learning was cleared" }
+          : { checkpoint: JSON.stringify({ ...state, v2: undefined }), progress: "Reading sources again after interruption" };
+      }
       if (publishedBatch(writer, job)) return { progress: "Finishing the saved batch after interruption" };
       return { progress: "Resuming from the last finished batch" };
     },
@@ -157,13 +169,21 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         checkpoint: { ...state, home: writer.location.home, weeklyDue: weekly ? retry : undefined },
         done: true, gaps: true, summary: why, tokens: spent(),
       });
-      if (weekly && weeklySchedule(writer, project) !== JSON.stringify(weekly)) return { checkpoint: state, done: true, summary: "A newer weekly schedule is in effect." };
-      if (!learningOn(writer, project, params.checkout, now)) return { checkpoint: state, wait: "Waiting: MEX is off here" };
-      if (weekly && sessionsActive(writer, now)) return waitForIdle(state, now);
-      // Without it nothing that is paid for could be checked, or saved.
-      if (!nativeBinary()) return { checkpoint: { ...state, retryAt: now + 60_000 }, wait: "Waiting: learning needs the installed check evaluator" };
+      if (!state.rawPurged) {
+        if (weekly && weeklySchedule(writer, project) !== JSON.stringify(weekly)) return { checkpoint: state, done: true, summary: "A newer weekly schedule is in effect." };
+        if (!learningOn(writer, project, params.checkout, now)) return { checkpoint: state, wait: "Waiting: MEX is off here" };
+        if (weekly && sessionsActive(writer, now)) return waitForIdle(state, now);
+        // Without it nothing that is paid for could be checked, or saved.
+        if (!nativeBinary()) return { checkpoint: { ...state, retryAt: now + 60_000 }, wait: "Waiting: learning needs the installed check evaluator" };
+      }
       await clearLearningChecks(writer.location.home, job.id);
       recoverNotes(writer, project);
+      if (state.rawPurged) {
+        // No source cursor advances when a run loses its input or model replies.
+        const saved = reviewRows(writer, project, job.id).length;
+        const summary = "Learning was interrupted. Temporary sources and model replies were cleared.";
+        return { ...finishGap(summary), results: Math.max(0, saved - job.results) };
+      }
       try {
         if (!isDeepStrictEqual(await origin(params.checkout), params.origin)) return finishGap("The checkout's source repository changed.");
         let client: ForgeClient | undefined;
