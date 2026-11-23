@@ -159,8 +159,8 @@
     "type": "anti",
     "match": "literal",
     "pattern": "GetSourceOfProjectReferenceIfOutputIncluded",
-    "good": true,
-    "why": "the node-builder path that shouldn't run"
+    "good": false,
+    "why": "the hunk mentions the path only in a comment"
    },
    {
     "type": "anti",
@@ -379,8 +379,8 @@
     "type": "anti",
     "match": "literal",
     "pattern": "The reference implementation strips the prefix",
-    "good": true,
-    "why": "the comment the reviewer asked to delete"
+    "good": false,
+    "why": "the reviewer asked to edit a comment, so this does not identify code"
    },
    {
     "type": "anti",

@@ -318,10 +318,17 @@ func matchEdit(snap *entries.Snapshot, rel, added, old string) []bump {
 			continue
 		}
 		for _, t := range it.Entry.When {
-			if t.Type != typ || !precise(t) {
+			if t.Type != typ {
 				continue
 			}
-			if occurrences(t, added) <= occurrences(t, old) {
+			var adds bool
+			if it.Entry.Learned() {
+				adds = pattern.PreciseCodePattern(t.Type, t.Match, t.Pattern) &&
+					pattern.CodeCount(t.Match, t.Pattern, added) > pattern.CodeCount(t.Match, t.Pattern, old)
+			} else {
+				adds = precise(t) && occurrences(t, added) > occurrences(t, old)
+			}
+			if !adds {
 				continue // only an edit that adds the pattern
 			}
 			out = append(out, bump{item: it, trigger: t, rel: rel})
