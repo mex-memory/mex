@@ -8,6 +8,11 @@ import type { Candidate, HarvestPoint } from "./types.js";
 
 type DocKind = "adr" | "doc";
 const prose = /\.(?:mdx?|rst|adoc)$/iu;
+const excludedDocs = {
+  sections: /^(?:codeofconduct|securitypolicy|licen[cs]es?|changelogs?|history|releasenotes?|funding|supportpolicy|(?:author|contributor)lists?|governance|(?:issue|pullrequest)templates?)$/iu,
+  files: /^(?:security|support|authors?|contributors?)$/iu,
+};
+const docName = (name: string) => name.replace(/[._ -]/gu, "");
 const guides = /^(?:contributing|development|developing|architecture|developer[-_. ]guide|maintainer[-_. ]guide|getting[-_. ]started[-_. ]developing)(?:[._-][^/]*)?$/iu;
 const adrHeading = /\b(?:alternatives?|considered options?|options considered|rejected|consequences?|decisions?)\b/iu;
 const contributor = /\b(?:contribut\w*|develop(?:ment|ing|ers?)|architecture|maintain\w*|building from source|local setup|running tests|testing)\b/iu;
@@ -20,6 +25,8 @@ export function docKind(path: string): DocKind | undefined {
     || /(?:^|\/)\.(?:cursor|claude)\/rules\/|(?:^|\/)\.github\/instructions\//u.test(path)
     || segments.some(part => part.startsWith(".") || ["node_modules", "vendor"].includes(part))) return undefined;
   const name = posix.basename(path).replace(prose, "");
+  if (excludedDocs.files.test(docName(name))
+    || [...segments.slice(0, -1), name].some(part => excludedDocs.sections.test(docName(part)))) return undefined;
   if (/(?:^|\/)(?:adrs?|decisions|rfcs)\//iu.test(path) || /adr/iu.test(name)) return "adr";
   if (guides.test(name) || /(?:^|\/)docs?\//iu.test(path) || /^readme$/iu.test(name)) return "doc";
 }
@@ -90,7 +97,7 @@ export function documentCandidates(point: HarvestPoint, kind: DocKind, raw: stri
     if (!body || (kind === "adr" && !adrHeading.test(heading.name))) continue;
     if (readme && !names.some(name => contributor.test(name)) && !(consumerUsage && hasContributorSection)) continue;
     if (!readme && kind === "doc" && /(?:^|\/)docs?\//iu.test(path)
-      && /(?:^|\/)(?:api[-_ ]?reference|reference|release[-_ ]?notes|changelog|generated)\//iu.test(path)
+      && /(?:^|\/)(?:api[-_ ]?reference|reference|generated)\//iu.test(path)
       && ![...names, title].some(name => contributor.test(name))) continue;
     const chunks = passages(body);
     if (kind === "adr" && chunks.length > 1) gaps.messages.add("Some long decision sections were excerpted.");
