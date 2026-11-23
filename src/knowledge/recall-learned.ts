@@ -101,18 +101,21 @@ export function describeLearnedRecall(item: StoredEntry, options: KnowledgeOptio
   const mex: KnowledgeEntry["mex"] & { fix?: Fix } = item.entry.mex;
   const label = mex.source.label ? `${item.label} ${mex.source.label}` : item.label;
   const result = { id, level: item.level, label, verdict };
-  if (mex.status === "proposed") return { ...result, action: "withheld", message: "Withheld. This entry is awaiting acceptance." };
+  const boundary = mex.status === "proposed" || mex.status === "retired"
+    ? " A shared copy is separate and stays until the team changes it. Rule text an agent already loaded stays until that agent starts again."
+    : "";
+  if (mex.status === "proposed") return { ...result, action: "withheld", message: `Withheld. This entry is awaiting acceptance.${boundary}` };
   const reason = checks.find(check => (check.status === "fail" || check.status === "gone") && check.reason)?.reason;
   const detail = reason && reason.length <= 240 && !hasSecret(reason) && !/[\p{C}]/u.test(reason)
     ? ` Check reported "${reason}".` : "";
   if (verdict === "broken") return { ...result, action: "withheld",
-    message: `Withheld. The current checkout no longer supports this entry.${detail} Run mex check for details.` };
+    message: `Withheld. The current checkout no longer supports this entry.${detail} Run mex check for details.${boundary}` };
   if (verdict === "changed") return { ...result, action: "replaced",
-    message: `Being checked. Its evidence changed.${detail} Read the current code or run mex check for details.` };
+    message: `Being checked. Its evidence changed.${detail} Read the current code or run mex check for details.${boundary}` };
   if (verdict !== "held" && !checks.some(check => check.kind === "scope" && check.status === "pass")) {
-    return { ...result, action: "withheld", message: "Withheld. MEX could not verify that the scope still applies." };
+    return { ...result, action: "withheld", message: `Withheld. MEX could not verify that the scope still applies.${boundary}` };
   }
-  return { ...result, action: "given", message: verdict === "held" ? "Current checks hold." : "The scope still applies. Other checks could not confirm the entry.",
+  return { ...result, action: "given", message: `${verdict === "held" ? "Current checks hold." : "The scope still applies. Other checks could not confirm the entry."}${boundary}`,
     claim: mex.one_line, why: item.entry.text, ...(mex.fix ? { fix: mex.fix } : {}),
     ...(item.level === "personal" && mex.source.quote ? { quote: mex.source.quote } : {}),
     sources: sourceLinks(item.entry, item.level, options, project) };
