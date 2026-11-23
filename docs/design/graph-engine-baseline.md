@@ -766,6 +766,59 @@ integer keys. The PR head used all five language families and
 WASI uses one extraction thread and skips the shared facts cache.
 It refreshes in one shot when edits settle. Resident edits use native Rust.
 
+## Final results (shipping defaults)
+
+Measured on 23 Nov 2026 at `66472df9` on the same M4 MacBook Air as the baseline, with no `MEX_GRAPH_*` flags set: every language on the engine and schema v5 storage. `measure.mjs` ran the same number of runs per repository as the baseline. Each cell gives the `next2` median, then this branch's median. Accuracy is graded against the cached SCIP answer keys, as in the baseline.
+
+| Repo | Nodes | Cold build s | Peak MB (% of `next2`) | Refresh s | Bytes per node | Precision % | Recall % |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| express | 3,586 | 1.97 → 0.39 (5.1×) | 485 → 159 (33%) | 1.34 → 0.18 | 4,660 → 1,218 | 100 → 100 | 99.3 → 100 |
+| hono | 15,516 | 7.66 → 1.20 (6.4×) | 985 → 233 (24%) | 2.71 → 0.22 | 4,728 → 1,178 | 100 → 100 | 83.9 → 80.1 |
+| zod | 16,121 | 8.40 → 1.32 (6.4×) | 1,045 → 235 (22%) | 2.59 → 0.25 | 5,554 → 1,303 | 99.6 → 100 | 62.6 → 61.7 |
+| nest | 26,329 | 14.49 → 2.07 (7.0×) | 1,147 → 311 (27%) | 5.47 → 0.33 | 5,085 → 1,261 | 99.9 → 100 | 94.2 → 95.3 |
+| TypeScript `src/` | 56,601 | 25.00 → 4.64 (5.4×) | 1,696 → 583 (34%) | 7.27 → 0.24 | 5,330 → 1,468 | | |
+| novu | 161,688 | 77.11 → 12.18 (6.3×) | 2,553 → 975 (38%) | 23.29 → 0.79 | 5,110 → 1,329 | | |
+| flask | 2,198 | 1.38 → 0.31 (4.4×) | 370 → 149 (40%) | 0.83 → 0.18 | 3,589 → 1,186 | 85.6 → 100 | 22.2 → 83.9 |
+| httpx | 1,485 | 1.28 → 0.29 (4.5×) | 355 → 149 (42%) | 0.78 → 0.18 | 4,402 → 1,353 | 89.4 → 99.8 | 33.0 → 82.9 |
+| fastapi | 10,220 | 4.70 → 0.92 (5.1×) | 549 → 215 (39%) | 2.12 → 0.23 | 3,612 → 1,023 | 98.4 → 100 | 22.9 → 70.8 |
+| django | 61,259 | 26.05 → 4.34 (6.0×) | 1,041 → 396 (38%) | 7.38 → 0.38 | 4,397 → 1,183 | 92.4 → 99.3 | 61.6 → 92.9 |
+| fd (Rust) | 724 | 0.92 → 0.24 (3.8×) | 364 → 109 (30%) | 0.67 → 0.17 | 5,063 → 1,791 | | |
+| ripgrep (Rust) | 4,424 | 2.56 → 0.49 (5.2×) | 453 → 161 (36%) | 1.02 → 0.19 | 4,890 → 1,592 | | |
+
+TypeScript recall against the compiler route's own recall is 95.5% on Hono, 98.6% on zod, 101% on NestJS and 100% on Express.
+
+**Warm edits** with the same defaults (24 edits after two warm-ups; MEX p50/p95 in ms · held MiB):
+
+| Repository and file | Append | Prepend | Insert call | Change export |
+|---|---:|---:|---:|---:|
+| Hono `src/hono-base.ts` | 34.2/35.6 · 47 | 36.1/37.7 · 48 | 36.7/37.9 · 62 | 36.6/40.1 · 65 |
+| Flask `src/flask/app.py` | 38.4/40.3 · 40 | 38.7/55.2 · 40 | 37.7/40.5 · 44 | 38.7/43.0 · 48 |
+| ripgrep `crates/core/main.rs` | 27.5/32.3 · 37 | 28.9/30.9 · 37 | 30.5/32.9 · 42 | 32.0/36.6 · 44 |
+| NestJS `packages/core/nest-factory.ts` | 31.5/33.4 · 68 | 36.0/37.7 · 70 | 36.8/39.9 · 94 | 38.2/39.7 · 101 (see below) |
+| novu `apps/api/src/app.module.ts` | 39.5/40.9 · 197 | 40.2/42.1 · 199 | 49.1/50.0 · 235 | 52.2/58.2 · 235 |
+
+The first NestJS export run measured 197.0/200.6 ms, with the engine at 33 ms instead of 18 ms. Five later runs, including the same call-then-export order, measured 37.9–42.2 ms. The slow run was not reproduced, and the table shows the first rerun.
+
+**Compiler-graded call graph** (`scripts/graph-bench/callgraph.mjs --gate`, 100 sampled callees, the TypeScript 5.9 language service as the answer key). All three pass the gate.
+
+| Repo | Precision | Recall | F1 | Read p50 |
+|---|---:|---:|---:|---:|
+| Hono | 0.998 | 0.966 | 0.981 | 4 ms |
+| zod | 0.992 | 0.988 | 0.990 | 4 ms |
+| NestJS | 0.483 | 0.993 | 0.650 | 5 ms |
+
+On NestJS, 128 of the engine's 290 sites are `@Module(...)` decorator calls. NestJS imports them as `@nestjs/common`, which the engine resolves to the workspace sources. The language service has nothing built, so it finds none of them. Without `Module`, the engine gets 0.864 precision and 0.993 recall, and `next2`'s compiler graph gets 0.881 and 1.000.
+
+**Against the locked targets:**
+
+- Cold build is at least 5× faster on 9 of 12 repositories. Flask (4.4×), HTTPX (4.5×) and fd (3.8×) build in under 0.35 s, where process start dominates. novu takes 12.2 s, Hono 1.2 s and Django 4.3 s, all under their limits.
+- Peak memory is at most 40% of `next2` on 10 of 12. Flask is at 40.3% and HTTPX at 42%, both 149 MB. novu peaks at 975 MiB, which is accepted against the 1 GB cap.
+- Every one-file refresh is under 1 s. novu takes 0.79 s.
+- Warm edits are under 50 ms p50 everywhere except novu's export edit, at 52.2 ms here and 55.1 ms in the export run. That is accepted.
+- novu holds at most 235 MiB between edits.
+- Disk is under 1.5 KB per node except on the two small Rust repositories: fd at 1,791 bytes (1.2 MB in total) and ripgrep at 1,592 bytes.
+- TypeScript precision is at least the compiler route's on every repository, and recall is 95.5–101% of the compiler's. Python precision is 99.3–100%, and recall is above `next2` on every repository.
+
 ## Locked targets
 
 These replace the first proposals in the design. Speed and memory are ratios against `next2` on the same machine, so they hold on any CI runner; the absolute values are for this M4.
