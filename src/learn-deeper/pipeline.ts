@@ -61,13 +61,15 @@ export const PIPELINE_LIMITS = {
 /**
  * What the first triage batch writes. Strong kept items go out as usual. When that batch kept
  * none, the early writer call still runs, on the best-supported kept items, and they wait for a tick.
+ * A kept item with no acted-on or familiar support is not evidence yet: it stays for the full window
+ * instead of spending a writer call the later pass would drop.
  * Ranking matches clustering, without the strong bonus those items do not have.
  */
 export function earlyLessons(kept: readonly Triaged[], limit: number): { items: Triaged[]; waiting: boolean } {
   const strong = kept.filter(item => item.candidate.signal === "strong").slice(0, limit);
   if (strong.length) return { items: strong, waiting: false };
   const score = (item: Triaged) => (item.candidate.weights.actedOn ? 2 : 0) + (item.candidate.weights.familiar ? 1 : 0);
-  const ranked = [...kept].sort((a, b) => score(b) - score(a)
+  const ranked = kept.filter(item => score(item) > 0).sort((a, b) => score(b) - score(a)
     || b.candidate.at.localeCompare(a.candidate.at) || a.candidate.id.localeCompare(b.candidate.id));
   return { items: ranked.slice(0, limit), waiting: ranked.length > 0 };
 }
@@ -829,7 +831,8 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       let results = 0;
       if (!state.early) {
         // First rules early. Strong items of this batch are written now. A batch that kept none
-        // still spends the early writer call on its best-supported items, saved as waiting rules.
+        // still spends the early writer call on kept items that were acted on or are familiar,
+        // saved as waiting rules. An unsupported keep stays for the full window.
         const byId = new Map(candidates.map(candidate => [candidate.id, candidate]));
         const kept: Triaged[] = outcome.results.flatMap(result => {
           const candidate = byId.get(result.id);
