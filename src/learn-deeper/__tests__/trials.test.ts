@@ -5,10 +5,14 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { setCheckoutEnabled } from "../../controls/index.js";
 import { buildIndex } from "../../file-index/build.js";
+import { createJudgeKind } from "../../judge/job.js";
+import { evaluate, nativeRequest, recordChecks } from "../../judge/native.js";
+import { runJudgeSync } from "../../judge/sync.js";
 import { propose } from "../../knowledge/gate.js";
 import { parseEntry } from "../../knowledge/entry.js";
 import { tickLearned } from "../../knowledge/mutations.js";
 import { snapshotNotes } from "../../knowledge/personal-store.js";
+import { recallLearned } from "../../knowledge/recall-learned.js";
 import type { runModel } from "../../model-runner/index.js";
 import { openHooksReadOnly, openRecord } from "../../record/index.js";
 import { enqueueJob, ownerId, registerJobKind, runOneBatch, type JobRow } from "../../record/jobs.js";
@@ -61,6 +65,93 @@ function fixture() {
 }
 type Fixture = ReturnType<typeof fixture>;
 const modelReply = (value: unknown) => ({ text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture", estimated: false } }) as Awaited<ReturnType<typeof runModel>>;
+const knowledgeOptions = (f: Fixture) => ({ home: f.home, projectPath: f.checkout });
+const judgeRequest = (f: Fixture) => ({ checkout: f.checkout, project_id: f.project, mex_home: f.home,
+  record_directory: f.writer.location.directory });
+
+it.each([
+  ["unrelated edit", "held", 0],
+  ["reworded passage", "changed", 1],
+  ["removed passage", "broken", 1],
+] as const)("checks a learned doc rule after an %s", async (change, verdict, calls) => {
+  const f = fixture();
+  try {
+    const doc = "CONTRIBUTING.md", file = join(f.root, doc);
+    const passage = "Route all public requests through the stable adapter so offline callers get the same response.";
+    const claim = "Use the stable adapter for public requests.";
+    const options = knowledgeOptions(f);
+    const original = "# Adapters\n\n" + passage + "\n\n# Setup\n\nUse the sample workspace.\n";
+    writeFileSync(file, original);
+    f.git("add", doc);
+    f.git("-c", "commit.gpgsign=false", "commit", "-qm", "Document the adapter");
+    await f.index();
+    const [saved] = await propose([{ producer: "learn-deeper", key: doc, kind: "rule", text: claim,
+      source: { type: "docs", ref: doc }, evidenceClass: "docs", model: "none", anchors: { scope: [doc] },
+      checks: [{ kind: "scope", role: "complete", target: { glob: doc } },
+        { kind: "quote", role: "complete", target: { file: doc, exact: passage, heading: "Adapters", prefix: "", suffix: "" } }],
+    }], options);
+    expect(saved).toMatchObject({ status: "accepted" });
+    if (saved?.status !== "accepted") throw Error(JSON.stringify(saved));
+    const id = saved.entryId;
+    expect(recallLearned(id, options)).toMatchObject({ verdict: "held", action: "given", claim });
+    const updated = change === "unrelated edit" ? original.replace("sample workspace", "shared workspace")
+      : original.replace(passage, change === "removed passage" ? "The examples below illustrate release tags." : passage.replace("same response", "same result"));
+    writeFileSync(file, updated);
+    await f.index();
+    await nativeRequest({ ...judgeRequest(f), action: "evaluate", store: true });
+    const action = verdict === "held" ? "given" : verdict === "changed" ? "replaced" : "withheld";
+    expect(recallLearned(id, options)).toMatchObject({ verdict, action });
+    f.hook("doc", "SessionStart", { source: "startup" });
+    const advice = f.hook("doc", "PostToolBatch", { tool_calls: [{ tool_name: "Read", tool_input: { file_path: file }, tool_response: updated }] });
+    if (verdict === "held") expect(advice).toContain(claim);
+    else expect(advice).not.toContain(claim);
+    if (verdict === "changed") expect(advice).toContain(`mex recall ${id}`);
+    if (verdict === "broken") expect(advice).not.toContain(id);
+    const model = vi.fn<typeof runModel>(async request => {
+      expect(request.prompt).toContain(id);
+      expect(request.prompt).toContain(verdict === "changed" ? "the quoted passage was edited" : "the quoted passage no longer exists");
+      return modelReply({ results: [{ id, result: "cannot-tell" }] });
+    });
+    registerJobKind(createJudgeKind({ evaluate, recordChecks, model }));
+    expect((await runJudgeSync(options, { available: () => true, write: () => {} }))?.state).toMatch(/^done/u);
+    expect(model).toHaveBeenCalledTimes(calls);
+  } finally { registerJobKind(createJudgeKind()); f.close(); }
+}, 60_000);
+
+it("updates the target and scope of a personal learned rule when its indexed symbol moves", async () => {
+  const f = fixture();
+  try {
+    const original = "api/endpoint.ts", moved = "api/moved.ts", options = knowledgeOptions(f);
+    await f.index();
+    const [saved] = await propose([{ producer: "learn-deeper", key: "endpoint-move", kind: "rule",
+      text: "Use the named endpoint so handlers share the same route.",
+      source: { type: "review", ref: "https://github.com/acme/service/pull/1" }, evidenceClass: "review", model: "none",
+      anchors: { scope: [original], symbols: [{ file: original, symbol: "endpoint" }] },
+      checks: [{ kind: "scope", role: "complete", target: { glob: original } }],
+    }], options);
+    expect(saved).toMatchObject({ status: "accepted" });
+    if (saved?.status !== "accepted") throw Error(JSON.stringify(saved));
+    const id = saved.entryId;
+    f.git("mv", original, moved);
+    f.git("-c", "commit.gpgsign=false", "commit", "-qm", "Move the endpoint");
+    await f.index();
+    const report = await evaluate(judgeRequest(f));
+    expect(report.results?.find(result => result.entry_id === id)?.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "symbol", status: "pass", relink: { file: moved, symbol: "endpoint" } }),
+    ]));
+    const model = vi.fn<typeof runModel>(async () => { throw Error("Relocation requires no judge call."); });
+    registerJobKind(createJudgeKind({ evaluate, recordChecks, model }));
+    expect((await runJudgeSync(options, { available: () => true, write: () => {} }))?.state).toBe("done");
+    expect(model).not.toHaveBeenCalled();
+    const refreshed = parseEntry(snapshotNotes(f.writer, f.project).files.get(id)!);
+    expect(refreshed.mex.scope).toEqual([moved]);
+    expect(refreshed.mex.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "symbol", target: { file: moved, symbol: "endpoint" } }),
+      expect.objectContaining({ kind: "scope", target: { glob: moved } }),
+    ]));
+    expect(recallLearned(id, options)).toMatchObject({ verdict: "held", action: "given" });
+  } finally { registerJobKind(createJudgeKind()); f.close(); }
+}, 60_000);
 
 async function runLearning(f: Fixture, model: typeof runModel, state: ReturnType<typeof initialState>, candidates: Candidate[] = [], procedures = false) {
   const { writer, project, checkout, head } = f;

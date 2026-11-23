@@ -79,22 +79,38 @@ type Resolver func(path string, isFile bool) (project, checkout string)
 func slash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 
 // relTo resolves OS aliases and links before comparing containment, including
-// a prospective file whose parent exists. Checkout mirrors use real paths.
+// a prospective file whose parent exists. Checkout mirrors use real paths. The
+// result keeps the file system's own spelling, as git and entry scopes write
+// it: a record path is lower-cased on Windows, and a scope is not.
 func relTo(checkout, p string) (string, bool) {
 	if checkout == "" || p == "" {
 		return "", false
 	}
 	// Checkout mirrors use real paths; payloads can use an OS alias such as
 	// /var on macOS. Resolve the same anchor before comparing containment.
+	root := checkout
 	if real, err := place.RealPath(checkout); err == nil {
-		checkout = real
+		root = real
+	}
+	if rel, ok := place.RelativeToCheckout(root, p); ok {
+		return rel, true
+	}
+	// A file the call is about to create: its folder has the real spelling.
+	if parent, err := place.RealPath(filepath.Dir(p)); err == nil {
+		if parent == root {
+			if _, err := os.Lstat(filepath.FromSlash(p)); os.IsNotExist(err) {
+				return filepath.Base(filepath.FromSlash(p)), true
+			}
+		} else if rel, ok := place.RelativeToCheckout(root, filepath.Dir(p)); ok {
+			return path.Join(rel, filepath.Base(filepath.FromSlash(p))), true
+		}
 	}
 	if real, err := place.RealPath(p); err == nil {
 		p = real
 	} else if parent, err := place.RealPath(filepath.Dir(p)); err == nil {
 		p = filepath.Join(parent, filepath.Base(p))
 	}
-	return plainRel(checkout, p)
+	return plainRel(root, p)
 }
 
 func plainRel(checkout, p string) (string, bool) {
