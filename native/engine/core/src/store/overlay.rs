@@ -131,12 +131,11 @@ fn immutable_uri(path: &Path) -> rusqlite::Result<String> {
         .to_str()
         .ok_or_else(|| Error::InvalidPath(path.to_owned()))?;
     let mut uri = String::from("file:");
+    // SQLite parses the URI authority before unescaping the filename. Escape
+    // Windows backslashes as-is and give a leading // an empty authority.
     if path.starts_with("//") {
         uri.push_str("//");
     }
-    // SQLite parses the URI authority before unescaping the filename. Escape
-    // Windows backslashes as-is, so neither a UNC host nor a verbatim prefix
-    // becomes an authority and the Windows VFS receives the original path.
     for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'_' | b'-' | b'.') {
             uri.push(char::from(byte));
@@ -151,8 +150,12 @@ fn immutable_uri(path: &Path) -> rusqlite::Result<String> {
 
 #[cfg(test)]
 #[test]
-fn immutable_uri_preserves_verbatim_and_unc_paths() {
+fn immutable_uri_preserves_windows_paths() {
     for (path, expected) in [
+        (
+            r"C:\Graph store\base#1.db",
+            "file:C:%5CGraph%20store%5Cbase%231.db?mode=ro&immutable=1",
+        ),
         (
             r"\\?\C:\Graph store\base#1.db",
             "file:%5C%5C%3F%5CC:%5CGraph%20store%5Cbase%231.db?mode=ro&immutable=1",
@@ -164,6 +167,10 @@ fn immutable_uri_preserves_verbatim_and_unc_paths() {
         (
             r"\\?\UNC\server\share\base.db",
             "file:%5C%5C%3F%5CUNC%5Cserver%5Cshare%5Cbase.db?mode=ro&immutable=1",
+        ),
+        (
+            "//server/share/base.db",
+            "file:////server/share/base.db?mode=ro&immutable=1",
         ),
     ] {
         assert_eq!(immutable_uri(Path::new(path)).unwrap(), expected);

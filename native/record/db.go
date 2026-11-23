@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mex-memory/mex/native/internal/sqliteuri"
 	"modernc.org/sqlite"
 )
 
@@ -186,11 +187,7 @@ func databaseURI(path string) (url.URL, error) {
 	if err != nil {
 		return url.URL{}, err
 	}
-	slash := filepath.ToSlash(absolute)
-	if !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-	return url.URL{Scheme: "file", Path: slash}, nil
+	return sqliteuri.File(absolute), nil
 }
 
 func openDatabaseWithBusyTimeout(path string, readOnly bool, busyTimeout int) (*sql.DB, error) {

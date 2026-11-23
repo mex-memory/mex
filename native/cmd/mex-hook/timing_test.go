@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mex-memory/mex/native/internal/sqliteuri"
 	localrecord "github.com/mex-memory/mex/native/record"
 	"github.com/mex-memory/mex/native/record/place"
 	"modernc.org/sqlite"
@@ -129,11 +129,8 @@ func callOnce(t *testing.T, bin, mexHome string) time.Duration {
 type stats struct{ p50, p95, max time.Duration }
 
 func hookReadOnlyURI(location localrecord.Location) string {
-	slash := filepath.ToSlash(location.Hooks)
-	if !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-	uri := url.URL{Scheme: "file", Path: slash, RawQuery: "mode=ro"}
+	uri := sqliteuri.File(location.Hooks)
+	uri.RawQuery = "mode=ro"
 	return uri.String()
 }
 

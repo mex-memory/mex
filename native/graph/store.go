@@ -4,13 +4,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/mex-memory/mex/native/index"
+	"github.com/mex-memory/mex/native/internal/sqliteuri"
 	"github.com/mex-memory/mex/native/record/place"
 	_ "modernc.org/sqlite"
 )
@@ -85,7 +85,7 @@ func OpenStore(recordDirectory, projectID, checkout string, isTest func(string) 
 		main = *p.Overlay
 	}
 	file := filepath.Join(directory, main)
-	db, err := sql.Open("sqlite", immutableURI(file))
+	db, err := sql.Open("sqlite", sqliteuri.Immutable(file))
 	if err != nil {
 		return nil, err
 	}
@@ -120,15 +120,6 @@ var (
 // TestPath tells a test file by its path alone.
 func TestPath(path string) bool { return testDirectory.MatchString(path) || testFile.MatchString(path) }
 
-func immutableURI(file string) string {
-	slash := filepath.ToSlash(file)
-	if !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-	u := url.URL{Scheme: "file", Path: slash, RawQuery: "mode=ro&immutable=1"}
-	return u.String()
-}
-
 func attachOverlayBase(db *sql.DB, base string) error {
 	var named string
 	if err := db.QueryRow("SELECT value FROM main.overlay_info WHERE key='base'").Scan(&named); err != nil {
@@ -137,7 +128,7 @@ func attachOverlayBase(db *sql.DB, base string) error {
 	if named != filepath.Base(base) {
 		return ErrNoGraph
 	}
-	_, err := db.Exec("ATTACH DATABASE ? AS base", immutableURI(base))
+	_, err := db.Exec("ATTACH DATABASE ? AS base", sqliteuri.Immutable(base))
 	return err
 }
 
