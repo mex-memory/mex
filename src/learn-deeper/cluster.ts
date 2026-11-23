@@ -1,19 +1,8 @@
-/**
- * Clustering across the whole review window, with no model and no embeddings.
- *
- * Each cluster is led by its strongest member. Candidates are visited strongest first, and each joins
- * the first cluster whose leader it matches, or leads a new one. Matching only the leader (not any
- * member) keeps lessons from chaining together through intermediate items, so a cluster's support
- * (its distinct PRs) counts one lesson, not a neighbourhood of related ones.
- *
- * Two items hold the same lesson when their lesson drafts say the same thing: most of their content
- * words, about the same things, in the same direction. A shared code identifier is only a hint. Two
- * comments about one API are usually two lessons, and counting them as one would give a rule support
- * it doesn't have and lose the other lesson. A missed match costs a duplicate someone can drop, so when
- * in doubt two lessons stay apart. Earlier learned entries are matched the same way, so a repeated
- * lesson adds support to the entry that already holds it instead of becoming a duplicate.
- */
+/** Candidate signals nominate comparisons. Only identical drafts or a same verdict join a leader. */
 import { createHash } from "node:crypto";
+import { globToRegExp } from "../file-index/glob.js";
+import { squash } from "./lesson-text.js";
+import type { LessonPair, MeaningQuestion, MeaningVerdict } from "./meaning.js";
 import type { LessonSupport } from "./coverage.js";
 import type { Candidate, CandidateKind } from "./harvest/types.js";
 import type { TriageCategory, TriageResult } from "./triage.js";
@@ -27,6 +16,7 @@ export interface EarlierLearned {
   scope: readonly string[];
   patterns: readonly string[];
   support?: LessonSupport;
+  refused?: boolean;
 }
 export type ClusterSource = "review" | "docs" | "history";
 export type ClusterDecision = "write" | "propose" | "drop";
@@ -45,6 +35,8 @@ export interface Cluster {
   files: string[];
   identifiers: string[];
   earlier?: string;
+  earlierClaim?: string;
+  relatedRefusals?: string[];
   /** The support the earlier entry already has, from its own evidence. */
   prior?: LessonSupport;
   decision: ClusterDecision;
@@ -65,12 +57,6 @@ export const CLUSTER_LIMITS = {
   longIdentifier: 10,
   /** An identifier found in more than this share of the run's items is too common to link them. */
   commonShare: 0.3,
-  /** Without a shared identifier: Jaccard similarity of the drafts' content words, and the fewest shared. */
-  wordJaccard: 0.5,
-  minSharedWords: 3,
-  /** With one: how much of the shorter draft's other words the two share, and the fewest shared. */
-  aboutOverlap: 0.6,
-  aboutSharedWords: 2,
   /** Members sent to the writer per cluster; support still counts all of them. */
   writerMembers: 4,
 } as const;
@@ -156,154 +142,154 @@ function rank(a: Triaged, b: Triaged): number {
   return score(b) - score(a) || b.candidate.at.localeCompare(a.candidate.at) || a.candidate.id.localeCompare(b.candidate.id);
 }
 
-/** Words that put what follows on the "don't" side of a lesson, up to the next clause or preposition. */
-const AGAINST = /^(?:not|no|never|don't|dont|doesn't|avoid|without|stop|remove|drop|replace|over)$/u;
-const CLAUSE_END = /^(?:for|in|on|at|to|from|with|when|while|if|because|so|but|before|after|across|per)$/u;
-
-/** Which way a lesson points at each thing it names: "use A, not B" is for A and against B. */
-function directions(lesson: string): Map<string, boolean> {
-  const out = new Map<string, boolean>();
-  const text = lesson.toLowerCase().replace(/\b(?:instead of|rather than)\b/gu, ", not ").replace(/\bdo not\b/gu, "don't");
-  for (const clause of text.split(/[,;:]|\.(?=\s|$)/u)) {
-    let against = false;
-    for (const token of clause.matchAll(/[@a-z0-9_$][\w$'-]*(?:[./][@a-z0-9_$][\w$-]*)*/gu)) {
-      const word = token[0];
-      if (AGAINST.test(word)) { against = true; continue; }
-      if (CLAUSE_END.test(word)) { against = false; continue; }
-      if (word.length < 2 || STOP_WORDS.has(word)) continue;
-      for (const key of new Set([word, stem(word)])) if (!out.has(key)) out.set(key, !against);
-    }
-  }
-  return out;
+interface Profile {
+  item: Triaged;
+  identifiers: Set<string>;
+  words: Set<string>;
+  files: Set<string>;
+  area: string;
 }
 
-interface Profile { item: Triaged; lesson: string; identifiers: Set<string>; words: Set<string>; area: string }
-
-function profileOf(item: Triaged, lesson: string, identifiers: Iterable<string>, area: string): Profile {
-  return { item, lesson, identifiers: new Set(identifiers), words: lessonWords(lesson), area };
+function ownProfile(item: Triaged, packageOf: typeof defaultPackageOf, claim = item.triage.lesson): Profile {
+  const files = new Set(item.candidate.path ? [item.candidate.path] : item.candidate.changedPaths ?? []);
+  const identifiers = new Set(identifiersOf({ ...item, triage: { ...item.triage, lesson: claim } }));
+  return { item, identifiers, words: lessonWords(claim), files, area: packageOf(files.values().next().value) };
 }
 
-function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): { score: number; shared: number } {
+function intersects<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+  for (const value of a) if (b.has(value)) return true;
+  return false;
+}
+
+function sharedWords(a: Profile, b: Pick<Profile, "words">, common: ReadonlySet<string>): boolean {
   let shared = 0;
-  for (const word of a) if (b.has(word)) shared++;
-  const union = a.size + b.size - shared;
-  return { score: union ? shared / union : 0, shared };
-}
-
-/** The identifiers a lesson itself names, without the code its comment sat on. */
-function namedBy(profile: Profile): Set<string> {
-  const { item, lesson } = profile;
-  return new Set(identifiersOf({ candidate: { ...item.candidate, code: undefined }, triage: { ...item.triage, lesson } }));
-}
-
-export type LessonMatch = "same" | "related" | "none";
-
-function compare(a: Profile, b: Profile, common: ReadonlySet<string>): LessonMatch {
-  const aNames = namedBy(a), bNames = namedBy(b);
-  const named = [...aNames].filter(id => bNames.has(id));
-  const shared = named.filter(id => !common.has(id));
-  const subject = [...a.identifiers].some(id => b.identifiers.has(id) && !common.has(id)
-    && (id.length >= CLUSTER_LIMITS.longIdentifier || (a.area !== "" && a.area === b.area)));
-  // The words besides the names: what is to be done, not what it is about.
-  const parts = new Set([...aNames, ...bNames].flatMap(id => [id, ...id.split(/[./]/u)]).flatMap(id => [id, stem(id)]));
-  const rest = (profile: Profile) => new Set([...profile.words].filter(word => !parts.has(word)));
-  const aRest = rest(a), bRest = rest(b), smaller = Math.min(aRest.size, bRest.size);
-  let both = 0;
-  for (const word of aRest) if (bRest.has(word)) both++;
-  const overlap = smaller ? both / smaller : 0;
-  const related: LessonMatch = subject || shared.length > 0 || (overlap >= 0.5 && both >= 2) ? "related" : "none";
-
-  // Opposite advice about one thing is two lessons, however alike the words are.
-  const aWay = directions(a.lesson), bWay = directions(b.lesson);
-  const way = (id: string, ways: Map<string, boolean>) => ways.get(id) ?? ways.get(stem(id));
-  if (named.some(id => way(id, aWay) !== undefined && way(id, bWay) !== undefined && way(id, aWay) !== way(id, bWay))) return related;
-  if (a.item.triage.category !== b.item.triage.category) return related;
-  if (shared.length) {
-    const toward = shared.some(id => way(id, aWay) === true && way(id, bWay) === true);
-    const away = shared.some(id => way(id, aWay) === false && way(id, bWay) === false);
-    // "A, not B" in both is one substitution, whatever else they say.
-    if (toward && away) return "same";
-    if (overlap >= CLUSTER_LIMITS.aboutOverlap && both >= CLUSTER_LIMITS.aboutSharedWords) return "same";
-    // Two drafts against the same thing need little else in common; two bare "use A" drafts have nothing else to compare.
-    if (away && smaller <= 2 && both >= 1 && overlap >= 0.5) return "same";
-    return (toward || away) && smaller <= 1 && Math.max(aRest.size, bRest.size) <= 2 ? "same" : related;
+  for (const word of a.words) {
+    if (b.words.has(word) && (++shared >= 2 || word.length >= 4 && !common.has(word))) return true;
   }
-  // Two lessons that each name code, and none in common, are about different things. A name most of the run mentions tells nothing.
-  const telling = (names: ReadonlySet<string>) => [...names].some(id => !common.has(id));
-  if (telling(aNames) && telling(bNames)) return related;
-  const words = jaccard(a.words, b.words);
-  return words.score >= CLUSTER_LIMITS.wordJaccard && words.shared >= CLUSTER_LIMITS.minSharedWords ? "same" : related;
+  return false;
 }
 
-const areaOf = (item: Triaged, packageOf: (path: string | undefined) => string) => packageOf(item.candidate.path ?? item.candidate.changedPaths?.[0]);
-const ownProfile = (item: Triaged, packageOf: (path: string | undefined) => string) =>
-  profileOf(item, item.triage.lesson, identifiersOf(item), areaOf(item, packageOf));
-
-/** Whether two items hold the same lesson, share only its subject, or neither. */
-export function lessonMatch(a: Triaged, b: Triaged, packageOf = defaultPackageOf): LessonMatch {
-  return compare(ownProfile(a, packageOf), ownProfile(b, packageOf), new Set());
+function nominate(a: Profile, b: Profile, commonIds: ReadonlySet<string>, commonWords: ReadonlySet<string>): boolean {
+  return intersects(a.files, b.files) || sharedWords(a, b, commonWords) ||
+    [...a.identifiers].some(id => b.identifiers.has(id) && !commonIds.has(id)
+      && (id.length >= CLUSTER_LIMITS.longIdentifier || (a.area !== "" && a.area === b.area)));
 }
 
-function earlierProfile(entry: EarlierLearned, like: Triaged, packageOf: (path: string | undefined) => string): Profile {
-  const lesson = entry.claim ?? entry.text;
-  const ids = [...entry.patterns, ...[...lesson.matchAll(IDENTIFIER)].map(token => token[0])].map(id => id.toLowerCase())
-    .filter(id => id.length >= CLUSTER_LIMITS.minIdentifier);
-  return profileOf(like, lesson, ids, packageOf(entry.scope.find(glob => !glob.includes("*")) ?? entry.scope[0]));
-}
-
-/** How a cluster's lessons compare with an earlier entry: the closest of its members. */
-export function matchEarlier(cluster: Pick<Cluster, "members">, entry: EarlierLearned, packageOf = defaultPackageOf): LessonMatch {
-  let best: LessonMatch = "none";
-  for (const member of cluster.members) {
-    const match = compare(ownProfile(member, packageOf), earlierProfile(entry, member, packageOf), new Set());
-    if (match === "same") return "same";
-    if (match === "related") best = "related";
-  }
-  return best;
-}
-
-export interface ClusterOptions { packageOf?: (path: string | undefined) => string; earlier?: readonly EarlierLearned[] }
-
-/** Group kept triage results into clusters, decide which are written (D1), and match earlier entries. */
-export function clusterLessons(items: readonly Triaged[], options: ClusterOptions = {}): Cluster[] {
-  const packageOf = options.packageOf ?? defaultPackageOf;
-  const kept = items.filter(item => item.triage.keep).sort(rank);
-  const profiles = kept.map(item => ownProfile(item, packageOf));
-  // An identifier most of the run mentions (the framework's own name, a common helper) links nothing.
+function commonTerms(profiles: readonly Profile[], field: "identifiers" | "words"): Set<string> {
+  if (profiles.length < 5) return new Set();
   const frequency = new Map<string, number>();
-  for (const profile of profiles) for (const id of profile.identifiers) frequency.set(id, (frequency.get(id) ?? 0) + 1);
-  const common = new Set([...frequency].filter(([, n]) => profiles.length >= 5 && n > CLUSTER_LIMITS.commonShare * profiles.length).map(([id]) => id));
-  const groups: Array<{ leader: Profile; members: Profile[] }> = [];
-  for (const profile of profiles) {
-    const home = groups.find(group => compare(group.leader, profile, common) === "same");
-    if (home) home.members.push(profile);
-    else groups.push({ leader: profile, members: [profile] });
+  for (const profile of profiles) for (const term of profile[field]) frequency.set(term, (frequency.get(term) ?? 0) + 1);
+  return new Set([...frequency].filter(([, n]) => n > CLUSTER_LIMITS.commonShare * profiles.length).map(([term]) => term));
+}
+
+export const earlierClaim = (entry: Pick<EarlierLearned, "claim" | "text">): string =>
+  entry.claim ?? entry.text.trim().split(/\r?\n/u, 1)[0]!.slice(0, 160);
+
+function profileEarlier(entry: EarlierLearned) {
+  const claim = earlierClaim(entry);
+  const identifiers = new Set([...entry.patterns, claim].flatMap(text =>
+    [...text.matchAll(IDENTIFIER)].map(([id]) => id.toLowerCase()).filter(id => id.length >= CLUSTER_LIMITS.minIdentifier)));
+  const scopes = entry.scope.flatMap(glob => {
+    if (glob === "**" || glob === "**/*") return [];
+    try { return [globToRegExp(glob)]; } catch { return []; }
+  });
+  return { claim, identifiers, scopes, words: lessonWords(claim) };
+}
+
+function nominateEarlier(profile: Profile, earlier: ReturnType<typeof profileEarlier>): boolean {
+  return squash(profile.item.triage.lesson) === squash(earlier.claim)
+    || [...profile.files].some(file => earlier.scopes.some(glob => glob.test(file)))
+    || intersects(profile.identifiers, earlier.identifiers) || sharedWords(profile, earlier, new Set());
+}
+
+/** Find earlier notes worth comparing with a written claim. Each note still needs a verdict. */
+export function earlierCandidates(cluster: Pick<Cluster, "members">, claim: string, earlier: readonly EarlierLearned[]): EarlierLearned[] {
+  const profiles = cluster.members.map(item => ownProfile(item, defaultPackageOf, claim));
+  return earlier.filter(entry => {
+    const profile = profileEarlier(entry);
+    return profiles.some(member => nominateEarlier(member, profile));
+  });
+}
+
+export function earlierPair(lesson: string, entry: EarlierLearned, claim?: string): LessonPair {
+  return { left: { lesson, ...(claim ? { claim } : {}) }, right: { lesson: earlierClaim(entry) } };
+}
+
+export interface ClusterOptions { packageOf?: typeof defaultPackageOf; earlier?: readonly EarlierLearned[] }
+
+/** Plan comparisons before choosing leaders so every nominated pair can share a bounded model call. */
+export function planClusters(items: readonly Triaged[], options: ClusterOptions = {}) {
+  const packageOf = options.packageOf ?? defaultPackageOf;
+  const profiles = items.filter(item => item.triage.keep).sort(rank).map(item => ownProfile(item, packageOf));
+  const commonIds = commonTerms(profiles, "identifiers");
+  const commonWords = commonTerms(profiles, "words");
+  const earlier = (options.earlier ?? []).map(entry => ({ entry, profile: profileEarlier(entry) }));
+  const questions: MeaningQuestion[] = [];
+  const questionIndex = new Map<string, number>();
+  const ask = (pair: LessonPair): number => {
+    const key = JSON.stringify(pair);
+    const existing = questionIndex.get(key);
+    if (existing !== undefined) return existing;
+    const index = questions.length;
+    questions.push({ lesson: pair });
+    questionIndex.set(key, index);
+    return index;
+  };
+  const comparisons = profiles.map((profile, i) => {
+    const own = new Map<Profile, number | "same">();
+    const lesson = profile.item.triage.lesson;
+    for (let j = 0; j < i; j++) {
+      const other = profiles[j]!;
+      if (profile.item.triage.category !== other.item.triage.category) continue;
+      const previous = other.item.triage.lesson;
+      if (lesson === previous) own.set(other, "same");
+      else if (nominate(profile, other, commonIds, commonWords)) {
+        own.set(other, ask({ left: { lesson: previous }, right: { lesson } }));
+      }
+    }
+    const prior = earlier.flatMap(({ entry, profile: old }) =>
+      nominateEarlier(profile, old) ? [{ entry, index: ask(earlierPair(lesson, entry)) }] : []);
+    return { profile, own, prior };
+  });
+
+  function resolve(verdicts: ReadonlyArray<MeaningVerdict | undefined> = []): Cluster[] {
+    type Comparison = typeof comparisons[number];
+    const groups: Array<{ leader: Comparison; members: Comparison[] }> = [];
+    for (const comparison of comparisons) {
+      const home = groups.find(({ leader }) => {
+        const match = comparison.own.get(leader.profile);
+        return match === "same" || (match !== undefined && verdicts[match] === "same");
+      });
+      if (home) home.members.push(comparison);
+      else groups.push({ leader: comparison, members: [comparison] });
+    }
+    return groups.map(({ leader, members }) => {
+      const refused = members.flatMap(member => member.prior).filter(({ entry }) => entry.refused);
+      const match = refused.find(({ index }) => verdicts[index] === "same") ??
+        leader.prior.find(({ index }) => verdicts[index] === "same");
+      const related = [...new Set(refused.filter(({ index }) => verdicts[index] === "related").map(({ entry }) => entry.id))];
+      const cluster = total(members.map(({ profile: { item, identifiers } }) => ({ item, identifiers })), match?.entry);
+      return related.length ? { ...cluster, relatedRefusals: related } : cluster;
+    });
   }
-  return groups.map(group => summarize(group.leader, group.members, options.earlier ?? [], common, packageOf));
+
+  return { questions, resolve };
 }
 
-function summarize(leader: Profile, members: Profile[], earlier: readonly EarlierLearned[], common: ReadonlySet<string>,
-  packageOf: (path: string | undefined) => string): Cluster {
-  const earlierMatch = earlier.find(entry => compare(leader, earlierProfile(entry, leader.item, packageOf), common) === "same");
-  return total(members.map(({ item, identifiers }) => ({ item, identifiers })), earlierMatch && { id: earlierMatch.id, support: earlierMatch.support });
-}
-
-/**
- * The same cluster with only the members that back a claim: what a rule may say it was learned from. Its key stays,
- * so the entry keeps its id.
- */
-export function backedBy(cluster: Cluster, ids: ReadonlySet<string>): Cluster {
+/** Count only members that independently back the claim. The entry keeps its cluster key. */
+export function backedBy(cluster: Cluster, ids: ReadonlySet<string>, keepEarlier = false): Cluster {
   const members = cluster.members.filter(member => ids.has(member.candidate.id));
-  if (members.length === cluster.members.length) return cluster;
-  const backed = total(members.map(item => ({ item, identifiers: new Set(identifiersOf(item)) })),
-    cluster.earlier ? { id: cluster.earlier, support: cluster.prior } : undefined);
+  const earlier = keepEarlier && cluster.earlier && cluster.earlierClaim
+    ? { id: cluster.earlier, claim: cluster.earlierClaim, text: cluster.earlierClaim, support: cluster.prior } : undefined;
+  if (members.length === cluster.members.length && !!earlier === !!cluster.earlier) return cluster;
+  const backed = total(members.map(item => ({ item, identifiers: new Set(identifiersOf(item)) })), earlier);
   // A waiting rule stays waiting when only some of its members back the claim. Recomputing would
   // call the same evidence a drop and the early writer call would have saved nothing.
   if (cluster.waiting) return { ...backed, key: cluster.key, waiting: true, decision: "propose", why: cluster.why };
   return { ...backed, key: cluster.key };
 }
 
-function total(members: ReadonlyArray<{ item: Triaged; identifiers: ReadonlySet<string> }>, earlierMatch?: { id: string; support?: LessonSupport }): Cluster {
+function total(members: ReadonlyArray<{ item: Triaged; identifiers: ReadonlySet<string> }>, earlierMatch?: Pick<EarlierLearned, "id" | "text" | "claim" | "support">): Cluster {
   const pulls = new Set<number>(), commits = new Set<string>(), reviewers = new Set<string>();
   const files = new Set<string>(), identifiers = new Set<string>();
   const sources = new Set<ClusterSource>();
@@ -339,7 +325,8 @@ function total(members: ReadonlyArray<{ item: Triaged; identifiers: ReadonlySet<
     key: createHash("sha256").update(ids[0] ?? "").digest("hex").slice(0, 24),
     members: members.map(member => member.item), pulls: [...pulls].sort((a, b) => a - b), commits: [...commits].sort(),
     reviewers: reviewers.size, reviewerKeys: [...reviewers].sort(), support, strong, source, category, files: [...files].sort(), identifiers: [...identifiers].sort(),
-    ...(earlierMatch ? { earlier: earlierMatch.id, ...(earlierMatch.support ? { prior: earlierMatch.support } : {}) } : {}), decision, why,
+    ...(earlierMatch ? { earlier: earlierMatch.id, earlierClaim: earlierClaim(earlierMatch),
+      ...(earlierMatch.support ? { prior: earlierMatch.support } : {}) } : {}), decision, why,
   };
 }
 

@@ -107,12 +107,16 @@ func CandidateVerdict(checkout, directory, project string, ix Index, entry *entr
 func normalizeQuote(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // quoteOffset chooses the occurrence whose immediate context best matches.
-// A reworded heading or context need not invalidate an intact passage.
 func quoteOffset(text, exact, prefix, suffix string) int {
+	at, _ := quoteLocation(text, exact, prefix, suffix)
+	return at
+}
+
+func quoteLocation(text, exact, prefix, suffix string) (best, score int) {
+	best, score = -1, -1
 	if exact == "" {
-		return -1
+		return best, score
 	}
-	best, score := -1, -1
 	for start := 0; start < len(text); {
 		at := strings.Index(text[start:], exact)
 		if at < 0 {
@@ -135,7 +139,7 @@ func quoteOffset(text, exact, prefix, suffix string) int {
 		}
 		start = at + 1
 	}
-	return best
+	return best, score
 }
 
 type shingle struct{ first, second string }
@@ -181,8 +185,53 @@ func editedQuote(text, exact string) string {
 	return strings.Join(words[best:best+size], " ")
 }
 
+var asciidocHeading = lazy(`^={1,6}[ \t]+(.+)$`)
+var rstUnderline = lazy(`^(?:===+|~~~+|---+|\^\^\^+)\s*$`)
+
+// Harvested passages stop at the next heading, including a child heading.
+// Searching through one would let a historical note support a current rule.
+func quoteSections(data string, file, title string) []string {
+	if title == "" {
+		return []string{normalizeQuote(data)}
+	}
+	lines := strings.Split(strings.ReplaceAll(data, "\r\n", "\n"), "\n")
+	hs := headings(lines)
+	switch strings.ToLower(filepath.Ext(file)) {
+	case ".adoc":
+		hs = nil
+		for i, line := range lines {
+			if m := asciidocHeading().FindStringSubmatch(line); m != nil {
+				hs = append(hs, heading{line: i, text: strings.TrimSpace(m[1])})
+			}
+		}
+	case ".rst":
+		hs = nil
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i-1]) != "" && rstUnderline().MatchString(lines[i]) {
+				hs = append(hs, heading{line: i - 1, text: strings.TrimSpace(lines[i-1])})
+			}
+		}
+	}
+	var out []string
+	for i, h := range hs {
+		if h.text != title {
+			continue
+		}
+		start, end := h.line+1, len(lines)
+		if start < len(lines) && (setextHeading().MatchString(lines[start]) || rstUnderline().MatchString(lines[start])) {
+			start++
+		}
+		if i+1 < len(hs) {
+			end = hs[i+1].line
+		}
+		out = append(out, normalizeQuote(strings.Join(lines[min(start, end):end], "\n")))
+	}
+	return out
+}
+
 func (ev *Evaluator) quoteCheck(c Check) CheckResult {
-	data, res, ok := ev.readTarget(str(c.Target, "file"))
+	file := str(c.Target, "file")
+	data, res, ok := ev.readTarget(file)
 	if !ok {
 		return res
 	}
@@ -190,19 +239,17 @@ func (ev *Evaluator) quoteCheck(c Check) CheckResult {
 	if exact == "" {
 		return CheckResult{Status: Floor, Reason: "the quote is empty"}
 	}
-	text := normalizeQuote(string(data))
-	if quoteOffset(text, exact, normalizeQuote(str(c.Target, "prefix")), normalizeQuote(str(c.Target, "suffix"))) >= 0 {
-		return CheckResult{Status: Pass, Now: textHash(exact)}
-	}
-	if heading := str(c.Target, "heading"); heading != "" {
-		var found bool
-		text, found = section(data, heading)
-		if !found {
-			return CheckResult{Status: Gone, Reason: "the quoted passage no longer exists"}
+	texts := quoteSections(string(data), file, str(c.Target, "heading"))
+	prefix, suffix := normalizeQuote(str(c.Target, "prefix")), normalizeQuote(str(c.Target, "suffix"))
+	for _, text := range texts {
+		if at, score := quoteLocation(text, exact, prefix, suffix); at >= 0 && (len(texts) == 1 || score > 0) {
+			return CheckResult{Status: Pass, Now: textHash(exact)}
 		}
 	}
-	if edited := editedQuote(text, exact); edited != "" {
-		return CheckResult{Status: Fail, Reason: "the quoted passage was edited", Now: edited}
+	for _, text := range texts {
+		if edited := editedQuote(text, exact); edited != "" {
+			return CheckResult{Status: Fail, Reason: "the quoted passage was edited", Now: edited}
+		}
 	}
 	return CheckResult{Status: Gone, Reason: "the quoted passage no longer exists"}
 }

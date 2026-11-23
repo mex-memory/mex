@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { MEANING_PURPOSE } from "../meaning.js";
+import { recordedMeaning } from "./fixtures/meaning.js";
 import { setCheckoutEnabled } from "../../controls/index.js";
 import { buildIndex } from "../../file-index/build.js";
 import { createJudgeKind } from "../../judge/job.js";
@@ -268,6 +270,7 @@ it("receipts linter suggestions and alternatives only after the gate saves them"
         { id: lint.id, keep: true, category: "correctness", lesson: "Avoid console output at the endpoint." },
         { id: decision.id, keep: true, category: "api-use", lesson: "Use the local client." },
       ] });
+      if (request.purpose === MEANING_PURPOSE) return modelReply(recordedMeaning(request.prompt));
       const clusters = [...request.prompt.matchAll(/"cluster":"([a-f0-9]{24})"[^\n]*?"id":"(gh:thread:[12])"/gu)];
       return modelReply({ entries: clusters.map(([, cluster, id]) => {
         const linter = id === lint.id;

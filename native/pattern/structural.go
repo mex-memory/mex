@@ -286,6 +286,10 @@ func tokenizeAt(s string) ([]string, []int) {
 			for i < len(s) && s[i] != '\n' {
 				i++
 			}
+		case c == '#' && (i == 0 || strings.ContainsRune(" \t\n", rune(s[i-1]))):
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
 			end := strings.Index(s[i+2:], "*/")
 			if end < 0 {

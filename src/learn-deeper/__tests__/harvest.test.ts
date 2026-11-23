@@ -14,7 +14,7 @@ import { authored, decides, decisionsFirst, hasDecisionsSection } from "../harve
 import { reviewedFiles, ReviewRead } from "../harvest/forge.js";
 import { Gaps } from "../harvest/evidence.js";
 import { align, hunkSpan, RegionReader, reviewRegions } from "../harvest/regions.js";
-import { clusterLessons } from "../cluster.js";
+import { planClusters } from "../cluster.js";
 import { sourceDigest } from "../source.js";
 import { writerPrompt } from "../write.js";
 
@@ -398,7 +398,7 @@ describe("harvest", () => {
 
   it("stops at the run allowance, resumes without duplicate IDs, and reads weekly points strictly newer", async () => {
     const deps = forge({ textOnly: true });
-    const budget = 26_470;
+    const budget = 48_854;
     const bounds = { since: "2026-11-12T00:00:00Z" };
     const first = await drain(options({ ...bounds, budget }), deps);
     expect(first.candidates).toHaveLength(3);
@@ -416,7 +416,7 @@ describe("harvest", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("stops earlier on long doc passages than on short comments at the same token budget", async () => {
-    const budget = 29_500;
+    const budget = 51_884;
     const docs = await drain(options({ budget, until: "2026-11-02T00:00:00Z" }), forge());
     const reviews = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true }));
     expect(docs.candidates).toHaveLength(1);
@@ -432,7 +432,7 @@ describe("harvest", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("caps document and ADR evidence across batches and keeps reading review threads", async () => {
-    const budget = 128_000;
+    const budget = 315_000;
     const { candidates, batches } = await drain(options({ budget }), forge({ textOnly: true, mergedCount: 9 }));
     const docs = candidates.filter(candidate => candidate.kind === "doc" || candidate.kind === "adr");
     expect(docs.some(candidate => candidate.kind === "doc")).toBe(true);
@@ -460,7 +460,7 @@ describe("harvest", () => {
   it("gives docs and descriptions the same share on either agent", async () => {
     const body = CHOSEN + " " + "The other name stays in the notes for readers. ".repeat(30);
     const read = async (agent: "claude" | "codex") => {
-      const { candidates } = await drain(options({ agent }), forge({ textOnly: true, mergedCount: 12, merged: { body, author: { __typename: "User", login: "cedar-owner" } } }));
+      const { candidates } = await drain(options({ agent, budget: 500_000 }), forge({ textOnly: true, mergedCount: 12, merged: { body, author: { __typename: "User", login: "cedar-owner" } } }));
       const count = (...kinds: string[]) => candidates.filter(candidate => kinds.includes(candidate.kind)).length;
       return [count("doc", "adr"), count("pr-text")];
     };
@@ -547,13 +547,14 @@ it("caps reviewed-file requests per batch and caches missing files", async () =>
   expect(gaps.list()).toContain("Some reviewed files exceeded the forge request budget.");
 });
 
-it("quotes both calibration shapes using packed calls, prose-only triage and an allowance for one repair in five", () => {
+it("includes the comparison and quote checks in both calibration shapes", () => {
   const hono = estimateHarvest(forecastCounts({ merged: 48, doc: 17 }), "claude");
   const novu = estimateHarvest(forecastCounts({ merged: 45, doc: 36 }), "codex");
-  expect([hono.total, novu.total]).toEqual([142_484, 291_432]);
+  expect([hono.total, novu.total]).toEqual([269_942, 556_472]);
+  expect([hono.comparisons + hono.grounding, novu.comparisons + novu.grounding]).toEqual([127_458, 265_040]);
   expect(hono.total).toBeLessThan(392_384);
-  expect(novu.total).toBeLessThan(480_000);
-  expect(novu.total).toBeLessThan(DEFAULT_HARVEST_BUDGET);
+  expect(novu.triage + novu.writer + novu.repair).toBeLessThan(DEFAULT_HARVEST_BUDGET);
+  expect(novu.total).toBeGreaterThan(DEFAULT_HARVEST_BUDGET);
 });
 
 describe("PR descriptions", () => {
@@ -718,7 +719,7 @@ describe("PR descriptions", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("can take a quarter of the budget, and the reviews are still read", async () => {
-    const budget = 128_000;
+    const budget = 315_000;
     const body = CHOSEN + " " + "The other name stays in the notes for readers. ".repeat(30);
     const { candidates, gaps } = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true, mergedCount: 24, merged: { body, author } }));
     const texts = candidates.filter(candidate => candidate.kind === "pr-text");
@@ -736,7 +737,7 @@ describe("PR descriptions", () => {
     expect(size({ text: "No.", prText: CHOSEN }).writerTokens).toBeGreaterThan(size({ text: "No." }).writerTokens);
     const candidate = { id: "gh:pr:31", kind: "pr-text", link: "https://github.com/fiction/transports/pull/31", at: "2026-11-12T00:00:00Z", title: "Unify", pull: 31,
       text: CHOSEN, prText: CHOSEN, hash: "", nodeIds: [], reviewers: [], weights: {}, signal: "strong" } as unknown as Candidate;
-    const prompt = (own: Candidate) => writerPrompt(clusterLessons([{ candidate: own, triage: { id: own.id, keep: true, category: "api-use", lesson: CHOSEN } }]), { linters: [] });
+    const prompt = (own: Candidate) => writerPrompt(planClusters([{ candidate: own, triage: { id: own.id, keep: true, category: "api-use", lesson: CHOSEN } }]).resolve(), { linters: [] });
     expect(prompt(candidate).split(CHOSEN)).toHaveLength(prompt({ ...candidate, prText: undefined }).split(CHOSEN).length);
     expect(prompt({ ...candidate, text: "Keep it.", prText: CHOSEN })).toContain('"prText"');
   });

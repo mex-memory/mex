@@ -1,4 +1,6 @@
-import { codexCacheRead, inputOverhead } from "../plan.js";
+import { tokenCount } from "../../model-runner/consent.js";
+import { LESSON_PAIR_BATCH } from "../meaning.js";
+import { codexCacheRead, inputOverhead, promptEstimate } from "../plan.js";
 import type { Candidate, CandidateCounts, CandidateKind, HarvestEvidenceSize, HarvestOptions } from "./types.js";
 
 // This starting allowance covers a full review sample on the two calibration
@@ -32,16 +34,32 @@ function writerCalls(clusters: number): number {
   return clusters < 2 ? clusters : 1 + Math.ceil((clusters - 1) / WRITER_BATCH);
 }
 
+function estimateMeaning(candidates: number, clusters: number, repairs: number, writes: number, agent: HarvestOptions["agent"]) {
+  // Forecast six nominated comparisons per kept observation. Scope overlap and
+  // earlier notes vary by repo, so the call-level budget still decides.
+  const kept = Math.ceil(candidates / WRITTEN_SHARE);
+  const pairs = kept <= 1 ? 0 : kept * 6;
+  const pairCalls = pairs ? 1 + Math.ceil(pairs / LESSON_PAIR_BATCH) : 0;
+  const quoteCalls = writes + Math.ceil(repairs / WRITER_BATCH);
+  const allowance = tokenCount(promptEstimate("", agent, 0));
+  const comparisons = pairCalls * (allowance + 240) + pairs * 105;
+  // Four clause/quote pairs per written or repaired entry, plus room for prior claims.
+  const grounding = quoteCalls * (allowance + 240) + (clusters + repairs) * 360;
+  return { comparisons, grounding };
+}
+
 export function estimateHarvest(counts: CandidateCounts, agent: HarvestOptions["agent"]):
-{ triage: number; writer: number; repair: number; total: number } {
+{ triage: number; writer: number; repair: number; comparisons: number; grounding: number; total: number } {
   const candidates = Object.values(counts).reduce((sum, count) => sum + count, 0);
   const clusters = Math.ceil(candidates / CANDIDATES_PER_CLUSTER);
   const repairs = Math.ceil(clusters / REPAIR_SHARE);
   const overhead = callOverhead(agent);
   const triage = Math.ceil(candidates / TRIAGE_BATCH) * overhead + candidates * TRIAGE_PER_CANDIDATE;
-  const writer = writerCalls(clusters) * overhead + clusters * WRITER_PER_CLUSTER;
+  const writes = writerCalls(clusters);
+  const writer = writes * overhead + clusters * WRITER_PER_CLUSTER;
   const repair = Math.ceil(repairs / WRITER_BATCH) * overhead + repairs * REPAIR_PER_ENTRY;
-  return { triage, writer, repair, total: triage + writer + repair };
+  const { comparisons, grounding } = estimateMeaning(candidates, clusters, repairs, writes, agent);
+  return { triage, writer, repair, comparisons, grounding, total: triage + writer + repair + comparisons + grounding };
 }
 
 export const emptyHarvestEvidence: HarvestEvidenceSize = { candidates: 0, triageTokens: 0, writerTokens: 0, largestWriterTokens: 0 };
@@ -81,11 +99,12 @@ export function projectHarvestSpend(size: HarvestEvidenceSize, agent: HarvestOpt
     + triageInput + size.candidates * TRIAGE_REPLY;
   const writtenEvidence = Math.max(size.largestWriterTokens, Math.ceil(size.writerTokens / WRITTEN_SHARE));
   const writerInput = writtenEvidence + clusters * WRITER_METADATA;
-  const writer = Math.max(writerCalls(clusters), Math.ceil(writerInput / WRITER_INPUT_LIMIT)) * overhead
-    + writerInput + clusters * ENTRY_REPLY;
+  const writes = Math.max(writerCalls(clusters), Math.ceil(writerInput / WRITER_INPUT_LIMIT));
+  const writer = writes * overhead + writerInput + clusters * ENTRY_REPLY;
   const repair = Math.ceil(repairs / WRITER_BATCH) * overhead + Math.ceil(writtenEvidence / REPAIR_SHARE)
     + repairs * (REPAIR_METADATA + ENTRY_REPLY);
-  return triage + writer + repair;
+  const { comparisons, grounding } = estimateMeaning(size.candidates, clusters, repairs, writes, agent);
+  return triage + writer + repair + comparisons + grounding;
 }
 
 export function forecastCounts(inventory: { merged: number; closed?: number; revert?: number; cause?: number; adr?: number; doc: number; issue?: number }):

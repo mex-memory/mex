@@ -1,0 +1,22 @@
+[
+  ["same", "Reject expired session tokens before routing the request", "Disallow expired session tokens before routing requests"],
+  ["same", "Emit an audit event after saving account settings", "Emit audit events after saving account settings"],
+  ["same", "Do not cache signed download URLs", "Never cache signed download URLs"],
+  ["same", "Prefer the scoped key instead of the global key", "Prefer the scoped key over the global key"],
+  ["same", "Use the UTF-8 encoder for queue payloads", "Use the UTF-8 encoder for queue payloads."],
+  ["same", "Check the lease before deleting the row", "Validate the lease before deleting the row"],
+  ["same", "Keep the backup for 12 hours", "Retain the backup for 12 hours"],
+  ["same", "Use the tenant clock for report timestamps", "Use the tenant clock for report timestamps, please."],
+  ["same", "Backfill missing days from the ledger", "Backfill missing days using the ledger"],
+  ["same", "Route signed events via dispatchSigned", "Route signed events through dispatchSigned"],
+  ["different", "Only purge archived rows after 14 days", "Only purge archived rows after 1 day"],
+  ["different", "Enable gzip for retained logs", "Disable gzip for retained logs"],
+  ["different", "Publish invoice events only after commit", "Publish invoice events even before commit"],
+  ["different", "Move the source file to the package root", "Move the package file to the source root"],
+  ["different", "Use listEntries for archived entries", "Use listEntries for active entries"],
+  ["different", "Use the gateway key when the proxy errors", "Use the gateway key unless the proxy errors"],
+  ["different", "Use validateRequest before loadAccount on the public route", "Use loadAccount before validateRequest on the public route"],
+  ["different", "Prefer the package clock over the service clock", "Prefer the service clock over the package clock"],
+  ["different", "Reject jobs with zero attempts left", "Accept jobs with zero attempts left"],
+  ["different", "Use safeWrite instead of writeLog on the success path", "Use safeWrite instead of writeLog on the error path"]
+]

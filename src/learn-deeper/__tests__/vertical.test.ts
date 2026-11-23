@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { MEANING_PURPOSE } from "../meaning.js";
+import { recordedMeaning } from "./fixtures/meaning.js";
 import * as cliTools from "../../cli-tools.js";
 import { literalPattern } from "../../file-index/classify.js";
 import { buildIndex } from "../../file-index/build.js";
@@ -38,8 +40,8 @@ let suite: string, binary: string, fixture: string, repo: string;
 const original = { host: "github.com" as const, slug: "example/memory" };
 const path = "CONTRIBUTING.md";
 const sourceId = "doc:CONTRIBUTING.md#development";
-const quote = "Run npm run verify before cutting a release to catch outdated renderer snapshots.";
-const claim = "Verify renderer snapshots before cutting a release.";
+const quote = "Run npm run verify before cutting a release.";
+const claim = quote;
 const doc = (body = quote) => `# Development\n\n${body}\n`;
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 function commit(message: string) {
@@ -108,6 +110,7 @@ const reply = (value: object) => ({ text: JSON.stringify(value), selectedModel: 
 type ModelRequest = Parameters<typeof runModel>[0];
 const clusters = (prompt: string) => [...prompt.matchAll(/"cluster":"([a-f0-9]{24})"/gu)].map(match => match[1]!);
 function docReply(request: ModelRequest, id = sourceId, text = claim, citation = quote) {
+  if (request.purpose === MEANING_PURPOSE) return reply(recordedMeaning(request.prompt));
   if (request.purpose === "learn-deeper-filter") {
     const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as { id: string }[];
     return reply({ results: items.map(item => ({ id: item.id, keep: item.id === id, category: "process", lesson: text })) });
@@ -155,7 +158,7 @@ function fixtureModel() {
   return vi.fn<typeof runModel>(async request => docReply(request));
 }
 
-it("quotes the ceiling before any model call, accounts for both stages, and saves a private process rule", async () => {
+it("quotes the ceiling before any model call, accounts for sorting, writing and evidence, and saves a private process rule", async () => {
   const model = vi.fn<typeof runModel>(async request => runModel({ ...request, __internal: { spawn: (_file, _args, options) => {
     expect(options.env?.GH_TOKEN).toBeUndefined();
     return spawn(process.execPath, ["-e", `process.stdin.resume(); process.stdin.on("end", () => {
@@ -179,9 +182,9 @@ it("quotes the ceiling before any model call, accounts for both stages, and save
     expect(job.project_id).toBe(result.projectId);
     expect(plan.ceiling).toBe(Math.floor(plan.estimate * 1.5));
     const done = await advance(writer, job);
-    expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1, tokens_used: 2400 });
-    expect(state(done).v2.counts).toMatchObject({ "tokens.triage": 1200, "tokens.write": 1200, saved: 1 });
-    expect(writer.db.prepare("SELECT count(*) n FROM model_batches WHERE job_id=? AND state='done'").get(job.id)?.n).toBe(2);
+    expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1, tokens_used: 3600 });
+    expect(state(done).v2.counts).toMatchObject({ "tokens.triage": 1200, "tokens.write": 1200, "tokens.quotes": 1200, saved: 1 });
+    expect(writer.db.prepare("SELECT count(*) n FROM model_batches WHERE job_id=? AND state='done'").get(job.id)?.n).toBe(3);
     const schedule = JSON.parse(weeklySchedule(writer, job.project_id!)!);
     expect(schedule.due).toBeGreaterThanOrEqual(Date.parse(plan.until) + 7 * DAY_MS);
     expect(weeklyWakeDue(writer.location.home, schedule.due - 1_000)).toBe(false);
@@ -225,7 +228,7 @@ it("joins the unfinished job and keeps its pinned docs across a branch switch", 
   const writer = openRecord();
   try {
     expect(await advance(writer, jobRow(writer))).toMatchObject({ state: "done", results: 1 });
-    expect(model).toHaveBeenCalledTimes(2);
+    expect(model).toHaveBeenCalledTimes(3);
     expect(git("status", "--porcelain")).toBe("");
   } finally { writer.close(); }
 }, 60_000);
@@ -255,7 +258,7 @@ it.each(["offline", "expired login"] as const)("waits and resumes the same harve
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1 });
     expect(state(done).v2.counts).toMatchObject({ "harvested.doc": 1, saved: 1 });
-    expect(model).toHaveBeenCalledTimes(2);
+    expect(model).toHaveBeenCalledTimes(3);
   } finally { writer.close(); }
 }, 60_000);
 
@@ -282,7 +285,7 @@ it("reuses completed triage when a provider limit stops the writer and the app r
     limited = false;
     expect(requeueReadyJobs(writer)).toBe(1);
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["cheap", "best", "best"]);
+    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["cheap", "best", "best", "cheap"]);
     expect(rawRows(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);
@@ -385,7 +388,7 @@ it("two due machines converge on one rule id and offer one team publication", as
       return [...snapshotNotes(writer, project).files][0]!;
     }));
     expect(fetches.filter(value => value.endsWith("/branches/main"))).toHaveLength(2);
-    expect(model).toHaveBeenCalledTimes(4);
+    expect(model).toHaveBeenCalledTimes(6);
     expect(learned[0]![0]).toBe(learned[1]![0]);
     const [id, raw] = learned[0]!;
     const coverage = approvedCoverage(parseEntry(raw), raw, machines[0]!.setting(project, noteKey(id)), original);
@@ -448,7 +451,7 @@ it("uses shared full receipts before triage and respects a deleted legacy rule",
   const fetch = mockGithub({ head: () => head });
   const model = vi.fn<typeof runModel>(async request => {
     expect(request.prompt).not.toContain(sourceId);
-    expect(request.prompt).toContain(otherId);
+    if (request.purpose !== MEANING_PURPOSE) expect(request.prompt).toContain(otherId);
     return docReply(request, otherId);
   });
   registerJobKind(createLearnKind({ client: async () => new ForgeClient(original, "forge-fixture-token", fetch), model, now: () => now }, true));
@@ -466,8 +469,8 @@ it("uses shared full receipts before triage and respects a deleted legacy rule",
     const job = due(writer, old, now);
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 0 });
-    // The lesson is the retired rule word for word, so it is refused before the writer is paid.
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter"]);
+    // The comparison confirms the retired rule before the writer is paid.
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", MEANING_PURPOSE]);
     expect(notes(writer, job).map(entry => entry.mex.status)).toEqual(["retired"]);
     expect(writer.setting(project, noteKey(seeded.entryId))).toBeUndefined();
     expect(state(done).v2.counts).toMatchObject({ "covered-sources": 1, "cluster.forgotten": 1 });
@@ -519,7 +522,7 @@ it("finishes a published writer batch after its runner dies without another mode
     expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
     expect(jobRow(writer).progress).toBe("Finishing the saved batch after interruption");
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
-    expect(model).toHaveBeenCalledTimes(2);
+    expect(model).toHaveBeenCalledTimes(3);
     expect(reviewRows(writer, job.project_id!, job.id)).toHaveLength(1);
     expect(notes(writer, job)).toHaveLength(1);
     expect(rawRows(writer, job)).toEqual([]);
@@ -542,7 +545,7 @@ it.each(["harvest", "triage", "cluster", "write", "finish"])("resumes after the 
     expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND]);
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND, MEANING_PURPOSE]);
     expect(state(done).v2.counts).toMatchObject({ "harvested.doc": 1, "triage-kept": 1, saved: 1 });
     expect(rawRows(writer, job)).toEqual([]);
   } finally { writer.close(); }
@@ -617,7 +620,7 @@ it.each([false, true])("proves a repair only when the ceiling allows it (cap=%s)
     const done = await advance(writer, job);
     expect(done.state, JSON.stringify(state(done).gaps)).toBe(capped ? "done with gaps" : "done");
     expect(done.results).toBe(capped ? 0 : 1);
-    expect(model).toHaveBeenCalledTimes(capped ? 2 : 3);
+    expect(model).toHaveBeenCalledTimes(capped ? 2 : 4);
     if (capped) expect(state(done).gaps.join(" ")).toContain("allowance could not cover a repair");
     else expect(notes(writer, job)[0]?.mex.source.quote).toBe(quote);
   } finally { writer.close(); }
@@ -660,7 +663,7 @@ it.each(["prove", "repair"] as const)("reuses paid replies if interrupted during
       .rejects.toThrow("Fixture interruption");
     expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
-    expect(model).toHaveBeenCalledTimes(phase === "prove" ? 2 : 3);
+    expect(model).toHaveBeenCalledTimes(phase === "prove" ? 3 : 4);
     expect(rawRows(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);
@@ -688,7 +691,7 @@ it("withholds private and historical docs and applies pinned duplicate checks", 
   try {
     const job = jobRow(writer), done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done with gaps", results: 0 });
-    expect(model).toHaveBeenCalledTimes(2);
+    expect(model).toHaveBeenCalledTimes(3);
     expect(state(done).v2.counts).toMatchObject({ "historical-docs": 1, "gate-dropped.duplicate-rule-line": 1 });
     expect(state(done).gaps).toContain("Some rule files could not be read for duplicate checks.");
     expect(rawRows(writer, job)).toEqual([]);
@@ -716,6 +719,28 @@ it("keeps weekly repair inside automatic admission and preserves the schedule wh
     expect(model).toHaveBeenCalledTimes(3);
     expect(state(done).gaps.join(" ")).toContain("allowance could not cover a repair");
     expect(JSON.parse(weeklySchedule(writer, job.project_id!)!).due).toBe(now + 7 * DAY_MS);
+    expect(notes(writer, job)).toEqual([]);
+  } finally { writer.close(); }
+}, 60_000);
+
+it.each(["allowance", "unreadable"] as const)("keeps a verbatim quote unbacked when the weekly judgment is %s", async failure => {
+  const now = Date.now() + 2_000, head = git("rev-parse", "HEAD");
+  const fetch = mockGithub({ head: () => head });
+  const model = vi.fn<typeof runModel>(async request => {
+    if (request.purpose !== MEANING_PURPOSE) return docReply(request);
+    expect(request).toMatchObject({ setup: "mixed", role: "cheap", automatic: { measuredUsageOnly: true } });
+    expect(request.consented).toBeUndefined();
+    if (failure === "allowance") throw new ModelWaitError("cap");
+    return reply({ results: [] });
+  });
+  registerJobKind(createLearnKind({ client: async () => new ForgeClient(original, "forge-fixture-token", fetch), model, now: () => now }, true));
+  const writer = openWeekly();
+  try {
+    const job = due(writer, head, now);
+    const done = await advance(writer, job);
+    expect(done).toMatchObject({ state: "done with gaps", results: 0 });
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND, MEANING_PURPOSE]);
+    expect(state(done).gaps).toContain("A lesson evidence batch could not be judged.");
     expect(notes(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);

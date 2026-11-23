@@ -195,6 +195,88 @@ func codeShaped(p string) bool {
 	return false
 }
 
+var scopedCall = regexp.MustCompile(`(?:^|\s)(?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*\s*\(`)
+var namedCall = regexp.MustCompile(`^[A-Za-z_$][\w$]{2,}\s*\(`)
+
+func preciseCodeShape(p string) bool {
+	p = strings.TrimSpace(p)
+	switch p {
+	case "<=", ">=", "==", "!=", "===", "!==":
+		return true
+	}
+	if scopedCall.MatchString(p) {
+		return true
+	}
+	words := patternWords(p)
+	return len(words) > 0 && namedCall.MatchString(p) && !keywords[words[0]]
+}
+
+func matchesAnchor(before, after, anchor string, spans [][2]int) bool {
+	regions := anchorRegions(before, anchor)
+	if regions == nil || overlaps(spans, regions) {
+		return true
+	}
+	// A review can point at the context directly beside the fix. Require
+	// that context to survive, so a separate change on the anchor cannot
+	// make a neighboring match look like the reviewed change.
+	for _, r := range regions {
+		line := before[r[0]:r[1]]
+		left := strings.LastIndexByte(strings.TrimSuffix(before[:r[0]], "\n"), '\n') + 1
+		right := min(r[1]+1, len(before))
+		if end := strings.IndexByte(before[right:], '\n'); end >= 0 {
+			right += end
+		} else {
+			right = len(before)
+		}
+		for _, nearby := range [][2]int{{left, r[0]}, {min(r[1]+1, right), right}} {
+			if !overlaps(spans, [][2]int{nearby}) {
+				continue
+			}
+			if len(anchorRegions(after, line)) > 0 {
+				return true
+			}
+			// An adjacent declaration can be precisely what the review
+			// objects to when the commented line uses its binding.
+			adjacent := strings.TrimSpace(before[nearby[0]:nearby[1]])
+			if !strings.HasPrefix(adjacent, "if ") && !strings.HasPrefix(adjacent, "for ") {
+				continue
+			}
+			locals := declaredNames(adjacent)
+			for _, word := range patternWords(line) {
+				if distinctive(word) && locals[word] {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func codeLiteralSpans(p, code string) [][2]int {
+	if !strings.Contains(code, p) {
+		return nil
+	}
+	toks, offsets := tokenizeAt(code)
+	raw := Spans("literal", p, code)
+	start, end := len(p)-len(strings.TrimLeft(p, " \t\r\n")), len(strings.TrimRight(p, " \t\r\n"))
+	var matched [][2]int
+	for i, j, k := 0, 0, 0; i < len(raw); i++ {
+		lo, hi := raw[i][0]+start, raw[i][0]+end
+		for j < len(offsets) && offsets[j] < lo {
+			j++
+		}
+		if j == len(offsets) || offsets[j] != lo {
+			continue
+		}
+		for k = max(k, j); k < len(offsets) && offsets[k]+len(toks[k]) < hi; k++ {
+		}
+		if k < len(offsets) && offsets[k]+len(toks[k]) == hi {
+			matched = append(matched, raw[i])
+		}
+	}
+	return matched
+}
+
 // anchorRegions are the byte ranges of code's lines that the review comment
 // is on: lines whose text, trimmed, is one of anchor's. Lines with fewer than
 // three word characters (a lone brace) never anchor anything. nil when the
@@ -284,7 +366,7 @@ func Spans(match, p, code string) [][2]int {
 func overlaps(spans, regions [][2]int) bool {
 	for _, s := range spans {
 		for _, r := range regions {
-			if s[0] <= r[1] && r[0] <= s[1] {
+			if s[0] < r[1] && r[0] < s[1] {
 				return true
 			}
 		}

@@ -15,7 +15,7 @@
  * A pattern that fails stays out: the entry is still useful as prose, and a weak pattern is never shipped.
  */
 import { globToRegExp } from "../file-index/glob.js";
-import { checkPatterns, type PatternCandidate, type PatternVerdict } from "../knowledge/pattern-check.js";
+import { checkPatterns, type PatternCandidate } from "../knowledge/pattern-check.js";
 import type { GateContext } from "../knowledge/gate.js";
 import { sanitizeText } from "../knowledge/gates.js";
 import { references, type References } from "../knowledge/references.js";
@@ -23,6 +23,7 @@ import { backedBy, writerMembers, type Cluster, type Triaged } from "./cluster.j
 import { command, type PatternStage, type PinnedTree } from "./git.js";
 import { contrastive, safePath } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
+import { polarityMismatch, squash, unclippedQuote } from "./lesson-text.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
 
 export const PROOF_LIMITS = {
@@ -32,11 +33,6 @@ export const PROOF_LIMITS = {
   historyBytes: 4 << 20,
   /** Lines of a fix snippet. */
   fixLines: 10,
-  /** Files read at HEAD when looking for the fix's identifying literal. */
-  fixFiles: 400,
-  minLiteral: 4,
-  /** Match the native request limit even when a cluster has several proof pairs. */
-  nativeCandidates: 64,
 } as const;
 
 export type ProvenPattern = NonNullable<WriterEntry["when"]>[number] & {
@@ -86,14 +82,33 @@ export interface ProofContext {
   history?: (paths: readonly string[], since: string) => Promise<string | undefined>;
 }
 
-const squash = (text: string) => text.replace(/\r\n?/gu, "\n").replace(/\s+/gu, " ").trim();
-
 /** Every text a member's quotes may come from: its prose, PR text and the code regions it carries. */
 function sources(candidate: Candidate): string[] {
   const code = candidate.code;
   const reland = candidate.related?.reland;
   return [candidate.text, candidate.prText, code?.before?.text, code?.after?.text, code?.head?.text, reland?.before.text, reland?.after.text]
     .filter((text): text is string => !!text).map(squash);
+}
+
+type Citation = WriterEntry["clauses"][number]["quotes"][number];
+
+export interface ProofJudgment {
+  supportingQuotes: ReadonlySet<Citation>;
+  sameEarlier: boolean;
+}
+
+/** Only a verbatim, complete quote with compatible explicit polarity can be judged. */
+export function quoteChecks(draft: WriterEntry, cluster: Cluster) {
+  const byId = new Map(cluster.members.map(({ candidate }) => [candidate.id, sources(candidate)]));
+  return draft.clauses.map(clause => ({
+    clause,
+    citations: clause.quotes.map(citation => {
+      const quote = squash(citation.quote);
+      const cited = quote.length >= 4 ? (byId.get(citation.id) ?? []).filter(text => text.includes(quote)) : [];
+      const eligible = !polarityMismatch(clause.text, quote) && cited.some(text => unclippedQuote(quote, text));
+      return { citation, found: cited.length > 0, question: eligible ? { clause: clause.text, quote } : undefined };
+    }),
+  }));
 }
 
 const words = (text: string) => new Set(text.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length > 2));
@@ -147,32 +162,22 @@ export function processConfirmed(entry: Pick<WriterEntry, "claim" | "why">): boo
   return PROCESS_WORDS.test(`${entry.claim} ${entry.why}`);
 }
 
-function literalCandidates(snippet: string, before: string): string[] {
-  const found: string[] = [];
-  const add = (literal: string) => {
-    if (literal.length >= PROOF_LIMITS.minLiteral && !before.includes(literal) && !found.includes(literal)) found.push(literal);
-  };
-  for (const match of snippet.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(["'])([^"'\n]+)\1/gu)) add(`${match[1]}${match[2]}${match[1]}`);
-  for (const match of snippet.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/gu)) {
-    const name = match[1]!;
-    if (!/^(?:if|for|while|switch|return|function|catch|typeof|await|new|super|print)$/u.test(name)) add(`${name}(`);
-  }
-  return found;
+function fixMarkers(snippet: string, before: string): string[] {
+  const old = new Set(before.split("\n").map(line => line.trim()));
+  const lines = [...new Set(snippet.split("\n").map(line => line.trim()))]
+    .filter(line => line.length >= 4 && line.length <= 512 && /[A-Za-z_$][\w$]{2}/u.test(line));
+  // Keep enough of the fixed line to identify it even when another caller
+  // of the same API remains. A deletion can use its surviving context.
+  const added = lines.filter(line => !old.has(line));
+  return added.length ? added : lines;
 }
 
-/** True when the literal is in scope today; undefined when the scope was too large to read in full. */
-async function presentInScope(tree: PinnedTree, scope: readonly string[], literal: string): Promise<boolean | undefined> {
-  const patterns = scope.map(glob => { try { return globToRegExp(glob); } catch { return undefined; } }).filter(Boolean) as RegExp[];
-  let read = 0;
-  for (const path of tree.paths()) {
-    if (!patterns.some(pattern => pattern.test(path))) continue;
-    if (++read > PROOF_LIMITS.fixFiles) return undefined;
-    if ((await tree.read(path))?.includes(literal)) return true;
-  }
-  return false;
+/** The speed bump stops rules on anti and decisions on rejected. */
+export function stoppingType(draft: Pick<WriterEntry, "kind" | "route">): "anti" | "rejected" | undefined {
+  if (draft.route === "code-rule" && draft.kind === "rule") return "anti";
+  if ((draft.route === "ruled-out" || draft.route === "decision") && draft.kind === "decision") return "rejected";
+  return undefined;
 }
-
-const MANIFESTS = ["**/package.json", "**/go.mod", "**/requirements*.txt", "**/pyproject.toml", "**/Cargo.toml", "**/Gemfile", "**/pom.xml", "**/build.gradle*"];
 
 function fixFrom(draft: WriterEntry, pairs: readonly EvidencePair[]): ProvenFix | string {
   if (!draft.fix) return "no fix range given";
@@ -186,6 +191,7 @@ function fixFrom(draft: WriterEntry, pairs: readonly EvidencePair[]): ProvenFix 
   const lines = region.text.split("\n").slice(start - region.start, end - region.start + 1);
   const snippet = lines.join("\n");
   if (!snippet.trim()) return "the fix range is blank";
+  if (snippet.length > 800) return "the fix range is longer than 800 characters";
   return { snippet, path: region.path, commit: region.commit, lines: `${start}-${end}` };
 }
 
@@ -215,7 +221,7 @@ export function gitHistory(tree: PinnedTree) {
 }
 
 /** Prove one writer entry against its cluster's evidence and today's tree. */
-export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: ProofContext): Promise<ProofResult> {
+export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: ProofContext, judgment?: ProofJudgment): Promise<ProofResult> {
   const failures: string[] = [];
   const members = new Map(cluster.members.map((member: Triaged) => [member.candidate.id, member.candidate]));
   const shown = writerMembers(cluster);
@@ -224,36 +230,42 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     notAlwaysFollowed: false, alternatives: [], failures };
   const drop = (why: string) => ({ ...result, dropped: why });
 
-  // Clause provenance: quotes must be found verbatim (whitespace aside) in their own member.
-  const supported = draft.clauses.map(clause => {
-    const quotes = clause.quotes.filter(({ id, quote }) => {
-      const candidate = members.get(id);
-      const needle = squash(quote);
-      return !!candidate && needle.length >= 4 && sources(candidate).some(text => text.includes(needle));
-    });
-    if (quotes.length < clause.quotes.length) failures.push(`clause "${clause.text.slice(0, 80)}": ${clause.quotes.length - quotes.length} quote(s) not found in the cited evidence`);
+  const supported = quoteChecks(draft, cluster).map(({ clause, citations }) => {
+    const quotes = citations.filter(({ citation, question }) => question && judgment?.supportingQuotes.has(citation))
+      .map(({ citation }) => citation);
+    const missing = citations.filter(({ found }) => !found).length;
+    const label = `clause "${clause.text.slice(0, 80)}"`;
+    if (missing) failures.push(`${label}: ${missing} quote(s) not found in the cited evidence`);
+    const unsupported = citations.length - quotes.length - missing;
+    if (unsupported) failures.push(`${label}: ${unsupported} quote(s) don't support it`);
     return { clause, quotes };
   });
-  const claimText = squash(draft.claim);
-  const claimClauses = supported.filter(({ clause }) => {
+  let unquoted = squash(draft.claim);
+  const claimClauses: typeof supported = [];
+  for (const item of supported) {
+    if (!unquoted) break;
+    const { clause } = item;
     const text = squash(clause.text).replace(/[.!?,;:]$/u, "");
-    return text.length > 0 && claimText.includes(text);
-  });
-  const covered = words(claimClauses.map(item => item.clause.text).join(" "));
-  if (!claimClauses.length || claimClauses.some(item => !item.quotes.length) || [...words(draft.claim)].some(word => !covered.has(word))) {
+    if (!text || !unquoted.startsWith(text) || !/^[\s.!?,;:]?$/u.test(unquoted[text.length] ?? "")) break;
+    claimClauses.push(item);
+    unquoted = unquoted.slice(text.length).replace(/^[\s.!?,;:]+/u, "");
+  }
+  // A PR must independently support the whole instruction before it adds support.
+  const backing = new Set([...members.keys()].filter(id => claimClauses.every(item => item.quotes.some(quote => quote.id === id))));
+  if (!claimClauses.length || unquoted || !backing.size) {
     failures.push("the claim isn't supported by a verbatim quote");
     return drop("the claim isn't supported by a verbatim quote");
   }
-  result.quotes = supported.flatMap(item => item.quotes);
-  // A cluster is a guess. Only members quoted for the claim itself count toward it, and only their code proves it.
-  const backing = new Set(claimClauses.flatMap(item => item.quotes.map(quote => quote.id)));
+  result.quotes = claimClauses.flatMap(item => item.quotes.filter(quote => backing.has(quote.id)));
   result.unbacked = cluster.members.filter(member => !backing.has(member.candidate.id));
-  cluster = backedBy(cluster, backing);
+  cluster = backedBy(cluster, backing, judgment?.sameEarlier === true);
   result.cluster = cluster;
   if (cluster.decision === "drop") return drop("one pull request without a strong signal backs the claim");
   // Rebuild the reason from verified source clauses so a model-only explanation cannot reach delivery.
-  result.reasons = supported.filter(item => !claimClauses.includes(item) && item.quotes.length && overlap(item.clause.text, draft.claim) < 0.9)
-    .map(item => item.clause.text);
+  const reasons = supported.filter(item => !claimClauses.includes(item) && item.quotes.some(quote => backing.has(quote.id)) &&
+    overlap(item.clause.text, draft.claim) < 0.9);
+  result.reasons = reasons.map(item => item.clause.text);
+  result.quotes.push(...reasons.flatMap(item => item.quotes.filter(quote => backing.has(quote.id))));
 
   // Post-filters: a restated PR title or commit subject adds nothing.
   for (const candidate of members.values()) {
@@ -262,8 +274,9 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     }
   }
   // "Ruled out" and issue lessons need contrastive wording from a maintainer and a resolvable anchor.
-  const ruledOut = draft.route === "ruled-out" || [...members.values()].every(candidate => candidate.kind === "issue" || candidate.kind === "closed-pr");
-  if (ruledOut && ![...members.values()].some(candidate => candidate.reviewers.length > 0 && contrastive(`${candidate.text} ${candidate.prText ?? ""}`))) {
+  const cited = cluster.members.map(member => member.candidate);
+  const ruledOut = draft.route === "ruled-out" || cited.every(candidate => candidate.kind === "issue" || candidate.kind === "closed-pr");
+  if (ruledOut && !cited.some(candidate => candidate.reviewers.length > 0 && contrastive(`${candidate.text} ${candidate.prText ?? ""}`))) {
     return drop("a ruled-out lesson needs a maintainer's contrastive reason");
   }
 
@@ -273,10 +286,10 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     if (draft.route === "process-rule") failures.push("routed as scoped prose: its words don't read as a process rule");
     const valid = draft.scope.filter(glob => glob !== "**" && !glob.startsWith("/") && !glob.includes("..") && scopeMatches(context.tree, glob));
     if (valid.length < draft.scope.filter(glob => glob !== "**").length) failures.push("some scope globs match no file today");
-    const changed = [...members.values()].flatMap(candidate => candidate.path ? [candidate.path] : candidate.changedPaths ?? []);
-    const fallback = commonFolder(changed.filter(path => context.tree.has(path)));
-    const doc = [...members.values()].find(candidate => (candidate.kind === "doc" || candidate.kind === "adr") && candidate.path && context.tree.has(candidate.path))?.path;
-    result.scope = valid.length ? valid : fallback ? [fallback] : doc ? [doc] : [];
+    const changed = [...new Set(cited.flatMap(candidate => candidate.path ? [candidate.path] : candidate.changedPaths ?? []))]
+      .filter(path => safePath(path) && context.tree.has(path));
+    const folder = commonFolder(changed);
+    result.scope = [...new Set(valid.length ? valid : folder ? [folder] : changed.slice(0, 12))];
     if (!result.scope.length) return drop("nothing today for it to govern");
   }
 
@@ -288,78 +301,75 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   }
 
   // Patterns: the contrast test on every pair, the writer's own examples, and the area at HEAD.
-  const codeRoutes = new Set(["code-rule", "ruled-out", "pitfall"]);
-  if (draft.when.length && !codeRoutes.has(draft.route)) failures.push(`a ${draft.route} carries no edit pattern`);
-  const wanted = codeRoutes.has(draft.route) ? draft.when : [];
-  if (wanted.length && !pairs.some(pair => backing.has(pair.member))) failures.push("no before/after code to prove a pattern on");
-  const coverage = wanted.some(item => item.type !== "required") && context.check.checkTree && context.check.checkIndex
+  const stop = stoppingType(draft);
+  const wanted = draft.when.filter(item => item.type === stop || stop && item.type === "required");
+  if (wanted.length !== draft.when.length) failures.push("some patterns cannot stop edits for this entry kind");
+  const proofPairs = pairs.map((pair, at) => ({ pair, at })).filter(({ pair }) => backing.has(pair.member));
+  const coverage = wanted.some(item => item.type === stop) && context.check.checkTree && context.check.checkIndex
     ? patternScopeCoverage(context.tree, result.scope, context.patternStage) : undefined;
   if (coverage?.unread.length) failures.push(unreadScopeFailure(coverage.unread));
-  if (wanted.length && pairs.length && result.scope[0] !== "**" && !coverage?.unread.length) {
-    const run = context.patterns ?? checkPatterns;
-    const candidates: PatternCandidate[] = [];
-    const owner: Array<{ pattern: number; pair: number | "example"; probe?: true }> = [];
-    const proofPairs = pairs;
-    for (const [i, item] of wanted.entries()) {
-      for (const [p, pair] of proofPairs.entries()) {
-        if (!backing.has(pair.member)) continue;
-        candidates.push({ ...item, objected: pair.before.text, fixed: pair.after.text, ...(pair.anchor ? { anchor: pair.anchor } : {}) });
-        owner.push({ pattern: i, pair: p });
-        // The contrast check stops at the first miss, so a pattern that misses this pair's reviewed code
-        // was never tested on its fixed code. A probe asks only "does it occur here?" on the other side.
-        candidates.push({ type: "anti", match: item.match, pattern: item.pattern, objected: item.type === "required" ? pair.before.text : pair.after.text, fixed: "" });
-        owner.push({ pattern: i, pair: p, probe: true });
+  const run = context.patterns ?? checkPatterns;
+  if (wanted.some(item => item.type === stop) && !coverage?.unread.length && result.scope[0] !== "**") {
+    const scope = result.scope.map(globToRegExp);
+    const example = draft.examples;
+    const inScope = proofPairs.length > 0 && proofPairs.every(({ pair }) => scope.some(glob => glob.test(pair.after.path)));
+    const exactScope = result.scope.every(glob => !/[*?\[\]{}]/u.test(glob));
+    const tested = wanted.flatMap(item => {
+      const label = item.type + " " + JSON.stringify(item.pattern);
+      if (!inScope) {
+        failures.push(label + " needs reviewed code inside its edit scope");
+        return [];
       }
-      if (draft.examples?.flag && draft.examples.ok) {
-        candidates.push({ ...item, objected: item.type === "required" ? draft.examples.ok : draft.examples.flag,
-          fixed: item.type === "required" ? draft.examples.flag : draft.examples.ok });
-        owner.push({ pattern: i, pair: "example" });
+      if (item.type === stop && item.match === "structural" && !exactScope) {
+        failures.push(label + " needs exact files so its count can be checked again");
+        return [];
       }
-    }
-    const verdicts: Array<PatternVerdict | undefined> = [];
-    for (let i = 0; i < candidates.length; i += PROOF_LIMITS.nativeCandidates) {
-      const batch = candidates.slice(i, i + PROOF_LIMITS.nativeCandidates);
-      const outcomes = run(batch, result.scope, context.check);
-      verdicts.push(...batch.map((_, at) => outcomes?.[at]));
-    }
-    if (!verdicts.some(Boolean)) failures.push("the pattern check couldn't run");
-    for (const [i, item] of wanted.entries()) {
-      const mine = owner.flatMap((o, k) => o.pattern === i ? [{ ...o, verdict: verdicts[k] }] : []);
-      const real = mine.filter(o => o.pair !== "example" && !o.probe);
-      const occurs = (reason: string | undefined) => reason !== undefined && !/doesn't match the code the reviewer objected to|doesn't compile/u.test(reason);
-      const counter = real.find(o => /still matches the fixed code|already had it/u.test(o.verdict?.reason ?? ""))
-        ?? mine.find(o => o.probe && occurs(o.verdict?.reason));
-      const example = mine.find(o => o.pair === "example");
-      const exampleCounter = example && /still matches the fixed code|already had it/u.test(example.verdict?.reason ?? "");
-      const proven = real.filter(o => o.verdict?.keep || o.verdict?.common);
-      const label = `${item.type} ${JSON.stringify(item.pattern)}`;
-      if (!mine.some(item => item.verdict)) continue;
-      if (counter) {
-        failures.push(item.type === "required" ? `${label} is already in the reviewed code of pair ${counter.pair}` : `${label} matches the fixed code of pair ${counter.pair}`);
+      if (!example?.flag || !example.ok) {
+        failures.push(label + " needs a flag and an ok example");
+        return [];
+      }
+      const candidates: PatternCandidate[] = proofPairs.map(({ pair }) => ({
+        ...item, objected: pair.before.text, fixed: pair.after.text, ...(pair.anchor ? { anchor: pair.anchor } : {}),
+      }));
+      candidates.push({ ...item, objected: example.flag, fixed: example.ok });
+      return [{ item, label, candidates }];
+    });
+    // Each request reads the whole scope once.
+    const outcomes = tested.length ? run(tested.flatMap(test => test.candidates), result.scope, context.check) : undefined;
+    const stride = proofPairs.length + 1;
+    for (const [i, { item, label }] of tested.entries()) {
+      const contrast = outcomes?.slice(i * stride, i * stride + stride - 1);
+      const sample = outcomes?.[i * stride + stride - 1];
+      if (!sample || !contrast || contrast.length !== proofPairs.length) {
+        failures.push("the pattern check couldn't run");
         continue;
       }
-      if (exampleCounter) { failures.push(`${label} matches its own "ok" example`); continue; }
-      if (!(example?.verdict?.keep || example?.verdict?.common)) {
-        failures.push(`${label} does not separate its flag and ok examples`);
+      if (!(sample.keep || sample.common)) {
+        failures.push(label + (sample.reason.includes("still matches") ? ' matches its own "ok" example' : " does not separate its flag and ok examples"));
         continue;
       }
-      // A pair the pattern misses isn't counter-evidence: that member may show the lesson in another shape. The
-      // counter-evidence is a match in fixed code or the "ok" example, checked above. The fixture keeps only the
-      // pairs the pattern was proven on.
-      if (!proven.length) {
-        failures.push(`${label} isn't proven on any pair: ${[...new Set(real.map(o => o.verdict?.reason).filter(Boolean))].join("; ")}`);
+      const miss = contrast.findIndex(verdict => !verdict.keep && !verdict.common);
+      if (miss >= 0) {
+        const reason = contrast[miss]!.reason;
+        failures.push(label + (reason.includes("still matches") ? " matches the fixed code of pair " : " failed contrast on pair ") + proofPairs[miss]!.at + ". " + reason);
         continue;
       }
-      if (item.type !== "required" && coverage && proven.some(o => o.verdict!.files !== coverage.files)) {
-        failures.push(`${label} could not be checked in all ${coverage.files} scoped files at HEAD. Narrow the scope.`);
+      if (item.type !== "required" && coverage && contrast.some(verdict => verdict.files !== coverage.files)) {
+        failures.push(label + " could not be checked in all " + coverage.files + " scoped files at HEAD. Narrow the scope.");
         continue;
       }
-      const common = proven.find(o => o.verdict?.common)?.verdict;
+      const common = contrast.find(verdict => verdict.common);
       if (common && cluster.support < 2) {
-        failures.push(`${label} is ${common.reason}. Narrow the scope or remove this pattern.`);
+        failures.push(label + " is " + common.reason + ". Narrow the scope or remove this pattern.");
         continue;
       }
-      result.when.push({ ...item, pairs: proven.map(o => o.pair as number).slice(0, 3), migration: common !== undefined });
+      const fixPair = draft.fix?.pair;
+      const ordered = proofPairs.map(({ at }) => at);
+      if (fixPair !== undefined && ordered.includes(fixPair)) {
+        ordered.splice(ordered.indexOf(fixPair), 1);
+        ordered.unshift(fixPair);
+      }
+      result.when.push({ ...item, pairs: ordered.slice(0, 3), migration: common !== undefined });
     }
   }
 
@@ -378,30 +388,32 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
       }
     }
   }
-  if (!result.when.some(item => item.type !== "required")) result.when = [];
+  if (!result.when.some(item => item.type === stop)) result.when = [];
 
-  // The fix: a verbatim slice of the after code, and the literal it relies on, present today.
-  if (draft.route === "code-rule" || draft.fix) {
-    const fix = draft.fix && pairs[draft.fix.pair] && !backing.has(pairs[draft.fix.pair]!.member)
+  // A stop needs a fix the next edit can still use. Pin its own file,
+  // rather than searching a package for another use of the same API.
+  if (result.when.length) {
+    const pair = draft.fix && pairs[draft.fix.pair];
+    const fix = pair && !backing.has(pair.member)
       ? "the fix comes from evidence that doesn't back the claim" : fixFrom(draft, pairs);
-    if (typeof fix === "string") { if (draft.fix || result.when.length) failures.push(fix); }
-    else {
-      result.fix = fix;
-      const before = pairs.map(pair => pair.before.text).join("\n");
-      let introduced = 0, absent = 0;
-      for (const literal of literalCandidates(fix.snippet, before)) {
-        introduced++;
-        const present = await presentInScope(context.tree, result.scope, literal);
-        if (present === true) { result.fixLiteral = literal; break; }
-        if (present === false) absent++;
+    if (typeof fix === "string") failures.push(fix);
+    else if (pair) {
+      const head = await context.tree.read(fix.path);
+      if (head !== undefined) {
+        for (const pattern of fixMarkers(fix.snippet, pair.before.text)) {
+          if (!head.includes(pattern)) continue;
+          const target = { type: "required", match: "literal", pattern, objected: "", fixed: head } as const;
+          if (run([target], [], context.check)?.[0]?.keep) {
+            result.fix = fix;
+            result.fixLiteral = pattern;
+            break;
+          }
+        }
       }
-      // Code the fix introduced that is gone from its scope today means the team moved on: the pattern would stop
-      // edits in favour of a fix nobody uses. A fix that only removes code (`it.only` → `it`) introduces nothing to
-      // pin; its pattern stays, held by the fixture, the scope and the anti-pattern's count.
-      if (draft.route === "code-rule" && result.when.length && introduced > 0 && absent === introduced) {
-        failures.push("the code the fix introduced isn't in scope today, so the team may have moved on");
-        result.when = [];
-      }
+    }
+    if (result.when.length && (!result.fixLiteral || !result.when.some(item => item.type === stop && item.pairs.includes(draft.fix?.pair ?? -1)))) {
+      failures.push("the fix needs a target in its reviewed file today and a pair that proves the stop");
+      result.when = [];
     }
   }
   // Trial: a lesson the repo's linter already has a rule for becomes "enable rule X", unless it's already enabled.
@@ -411,21 +423,16 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     else if (config.includes(draft.lint.rule)) return drop(`the linter config already names ${draft.lint.rule}`);
     else result.lint = draft.lint;
   }
-  // Trial: alternatives a decision beat. A rejected option still in use today isn't ruled out: the team may have changed course.
-  if (draft.alternatives?.length && (draft.route === "decision" || draft.route === "ruled-out")) {
-    for (const alternative of draft.alternatives) {
+  // An untested alternative may explain a decision. Only an ordinary
+  // rejected pattern with a contrasting code pair can stop edits.
+  for (const alternative of draft.alternatives ?? []) {
+    if ((draft.route === "decision" || draft.route === "ruled-out") &&
+        cited.some(candidate => [candidate.text, candidate.prText ?? ""].some(source =>
+          squash(source).toLowerCase().split(/[.!?;](?=\s|$)/u).some(statement =>
+            /\b(?:ruled out|decided against|rejected)\b/u.test(statement) &&
+            statement.includes(squash(alternative.option).toLowerCase()) &&
+            statement.includes(squash(alternative.reason).toLowerCase()))))) {
       result.alternatives.push({ option: alternative.option, reason: alternative.reason });
-      const rejected = alternative.rejected;
-      if (!rejected || rejected.match !== "literal" || rejected.pattern.length < PROOF_LIMITS.minLiteral) continue;
-      const scopes = result.scope[0] === "**" ? ["**"] : [...result.scope, ...MANIFESTS];
-      const present = await presentInScope(context.tree, scopes, rejected.pattern);
-      if (present !== false) {
-        failures.push(present ? `the alternative ${alternative.option} is in use today, so it isn't ruled out` : `couldn't confirm ${alternative.option} is unused today`);
-        continue;
-      }
-      if (!result.when.some(item => item.type === "rejected" && item.pattern === rejected.pattern)) {
-        result.when.push({ type: "rejected", match: "literal", pattern: rejected.pattern, pairs: [], migration: false });
-      }
     }
   }
   // The gate saves no learned text it would have to change. Found here, the repair turn can still say it plainly.

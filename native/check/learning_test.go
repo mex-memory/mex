@@ -92,6 +92,30 @@ func TestLearnedScopeAndPatternBaselines(t *testing.T) {
 	}
 }
 
+func TestLearnedFixStaysInTheReviewedFile(t *testing.T) {
+	root := t.TempDir()
+	const file = "reviewed.ts"
+	const fix = "return stableAdapter(input);"
+	write(t, root, file, fix)
+	c := record(t, root, "pattern", Complete, map[string]any{"scope": file, "pattern": fix, "match": "literal", "expect": "present"})
+	write(t, root, "other.ts", fix)
+	write(t, root, file, "// "+fix+"\nreturn stableAdapter(other);")
+	if result := verdict(t, root, c); result.Verdict != Broken {
+		t.Fatalf("another file, comment or caller should not hold the reviewed fix: %+v", result)
+	}
+}
+
+func TestLearnedStructuralBaselineReadsTheReviewedFile(t *testing.T) {
+	root := t.TempDir()
+	const file = "reviewed.ts"
+	write(t, root, file, "return stableAdapter(input);")
+	c := record(t, root, "pattern", Supporting, map[string]any{"scope": file, "pattern": "legacyAdapter($X)", "match": "structural", "expect": "at-most"})
+	write(t, root, file, "return legacyAdapter(input);")
+	if result := verdict(t, root, c); result.Verdict != Changed {
+		t.Fatalf("new structural match should change the verdict: %+v", result)
+	}
+}
+
 func TestQuoteRelocation(t *testing.T) {
 	const exact = "Use the checked loader for every request with input."
 	root := t.TempDir()
@@ -108,6 +132,8 @@ func TestQuoteRelocation(t *testing.T) {
 		{"edited", "# Loader\n\nUse the safe loader for every request with input.", Changed},
 		{"too little overlap", "# Loader\n\nUse the safe loader for every operation with input.", Broken},
 		{"outside recorded heading", "# Loader\n\nDifferent instructions\n# Backup\n\nUse the safe loader for every request with input.", Broken},
+		{"exact in obsolete sibling", "# Loader\n\nDifferent instructions\n# Obsolete\n\n" + exact, Broken},
+		{"exact in obsolete child", "# Loader\n\nDifferent instructions\n## Obsolete\n\n" + exact, Broken},
 		{"removed", "# Loader\n\nOnly send validated input.", Broken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -45,14 +45,15 @@ wording ("always", "we don't", "instead use"), and a small pull request.
 | Harvest | none | Newest first, spread across the review window, until the run's token budget is reached. A change the search shows nobody discussed is not fetched. A cursor is saved, so weekly learning reads only what is newer |
 | Triage | cheap | Keep or drop each item from its comment text alone, with a category and a one-line lesson. Nits, one-offs, questions, status and generic advice are dropped |
 | First rules | best | The strongest items of the first batch are written right away, so the first rules arrive within minutes |
-| Cluster | none | Lessons that say the same thing, in the same direction, are grouped across the whole window. A shared code identifier is only a hint: two comments about one API are usually two lessons. A cluster is led by its strongest item, so unrelated lessons don't chain together. In doubt two lessons stay apart, because a missed repeat costs a duplicate and a wrong one gives a rule support it doesn't have |
+| Cluster | cheap | Code nominates pairs by shared files, identifiers or words. A cheap batch judges whether each pair gives the same rule, a related rule, or a different one. The strongest member leads each cluster. An earlier learned or refused entry also needs a same-rule verdict to match |
 | Write | best | Several clusters per call. The writer sees each thread with the code as reviewed, the author's fix and today's code. It keeps only what this team decided, ruled out or got burned by, that a capable newcomer couldn't tell from the code |
-| Prove | none | Every clause must quote its evidence verbatim. Support, reviewers, label and sources come only from the members quoted for the claim; the others get one round of their own, and a claim resting on one pull request without a strong signal is dropped. A pattern is kept only if it matches reviewed code in at least one before/after pair, matches no fixed code and not its own "ok" example, is rare today (at most 3 occurrences in scope, and not in 2 or more files that are over 1% of it), and later commits on the default branch didn't keep adding it anyway. Every text file in scope up to 512 KB is read; a scope that can't be read in full is unknown, not rare |
+| Judge evidence | cheap | Each writer or repair batch gets one check of its quoted clauses. Code verifies each quote in its source and rejects explicit reversals. Only supporting verdicts count. When a draft would add support to an earlier rule, the same batch compares the finished claim with that rule |
+| Prove | none | Every clause needs a supporting quote. Each counted member must support the whole claim; the others get one round of their own, and a claim resting on one pull request without a strong signal is dropped. A pattern is kept only if it matches the reviewed code in every backed before/after pair, matches no fixed code and not its own "ok" example, is rare today (at most 3 occurrences in scope, and not in 2 or more files that are over 1% of it), and later commits on the default branch didn't keep adding it anyway. Every text file in scope up to 512 KB is read; a scope that can't be read in full is unknown, not rare |
 | Repair | best | One turn for the entries that failed, with each failure's reason. A pattern that still fails is removed; the rule stays as text. A weak pattern is never kept |
 | Route and save | none | Each lesson becomes one entry through the producer gate, with the checks below |
 
-Single-signal lessons (one pull request with a strong signal) are saved as waiting for a tick: they are listed,
-never delivered, until the person keeps them.
+Single-signal lessons from one pull request start unticked, even with a proven edit pattern. A repeated
+lesson from one reviewer can start ticked once the code proves it. Written policy can also corroborate a review.
 
 ## What a learned rule carries
 
@@ -62,8 +63,8 @@ never delivered, until the person keeps them.
   it. It is never pushed to an agent, and `mex share` and every team write strip it.
 - Checks (see [knowledge-checks](knowledge-checks.md)):
   - `fixture` (complete): the before and after code the rule was proven on, re-run against its current patterns.
-  - the fix target, a `pattern` check with `expect: present` (complete): the literal the fix relies on must still be
-    in scope. If the team removes it, the rule is withheld.
+  - the fix target, a `pattern` check with `expect: present` (complete). The reviewed file must still contain the
+    fixed code. Removing it or leaving it only in a comment withholds the rule.
   - the anti-pattern's count today, a `pattern` check with `expect: at-most` (supporting): a rise sends the rule to
     the judge; a fall (the team cleaning up) changes nothing.
   - `scope` (complete): the rule governs at least one file.
@@ -78,7 +79,7 @@ never delivered, until the person keeps them.
 | Learned thing | When the agent gets it |
 | --- | --- |
 | A code rule with a proven pattern | At the edit that adds the anti-pattern in scope: the speed bump stops it once, with the team's fix |
-| A rejected approach | At the edit that brings it back, in scope or in a manifest |
+| A decision with a proven rejected pattern | At the edit that brings the rejected approach back, in scope or in a manifest |
 | A rule, decision or pitfall with a scope and no pattern | At the first read or edit of a file it governs, or through path-scoped rule files where the agent has them |
 | A process rule (branches, commit and PR text, releases) | In the agent's rule files, every session |
 | Anything learned | On `mex recall <id>`, with its reason, fix, source and current verdict |
@@ -112,7 +113,7 @@ branch, the person's copy is retired too: by id, by the source both were learned
 ## The review list
 
 At the end of a run, bare `mex` in a terminal lists everything that was learned, a page at a time: each rule's claim,
-why, fix and source, corroborated or proven rules pre-ticked, single-signal ones waiting. A number toggles one, Enter
+why, fix and source. A lesson from one pull request waits for a tick regardless of pattern proof. A number toggles one. Enter
 goes to the next page and on the last one saves every decision together, `d` there drops the unticked, and `q` leaves
 without saving anything. If an entry changed meanwhile, nothing is saved and the list is shown again next time.
 

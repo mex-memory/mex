@@ -64,6 +64,22 @@ func TestLearnedBumpShowsFixAndRecordsTheOverride(t *testing.T) {
 	t.Log(reply.Reason)
 }
 
+func TestLearnedBumpCountsCodeOccurrences(t *testing.T) {
+	f := newFixture(t)
+	f.entry(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
+		producer: "learn-deeper", oneLine: "Use the stable accessor.", when: []string{"anti:oldAccessor("}, level: "personal"})
+	f.verdict("mx_review1", held)
+	f.start("startup")
+	for _, code := range []string{"// oldAccessor(x)", "\"oldAccessor(x)\"", "notoldAccessor(x)"} {
+		if reply := preEdit(f, edited(f, "src/example.ts", "", code)); reply.Decision != "" {
+			t.Fatalf("non-code or partial token stopped the edit %q: %+v", code, reply)
+		}
+	}
+	if reply := preEdit(f, edited(f, "src/example.ts", "// oldAccessor(x)", "oldAccessor(x)")); reply.Decision != contract.Deny {
+		t.Fatalf("turning a comment into a real call did not stop the edit: %+v", reply)
+	}
+}
+
 func TestLearnedBumpTrimsWholeLinesAcrossThreeReasons(t *testing.T) {
 	f := newFixture(t)
 	var patterns, firstLines, lastLines []string

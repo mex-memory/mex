@@ -37,8 +37,9 @@ describe("first rules when the first batch has no strong item", () => {
     expect(clusters.map(cluster => cluster.decision)).not.toContain("drop");
     const waited = clusters.find(cluster => cluster.members.some(member => member.candidate.id === "acted"))!;
     expect(waited).toMatchObject({ decision: "propose", waiting: true });
-    expect(learnedStatus(waited.waiting, false, true, false)).toBe("proposed");
-    expect(learnedStatus(false, false, true, false)).toBe("active");
+    expect(learnedStatus(waited.waiting, false, true, false, 1)).toBe("proposed");
+    expect(learnedStatus(false, false, true, false, 1)).toBe("proposed");
+    expect(learnedStatus(false, false, true, false, 2)).toBe("active");
   });
 
   it("does not write an early member again, and keeps a waiting rule waiting when a quote covers only part of it", () => {

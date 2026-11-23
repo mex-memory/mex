@@ -9,6 +9,7 @@ import (
 
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/gitstate"
+	"github.com/mex-memory/mex/native/pattern"
 )
 
 // builtAt is an index that knows the commit its files were listed at.
@@ -349,8 +350,23 @@ func (ev *Evaluator) patternCheck(c Check) CheckResult {
 }
 
 func (ev *Evaluator) patternCount(target map[string]any) (int, CheckResult, bool) {
-	if m := str(target, "match"); m != "" && m != "literal" {
-		return 0, CheckResult{Status: Floor, Reason: "structural patterns are counted on edits, not here"}, false
+	match, expect := str(target, "match"), str(target, "expect")
+	file := exactPatternFile(target)
+	if file != "" && (expect == "present" || expect == "at-most") {
+		data, res, ok := ev.readTarget(file)
+		if !ok {
+			return 0, res, false
+		}
+		if match == "" {
+			match = "literal"
+		}
+		if _, err := pattern.Matcher(match, str(target, "pattern")); err != nil {
+			return 0, CheckResult{Status: Floor, Reason: "the code pattern doesn't compile"}, false
+		}
+		return pattern.CodeCount(match, str(target, "pattern"), string(data)), CheckResult{}, true
+	}
+	if match != "" && match != "literal" {
+		return 0, CheckResult{Status: Floor, Reason: "structural counts need an exact file"}, false
 	}
 	if ev.index == nil {
 		return 0, CheckResult{Status: Floor, Reason: "no file index for pattern checks"}, false
@@ -364,7 +380,6 @@ func (ev *Evaluator) patternCount(target map[string]any) (int, CheckResult, bool
 	if !counted {
 		return 0, CheckResult{Status: Floor, Reason: "the file index doesn't count this pattern yet"}, false
 	}
-	file := exactPatternFile(target)
 	// A folder or glob count can't be re-read here without walking the scope. After a commit
 	// made outside a session it may be stale until the background refresh lands (queued when
 	// HEAD moves), so it is being checked, never held: a rule must not deny an edit on it.
