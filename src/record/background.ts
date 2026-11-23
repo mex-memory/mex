@@ -19,6 +19,7 @@ import { BackgroundGraph } from "../graph/background-warm.js";
 import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/control.js";
 import { compactOffersPending, publishCompactOffers } from "../compaction/notices.js";
 import { ledgerPending, settlePendingLedger } from "../ledger/background.js";
+import { queueStopChecks, stopChecksPending } from "../learn-deeper/stop-check.js";
 import { queueDueWeekly, weeklyWakeDue } from "../learn-deeper/weekly-schedule.js";
 
 /**
@@ -142,7 +143,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
     if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) &&
-      !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) &&
+      !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !stopChecksPending(writer.location.directory) && !filterPending(writer.location.directory, writer) &&
       !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory) && !setupRefreshPending(writer.location.directory) &&
       !ledgerPending(writer.location.directory) &&
       !compactReviewNeeded(writer) && !compactOffersPending(writer.location.directory) && !weeklyWakeDue(writer.location.home)) {
@@ -280,6 +281,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       queuePendingRefreshes(writer);
       try { await graph.run(clock()); } catch (error) { log(`graph: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`); }
       // Hooks request work with bounded files; only Node owns model jobs.
+      try { queueStopChecks(writer, queueJob, clock()); } catch { /* a later pass retries */ }
       try { queuePendingJudgements(writer, queueJob, clock()); } catch { /* a later pass retries */ }
       try { queuePendingFilters(writer, queueJob); } catch { /* a later pass retries */ }
       // MEX's rule files carry a note the code changed: rebuild them between sessions.
@@ -336,6 +338,7 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
   let batches = 0;
   while (Date.now() < end) {
     // The same durable requests work when the detached process cannot start.
+    queueStopChecks(writer, queueJob);
     queuePendingJudgements(writer, queueJob);
     queuePendingFilters(writer, queueJob);
     queuePendingNative(writer);

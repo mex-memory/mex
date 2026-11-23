@@ -12,7 +12,7 @@ function publish(file: string, value: unknown): void {
 
 /** Called under the Node record writer lock, including when repairing after a crash. */
 export function publishControlMirrors(db: DatabaseSync, location: RecordLocation, onlyScope?: string): void {
-  const rows = db.prepare("SELECT scope,key,value FROM settings WHERE (scope='global' AND key IN ('enabled','ledger.holdout','levers.output')) OR key IN ('capture.enabled','delivery.scorer','delivery.aliases') OR key LIKE 'delivery.surface.%'").all();
+  const rows = db.prepare("SELECT scope,key,value FROM settings WHERE (scope='global' AND key IN ('enabled','ledger.holdout','levers.output')) OR key IN ('capture.enabled','delivery.scorer','delivery.aliases','learning.stopCheck') OR key LIKE 'delivery.surface.%'").all();
   const global = new Map(rows.filter(row => row.scope === "global").map(row => [String(row.key), String(row.value)]));
   const file = join(location.home, "controls.json");
   if ((onlyScope === undefined || onlyScope === "global") && (global.size || existsSync(file))) {
@@ -20,7 +20,7 @@ export function publishControlMirrors(db: DatabaseSync, location: RecordLocation
     const trial = global.get("ledger.holdout");
     publish(file, { version: 1, off: global.get("enabled") === "false", capture: global.get("capture.enabled") !== "false", ...(global.has("delivery.scorer") ? { scorer: global.get("delivery.scorer") } : {}), ...(global.has("delivery.aliases") ? { aliases: global.get("delivery.aliases") } : {}), ...(Object.keys(surfaces).length ? { surfaces } : {}), ...(trial ? { ledger_holdout: trial } : {}), ...(global.has("levers.output") ? { levers: global.get("levers.output") } : {}) });
   }
-  const deliveryScopes = new Set(rows.filter(row => row.scope !== "global" && (row.key === "delivery.scorer" || String(row.key).startsWith("delivery.surface."))).map(row => String(row.scope)));
+  const deliveryScopes = new Set(rows.filter(row => row.scope !== "global" && (row.key === "delivery.scorer" || row.key === "learning.stopCheck" || String(row.key).startsWith("delivery.surface."))).map(row => String(row.scope)));
   for (const scope of deliveryScopes) {
     if (onlyScope !== undefined && scope !== onlyScope) continue;
     if (!/^[gf]-[a-f0-9]{24}$/.test(scope)) throw new Error("Invalid delivery project identity.");
@@ -28,7 +28,8 @@ export function publishControlMirrors(db: DatabaseSync, location: RecordLocation
     const scorer = settings.get("delivery.scorer");
     if (scorer && !["tiers", "bm25", "fcfs", "risk"].includes(scorer)) throw new Error("Invalid delivery scorer.");
     const surfaces = Object.fromEntries([...settings].filter(([key]) => key.startsWith("delivery.surface.")).map(([key, value]) => [key.slice(17), value]));
-    publish(join(location.directory, "hook-delivery", scope + ".json"), { version: 1, ...(scorer ? { scorer } : {}), ...(Object.keys(surfaces).length ? { surfaces } : {}) });
+    publish(join(location.directory, "hook-delivery", scope + ".json"), { version: 1, ...(scorer ? { scorer } : {}), ...(Object.keys(surfaces).length ? { surfaces } : {}),
+      ...(settings.get("learning.stopCheck") === "true" ? { stop_check: true } : {}) });
   }
   for (const row of rows) {
     if (row.scope === "global" || (row.key !== "capture.enabled" && row.key !== "delivery.scorer")) continue;

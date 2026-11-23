@@ -16,6 +16,7 @@ import { origin, PinnedTree, repoPath, revision } from "./git.js";
 import { hosts } from "./hosts.js";
 import { LEARN_COMMAND, LEARN_KIND, Plan, quoteCeiling,
   reviewWindow, type LearningPlan } from "./plan.js";
+import { procedureEstimate } from "./procedures.js";
 import { planHarvest } from "./harvest/index.js";
 
 type Print = (line: string) => void;
@@ -162,7 +163,9 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const forgeCount = harvest.inventory.bands.reduce((sum, band) => sum + band.count, 0);
     const local = harvest.inventory.local;
     const localCount = local.revert.length + local.cause.length + local.adr.length + local.doc.length;
-    if (!forgeCount && !localCount) {
+    const procedures = reader.setting(projectId, "learning.procedures") === "true";
+    const extra = procedures ? procedureEstimate(agent) : 0;
+    if (!forgeCount && !localCount && !procedures) {
       write("Learn deeper found no reviews, past fixes or contributor docs to learn from here · $0, nothing started.");
       return;
     }
@@ -170,7 +173,8 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const gaps = harvest.gaps.map(gap => gap.slice(0, 180)).slice(0, 12);
     plan = Plan.parse({ checkout: root, head, origin: repo, source: access.source, visibility: access.visibility, agent,
       setup, ...window, preferred, pulls: [], docs: [], sessions: [], refresh: options.weekly !== false,
-      gaps, estimate: Math.max(1, harvest.estimate), ceiling: Math.max(1, harvest.ceiling), harvest });
+      gaps, estimate: Math.max(1, harvest.estimate + extra), ceiling: Math.max(1, harvest.ceiling + quoteCeiling(extra)), harvest,
+      ...(procedures ? { procedures: true } : {}) });
     const estimate = plan.estimate;
     refreshUsageForQuote();
     const minutes = Math.max(1, Math.ceil(estimate / 12_000));
@@ -178,6 +182,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const lines = ["Learn from past reviews, fixes and contributor docs using your agent plan?",
       `About ${minutes} ${minutes === 1 ? "minute" : "minutes"} · ${share}.`,
       `Estimate ${count(estimate)} tokens · ceiling ${count(plan.ceiling)} tokens.`];
+    if (procedures) lines.push("Includes an estimate for up to five cheap procedure calls within the 3% automatic allowance.");
     if (forge.anonymous) lines.push(`Fetching slowly without a ${repo.host === "github.com" ? "GitHub" : "GitLab"} login. Sign in with \`${repo.host === "github.com" ? "gh" : "glab"} auth login\` to speed it up.`);
     if (plan.visibility === "private") lines.push("Review and doc excerpts from this private repo will be sent to your selected agent account. Start only if your organization allows it.");
     if (plan.refresh) lines.push("After this run, MEX checks for new reviews and docs every 7–14 days when idle, signed in, and within the 3% automatic allowance. Use `mex learn --no-weekly` for a one-time run.");

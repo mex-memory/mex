@@ -1,3 +1,4 @@
+import { isLearningTrial, learningTrials, setLearningTrial } from "./learn-deeper/trial-settings.js";
 import chalk from "chalk";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { existsSync, realpathSync } from "node:fs";
@@ -1359,11 +1360,28 @@ const configCmd = program
 configCmd
   .command("set <key> <value>")
   .description("Set a config value (e.g. learning.statements on|off, telemetry on|off)")
-  .option("--project", "Set delivery.scorer, delivery.surface.<id> or learning.sharing for the registered project")
+  .option("--project", `Set delivery.scorer, delivery.surface.<id>, learning.sharing or ${learningTrials.join(", ")} for the registered project`)
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (options.project && !["delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) throw new Error("--project is supported for delivery.scorer, delivery.surface.<id> and learning.sharing.");
-      if (key.startsWith("delivery.surface.")) {
+      if (options.project && !isLearningTrial(key) && !["delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) {
+        throw new Error(`--project is supported for delivery.scorer, delivery.surface.<id>, learning.sharing and ${learningTrials.join(", ")}.`);
+      }
+      if (isLearningTrial(key)) {
+        if (!options.project) throw new Error(`Use --project to set ${key} for this repository.`);
+        const { openRecord } = await import("./record/index.js");
+        const writer = openRecord();
+        try {
+          const { confirmation, project } = setLearningTrial(writer, key, value, process.cwd());
+          if (key === "learning.prDecisions") {
+            const { queueJob, ensureBackground } = await import("./record/background.js");
+            for (const checkout of writer.db.prepare("SELECT path FROM checkouts WHERE project_id=?").all(project)) {
+              queueJob(writer, { kind: "native-files", projectId: project, params: { checkout: String(checkout.path), local: true } });
+            }
+            ensureBackground({ home: writer.location.home });
+          }
+          console.log(confirmation);
+        } finally { writer.close(); }
+      } else if (key.startsWith("delivery.surface.")) {
         const { openRecord } = await import("./record/index.js");
         const { setDeliverySurface } = await import("./controls/index.js");
         const writer = openRecord();
@@ -1436,7 +1454,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output, ${learningTrials.join(", ")}`);
         process.exitCode = 1;
         return;
       }

@@ -1,5 +1,18 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`lists the project learning trials in config set help 1`] = `
+"Usage: mex config set [options] <key> <value>
+
+Set a config value (e.g. learning.statements on|off, telemetry on|off)
+
+Options:
+  --project   Set delivery.scorer, delivery.surface.<id>, learning.sharing or
+              learning.stopCheck, learning.procedures, learning.prDecisions,
+              learning.deep.issues for the registered project
+  -h, --help  display help for command
+"
+`;
+
 exports[`shows the 0.9 manual in command order 1`] = `
 "Usage: mex [options] [command]
 

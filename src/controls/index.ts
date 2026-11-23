@@ -88,7 +88,7 @@ export function setLedgerHoldout(writer: RecordWriter, enabled: boolean): void {
     enabled ? (previous && /^[0-9a-f]{32}$/u.test(previous) ? previous : randomBytes(16).toString("hex")) : "");
 }
 
-function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string | ((previous: string | undefined) => string)): void {
+export function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string | ((previous: string | undefined) => string)): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {
     const value = typeof enabled === "function" ? enabled(writer.setting(scope, key)) : String(enabled);

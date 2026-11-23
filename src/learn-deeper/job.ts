@@ -352,6 +352,15 @@ function pipelineSummary(state: PipelineState, gaps: readonly string[]): string 
     parts.push(`Lessons: ${n("cluster.write")} corroborated, ${n("cluster.propose")} single strong, ${n("cluster.drop")} dropped.`);
     parts.push(`Saved ${n("saved")} rules: ${n("proven")} with a proven pattern, ${n("prose")} as scoped text, ${n("proposed")} waiting for your tick.`);
   }
+  for (const [key, one, many] of [
+    ["trial.issues", "issue source kept", "issue sources kept"], ["trial.linter", "linter suggestion saved", "linter suggestions saved"],
+    ["trial.alternatives", "alternative stored", "alternatives stored"], ["trial.procedures", "procedure waiting for a tick", "procedures waiting for a tick"],
+    ["trial.pr.followed", "PR description with a Decisions section", "PR descriptions with a Decisions section"],
+    ["trial.pr.ignored", "PR description without a Decisions section", "PR descriptions without a Decisions section"],
+  ] as const) {
+    const total = c[key];
+    if (total !== undefined) parts.push(`Counted ${total} ${total === 1 ? one : many}.`);
+  }
   return [...parts, ...gaps].join(" ");
 }
 

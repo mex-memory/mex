@@ -104,6 +104,21 @@ describe("Copilot's path-scoped instructions", () => {
 });
 
 describe("learned routing", () => {
+  it("adds exactly one Decisions instruction when the trial is on", () => {
+    const root = repo({ "CLAUDE.md": "Existing instructions.\n" });
+    const agents = ["codex", "claude-code", "copilot"] as const;
+    const selected = [team("mx_root01"), mine("mx_local1", "src/**")];
+    const off = planNative(root, agents, selected);
+    expect(planNative(root, agents, selected, false)).toEqual(off);
+    const line = "- When you chose between options, add a short Decisions section to the PR description. Say what you chose, what you ruled out, and why.\n";
+    const on = planNative(root, agents, selected, true);
+    expect(on.files).toHaveLength(off.files.length);
+    for (const [index, file] of on.files.entries()) {
+      expect(file.text.split(line)).toHaveLength(file.sharing === "local" ? 2 : 1);
+      expect({ ...file, text: file.text.replace(line, "") }).toEqual(off.files[index]);
+    }
+  });
+
   it("keeps process rules at the root and folder notes in file-matched instructions", () => {
     const process = team("mx_deeproot");
     const folder = mine("mx_deepfolder", "src/**");
