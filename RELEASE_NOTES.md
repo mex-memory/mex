@@ -1,3 +1,9 @@
+# MEX 0.9.0-beta.2
+
+Learn deeper proposes rules from the reviews, docs, and code a repository already has. A person keeps a rule, leaves it waiting, or drops it. Waiting is not a refusal: later evidence can list the item again, and it stays proposed until the person ticks it.
+
+The audit's blockers have to be confirmed on their own before real-agent metrics are read as a result of this release.
+
 # MEX 0.9.0-beta.1.1
 
 A fix release for 0.9.0-beta.1, on npm's `next` tag. MEX 0.8.5 remains on `latest`.

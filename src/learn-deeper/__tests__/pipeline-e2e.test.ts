@@ -24,7 +24,8 @@ import { LEARN_KIND, Plan } from "../plan.js";
 import { CURSOR_KEY, reviewRows } from "../pipeline.js";
 import { noteKey } from "../coverage.js";
 
-// This repo and the recorded thread are the seed for the joined fixture test (release-01).
+// This file is the release-01 joined fixture. The recorded thread is the seed, and the removal
+// checks that SessionStart and a later edit withhold the full claim.
 const recorded = readFileSync(new URL("./fixtures/harvest/changes.json", import.meta.url), "utf8");
 const reviewed: string[] = JSON.parse(recorded).originalLines;
 const path = "src/changed.ts";
@@ -249,8 +250,10 @@ it.each([
     writeFileSync(join(repo, path), reviewed.join("\n").replace("fallback(label)", "transport(label)") + "\n");
     commit("Switch adapters", "2026-11-19T10:00:00Z");
     await index();
-    hook("second", "SessionStart", { source: "startup" });
-    expect(hook("second", "PreToolUse", edit("transport"))).not.toContain("deny");
+    expect(hook("second", "SessionStart", { source: "startup" })).not.toContain(claim);
+    const afterRemoval = hook("second", "PreToolUse", edit("transport"));
+    expect(afterRemoval).not.toContain("deny");
+    expect(afterRemoval).not.toContain(claim);
   } finally { writer.close(); }
 }, 120_000);
 
@@ -422,9 +425,10 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", 
       expect(after).toEqual(before);
       expect(edited()).not.toContain("deny");
     } else if (decision === "leave waiting") {
-      expect(later.rows).toMatchObject([{ entryId: id, claim: later.wording, support: 2, status: "active" }]);
+      expect(later.rows).toMatchObject([{ entryId: id, claim: later.wording, support: 2, status: "proposed" }]);
       expect(later.model.mock.calls.some(([request]) => request.purpose === LEARN_KIND)).toBe(true);
-      expect(parseEntry(new Map(after).get(id)!).mex.status).toBe("active");
+      expect(parseEntry(new Map(after).get(id)!).mex.status).toBe("proposed");
+      expect(edited()).not.toContain("deny");
     } else {
       expect(later.model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter"]);
       expect(later.counts).toMatchObject({ "cluster.forgotten": 1 });
