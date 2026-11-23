@@ -165,7 +165,7 @@ jobs:
         run: |
           archive="$RUNNER_TEMP/wasi-sdk.tar.gz"
           curl -fLsS --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-29/wasi-sdk-29.0-x86_64-linux.tar.gz -o "$archive"
-          echo "87d1d1a2879d139cdc624b968efad3d4a97b8078cdff95e63acafd1a0171  $archive" | sha256sum -c -
+          echo "87d1d1a2879d139cdc624b968efad3d4a97b8078cdff95e63ac88ecafd1a0171  $archive" | sha256sum -c -
           mkdir -p "$WASI_SDK_PATH"
           tar -xzf "$archive" -C "$WASI_SDK_PATH" --strip-components=1
           (cd native/engine && rustup target add wasm32-wasip1)
