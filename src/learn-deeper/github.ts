@@ -13,7 +13,10 @@ export async function githubRepository(client: ForgeClient): Promise<RepositoryA
   const original = metadata?.fork === true ? object(metadata.source) : metadata;
   const source = typeof original?.full_name === "string" && repository("github.com", original.full_name);
   if (!source || typeof original?.private !== "boolean" || typeof metadata?.private !== "boolean") throw new SourceError("unavailable");
-  if (client.redirectCount() > before && source.slug.toLowerCase() !== client.repo.slug.toLowerCase()) client.renamed = source;
+  if (client.redirectCount() > before && source.slug.toLowerCase() !== client.repo.slug.toLowerCase()) {
+    client.renamed = source;
+    client.repo = source;
+  }
   return { source, visibility: metadata.private || original.private ? "private" : "public" };
 }
 

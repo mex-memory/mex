@@ -21,6 +21,7 @@ it("follows a same-host rename and reports a redirect it cannot follow as a move
   const followed = client(renamed);
   await expect(githubRepository(followed)).resolves.toMatchObject({ source: { slug: "lysine-dev/okhttp" }, visibility: "public" });
   expect(followed.renamed?.slug).toBe("lysine-dev/okhttp");
+  expect(followed.repo.slug).toBe("lysine-dev/okhttp");
   expect(seen).toEqual(["https://api.github.com/repos/square/okhttp", "https://api.github.com/repositories/5152285"]);
 
   const foreign = vi.fn(async () => new Response(null, { status: 301, headers: { location: "https://evil.example/repos/square/okhttp" } }));

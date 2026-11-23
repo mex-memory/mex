@@ -89,7 +89,7 @@ export class ForgeClient {
   /** Set when a same-host redirect resolved this name to a different repository slug. */
   renamed?: Repository;
   readonly anonymous: boolean;
-  constructor(readonly repo: Repository, private readonly token?: string, private readonly request = fetch,
+  constructor(public repo: Repository, private readonly token?: string, private readonly request = fetch,
     private readonly anonymousDelayMs = 1100) { this.anonymous = !token; }
 
   redirectCount(): number { return this.redirects; }
