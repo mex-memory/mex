@@ -13,6 +13,8 @@
 // treated as proof. Kept pure (nodes + refs in → edges out) so build and sync
 // share the exact same deterministic resolution pass.
 
+import { posix } from "node:path";
+import { isEcmaScriptLanguage } from "../engine-languages.js";
 import type { EdgeKind, GraphEdge, GraphNode, Language, NodeKind } from "../types.js";
 import type { UnresolvedRefRecord } from "../db/store.js";
 import type { FrameworkResolver, ResolutionContext } from "./types.js";
@@ -28,6 +30,13 @@ const MODULE_EXTENSIONS = [
   ".mjs",
   ".cjs",
 ];
+
+const SOURCE_EXTENSIONS_BY_OUTPUT = new Map([
+  [".js", [".ts", ".tsx"]],
+  [".jsx", [".tsx"]],
+  [".mjs", [".mts"]],
+  [".cjs", [".cts"]],
+]);
 
 /** Node kinds a reference of a given kind is allowed to bind to. */
 const TARGET_KINDS: Record<string, NodeKind[]> = {
@@ -221,6 +230,7 @@ export function resolveReferences(
       filtered,
       fromNode,
       ref,
+      fileNodeByPath.get(fromNode.filePath),
       provenFiles.size > 0 ? provenFiles : importsByFile.get(fromNode.filePath),
       qualifierBindings.length > 0,
     );
@@ -244,6 +254,10 @@ export function resolveReferences(
       ref.status = (ref.candidates?.length ?? 0) > 1 ? "ambiguous" : "unresolved";
       ref.confidence = ref.status === "ambiguous" ? 0.75 : 0;
     }
+    // Look up a member by its called name, keeping the receiver as evidence.
+    if (ref.status !== "resolved" && ref.referenceKind === "calls" && typeof ref.metadata?.calledName === "string") {
+      ref.referenceName = ref.metadata.calledName;
+    }
   }
   return edges;
 }
@@ -258,6 +272,7 @@ function pickBest(
   candidates: GraphNode[],
   fromNode: GraphNode,
   ref: UnresolvedRefRecord,
+  fileNodeId: string | undefined,
   importedFiles: Set<string> | undefined,
   explicitQualifier = false,
 ): GraphNode | null {
@@ -290,8 +305,8 @@ function pickBest(
     });
     if (lexical.length === 1) return lexical[0]!;
     if (lexical.length > 1) return null;
-    const moduleLevel = sameFile.filter((node) => !node.containerId);
-    if (!receiver && moduleLevel.length === 1) return moduleLevel[0]!;
+    const moduleLevel = sameFile.filter((node) => !node.containerId || node.containerId === fileNodeId);
+    if (!receiver && ref.metadata?.calledName === undefined && moduleLevel.length === 1) return moduleLevel[0]!;
     return null;
   }
 
@@ -453,7 +468,7 @@ function importBindings(ref: UnresolvedRefRecord): Array<{ localName: string; im
  * node. Tries the bare path, each source extension, and an `index.*` under it.
  * Bare (non-relative) specifiers are external packages — unresolved (null).
  */
-function resolveModulePath(
+export function resolveModulePath(
   fromFile: string,
   specifier: string,
   language: Language,
@@ -467,8 +482,11 @@ function resolveModulePath(
   }
   if (!specifier.startsWith(".")) return null; // external package
   const base = posixJoin(posixDirname(fromFile), specifier);
+  const extension = posix.extname(base);
+  const sources = isEcmaScriptLanguage(language) ? SOURCE_EXTENSIONS_BY_OUTPUT.get(extension) : undefined;
   const candidates = [
     base,
+    ...(sources ?? []).map((ext) => base.slice(0, -extension.length) + ext),
     ...MODULE_EXTENSIONS.map((ext) => base + ext),
     ...MODULE_EXTENSIONS.map((ext) => posixJoin(base, "index") + ext),
   ];

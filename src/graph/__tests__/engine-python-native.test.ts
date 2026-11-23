@@ -105,7 +105,7 @@ describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's 
     expect(after.calls).not.toContainEqual({ source: "use", target: "helper" });
 
     const python = after.files.filter((file) => file.path.endsWith(".py"));
-    expect(new Set(python.map((file) => file.extractor_version))).toEqual(new Set(["tree-sitter-v4+engine-python-v1"]));
+    expect(new Set(python.map((file) => file.extractor_version))).toEqual(new Set(["tree-sitter-v5+engine-python-v1"]));
     expect(after.files.find((file) => file.path === "pkg/broken.py")?.parse_status)
       .toBe(before.files.find((file) => file.path === "pkg/broken.py")?.parse_status);
     expect(after.files.find((file) => file.path === "app.ts")).toEqual(before.files.find((file) => file.path === "app.ts"));

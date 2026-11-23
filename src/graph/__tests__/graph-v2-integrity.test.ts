@@ -592,7 +592,7 @@ describe("graph construction integration", () => {
     const configBefore = before.getMetadata("config_hash");
     expect(before.getMetadata("grammar_hash")).toMatch(/^[a-f0-9]{64}$/);
     expect(before.getMetadata("resolver_version")).toBe("engine-first-v4");
-    expect(before.getMetadata("extractor_version")).toContain("tree-sitter-v4+engine-");
+    expect(before.getMetadata("extractor_version")).toContain("tree-sitter-v5+engine-");
     beforeDb.close();
 
     expect(await engine.sync([])).toMatchObject({ filesIndexed: 0, nodesCreated: 0, edgesCreated: 0 });

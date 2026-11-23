@@ -86,7 +86,7 @@ describe("graph snapshot provenance", () => {
       indexedBranch: "snapshot-test",
       indexedHead: head,
       schemaVersion: DB_SCHEMA_VERSION,
-      extractorVersion: expect.stringContaining("tree-sitter-v4+engine-"),
+      extractorVersion: expect.stringContaining("tree-sitter-v5+engine-"),
       resolverVersion: "engine-first-v4",
       sourceCorpusDigest: computeSourceCorpusDigest([{ path: "src/stable.ts", contentHash }]),
       sourceCount: 1,
@@ -218,7 +218,8 @@ describe("graph snapshot provenance", () => {
     const binding = db.prepare(
       `SELECT target.file_path AS resolvedFilePath
        FROM edges e JOIN nodes target ON target.id = e.target
-       WHERE e.kind = 'imports' AND e.source = 'file:src/use.ts'`,
+       JOIN nodes source ON source.id = e.source
+       WHERE e.kind = 'imports' AND source.kind = 'file' AND source.file_path = 'src/use.ts'`,
     ).get() as { resolvedFilePath: string | null } | undefined;
     db.close();
     expect(binding).toEqual({ resolvedFilePath: "src/target.ts" });

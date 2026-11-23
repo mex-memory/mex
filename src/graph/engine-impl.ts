@@ -30,7 +30,10 @@ import { isSameResolvedPath, toPosix } from "../paths.js";
 import type {
   BuildResult, GraphEngine, GraphEngineReport, GraphPublicationReport, NodeSearchOptions, SkippedSourceFile,
 } from "./engine.js";
-import { engineFileExtractorVersion, graphEngineHandlesEcmaScript, graphEngineLanguageFamily, graphEngineLanguages, TREE_SITTER_EXTRACTOR_VERSION } from "./engine-languages.js";
+import {
+  engineFileExtractorVersion, graphEngineHandlesEcmaScript, graphEngineLanguageFamily, graphEngineLanguages,
+  isEcmaScriptLanguage, TREE_SITTER_EXTRACTOR_VERSION,
+} from "./engine-languages.js";
 import type { EngineStagedFile } from "./native-engine.js";
 import {
   GRAPH_CORPUS_GLOB_OPTIONS,
@@ -89,7 +92,7 @@ import {
 } from "./extraction-cache.js";
 import { createStagedResolutionContext } from "./resolution/context.js";
 import { FRAMEWORK_RESOLVERS } from "./resolution/frameworks/index.js";
-import { resolveReferences } from "./resolution/resolver.js";
+import { resolveModulePath, resolveReferences } from "./resolution/resolver.js";
 import {
   GRAPH_SNAPSHOT_METADATA_KEY,
   createGraphSnapshot,
@@ -1080,6 +1083,7 @@ function stageFrameworkAndFallbackResolution(
 ): void {
   if (files.every((file) => file.frameworksResolved)) return;
   const initialNodes = files.flatMap((file) => file.nodes);
+  hydrateFallbackImportBindings(files, initialNodes);
   const fileByPath = new Map(files.map((file) => [file.record.path, file]));
   const sourceAccess = {
     paths: [...fileByPath.keys()],
@@ -1184,7 +1188,6 @@ function stageFrameworkAndFallbackResolution(
   );
   const resolvedEdges = timeGraphPhase("resolve.references", () =>
     resolveReferences(nodes, refs, { resolvers, context }));
-  hydrateFallbackImportBindings(files, nodes, nodeById);
   for (const edge of resolvedEdges) {
     const source = nodeById.get(edge.source);
     const stagedFile = source ? fileByPath.get(source.filePath) : undefined;
@@ -1193,40 +1196,39 @@ function stageFrameworkAndFallbackResolution(
 }
 
 /**
- * Fallback resolvers prove module ownership while resolving import references.
- * Persist that proof on each binding too: namespace imports target the file
- * node, while a uniquely named imported declaration targets the declaration.
+ * Resolve explicit bindings against the indexed corpus before framework
+ * resolvers use them. Namespace imports point to the file node.
  */
 function hydrateFallbackImportBindings(
   files: readonly StagedFile[],
   nodes: readonly GraphNode[],
-  nodeById: ReadonlyMap<string, GraphNode>,
 ): void {
+  const fileNodeIds = new Map<string, string>();
   const symbolsByFileAndName = new Map<string, GraphNode[]>();
   for (const node of nodes) {
-    if (node.kind === "file") continue;
+    if (node.kind === "file") {
+      fileNodeIds.set(node.filePath, node.id);
+      continue;
+    }
     const key = `${node.filePath}\0${node.name}`;
     const bucket = symbolsByFileAndName.get(key) ?? [];
     bucket.push(node);
     symbolsByFileAndName.set(key, bucket);
   }
   for (const file of files) {
+    if (file.sketches) continue;
     for (const binding of file.imports) {
       if (binding.resolvedFilePath || binding.targetId) continue;
-      const imported = file.references.find((reference) =>
-        reference.referenceKind === "imports"
-        && reference.referenceName === binding.moduleSpecifier
-        && fallbackBindings(reference).some((candidate) =>
-          candidate.localName === binding.localName && candidate.importedName === binding.importedName),
-      );
-      const targetFile = imported?.targetId ? nodeById.get(imported.targetId) : undefined;
-      if (!targetFile || targetFile.kind !== "file") continue;
-      binding.resolvedFilePath = targetFile.filePath;
+      const targetPath = resolveModulePath(file.record.path, binding.moduleSpecifier, file.record.language, fileNodeIds);
+      if (!targetPath) continue;
+      binding.resolvedFilePath = targetPath;
+      const targetFileId = fileNodeIds.get(targetPath);
       if (binding.importedName === "*") {
-        binding.targetId = targetFile.id;
+        binding.targetId = targetFileId;
         continue;
       }
-      const candidates = symbolsByFileAndName.get(`${targetFile.filePath}\0${binding.importedName}`) ?? [];
+      const candidates = (symbolsByFileAndName.get(`${targetPath}\0${binding.importedName}`) ?? []).filter((node) =>
+        !isEcmaScriptLanguage(node.language) || (node.isExported && node.containerId === targetFileId));
       if (candidates.length === 1) binding.targetId = candidates[0]!.id;
     }
   }
@@ -1557,6 +1559,9 @@ function stageTreeFile(discovered: DiscoveredFile, source: string): StagedFile {
       });
     } else if (edge.targetName) {
       const dot = edge.targetName.lastIndexOf(".");
+      const receiver = typeof edge.metadata?.receiver === "string"
+        ? edge.metadata.receiver
+        : dot > 0 ? edge.targetName.slice(0, dot) : undefined;
       references.push({
         fromNodeId: edge.source,
         referenceName: edge.targetName,
@@ -1566,8 +1571,8 @@ function stageTreeFile(discovered: DiscoveredFile, source: string): StagedFile {
         line: edge.line === undefined ? undefined : edge.line + 1,
         column: edge.column,
         candidates: edge.candidates,
-        receiver: dot > 0 ? edge.targetName.slice(0, dot) : undefined,
-        qualifier: dot > 0 ? edge.targetName.slice(0, dot) : undefined,
+        receiver,
+        qualifier: receiver,
         metadata: edge.metadata,
         status: "pending",
         resolver: "tree-sitter",

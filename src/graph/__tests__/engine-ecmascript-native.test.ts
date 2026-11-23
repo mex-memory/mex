@@ -130,11 +130,11 @@ describe.skipIf(!binary)("TypeScript and JavaScript from the Rust engine into sc
     }));
     expect(after.cache).toEqual([]);
     expect(after.files).toEqual([
-      { path: "src/client.ts", language: "typescript", extractor_version: "tree-sitter-v4+engine-typescript-v1" },
-      { path: "src/other.jsx", language: "jsx", extractor_version: "tree-sitter-v4+engine-javascript-v1" },
-      { path: "src/script.mjs", language: "javascript", extractor_version: "tree-sitter-v4+engine-javascript-v1" },
-      { path: "src/service.ts", language: "typescript", extractor_version: "tree-sitter-v4+engine-typescript-v1" },
-      { path: "src/view.tsx", language: "tsx", extractor_version: "tree-sitter-v4+engine-typescript-v1" },
+      { path: "src/client.ts", language: "typescript", extractor_version: "tree-sitter-v5+engine-typescript-v1" },
+      { path: "src/other.jsx", language: "jsx", extractor_version: "tree-sitter-v5+engine-javascript-v1" },
+      { path: "src/script.mjs", language: "javascript", extractor_version: "tree-sitter-v5+engine-javascript-v1" },
+      { path: "src/service.ts", language: "typescript", extractor_version: "tree-sitter-v5+engine-typescript-v1" },
+      { path: "src/view.tsx", language: "tsx", extractor_version: "tree-sitter-v5+engine-typescript-v1" },
     ]);
     expect(after.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -228,7 +228,7 @@ async function expectFallback(root: string, reason: string, expectedFiles = 7): 
     message: expect.stringContaining(reason),
   }));
   const graph = rows(root);
-  expect(graph.files.every(file => (file as { extractor_version: string }).extractor_version === "tree-sitter-v4")).toBe(true);
+  expect(graph.files.every(file => (file as { extractor_version: string }).extractor_version === "tree-sitter-v5")).toBe(true);
   expect(graph.edges).toContainEqual(expect.objectContaining({
     source: "caller", target: "helper", kind: "calls",
   }));

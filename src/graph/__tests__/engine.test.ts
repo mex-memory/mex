@@ -179,7 +179,7 @@ describe("GraphEngine build + reads", () => {
     } finally { db.close(); }
   });
 
-  it("uses an explicit compiler import binding for an Express route handler", () => {
+  it("uses an explicit import binding for an Express route handler", () => {
     const route = engine.searchNodes("POST /imported").find((node) => node.kind === "route");
     const handlerId = findId("importedHandler");
     expect(route).toBeDefined();

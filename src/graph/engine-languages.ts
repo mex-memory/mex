@@ -10,7 +10,7 @@ import type { Language } from "./types.js";
 export const GRAPH_ENGINE_LANGUAGES_ENV = "MEX_GRAPH_ENGINE_LANGUAGES";
 const ECMASCRIPT_FAMILIES = ["javascript", "typescript"] as const;
 const ENGINE_LANGUAGES = ["csharp", "javascript", "python", "rust", "typescript"];
-export const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v4";
+export const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v5";
 /** Bumped when the engine's rows for a language change. */
 const ENGINE_EXTRACTOR_VERSION = "v1";
 
