@@ -35,7 +35,7 @@ import type { PinnedTree } from "./git.js";
 import { procedureProposal, procedureSamples, type ProcedureSample } from "./procedures.js";
 import { BYTES_PER_TOKEN, TRIAGE_BATCH, TRIAGE_INPUT_LIMIT, TRIAGE_METADATA } from "./harvest/estimate.js";
 import { harvestBatch } from "./harvest/index.js";
-import { networkGroups, networkProofKey, readNetworkGroups } from "./network-proof.js";
+import { networkGroups, networkProofKey, networkRowKey, readNetworkGroups } from "./network-proof.js";
 import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harvest/types.js";
 import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
 import { gitHistory, proveEntry, type ProofContext, type ProofResult } from "./prove.js";
@@ -504,6 +504,13 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
           const groups = networkGroups(item.entry, members).map(group => group.complete ? group
             : stored.find(old => old.url === group.url && old.hash === group.hash) ?? group);
           set.run(project, networkProofKey(item.entry.mex.id), JSON.stringify(groups));
+          // This run read those comments, so a link isn't unknown until the first weekly pass: the rule files take only
+          // what holds.
+          for (const { url, hash, complete } of groups) {
+            if (complete && members.some(candidate => candidate.link === url && candidate.hash === hash)) {
+              set.run(project, networkRowKey(url, hash), JSON.stringify({ state: "same", at: context.job.created_at }));
+            }
+          }
         }
 
         // The review list's rows: no source text, only what the person decides on. Kept after the run's cleanup.

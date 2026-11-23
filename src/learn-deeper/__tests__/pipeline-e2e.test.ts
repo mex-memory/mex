@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, afterEach, expect, it, vi } from "vitest";
+import { runCheck } from "../../knowledge/check.js";
 import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
 import { snapshotNotes } from "../../knowledge/personal-store.js";
 import { buildIndex } from "../../file-index/build.js";
@@ -188,6 +189,19 @@ it.each([
     expect(JSON.parse(row().checkpoint!).v2.phase).toBe("harvest");
     const [early] = reviewRows(writer, project, job.id);
     expect(early).toMatchObject({ support: 1, reviewers: 1, proven: true });
+    // Its pattern is counted without waiting for the rest of the run, or for the next commit.
+    const recounts = () => writer.db.prepare("SELECT id,state,params FROM jobs WHERE kind='file-index'").all()
+      .filter(row => JSON.parse(String(row.params)).full === true);
+    expect(recounts()).toHaveLength(1);
+    while (recounts().some(row => row.state === "queued")) await runOneBatch(writer, owner, { only: new Set([String(recounts().at(-1)!.id)]) });
+    // It holds from the start, in a checkout with Windows line endings too: rule files take only what holds, and a
+    // changed rule can't stop an edit.
+    const verdict = () => runCheck({ home: writer.location.home, projectPath: checkout }).entries.find(item => item.id === early!.entryId)?.verdict;
+    expect(verdict()).toBe("held");
+    const working = readFileSync(join(repo, path), "utf8");
+    writeFileSync(join(repo, path), working.replaceAll("\n", "\r\n"));
+    expect(verdict()).toBe("held");
+    writeFileSync(join(repo, path), working);
     const firstRule = parseEntry(snapshotNotes(writer, project).files.get(early!.entryId)!);
     expect(firstRule.mex.scope).toEqual([path]);
     expect(firstRule.mex.checks).toContainEqual(expect.objectContaining({
@@ -197,6 +211,7 @@ it.each([
     for (let i = 0; i < 8 && row().state === "queued"; i++) await runOneBatch(writer, owner, { only: new Set([job.id]) });
     const done = row();
     expect(done.state, String(done.reason)).toMatch(/^done/u);
+    expect(recounts().filter(row => row.state === "queued")).toHaveLength(1);
     expect(model).toHaveBeenCalledTimes(gap !== "none" ? 5 : 4);
     expect(model.mock.calls.filter(([request]) => request.prompt.includes("Your earlier entries for these clusters failed verification"))).toHaveLength(gap !== "none" ? 1 : 0);
     expect(JSON.parse(done.checkpoint!).v2.counts).toMatchObject({ "harvested.review-thread": 2, "triage-kept": 2, saved: 2 });
