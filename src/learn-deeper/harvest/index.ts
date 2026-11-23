@@ -291,15 +291,14 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
   const scan = next[plan.mode] = scanFor(plan, next);
   const hasReviewHistory = plan.inventory.bands.some(band => band.count > 0 && (band.source === "merged" || band.source === "closed"))
     || (scan.totals.merged ?? 0) > 0 || (scan.totals.closed ?? 0) > 0;
-  const documentLimit = hasReviewHistory ? Math.floor(plan.budget / 4) : undefined;
+  // A share of the evidence. What one agent rereads from its cache on every call would leave Codex a handful of items.
+  const fitsShare = (evidence: HarvestEvidenceSize) => projectHarvestSpend(evidence, "claude") <= plan.budget / 4;
   // An older checkpoint has no source breakdown, so reserve its prior spend.
   let documentEvidence = run.documentEvidence ??= run.evidence;
-  const canFitDocument = (evidence: HarvestEvidenceSize) =>
-    documentLimit === undefined || projectHarvestSpend(evidence, plan.agent) <= documentLimit;
+  const canFitDocument = (evidence: HarvestEvidenceSize) => !hasReviewHistory || fitsShare(evidence);
   const canReadDocs = canFitDocument(addHarvestEvidence(documentEvidence, { text: "" }));
   // A description was written by the change's own author and reviewed by nobody, so it can't crowd out the reviews.
   let descriptionEvidence = run.descriptionEvidence ??= run.evidence;
-  const canFitDescription = (evidence: HarvestEvidenceSize) => projectHarvestSpend(evidence, plan.agent) <= plan.budget / 4;
   const descriptions = { decisions: 0, plain: 0 };
   const gaps = new Gaps();
   if (already === 0) for (const gap of plan.gaps) gaps.messages.add(gap);
@@ -324,7 +323,7 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
     return result();
   }
   if (!scan.partial.some(item => item.source !== "issue" || plan.issues)) await fill(plan, next, scan, client, gaps,
-    canFitDescription(addHarvestEvidence(descriptionEvidence, { text: "" })));
+    fitsShare(addHarvestEvidence(descriptionEvidence, { text: "" })));
   const work = take(scan, plan);
   if (!work.length) return result();
   const forge = work.filter((item): item is typeof item & ForgeItem => forgeSource(item.source));
@@ -391,7 +390,7 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
       continue;
     }
     const projectedDescriptions = candidate.kind === "pr-text" ? addHarvestEvidence(descriptionEvidence, candidate) : undefined;
-    if (projectedDescriptions && !canFitDescription(projectedDescriptions)) {
+    if (projectedDescriptions && !fitsShare(projectedDescriptions)) {
       gaps.messages.add(DESCRIPTION_BUDGET_GAP);
       skipped.add(candidate);
       continue;
@@ -400,7 +399,7 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
     const estimate = projectHarvestSpend(evidence, plan.agent);
     if (estimate > plan.budget) {
       gaps.messages.add("Learning reached its estimated token budget.");
-      if (projectedDocuments && documentLimit !== undefined) {
+      if (projectedDocuments && hasReviewHistory) {
         skipped.add(candidate);
         continue;
       }

@@ -439,6 +439,19 @@ describe("harvest", () => {
     expect(candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(36);
   }, GIT_FIXTURE_TIMEOUT);
 
+  it("gives docs and descriptions the same share on either agent", async () => {
+    const body = CHOSEN + " " + "The other name stays in the notes for readers. ".repeat(30);
+    const read = async (agent: "claude" | "codex") => {
+      const { candidates } = await drain(options({ agent }), forge({ textOnly: true, mergedCount: 12, merged: { body, author: { __typename: "User", login: "cedar-owner" } } }));
+      const count = (...kinds: string[]) => candidates.filter(candidate => kinds.includes(candidate.kind)).length;
+      return [count("doc", "adr"), count("pr-text")];
+    };
+    const claude = await read("claude");
+    expect(claude[0]).toBeGreaterThan(5);
+    expect(claude[1]).toBe(12);
+    expect(await read("codex")).toEqual(claude);
+  }, GIT_FIXTURE_TIMEOUT);
+
   it("reserves budget for closed PRs even without merged PRs", async () => {
     const { candidates, gaps } = await drain(options({ budget: 80_000 }), forge({ mergedCount: 0 }));
     expect(candidates.some(candidate => candidate.kind === "doc" || candidate.kind === "adr")).toBe(false);
