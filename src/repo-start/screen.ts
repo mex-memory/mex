@@ -168,17 +168,21 @@ export function renderDone(ms: number, mode: ScreenMode): string[] {
  */
 export const NOTE_EXAMPLE = 'mex note "<something your agents keep getting wrong here, and why>"';
 
-export function renderNext(options: { short: boolean; learning?: string }, mode: ScreenMode): string[] {
+export function renderNext(options: { short: boolean; learning?: string; agents?: readonly string[]; hooksOff?: boolean }, mode: ScreenMode): string[] {
+  // Without the native hook nothing reaches an agent, so nothing here may promise it.
+  if (options.hooksOff) return renderNotes(["Nothing reaches your agents yet: MEX's native hook is missing. Reinstall MEX, then run mex install."], mode);
   if (options.short) return renderNotes(['Saved notes reach new sessions; mex note "<fact>" adds one.'], mode);
   // Learning from typed statements is opt-in; anything but "on" is off.
   const learning = options.learning === "on"
     ? "Learning from what you type runs in the background with your agent's smallest model, at most 3% of your usage. Off: mex config set learning.statements off"
     : 'Save a note with mex note, or type "mex note: …" in a session. Learning from everything you type is off until you turn it on: mex config set learning.statements on';
+  const agents = options.agents?.length ? options.agents : ["Claude Code", "Codex"];
+  const names = (last: string) => agents.length <= 1 ? agents.join("") : `${agents.slice(0, -1).join(", ")} ${last} ${agents.at(-1)}`;
   return renderNotes([
-    "", "From now on, in Claude Code and Codex",
+    "", `From now on, in ${names("and")}`,
     "· Notes you save reach every new session. A note the code has made false is held back.", `· ${learning}`,
     "", "Try it", `  ${NOTE_EXAMPLE}`,
-    "  Then start a new Claude Code or Codex session and ask about it.",
+    `  Then start a new ${names("or")} session and ask about it.`,
     "", "Undo: mex off (this repo) · mex uninstall (everything)",
   ].map(line => mode.ascii ? line.replace(/·/gu, "-").replace(/…/gu, "...") : line), mode);
 }

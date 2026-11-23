@@ -46,7 +46,8 @@ function readManifest(path: string): NativeManifest {
 function assertNativePath(path: string): void {
   const parts = path.split("/");
   if (!parts.length || !parts.every(part => /^[A-Za-z0-9._-]+$/u.test(part) && part !== "." && part !== "..")
-    || !(posix.basename(path) === "AGENTS.md" || /^\.claude\/rules\/mex[\w-]*\.md$/u.test(path))) {
+    // The three forms native-plan writes: AGENTS.md, Claude Code's rules and Copilot's path-scoped instructions.
+    || !(posix.basename(path) === "AGENTS.md" || /^\.claude\/rules\/mex[\w-]*\.md$/u.test(path) || /^\.github\/instructions\/mex[\w-]*\.instructions\.md$/u.test(path))) {
     throw new KnowledgeError("UNSAFE_NATIVE", "A generated file has an unsafe path.");
   }
 }

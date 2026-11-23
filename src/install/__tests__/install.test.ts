@@ -182,16 +182,24 @@ describe("machine-wide hook installation", () => {
     expect(readFileSync(f.claude, "utf8")).toBe(concurrent);
   });
 
-  it("uses the Node fallback when a binary is missing or fails self-test", async () => {
+  it("uses the Node fallback when a binary is missing or fails self-test, and leaves it once a binary works", async () => {
     for (const missing of [true, false]) {
       const f = fixture();
-      await installAgents({ ...f.options, nativeBinary: missing ? null : f.binary, selfTest: () => ({ ok: false }) });
+      const broken = { ...f.options, nativeBinary: missing ? null : f.binary, selfTest: () => ({ ok: false }) };
+      const fallback = await installAgents(broken);
+      expect(fallback.notices.join("\n")).toContain("your agents get no MEX knowledge yet");
       const handler = JSON.parse(readFileSync(f.claude, "utf8")).hooks.SessionStart[0].hooks[0];
       expect(handler.command).toBe("node");
       expect(handler.args).toEqual([join(f.home, "bin", "mex-hook.cjs"), "claude-code", "SessionStart"]);
       const first = readFileSync(f.claude);
-      await installAgents(f.options);
+      await installAgents(broken);
       expect(readFileSync(f.claude)).toEqual(first);
+      // The fallback delivers nothing, so a working binary replaces it.
+      const upgraded = await installAgents(f.options);
+      expect(upgraded.notices.join("\n")).toContain("switched to it from the fail-open Node fallback");
+      const events = JSON.parse(readFileSync(f.claude, "utf8")).hooks.SessionStart;
+      expect(events).toHaveLength(1);
+      expect(events[0].hooks[0].command).toBe(join(f.home, "bin", process.platform === "win32" ? "mex-hook.exe" : "mex-hook"));
       expect((await uninstallAgents({ home: f.home })).conflicts).toEqual([]);
     }
   });
