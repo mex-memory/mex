@@ -13,8 +13,9 @@
  * database a reader has open fails on Windows, renaming over a pointer doesn't
  * need to wait long. Old snapshots are removed once nothing points at them.
  */
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -170,12 +171,65 @@ CREATE INDEX paths_record ON paths(hash, lang);`;
 
 function stamp(): string { return `${Date.now().toString(36)}${process.pid.toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`; }
 
+/** Another process opened the new database before its schema was in place. */
+function sharingConflict(error: unknown): boolean {
+  const coded = error as NodeJS.ErrnoException & { errcode?: number };
+  if (coded.code === "EBUSY" || coded.code === "EPERM" || coded.code === "EACCES") return true;
+  // SQLITE_BUSY, SQLITE_LOCKED, SQLITE_IOERR, SQLITE_CANTOPEN.
+  if (coded.errcode === 5 || coded.errcode === 6 || coded.errcode === 10 || coded.errcode === 14) return true;
+  const message = error instanceof Error ? error.message : "";
+  return /database is locked|unable to open database file|disk I\/O error|SQLITE_BUSY|SQLITE_LOCKED|SQLITE_CANTOPEN|SQLITE_IOERR/i.test(message);
+}
+
+function waitForSharing(attempt: number): void {
+  const until = Date.now() + 25 * (attempt + 1);
+  while (Date.now() < until) { /* the other opener closes within a moment */ }
+}
+
 function createFile(file: string, schema: string): DatabaseSync {
   const { DatabaseSync } = sqliteModule();
-  const db = new DatabaseSync(file);
-  db.exec("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA page_size=4096;");
-  db.exec(schema);
-  return db;
+  let last: unknown;
+  for (let attempt = 0; ; attempt++) {
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(file);
+      db.exec("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA page_size=4096;");
+      db.exec(schema);
+      return db;
+    } catch (error) {
+      last = error;
+      // A throw here used to leave the connection for the garbage collector.
+      // On Windows that lock outlives the job, so the staged tree cannot be removed.
+      try { db?.close(); } catch { /* the failed open is already unusable */ }
+      if (attempt >= 12 || !sharingConflict(error)) break;
+      try { unlinkSync(file); } catch { /* the other opener still has the file */ }
+      waitForSharing(attempt);
+    }
+  }
+  throw last;
+}
+
+/**
+ * A snapshot directory can be long enough that SQLite cannot create the
+ * rollback journal beside the file: the journal path is the file path plus
+ * "-journal", and that crosses the Windows path limit. The database is built
+ * on a short path and the finished bytes are copied into place.
+ */
+function snapshotScratch(): string {
+  return join(tmpdir(), `mex-idx-${stamp()}.db`);
+}
+
+/** Copy a finished snapshot into its directory. A scanner can hold the new name for a moment. */
+function publishDatabase(scratch: string, file: string): void {
+  const temporary = `${file}.tmp`;
+  try { copyFileSync(scratch, temporary); }
+  finally { try { unlinkSync(scratch); } catch { /* the copy is the one that gets published */ } }
+  for (let attempt = 0; ; attempt++) {
+    try { renameSync(temporary, file); return; } catch (error) {
+      if (attempt >= 12 || !sharingConflict(error)) throw error;
+      waitForSharing(attempt);
+    }
+  }
 }
 
 /** Stored per record: everything but the key. */
@@ -216,8 +270,9 @@ function setMeta(db: DatabaseSync, values: Record<string, string>): void {
 export function writeBase(directory: string, records: Iterable<FileRecord>, patterns: readonly IndexPattern[], copyFrom?: string): string {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const name = `base-${stamp()}.db`;
-  const temporary = join(directory, `${name}.tmp`);
-  const db = createFile(temporary, RECORD_TABLES);
+  const scratch = snapshotScratch();
+  const db = createFile(scratch, RECORD_TABLES);
+  let written = false;
   try {
     if (copyFrom) db.prepare("ATTACH DATABASE ? AS old").run(immutableUri(join(directory, copyFrom)));
     db.exec("BEGIN");
@@ -229,8 +284,12 @@ export function writeBase(directory: string, records: Iterable<FileRecord>, patt
     setMeta(db, { store_version: String(STORE_VERSION), extractor_version: String(EXTRACTOR_VERSION), patterns: patternsVersion(patterns), created_at: new Date().toISOString() });
     db.exec("COMMIT");
     if (copyFrom) db.exec("DETACH DATABASE old");
-  } finally { db.close(); }
-  renameSync(temporary, join(directory, name));
+    written = true;
+  } finally {
+    db.close();
+    if (!written) { try { unlinkSync(scratch); } catch { /* already gone */ } }
+  }
+  publishDatabase(scratch, join(directory, name));
   writeAtomic(join(directory, "base.json"), `${JSON.stringify({ version: STORE_VERSION, base: name })}\n`);
   return name;
 }
@@ -306,9 +365,10 @@ export interface CheckoutSnapshot {
 export function writeCheckout(directory: string, key: string, snapshot: CheckoutSnapshot): Pointer {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const name = `c-${key}-${stamp()}.db`;
-  const temporary = join(directory, `${name}.tmp`);
-  const db = createFile(temporary, RECORD_TABLES + CHECKOUT_TABLES);
+  const scratch = snapshotScratch();
+  const db = createFile(scratch, RECORD_TABLES + CHECKOUT_TABLES);
   const asOf = new Date().toISOString();
+  let written = false;
   try {
     db.exec("BEGIN");
     const insert = db.prepare("INSERT INTO paths VALUES(?,?,?,?,?,?,?,?)");
@@ -322,8 +382,12 @@ export function writeCheckout(directory: string, key: string, snapshot: Checkout
       base: snapshot.base, patterns: patternsVersion(snapshot.patterns), pattern_ids: JSON.stringify(snapshot.patterns.map((item) => item.id)), as_of: asOf,
     });
     db.exec("COMMIT");
-  } finally { db.close(); }
-  renameSync(temporary, join(directory, name));
+    written = true;
+  } finally {
+    db.close();
+    if (!written) { try { unlinkSync(scratch); } catch { /* already gone */ } }
+  }
+  publishDatabase(scratch, join(directory, name));
   const pointer: Pointer = { version: STORE_VERSION, root: snapshot.root, snapshot: name, base: snapshot.base, as_of: asOf, ...(snapshot.head ? { head: snapshot.head } : {}) };
   writePointer(directory, key, pointer);
   return pointer;

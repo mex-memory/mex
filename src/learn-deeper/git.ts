@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { looksBinary } from "../file-index/classify.js";
 import { backgroundEnvironment } from "../filter/environment.js";
@@ -73,6 +73,45 @@ function scratchPath(home: string, jobId: string, create: boolean): string | und
   return containedDirectory(home, ["learn-checks", jobId], create);
 }
 
+const REMOVAL_BUSY = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+
+function removalCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
+}
+
+/** Staged copies are the review text. Empty them even when the directory itself cannot be removed yet. */
+async function scrubStagedText(dir: string): Promise<void> {
+  let entries;
+  try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) { await scrubStagedText(path); continue; }
+    if (!entry.isFile()) continue;
+    try { await writeFile(path, Buffer.alloc(0)); } catch { /* still open */ }
+    try { await unlink(path); } catch { /* still open */ }
+  }
+}
+
+async function dropDirectory(dir: string): Promise<boolean> {
+  // Our own handles are already closed. This wait is only the moment a scanner still has the new file.
+  const deadline = Date.now() + 400;
+  for (;;) {
+    try { await rm(dir, { recursive: true, force: true }); return true; } catch (error) {
+      const code = removalCode(error);
+      if (code === "ENOENT") return true;
+      if (!code || !REMOVAL_BUSY.has(code) || Date.now() >= deadline) return false;
+      await new Promise(resolve => setTimeout(resolve, 40));
+    }
+  }
+}
+
+/** A file Windows still has open must not fail the job, and must not keep the staged review text. */
+async function removeScratch(dir: string): Promise<void> {
+  if (await dropDirectory(dir)) return;
+  await scrubStagedText(dir);
+  await dropDirectory(dir);
+}
+
 /** A resumed owner reclaims only the abandoned staging directories for its own job. */
 export async function clearLearningChecks(home: string, jobId: string): Promise<void> {
   const root = scratchPath(home, jobId, false);
@@ -81,8 +120,11 @@ export async function clearLearningChecks(home: string, jobId: string): Promise<
   if (entries.length > 16 || entries.some(item => !item.isDirectory() || !/^batch-[A-Za-z0-9]{6}$/u.test(item.name))) {
     throw new Error("Learning's temporary check directory contains unexpected files.");
   }
-  for (const item of entries) await rm(join(root, item.name), { recursive: true, force: true });
-  await rmdir(root);
+  for (const item of entries) await removeScratch(join(root, item.name));
+  try { await rmdir(root); } catch (error) {
+    const code = removalCode(error);
+    if (code !== "ENOENT" && !REMOVAL_BUSY.has(code ?? "")) throw error;
+  }
 }
 
 /** Limited to regular files in the consented commit, without consulting the working tree. */
@@ -254,8 +296,8 @@ export class PinnedTree {
     try {
       return await run(dir);
     } finally {
-      await rm(dir, { recursive: true, force: true });
-      await rmdir(parent);
+      await removeScratch(dir);
+      try { await rmdir(parent); } catch { /* a sibling batch, or a file Windows still has open */ }
     }
   }
 }
