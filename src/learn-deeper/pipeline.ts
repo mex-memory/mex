@@ -213,7 +213,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     }
     const project = context.job.project_id!;
     // The gate records pattern checks from the staged index: count the fix and baseline literals first.
-    const fixLiterals = proofs.flatMap(proof => proof.fixLiteral ? [proof.fixLiteral] : []);
+    const fixLiterals = proofs.flatMap(proof => [...(proof.fixLiteral ? [proof.fixLiteral] : []), ...(proof.lint ? [proof.lint.rule] : [])]);
     if (fixLiterals.length && checked.checkIndex) {
       registerLiterals(checked.checkIndex.recordDirectory, checked.checkIndex.projectId, fixLiterals);
       await buildIndex({ root: checked.checkTree!, projectId: checked.checkIndex.projectId, recordDirectory: checked.checkIndex.recordDirectory, workers: 0 });

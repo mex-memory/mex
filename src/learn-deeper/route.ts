@@ -104,7 +104,8 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const members = cluster.members.map(member => member.candidate);
   const checks: ProposedCheck[] = [];
   const glob = checkGlob(proof.scope);
-  const proven = proof.when.length > 0;
+  // Proven means a pattern passed the before/after proof; a ruled-out alternative's pattern only has "unused today".
+  const proven = proof.when.some(item => item.pairs.length > 0);
 
   if (proven && glob) {
     // One fixture per pattern, holding only the pairs that pattern was proven on: the evaluator requires every
@@ -144,13 +145,20 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   if (quoted) checks.push(quoted);
   if (proof.symbol) checks.push({ kind: "symbol", role: "supporting", target: { file: proof.symbol.file, symbol: proof.symbol.name } } as ProposedCheck);
   if (draft.until) checks.push({ kind: "until", role: "complete", target: draft.until } as ProposedCheck);
+  // Trial: "enable rule X". Its check says the config doesn't name the rule yet; once the team enables it the linter
+  // enforces the lesson, the check fails and the suggestion is withheld.
+  if (proof.lint && !proven) {
+    checks.push({ kind: "pattern", role: "complete", target: { scope: proof.lint.config, pattern: proof.lint.rule, match: "literal", expect: "exact" }, saw: { count: 0 } } as ProposedCheck);
+  }
   if (!checks.length) return { dropped: "no check could hold it" };
 
   const first = primary(cluster);
   const ref = cluster.source === "docs" ? first.path ?? first.link : pullLink(reviews[0] ?? first) ?? first.link;
   const sourceType = cluster.source === "docs" ? "docs" : "review";
   const kept = keptQuote(proof);
-  const text = [proof.claim, ...proof.reasons].join(" ").slice(0, 1000);
+  const lint = proof.lint && !proven ? [`This repo's linter can enforce it: enable \`${proof.lint.rule}\` in \`${proof.lint.config}\`.`] : [];
+  const alternatives = proof.alternatives.map(item => `Considered and ruled out: ${item.option} (${item.reason}).`);
+  const text = [proof.claim, ...proof.reasons, ...lint, ...alternatives].join(" ").slice(0, 1000);
   const fixKinds = new Set(["rule", "pitfall", "decision"]);
   const status = cluster.decision === "write" && !proof.notAlwaysFollowed ? "active"
     : proven && !proof.notAlwaysFollowed ? "active" : "proposed";
