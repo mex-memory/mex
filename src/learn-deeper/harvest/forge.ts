@@ -421,6 +421,11 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     const followed = read.discussion(comments);
     const text = cleanText(followed.raw, gaps, read.reviewers);
     if (!text) continue;
+    // The change's own author replying is context, not a second reviewer, and their note on their own lines is no
+    // objection: it is evidence like their description, when it says what was chosen.
+    const others = read.discussion(comments.filter(comment => comment.login !== author?.login));
+    const reviewed = others.reviewers.length > 0;
+    if (!reviewed && !decides(text)) continue;
     const hunk = string(root.diffHunk);
     if (hunk && safeRaw(hunk) !== hunk) { gaps.withheld(true); continue; }
     const orig = gitId(object(root.originalCommit)?.oid);
@@ -434,13 +439,14 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
         head: plan.head, changedPaths, headRepo: string(object(row.headRepository)?.nameWithOwner) }, reader, gaps) : { actedOn: false };
     if (location.withheld) continue;
     const afterPath = location.code?.after?.path;
-    const familiar = !!familiarity && comments.some(comment => familiarity.knows(comment.login, path, pull, point.at)
-      || afterPath !== undefined && afterPath !== path && familiarity.knows(comment.login, afterPath, pull, point.at));
+    const familiar = !!familiarity && comments.some(comment => comment.login !== author?.login
+      && (familiarity.knows(comment.login, path, pull, point.at)
+        || afterPath !== undefined && afterPath !== path && familiarity.knows(comment.login, afterPath, pull, point.at)));
     const number = comments[0]?.databaseId;
     candidates.push(newCandidate({ ...base, ...followedFields(followed), id: `gh:thread:${id}`, kind: "review-thread",
-      link: number ? `${link}#discussion_r${number}` : link, path, text, prText, hash: evidenceDigest(followed.bodies), code: location.code },
-    { actedOn: location.actedOn, familiar, smallPr, hotUnknown: plan.inventory.hotPaths.includes(afterPath ?? path)
-      && !deps.knownPaths?.has(afterPath ?? path) }));
+      link: number ? `${link}#discussion_r${number}` : link, path, text, prText, hash: evidenceDigest(followed.bodies), code: location.code, reviewers: others.reviewers },
+    { actedOn: reviewed && location.actedOn, familiar, smallPr, hotUnknown: plan.inventory.hotPaths.includes(afterPath ?? path)
+      && !deps.knownPaths?.has(afterPath ?? path) }, others.raw));
   }
   return candidates;
 }

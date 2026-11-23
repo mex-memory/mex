@@ -198,7 +198,7 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
       const review = forkFixture.reviews.find((item: { contents: { path: string } }) => item.contents.path === file);
       return review ? Response.json(review.contents) : new Response(null, { status: 404 });
     }
-    if (path.endsWith("/collaborators/fern-owner/permission")) {
+    if (/\/collaborators\/(?:fern|cedar)-owner\/permission$/u.test(path)) {
       captures.push("permission");
       return Response.json({ permission: "write" });
     }
@@ -554,16 +554,17 @@ describe("PR descriptions", () => {
   ])("tells a choice from a list of changes: %s", (text, expected) => { expect(decides(text)).toBe(expected); });
 
   const owner = { __typename: "User", login: "fern-owner", name: "Fern Example" };
+  const author = { __typename: "User", login: "cedar-owner", name: "Cedar Example" };
   it.each([
-    ["a writer's choice", { body: CHOSEN, author: owner }, "weak"],
-    ["a writer's Decisions section", { body: "## Decisions\n- Keep one adapter.", author: owner }, "strong"],
-    ["a writer's link to a guideline", { body: CHOSEN + " See [the guide](docs/CONTRIBUTING.md).", author: owner }, "weak"],
-    ["the template's own words", { body: "## What\nWe decided every change says what it does.\nUnify the adapter names.", author: owner }, undefined],
-    ["a writer's list of changes", { body: "Unify the adapter names.", author: owner }, undefined],
+    ["a writer's choice", { body: CHOSEN, author }, "weak"],
+    ["a writer's Decisions section", { body: "## Decisions\n- Keep one adapter.", author }, "strong"],
+    ["a writer's link to a guideline", { body: CHOSEN + " See [the guide](docs/CONTRIBUTING.md).", author }, "weak"],
+    ["the template's own words", { body: "## What\nWe decided every change says what it does.\nUnify the adapter names.", author }, undefined],
+    ["a writer's list of changes", { body: "Unify the adapter names.", author }, undefined],
     ["an outsider's choice", { body: CHOSEN, authorAssociation: "CONTRIBUTOR" }, undefined],
-    ["a bot's choice", { body: CHOSEN, author: { ...owner, __typename: "Bot" } }, undefined],
-    ["a program's choice in a writer's description", { body: "Unify the names.\n<!-- review_summary -->\n" + CHOSEN, author: owner }, undefined],
-    ["a description with a private part", { body: CHOSEN + "\n<!-- <private>the client</private> -->", author: owner }, undefined],
+    ["a bot's choice", { body: CHOSEN, author: { ...author, __typename: "Bot" } }, undefined],
+    ["a program's choice in a writer's description", { body: "Unify the names.\n<!-- review_summary -->\n" + CHOSEN, author }, undefined],
+    ["a description with a private part", { body: CHOSEN + "\n<!-- <private>the client</private> -->", author }, undefined],
   ] as const)("is evidence on its own only when a writer decides something: %s", async (_what, merged, signal) => {
     const deps = forge({ textOnly: true, merged });
     const { candidates } = await drain(options(reviewWindow), deps);
@@ -573,7 +574,7 @@ describe("PR descriptions", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("counts the descriptions read, whether or not they are evidence", async () => {
-    const told = async (body: string) => (await drain(options(reviewWindow), forge({ textOnly: true, merged: { body, author: owner } }))).batches
+    const told = async (body: string) => (await drain(options(reviewWindow), forge({ textOnly: true, merged: { body, author } }))).batches
       .reduce((sum, { descriptions }) => [sum[0]! + descriptions.decisions, sum[1]! + descriptions.plain], [0, 0]);
     expect(await told("Unify the adapter names.")).toEqual([0, 1]);
     expect(await told("## Decisions\n- Keep one adapter.")).toEqual([1, 0]);
@@ -593,7 +594,7 @@ describe("PR descriptions", () => {
     expect((await read("merged", { ...quiet, authorAssociation: "CONTRIBUTOR" })).detail).toBe(0);
     expect((await read("merged", { ...quiet, author: { __typename: "Bot", login: "fern-bot" } })).detail).toBe(0);
     // A writer may have described a decision, a reply may be missing from the counts, and anyone's change may be reviewed.
-    expect((await read("merged", { ...quiet, authorAssociation: "MEMBER", author: owner, body: CHOSEN }))).toEqual({ detail: 1, found: 1 });
+    expect((await read("merged", { ...quiet, authorAssociation: "MEMBER", author, body: CHOSEN }))).toEqual({ detail: 1, found: 1 });
     expect((await read("merged", { authorAssociation: "CONTRIBUTOR", reviewThreads: { ...row.merged.reviewThreads, totalCount: undefined } })).detail).toBe(1);
     expect((await read("merged", { authorAssociation: "CONTRIBUTOR" })).found).toBe(4);
     const nothing = { nodes: [], totalCount: 0 };
@@ -646,6 +647,38 @@ describe("PR descriptions", () => {
     expect(!!await closedCase("We decided to use two transports instead.", comment)).toBe(read);
   }, GIT_FIXTURE_TIMEOUT);
 
+  const threadCase = async (author: string, said: Array<[login: string, body: string]>) => {
+    const row = JSON.parse(raw.replaceAll("OID_ORIGINAL", original).replaceAll("OID_MERGE", merge)).merged;
+    const first = row.reviewThreads.nodes[0], root = first.comments.nodes[0];
+    const person = (login: string) => ({ __typename: "User", login, name: login });
+    first.comments.nodes = said.map(([login, body], i) => ({ ...root, id: `PRRC_said${i}`, body, author: person(login),
+      pullRequestReview: { authorCanPushToRepository: true, author: { login } } }));
+    const { candidates } = await drain(options(reviewWindow), forge({ merged: { author: person(author),
+      reviewThreads: { ...row.reviewThreads, nodes: [first], totalCount: 1 } } }));
+    return candidates.find(candidate => candidate.kind === "review-thread");
+  };
+  const ASK = "Prefer the stable adapter over the fallback.";
+  it("counts people who reviewed the change, not its author's replies", async () => {
+    const alone = await threadCase("iris-dev", [["fern-owner", ASK]]);
+    expect(alone?.reviewers).toHaveLength(1);
+    const replied = await threadCase("iris-dev", [["fern-owner", ASK], ["iris-dev", "Done, thanks."]]);
+    expect(replied?.reviewers).toEqual(alone?.reviewers);
+    expect(replied?.text).toBe(ASK + "\n\nDone, thanks.");
+    expect((await threadCase("iris-dev", [["fern-owner", ASK], ["cedar-owner", "Agreed."]]))?.reviewers).toHaveLength(2);
+    // The author asked and a reviewer answered.
+    expect((await threadCase("iris-dev", [["iris-dev", "Adapter or fallback?"], ["fern-owner", ASK]]))?.reviewers).toEqual(alone?.reviewers);
+    // Only a reviewer's wording can be a rule for everyone.
+    expect((await threadCase("iris-dev", [["fern-owner", "Why this one?"], ["iris-dev", "We never use the fallback."]]))?.weights.generalising).toBe(false);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("treats an author's note on their own lines like their description", async () => {
+    expect(await threadCase("fern-owner", [["fern-owner", "Moved this up a bit."]])).toBeUndefined();
+    const decided = await threadCase("fern-owner", [["fern-owner", "We chose the stable adapter over the fallback. See [why](docs/CONTRIBUTING.md)."]]);
+    expect(decided).toMatchObject({ signal: "weak", reviewers: [], weights: { actedOn: false, familiar: false, guidelineLink: false, generalising: false } });
+    // The same words from a reviewer are an objection the author acted on.
+    expect(await threadCase("iris-dev", [["fern-owner", "Moved this up a bit."]])).toMatchObject({ weights: { actedOn: true } });
+  }, GIT_FIXTURE_TIMEOUT);
+
   it("keeps only the start of what a closed change proposed", async () => {
     const candidate = (await closedCase("Adds a second transport. ".repeat(50), "A second one is not needed."))!;
     expect(candidate.text.startsWith("A second one is not needed.\n\nAdds a second transport.")).toBe(true);
@@ -656,7 +689,7 @@ describe("PR descriptions", () => {
   it("can take a quarter of the budget, and the reviews are still read", async () => {
     const budget = 128_000;
     const body = CHOSEN + " " + "The other name stays in the notes for readers. ".repeat(30);
-    const { candidates, gaps } = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true, mergedCount: 24, merged: { body, author: owner } }));
+    const { candidates, gaps } = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true, mergedCount: 24, merged: { body, author } }));
     const texts = candidates.filter(candidate => candidate.kind === "pr-text");
     expect(texts.length).toBeGreaterThan(5);
     expect(texts.length).toBeLessThan(24);

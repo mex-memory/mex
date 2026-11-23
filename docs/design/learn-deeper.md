@@ -25,7 +25,8 @@ repeats the mistake, with the team's fix, and is withheld when the code no longe
 Agent rule files (`AGENTS.md`, `CLAUDE.md` and the other formats MEX imports) are never read as docs: setup's
 first step already imports them. Docs are at most a quarter of a run's rules unless the repository has no review
 history. Bot comments, minimised comments, authors without write access and anything that looks like a secret are
-dropped. Reviewers are counted by a hashed key, never by name.
+dropped. Reviewers are counted by a hashed key, never by name. A change's own author is not one of its reviewers: their
+replies are context, and a note on their own lines counts only when it says what was chosen.
 
 Of a description only what its author wrote is read: not hidden comments, ticked boxes, the repository's own template
 or a block a program put there. A checklist's link to CONTRIBUTING is nobody's argument, and a template repeated in a
