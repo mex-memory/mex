@@ -45,6 +45,7 @@ import {
 } from "./corpus-policy.js";
 import { graphManifest, graphManifestDiffersOnlyByConfig, graphManifestForSchema } from "./manifest.js";
 import { graphEngineFallbackMessage } from "./engine-languages.js";
+import { graphEngineMemoryDiagnostic, readGraphMemoryFailure } from "./engine-memory.js";
 import { isSupportedSourceFile } from "./extraction/grammars.js";
 import { bandHashInts, decodeMinhash, indexedInLsh } from "./fingerprint.js";
 import type { Fingerprint } from "./reconcile.js";
@@ -469,7 +470,18 @@ class CorruptGraphIndexError extends Error {
 export async function inspectGraphStatus(
   options: InspectGraphStatusOptions,
 ): Promise<GraphStatus> {
-  return (await inspectGraphStatusWithFreshObservation(options)).graphStatus;
+  return withGraphStorageContext(async () => {
+    const { graphStatus } = await inspectGraphStatusInContext(options);
+    // A failed maintenance attempt is checkout health information. Candidate
+    // validation and freshness proofs use the database observation.
+    if (options.dbPath) return graphStatus;
+    const memoryMb = readGraphMemoryFailure(options.projectRoot);
+    return memoryMb === undefined ? graphStatus : {
+      ...graphStatus,
+      engineMemoryLimitMb: memoryMb,
+      diagnostics: [graphEngineMemoryDiagnostic(memoryMb), ...graphStatus.diagnostics],
+    };
+  });
 }
 
 /**

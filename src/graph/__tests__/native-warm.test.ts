@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openGraphDatabase } from "../db/database.js";
 import { rebuildGraph, refreshGraph } from "../maintenance.js";
 import { graphEngineBinary } from "../native-engine.js";
+import { NativeGraphServer } from "../native-serve.js";
 import { writeGraphState } from "../jobs.js";
 import { NativeWarmCheckout } from "../native-warm.js";
 import { currentGraphPath, graphLocation, readGraphPointer } from "../storage.js";
@@ -26,6 +27,7 @@ afterEach(() => {
   if (scratch) rmSync(scratch, { recursive: true, force: true });
   scratch = undefined;
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 async function fixture(): Promise<string> {
@@ -115,12 +117,17 @@ describe.skipIf(!engine)("native warm checkout", () => {
 
   it("warms a v5 checkout after a v4 verification failure and records a matching v5 check", async () => {
     const root = await fixture();
+    vi.stubEnv("MEX_GRAPH_MACHINE", "cores=4,totalMb=8192");
+    const open = vi.spyOn(NativeGraphServer, "open");
     const location = graphLocation(root);
     writeGraphState(location.directory, { version: 1, warm: "off", checkedAt: new Date().toISOString() });
     registry = new WarmRegistry({ queueRefresh: vi.fn() });
     appendFileSync(join(root, "leaf.ts"), "// native edit\n");
     registry.note(location.projectId, root, ["leaf.ts"]);
     await registry.run();
+    expect(open).toHaveBeenCalledWith(engine, location.directory, expect.objectContaining({
+      limits: expect.objectContaining({ memoryMb: 512 }),
+    }));
     expect(registry.warmCheckouts).toBe(1);
     expect(readGraphPointer(location)?.overlay).toBeTruthy();
     expect(await verifyGraph(root)).toEqual({ status: "match", files: 2 });

@@ -118,6 +118,27 @@ are stale and explicit maintenance rebuilds their facts before they can
 serve reads. TypeScript and JavaScript keep their ordinal node ids on
 the engine.
 
+### Memory limits
+
+One-shot jobs get one eighth of installed RAM, rounded to MiB, with a
+256 MiB floor and a 4096 MiB native ceiling. The WASI ceiling is 3072 MiB,
+below wasm32's 4 GiB address space. Its guard measures the whole WASI host
+process. Installed RAM keeps the cap stable as the operating system fills
+and reclaims file caches. These fractions leave room for the parent and
+other processes, while the floor gives small hosts a usable budget.
+
+The warm registry gets one sixteenth of installed RAM, with a 128 MiB
+floor and a 2048 MiB ceiling. Each resident engine gets the same cap as
+the registry. The registry also accounts for the engines' combined RSS
+and the extra Node memory held for warm checkouts.
+
+When a parallel job reaches the cap, Node discards its output and retries
+once at the same cap with one extraction thread. WASI and other
+single-threaded jobs are already at the minimum. If the retry fails or
+the job was already serial, maintenance stops and keeps the current
+publication. `mex graph status` and Health show
+`GRAPH_ENGINE_MEMORY_LIMIT` with the cap reached.
+
 ### Published schema v5 candidates
 
 When all indexed languages are engine-owned and schema v5 is selected,
@@ -276,7 +297,7 @@ Express, NestJS, Next.js, Flask and FastAPI preserve their existing route roles 
 |---|---|---|
 | 0 | `result` written, job complete | validate output and continue publication |
 | 2 | Usage or request error (`graph_request_invalid`, `graph_contract_mismatch`) or a base without current refresh metadata (`graph_refresh_base_incompatible`) | keep the current publication on failure, or build a new base for an incompatible refresh base |
-| 3 | `graph_memory_limit`: over the memory cap | delete the candidate; Health says so, with the cap |
+| 3 | `graph_memory_limit` | Discard the output and retry a parallel job once with one thread. Report the cap if maintenance fails. |
 | 4 | `graph_deadline`: past the deadline | delete the candidate; report |
 | 5 | `graph_parent_gone`: the parent exited | nothing; the engine cleaned up |
 | 6 | `graph_write_failed`: SQLite, disk or stage stdout error | discard job output and report |

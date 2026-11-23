@@ -1,4 +1,5 @@
 import { graphEngineFallbackMessage, graphEngineRuntimeLabel } from "../graph/engine-languages.js";
+import { GRAPH_ENGINE_MEMORY_LIMIT, graphEngineMemoryDiagnostic } from "../graph/engine-memory.js";
 import { DiagramRepository } from "../statechart/repository.js";
 import { readAgentLoggingPolicy, setAgentLoggingPolicy } from "../logging/policy.js";
 import {
@@ -1533,7 +1534,7 @@ function projectGraphHealthStatus(
   return {
     id: "graph",
     label: "Code graph",
-    status: status.status === "fresh" && status.parseHealth.failed === 0
+    status: status.status === "fresh" && status.parseHealth.failed === 0 && status.engineMemoryLimitMb === undefined
       ? "healthy"
       : "degraded",
     summary: graphHealthSummary(status) + (status.engineRuntime ? ` Graph engine used ${graphEngineRuntimeLabel(status.engineRuntime)}.` : ""),
@@ -1544,6 +1545,9 @@ function projectGraphHealthStatus(
       }
       if (diagnostic.code === "GRAPH_ENGINE_WASI" && status.nativeEngineUnavailable) {
         projected.message = `The WASI graph engine ran because ${status.nativeEngineUnavailable}.`;
+      }
+      if (diagnostic.code === GRAPH_ENGINE_MEMORY_LIMIT && status.engineMemoryLimitMb !== undefined) {
+        projected.message = graphEngineMemoryDiagnostic(status.engineMemoryLimitMb).message;
       }
       return projected;
     }),

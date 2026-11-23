@@ -275,7 +275,7 @@ export class RepositoryGraphPort implements GraphPort {
     try {
       return await this.#deps.inspectStatus({
         projectRoot: this.#projectRoot,
-        dbPath: this.#dbPath,
+        dbPath: this.#explicitDbPath,
       });
     } catch {
       throw portError(
@@ -1914,6 +1914,8 @@ async function translateMaintenanceError(error: unknown): Promise<MexPortError> 
         "Graph changed during maintenance",
         "The published graph or source corpus changed during maintenance. Retry from current state.",
       );
+    case "GRAPH_ENGINE_MEMORY_LIMIT":
+      return portError("JOB_FAILED", 500, "Graph engine memory limit reached", error.message);
     case "GRAPH_CANDIDATE_INVALID":
     case "GRAPH_PUBLICATION_FAILED":
       return portError(

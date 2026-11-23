@@ -14,7 +14,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { childProcessUsage, WARM_GRAPH_SERVER } from "./process-stats.js";
 import { graphStorageV5 } from "./engine-languages.js";
-import { GRAPH_SERVER_CAP_MB } from "./sizing.js";
+import { graphEngineMemoryMb } from "./sizing.js";
 import { readGraphState, type GraphState } from "./jobs.js";
 import type { GraphLocation } from "./storage.js";
 import type { WarmGraphCheckout, WarmEditResult } from "./warm.js";
@@ -31,7 +31,7 @@ export interface WarmRegistrySettings {
 }
 
 export const WARM_DEFAULTS: WarmRegistrySettings = {
-  capMb: GRAPH_SERVER_CAP_MB,
+  get capMb() { return graphEngineMemoryMb("resident"); },
   coolMs: 15 * 60_000,
   quietMs: 2 * 60_000,
   probeMs: 60_000,
@@ -59,7 +59,7 @@ export class WarmRegistry {
   private probing = false;
   private readonly baselineRssMb = process.memoryUsage().rss / 1024 ** 2;
 
-  constructor(private readonly host: WarmHost, private readonly settings: WarmRegistrySettings = WARM_DEFAULTS) {}
+  constructor(private readonly host: WarmHost, private readonly settings: WarmRegistrySettings = { ...WARM_DEFAULTS }) {}
 
   private now(): number {
     return this.host.clock?.() ?? Date.now();
@@ -157,7 +157,8 @@ export class WarmRegistry {
       const state = readGraphState(location.directory);
       if (state?.warm === "off" && await checkDisabled(location, state)) { this.wait(root, projectId, now); return; }
       try {
-        const checkout = await (this.host.open?.(root) ?? import("./warm.js").then(({ openWarmCheckout }) => openWarmCheckout(root)));
+        const checkout = await (this.host.open?.(root)
+          ?? import("./warm.js").then(({ openWarmCheckout }) => openWarmCheckout(root, this.settings.capMb)));
         entry = { checkout, projectId };
         this.warm.set(root, entry);
         this.host.log?.(`warm: ${root}`);

@@ -4,6 +4,7 @@ import { existsSync, lstatSync, realpathSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { createGraphEngine, GraphSourceStagingError } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
+import { GraphEngineMemoryLimitError } from "./engine-memory.js";
 import {
   boundedCandidateMessage,
   graphCandidateRequest,
@@ -113,7 +114,10 @@ async function main(): Promise<void> {
     } catch (error) {
       writeFailureDiagnostic(error);
       try { engine?.close(); } catch { /* The supervisor removes the unpublished candidate after close. */ }
-      outcome = { type: "failed", category: failureCategory(error), usage: usage() };
+      outcome = {
+        type: "failed", category: failureCategory(error), usage: usage(),
+        ...(error instanceof GraphEngineMemoryLimitError ? { engineMemoryLimitMb: error.memoryMb } : {}),
+      };
     }
     try {
       await send(outcome);

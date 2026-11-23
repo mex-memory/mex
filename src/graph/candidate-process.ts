@@ -5,6 +5,7 @@ import { getHeapStatistics } from "node:v8";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BuildResult } from "./engine.js";
+import { GraphEngineMemoryLimitError } from "./engine-memory.js";
 import {
   boundedCandidateMessage,
   type GraphCandidateProgress,
@@ -187,6 +188,7 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
     let ready = false;
     let result: BuildResult | undefined;
     let failure: GraphCandidateProcessError | undefined;
+    let engineMemoryLimitMb: number | undefined;
     let lastProgress: GraphCandidateProgress | undefined;
     const sentSignals = new Set<NodeJS.Signals>();
     child.stderr?.on("data", (chunk: Buffer) => stderr.append(chunk));
@@ -246,6 +248,7 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
       } else if (message.type === "complete") {
         result = message.result;
       } else {
+        engineMemoryLimitMb = message.engineMemoryLimitMb;
         stop(fail("worker-error", message.category));
       }
       if ((message.type === "complete" || message.type === "failed") && message.usage) {
@@ -260,6 +263,10 @@ function superviseCandidate(options: GraphCandidateProcessOptions, request: Grap
       options.signal?.removeEventListener("abort", cancelled);
       child.stdio[4]?.destroy();
       if (options.signal?.aborted) failure = fail("cancelled", "cancelled");
+      if (engineMemoryLimitMb !== undefined && failure?.diagnostic?.reason === "worker-error") {
+        reject(new GraphEngineMemoryLimitError(engineMemoryLimitMb));
+        return;
+      }
       if (failure || code !== 0 || signal || !result) {
         let reason = failure?.diagnostic?.reason ?? "exit";
         const diagnosticOutput = stderr.text();

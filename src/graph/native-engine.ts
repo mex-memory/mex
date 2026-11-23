@@ -15,10 +15,12 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { GraphCoverageHistogram } from "./corpus-policy.js";
 import type { ImportBindingRecord, UnresolvedRefRecord } from "./db/store.js";
+import { GraphEngineMemoryLimitError } from "./engine-memory.js";
 import { graphPlatformPackage } from "./engine-platform.js";
 import { phaseTimingsWorkerEnv } from "./phase-timing.js";
 import type { BASIC_RESOLUTION, GraphEdge, GraphNode, Language } from "./types.js";
 import { addEngineUsage } from "./process-stats.js";
+import { currentGraphMachine, graphEngineMemoryMb } from "./sizing.js";
 
 /** The contract version this module speaks; the engine must report the same. */
 export const GRAPH_ENGINE_CONTRACT = 3;
@@ -134,21 +136,49 @@ export interface EngineRun {
   usage?: GraphEngineUsage;
 }
 
-/** Retry a launch that failed after the native version probe. */
+function hitMemoryLimit(run: EngineRun): boolean {
+  // The native guard exits with code 3 even if its error frame could not be sent.
+  return run.error?.code === "graph_memory_limit" || run.exitCode === 3;
+}
+
+/** Run one maintenance job, with a serial retry if parallel extraction hits the cap. */
 export async function runResolvedGraphEngine(
   runner: GraphEngineRunner,
-  request: EngineRequest,
-  options?: Parameters<typeof runGraphEngine>[2],
-): Promise<EngineRun & { runner: GraphEngineRunner }> {
-  let run = await runGraphEngine(runner, request, options);
+  request: Omit<EngineRequest, "limits">,
+  options?: NonNullable<Parameters<typeof runGraphEngine>[2]> & { onAttempt?: () => void },
+): Promise<EngineRun & { runner: GraphEngineRunner; memoryRetryMb?: number }> {
+  const machine = currentGraphMachine();
+  const limitsForRunner = () => ({
+    memoryMb: graphEngineMemoryMb(runner.kind, machine),
+    deadlineMs: 30 * 60_000,
+    // Match the engine's default bound on concurrent compression workspaces.
+    threads: runner.kind === "wasi" ? 1 : request.factsCache ? Math.min(machine.cores, 5) : machine.cores,
+  });
+  const attempt = (limits: EngineRequest["limits"]) => {
+    options?.onAttempt?.();
+    return runGraphEngine(runner, { ...request, limits }, options);
+  };
+  let limits = limitsForRunner();
+  let run = await attempt(limits);
   if (runner.kind === "native" && !options?.signal?.aborted && run.error?.code === "graph_engine_unavailable") {
     const wasi = resolveWasiGraphEngine("the mex-graph binary could not be executed");
     if (!("problem" in wasi)) {
       runner = wasi;
-      run = await runGraphEngine(runner, request, options);
+      limits = limitsForRunner();
+      run = await attempt(limits);
     }
   }
-  return { ...run, runner };
+  if (!hitMemoryLimit(run) || options?.signal?.aborted) return { ...run, runner };
+
+  const { memoryMb } = limits;
+  if (limits.threads === 1) throw new GraphEngineMemoryLimitError(memoryMb);
+  try {
+    run = await attempt({ ...limits, threads: 1 });
+  } catch (cause) {
+    throw new GraphEngineMemoryLimitError(memoryMb, { cause });
+  }
+  if (run.error || run.exitCode !== 0 || !run.result) throw new GraphEngineMemoryLimitError(memoryMb);
+  return { ...run, runner, memoryRetryMb: memoryMb };
 }
 
 /** Native executable selected by override, platform package, or checkout build. */
@@ -354,7 +384,7 @@ export function runGraphEngine(
       run.exitCode = code;
       run.signal = signal;
       rmSync(requestPath, { force: true });
-      if ((code !== 0 || !run.result) && request.output) removeCandidate(request.output);
+      if ((code !== 0 || !run.result || hitMemoryLimit(run)) && request.output) removeCandidate(request.output);
       if (run.result && run.usage) run.result.usage = run.usage;
       if (run.usage) addEngineUsage(run.usage);
       resolvePromise(run);

@@ -44,6 +44,9 @@ import { installGraphViews, overlayBase } from "./overlay.js";
 import { NativeGraphJobError, prepareNativeGraphBuild, type NativeGraphBuild, type NativeGraphFile, type NativeGraphRefresh } from "./native-build.js";
 import { hasGraphEngine, type GraphEngineBuildMetadata } from "./native-engine.js";
 import { graphStorageV5 } from "./engine-languages.js";
+import {
+  GRAPH_ENGINE_MEMORY_LIMIT, GraphEngineMemoryLimitError, graphEngineMemoryDiagnostic, recordGraphMemoryFailure,
+} from "./engine-memory.js";
 import { withEngineUsage, type ProcessUsage } from "./process-stats.js";
 import { auditRecordProvenInProcess, holdsAuditedBytes, recordAuditedDatabase } from "./audit-record.js";
 import { recallDigest, rememberDigest, withSourceMemo } from "./source-memo.js";
@@ -71,6 +74,7 @@ export type GraphMaintenanceErrorCode =
   | "GRAPH_MAINTENANCE_PATH_UNSAFE"
   | "GRAPH_MAINTENANCE_RACE"
   | "GRAPH_CANDIDATE_INVALID"
+  | typeof GRAPH_ENGINE_MEMORY_LIMIT
   | "GRAPH_PUBLICATION_FAILED";
 
 /** Internal typed failure used by the CLI and the future GraphPort adapter. */
@@ -285,6 +289,15 @@ export function acquireGraphMaintenanceLease(
           ? withGraphStorageContext(() => withSourceMemo(() => refreshGraphWithLease(paths, merged)))
           : withGraphStorageContext(() => withSourceMemo(() => rebuildGraphWithLease(paths, merged))));
         return outcome;
+      } catch (error) {
+        if (!(error instanceof GraphEngineMemoryLimitError)) throw error;
+        assertNotAborted(merged.signal);
+        assertMaintenanceDirectoryUnchanged(paths);
+        paths.writer?.assertOwned();
+        try { recordGraphMemoryFailure(paths.location, error.memoryMb); }
+        catch { /* Keep the operation's diagnostic if the local status record cannot be saved. */ }
+        const diagnostic = graphEngineMemoryDiagnostic(error.memoryMb);
+        throw new GraphMaintenanceError(GRAPH_ENGINE_MEMORY_LIMIT, diagnostic.message, [diagnostic]);
       } finally {
         const candidate = merged.__usage?.candidate;
         const unchanged = outcome?.filesIndexed === 0 && outcome.nodesCreated === 0 && !candidate;

@@ -27,10 +27,7 @@ export interface GraphSizing {
   sqliteTempStore: "MEMORY" | "FILE";
 }
 
-/** The background process's resident memory cap (`background.memory_mb`). */
-export const GRAPH_NODE_CAP_MB = 1024;
-/** The resident graph engines' memory cap. */
-export const GRAPH_SERVER_CAP_MB = 1024;
+export const GRAPH_ENGINE_MAX_MEMORY_MB = 4096;
 
 const clamp = (value: number, low: number, high: number): number => Math.min(high, Math.max(low, Math.round(value)));
 
@@ -45,15 +42,15 @@ export function currentGraphMachine(environment: NodeJS.ProcessEnv = process.env
   if (!simulated) return actual;
   const fields = Object.fromEntries(simulated.split(",").map((pair) => pair.split("=").map((part) => part.trim())));
   const number = (key: string, fallback: number): number => {
-    const value = Number(fields[key]);
-    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+    const value = Math.floor(Number(fields[key]));
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
   };
   const freeMb = number("freeMb", actual.freeMb);
   return { cores: number("cores", actual.cores), freeMb, totalMb: number("totalMb", Math.max(freeMb, Math.min(actual.totalMb, freeMb * 2))) };
 }
 
 export function graphSizing(machine: GraphMachine = currentGraphMachine()): GraphSizing {
-  const budgetMb = clamp(machine.freeMb / 2, 512, GRAPH_NODE_CAP_MB + GRAPH_SERVER_CAP_MB);
+  const budgetMb = clamp(machine.freeMb / 2, 512, 2048);
   return {
     machine,
     budgetMb,
@@ -61,6 +58,19 @@ export function graphSizing(machine: GraphMachine = currentGraphMachine()): Grap
     sqliteCacheMb: clamp(budgetMb / 8, 16, 128),
     sqliteTempStore: budgetMb >= 1_536 ? "MEMORY" : "FILE",
   };
+}
+
+/** RSS cap for a short-lived engine or the whole warm registry, in MiB. */
+export function graphEngineMemoryMb(
+  kind: "native" | "wasi" | "resident",
+  machine: GraphMachine = currentGraphMachine(),
+): number {
+  // Total RAM gives a stable ceiling even when reclaimable file caches leave
+  // little memory reported as free. Allow one eighth for an isolated job
+  // and one sixteenth for long-lived engines, with usable floors on small
+  // hosts. Leave a GiB below wasm32's address space for the WASI runtime.
+  if (kind === "resident") return clamp(machine.totalMb / 16, 128, 2048);
+  return clamp(machine.totalMb / 8, 256, kind === "wasi" ? 3072 : GRAPH_ENGINE_MAX_MEMORY_MB);
 }
 
 let current: GraphSizing | undefined;

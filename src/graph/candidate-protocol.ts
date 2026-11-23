@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { BuildResult } from "./engine.js";
+import { GRAPH_ENGINE_MAX_MEMORY_MB } from "./sizing.js";
 
 /** Private process boundary. Never serialize graph rows, source, or raw errors. */
 export const GRAPH_CANDIDATE_MESSAGE_BYTES = 1024 * 1024;
@@ -77,7 +78,12 @@ export const graphCandidateMessage = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready") }).strict(),
   z.object({ type: z.literal("progress"), progress: graphCandidateProgress }).strict(),
   z.object({ type: z.literal("complete"), result: buildResult, usage: candidateUsage.optional() }).strict(),
-  z.object({ type: z.literal("failed"), category: z.enum(["compatibility", "staging", "failed"]), usage: candidateUsage.optional() }).strict(),
+  z.object({
+    type: z.literal("failed"),
+    category: z.enum(["compatibility", "staging", "failed"]),
+    usage: candidateUsage.optional(),
+    engineMemoryLimitMb: count.positive().max(GRAPH_ENGINE_MAX_MEMORY_MB).optional(),
+  }).strict(),
 ]);
 export type GraphCandidateMessage = z.infer<typeof graphCandidateMessage>;
 

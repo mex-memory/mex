@@ -141,7 +141,7 @@ export class NativeWarmCheckout implements WarmGraphCheckout {
     this.requiredShadows = this.shadowsFor(files);
   }
 
-  static async open(location: GraphLocation, pointer: GraphPointer): Promise<NativeWarmCheckout | undefined> {
+  static async open(location: GraphLocation, pointer: GraphPointer, memoryMb: number): Promise<NativeWarmCheckout | undefined> {
     const root = location.root;
     const basePath = join(location.directory, pointer.base);
     const livePath = join(location.directory, pointer.overlay ?? pointer.base);
@@ -189,7 +189,7 @@ export class NativeWarmCheckout implements WarmGraphCheckout {
           languages: nativeEngineLanguageIds(languages), base: basePath,
           ...(pointer.overlay ? { overlay: livePath } : {}),
           factsCache: join(location.directory, "facts"),
-          limits: { memoryMb: 2048, deadlineMs: 24 * 60 * 60_000 },
+          limits: { memoryMb, deadlineMs: 24 * 60 * 60_000 },
         });
         return new NativeWarmCheckout(location, server, key, base, baseFiles, live, files, languages, configs, metadata, proof);
       });

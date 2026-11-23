@@ -93,6 +93,8 @@ export interface GraphStatus {
   engineFallback?: GraphEngineFallback;
   engineRuntime?: GraphEngineRuntime;
   nativeEngineUnavailable?: string;
+  /** Cap from the last memory-limit failure against this publication. */
+  engineMemoryLimitMb?: number;
   parseHealth: GraphParseHealth;
   changes: GraphSourceChanges;
   diagnostics: readonly Diagnostic[];

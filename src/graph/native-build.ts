@@ -10,6 +10,7 @@ import { discoverGraphBuildSources, GraphSourceSpool, type NativeSourceObservati
 import {
   engineFileExtractorVersion, graphEngineHandlesEcmaScript, graphEngineLanguageFamily, graphEngineLanguages, graphStorageV5,
 } from "./engine-languages.js";
+import { GraphEngineMemoryLimitError } from "./engine-memory.js";
 import type { BuildResult } from "./engine.js";
 import { detectLanguage } from "./extraction/grammars.js";
 import { discoverGraphConfigSources, graphManifestFromSources } from "./manifest.js";
@@ -46,7 +47,7 @@ export interface NativeGraphRefresh {
   shadowedFiles: number;
 }
 
-/** A standalone engine job failed before publication. */
+/** A standalone engine job failure eligible for a v4 rebuild. */
 export class NativeGraphJobError extends Error {
   constructor(message: string, readonly fallbackReason: string) { super(message); }
 }
@@ -165,7 +166,6 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
         mode, root, languages: enabled, output: candidate, factsCache, observationRoot,
         ...input,
         ...refresh,
-        limits: { memoryMb: 2048, deadlineMs: 30 * 60_000 },
       }, {
         signal: options.signal,
         onEvent: event => {
@@ -176,9 +176,12 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
           });
         },
       })).catch((error: unknown) => {
-        if (options.signal?.aborted) throw error;
+        if (options.signal?.aborted || error instanceof GraphEngineMemoryLimitError) throw error;
         throw new NativeGraphJobError(`Schema v5 ${mode} could not start.`, "the engine job could not be started");
       });
+      const invalidResult = (message: string, fallbackReason: string) => run.memoryRetryMb !== undefined
+        ? new GraphEngineMemoryLimitError(run.memoryRetryMb)
+        : new NativeGraphJobError(message, fallbackReason);
       if (run.error?.code === "graph_engine_parent_error") {
         throw new Error(`Schema v5 ${mode} failed (${run.error.message}).`);
       }
@@ -186,16 +189,16 @@ export async function prepareNativeGraphBuild(root: string, base?: string, previ
       if (refresh && run.error?.code === "graph_refresh_base_incompatible") return undefined;
       if (run.exitCode !== 0 || !run.result || run.result.files !== files.length) {
         const issue = run.error?.message ?? run.signal ?? run.exitCode ?? "missing result";
-        throw new NativeGraphJobError(`Schema v5 ${mode} failed (${issue}).`, graphEngineFailureReason(run));
+        throw invalidResult(`Schema v5 ${mode} failed (${issue}).`, graphEngineFailureReason(run));
       }
       const candidateStat = lstatSync(candidate, { throwIfNoEntry: false });
-      if (!candidateStat) throw new NativeGraphJobError("The graph engine did not produce a candidate.", "the engine did not produce a candidate");
+      if (!candidateStat) throw invalidResult("The graph engine did not produce a candidate.", "the engine did not produce a candidate");
       if (!candidateStat.isFile() || candidateStat.isSymbolicLink()) throw new Error("The graph candidate is unsafe.");
       const viaWasi = run.runner.kind === "wasi";
       const db = viaWasi ? openSqlite(candidate) : openSqlite(candidate, { readOnly: true, immutable: true });
       try {
         if (!hasV5GraphSchema(db)) {
-          throw new NativeGraphJobError("The graph engine did not write a schema v5 candidate.", "the engine returned an incompatible candidate");
+          throw invalidResult("The graph engine did not write a schema v5 candidate.", "the engine returned an incompatible candidate");
         }
         if (refresh && (overlayBase(db) !== basename(refresh.base) || !Number.isSafeInteger(run.result.shadowedFiles))) {
           throw new Error("The graph engine did not write an overlay for the requested base.");

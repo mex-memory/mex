@@ -1,17 +1,19 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openSqlite } from "../db/sqlite.js";
+import { RepositoryGraphPort } from "../application-adapter.js";
+import { runGraphStatus } from "../cli-status.js";
 import { createGraphEngine } from "../index.js";
 import { corpusExtractorVersion, CORPUS_EXTRACTOR_VERSION, discoverGraphConfigSources, graphManifest } from "../manifest.js";
 import { GRAPH_ENGINE_ENV, GRAPH_ENGINE_LANGUAGES_ENV, graphEngineBinary } from "../native-engine.js";
 import { ensureGraphCurrent, rebuildGraph, refreshGraph } from "../maintenance.js";
 import { inspectGraphStatus, inspectGraphStatusWithFreshObservation } from "../status.js";
 import { GRAPH_SNAPSHOT_METADATA_KEY } from "../snapshot.js";
-import { currentGraphPath } from "../storage.js";
+import { currentGraphPath, graphLocation, readGraphPointer } from "../storage.js";
 import { WARM_DEFAULTS, WarmRegistry } from "../warm-registry.js";
 import { openWarmCheckout } from "../warm.js";
 
@@ -254,8 +256,8 @@ if [ "$1" = version ]; then
   echo '{"version":"0.1.0","contract":3}'
   exit 0
 fi
-echo '{"type":"error","code":"graph_memory_limit","message":"internal diagnostics"}'
-exit 3
+echo '{"type":"error","code":"graph_write_failed","message":"internal diagnostics"}'
+exit 6
 `, { mode: 0o755 });
   return path;
 }
@@ -266,7 +268,7 @@ it.skipIf(process.platform === "win32").each(["v4", "v5"])(
     vi.stubEnv("MEX_GRAPH_STORAGE", storage);
     vi.stubEnv(GRAPH_ENGINE_ENV, failedEngine(root));
     const result = await rebuildGraph(root);
-    const reason = "the engine stopped (graph_memory_limit)";
+    const reason = "the engine stopped (graph_write_failed)";
     expect(result.engine).toMatchObject({ files: 0, fallbackFiles: 7, fellBack: reason });
     await expectFallback(root, reason);
   },
@@ -279,12 +281,120 @@ it.skipIf(!binary || process.platform === "win32")("falls back from a failed v5 
   writeFileSync(join(root, "src/a.ts"), "export function helper() { return 2; }");
   vi.stubEnv(GRAPH_ENGINE_ENV, failedEngine(root));
   expect((await refreshGraph(root)).status.schemaVersion).toBe(4);
-  await expectFallback(root, "the engine stopped (graph_memory_limit)");
+  await expectFallback(root, "the engine stopped (graph_write_failed)");
   vi.stubEnv(GRAPH_ENGINE_ENV, binary);
   const recovered = await ensureGraphCurrent(root);
   expect(recovered.status).toMatchObject({ status: "fresh", schemaVersion: 5 });
   expect(recovered.status.engineFallback).toBeUndefined();
   expect(recovered.engine).toMatchObject({ files: 7, fallbackFiles: 0 });
+});
+
+function memoryLimitedEngine(root: string, retryBinary?: string) {
+  const path = join(root, "memory-limited-engine");
+  const log = join(root, "engine-attempts.jsonl");
+  vi.stubEnv("MEX_GRAPH_MACHINE", "cores=8,totalMb=8192");
+  vi.stubEnv(GRAPH_ENGINE_ENV, path);
+  writeFileSync(path, `#!/usr/bin/env node
+const fs = require("node:fs");
+const [mode, flag, requestPath] = process.argv.slice(2);
+if (mode === "version") {
+  console.log(JSON.stringify({ version: "0.1.0", contract: 3 }));
+  process.exit(0);
+}
+const request = JSON.parse(fs.readFileSync(requestPath, "utf8"));
+const { memoryMb, threads } = request.limits;
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ mode, memoryMb, threads }) + "\\n");
+const retryBinary = ${JSON.stringify(retryBinary ?? null)};
+if (threads === 1 && retryBinary) {
+  const run = require("node:child_process").spawnSync(retryBinary, [mode, flag, requestPath], { stdio: "inherit" });
+  process.exit(run.status ?? 1);
+}
+if (request.output) {
+  fs.writeFileSync(request.output, "partial");
+  fs.writeFileSync(request.output + "-wal", "partial");
+}
+if (threads !== 1) {
+  if (mode === "stage") console.log(JSON.stringify({ type: "file", path: request.files[0].path, status: "failed" }));
+  console.log(JSON.stringify({ type: "error", code: "graph_memory_limit", message: "private output" }));
+}
+process.exitCode = 3;
+`, { mode: 0o755 });
+  return () => readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
+}
+
+const memoryLimitDiagnostic = {
+  code: "GRAPH_ENGINE_MEMORY_LIMIT",
+  severity: "warning",
+  message: "The Rust graph engine needed more memory than its 1024 MiB cap.",
+};
+
+it.skipIf(process.platform === "win32").each([
+  { storage: "v4", candidateExecution: undefined, mode: "stage", threads: 8 },
+  { storage: "v4", candidateExecution: "process" as const, mode: "stage", threads: 8 },
+  { storage: "v5", candidateExecution: undefined, mode: "build", threads: 5 },
+])("reports an exhausted memory retry for $storage with worker $candidateExecution", async ({
+  storage, candidateExecution, mode, threads,
+}) => {
+  const root = fallbackFixture();
+  vi.stubEnv("MEX_GRAPH_STORAGE", storage);
+  const attempts = memoryLimitedEngine(root);
+  await expect(rebuildGraph(root, { candidateExecution })).rejects.toMatchObject({
+    code: memoryLimitDiagnostic.code,
+    diagnostics: [memoryLimitDiagnostic],
+  });
+  expect(attempts()).toEqual([
+    { mode, memoryMb: 1024, threads },
+    { mode, memoryMb: 1024, threads: 1 },
+  ]);
+  const location = graphLocation(root);
+  expect(readGraphPointer(location)).toBeUndefined();
+  expect(readdirSync(location.directory).filter(name => name.startsWith("graph-tmp-"))).toEqual([]);
+  await expect(new RepositoryGraphPort(root).inspectStatus()).resolves.toMatchObject({
+    status: "missing", engineMemoryLimitMb: 1024, diagnostics: expect.arrayContaining([memoryLimitDiagnostic]),
+  });
+});
+
+it.skipIf(!binary || process.platform === "win32").each([
+  { storage: "v4", schema: 4, mode: "stage", threads: 8 },
+  { storage: "v5", schema: 5, mode: "build", threads: 5 },
+])("publishes only the successful serial $mode attempt", async ({ storage, schema, mode, threads }) => {
+  const root = fallbackFixture();
+  vi.stubEnv("MEX_GRAPH_STORAGE", storage);
+  const attempts = memoryLimitedEngine(root, binary);
+  await expect(rebuildGraph(root)).resolves.toMatchObject({
+    status: { schemaVersion: schema, engineRuntime: "native" },
+    engine: { files: 7, fallbackFiles: 0 },
+  });
+  expect(attempts()).toEqual([
+    { mode, memoryMb: 1024, threads },
+    { mode, memoryMb: 1024, threads: 1 },
+  ]);
+});
+
+it.skipIf(!binary || process.platform === "win32")("keeps a published graph when a refresh exhausts its memory retry", async () => {
+  const root = fallbackFixture();
+  vi.stubEnv("MEX_GRAPH_STORAGE", "v5");
+  expect((await rebuildGraph(root)).status.schemaVersion).toBe(5);
+  const location = graphLocation(root);
+  const published = readGraphPointer(location);
+  const bytes = readFileSync(currentGraphPath(root));
+  writeFileSync(join(root, "src/a.ts"), "export function helper() { return 2; }");
+  const attempts = memoryLimitedEngine(root);
+  await expect(refreshGraph(root)).rejects.toMatchObject({ code: memoryLimitDiagnostic.code });
+  expect(attempts()).toEqual([
+    { mode: "refresh", memoryMb: 1024, threads: 5 },
+    { mode: "refresh", memoryMb: 1024, threads: 1 },
+  ]);
+  expect(readGraphPointer(location)).toEqual(published);
+  expect(readFileSync(currentGraphPath(root))).toEqual(bytes);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await runGraphStatus({ root });
+    expect(log).toHaveBeenCalledWith(`WARNING ${memoryLimitDiagnostic.code}: ${memoryLimitDiagnostic.message}`);
+  } finally { log.mockRestore(); }
+  vi.stubEnv(GRAPH_ENGINE_ENV, binary);
+  expect((await refreshGraph(root)).status.schemaVersion).toBe(5);
+  expect((await inspectGraphStatus({ projectRoot: root })).engineMemoryLimitMb).toBeUndefined();
 });
 
 it("refuses to bind a compiler-era manifest even when source drift is bounded", async () => {

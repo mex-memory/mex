@@ -1,4 +1,5 @@
 import { processGraphSizing } from "./sizing.js";
+import { GraphEngineMemoryLimitError } from "./engine-memory.js";
 import { assertTextSource, unavailableFileReason } from "./source-errors.js";
 import { discoverGraphReadPaths } from "./read-discovery.js";
 import { skippedByRule } from "../file-index/discover.js";
@@ -1368,14 +1369,11 @@ interface EngineStaging {
   report: GraphEngineReport;
 }
 
-/** Memory cap and deadline for one engine stage job. */
-const ENGINE_STAGE_LIMITS = { memoryMb: 2048, deadlineMs: 30 * 60_000 };
-
 /**
  * Stage `languages` with the Rust engine (OSS-73), streamed as rows for
  * today's schema v4 store. The engine extracts and resolves every file of
- * those languages in one job. Any failure keeps today's extractors for every
- * file and says why in the report; staging never fails because of it.
+ * those languages in one job. A failed job uses the Node extractors unless
+ * it exceeded the engine's memory cap.
  */
 async function stageWithGraphEngine(
   root: string,
@@ -1415,9 +1413,9 @@ async function stageWithGraphEngine(
       } : {}),
       languages: enabled,
       frameworks: true,
-      limits: ENGINE_STAGE_LIMITS,
     }, {
       requestDir,
+      onAttempt: () => { files.clear(); seen.clear(); },
       onEvent: (event) => {
         if (event.type !== "staged" && event.type !== "file") return;
         const source = requested.get(event.path);
@@ -1428,7 +1426,8 @@ async function stageWithGraphEngine(
         if (event.type === "staged" && event.contentHash === source.contentHash) files.set(event.path, event);
       },
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof GraphEngineMemoryLimitError) throw error;
     return fellBack("the engine job could not be started");
   }
   if (run.signal === "SIGKILL") throw new Error("The graph engine was killed (SIGKILL).");
@@ -1436,7 +1435,10 @@ async function stageWithGraphEngine(
     // Codes only: the report crosses the candidate boundary, where no path may.
     return fellBack(graphEngineFailureReason(run));
   }
-  if (seen.size !== paths.length) return fellBack("the engine did not report every requested file");
+  if (seen.size !== paths.length) {
+    if (run.memoryRetryMb !== undefined) throw new GraphEngineMemoryLimitError(run.memoryRetryMb);
+    return fellBack("the engine did not report every requested file");
+  }
   if (files.size !== paths.length) {
     // Framework detection and handler resolution can depend on any engine
     // file. If one read disagreed with discovery, rerun that pass over the
