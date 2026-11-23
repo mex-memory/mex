@@ -112,8 +112,11 @@ export function upkeepScan(writer: RecordWriter, project: string, checkout: stri
     const created = Date.parse(entry.mex.created);
     let verified = created;
     try {
+      // Honor recorded follows. Delivery of a prose rule cannot prove it was followed.
       const row = JSON.parse(writer.setting(project, `knowledge.verified.${id}`) ?? "null");
-      if (row?.how === "person" || row?.how === "judge") verified = Math.max(created, Date.parse(row.at) || 0);
+      if (row?.how === "person" || row?.how === "judge" || row?.how === "followed") {
+        verified = Math.max(created, Date.parse(row.at) || 0);
+      }
     } catch { /* Creation is the baseline for older entries. */ }
     if (at - verified < 90 * DAY) { dismiss(writer, project, "age", id); continue; }
     stageUpkeep(writer, project, { ...target, kind: "age" }, "This rule has gone 90 days without verification.", `${entryHash}\n${verified}`, at);

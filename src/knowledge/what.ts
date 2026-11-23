@@ -132,8 +132,7 @@ export function noteProbe(id: string, kind: "opened" | "wrong", options: Knowled
       }),
       encoding: "utf8",
       windowsHide: true,
-      // An agent's report is the command's whole result, and its caller waits for it; on a busy Windows machine
-      // starting the hook and writing hooks.db can take more than 2 s. Other probes stay best effort and quick.
+      // Explicit reports have a bounded native database budget. Leave room for process startup.
       timeout: detail ? 10_000 : 2000,
       maxBuffer: 16384,
       env: {

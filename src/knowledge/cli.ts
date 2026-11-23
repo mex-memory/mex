@@ -224,7 +224,9 @@ export function buildKnowledgeCommands(): Command[] {
     .argument("<id>", "Stable entry id")
     // `mex forget <id>` is what MEX tells people after an agent saves a note,
     // so forget's reason is optional; wrong keeps it, since the reason is the point.
-    .argument(action === "wrong" ? "<reason>" : "[reason]", action === "wrong" ? "What is wrong with this entry" : "Why this entry should no longer be used (optional)")
+    .argument(action === "wrong" ? "<reason>" : "[reason]", action === "wrong"
+      ? "contradicted <file:line>, rejected-by-ci, not-applicable, or free text"
+      : "Why this entry should no longer be used (optional)")
     .option("--apply", "Apply the reviewed team-entry retirement")
     .option("--expect <revision>", "The exact revision printed by the team preview")
     .option("--json", "Print the retirement record as JSON")
@@ -239,7 +241,7 @@ export function buildKnowledgeCommands(): Command[] {
           const { parseWrongReason, reportWrong } = await import("./agent-report.js");
           const { knowledgeProject } = await import("./context.js");
           const agent = isAgentCaller();
-          const parsed = parseWrongReason(reason, knowledgeProject(options).root, agent);
+          const parsed = parseWrongReason(agent ? given ?? "" : reason, knowledgeProject(options).root, agent);
           if (agent) {
             const job = await reportWrong(id, parsed, options);
             if (opts.json) console.log(JSON.stringify({ ok: true, id, status: "proposed", reason: parsed.reason, kind: parsed.kind, job }));

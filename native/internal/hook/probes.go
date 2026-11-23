@@ -36,7 +36,7 @@ func agentReport(in explicitProbeInput) bool {
 		return false
 	}
 	switch d.Kind {
-	case "contradicted", "outdated", "wrong-scope", "noisy", "other":
+	case "contradicted", "rejected-by-ci", "not-applicable", "outdated", "wrong-scope", "noisy", "other":
 		return true
 	}
 	return false
@@ -54,6 +54,10 @@ func explicitProbe(stdin io.Reader, stdout io.Writer, getenv Env) int {
 		return 0
 	}
 	directory := homeFrom(getenv).recordDirectory()
+	if directory == "" {
+		_, _ = io.WriteString(stdout, "{}\n")
+		return 0
+	}
 	file := filepath.Join(directory, "hooks.db")
 	for _, name := range []string{"hooks.db", "hooks.db-wal", "hooks.db-shm"} {
 		if !safeTelemetryFile(filepath.Join(directory, name)) {
@@ -61,25 +65,25 @@ func explicitProbe(stdin io.Reader, stdout io.Writer, getenv Env) int {
 			return 0
 		}
 	}
-	if _, err := os.Stat(file); err != nil && !report {
+	location := localrecord.Location{Directory: directory, Hooks: file}
+	if report {
+		checkout, err := place.RealPath(in.Checkout)
+		if err == nil {
+			err = localrecord.SaveAgentRuleReport(location, in.Entry, in.Session, in.Project, checkout, in.Invocation, string(in.Detail), time.Now())
+		}
+		_ = json.NewEncoder(stdout).Encode(map[string]bool{"ok": err == nil})
+		return 0
+	}
+	if _, err := os.Stat(file); err != nil {
 		_, _ = io.WriteString(stdout, "{}\n")
 		return 0
 	}
-	h, err := localrecord.OpenHooks(localrecord.Location{Directory: directory, Hooks: file})
+	h, err := localrecord.OpenHooks(location)
 	if err != nil {
 		_, _ = io.WriteString(stdout, "{}\n")
 		return 0
 	}
 	defer h.Close()
-	if report {
-		checkout, err := place.RealPath(in.Checkout)
-		ok := false
-		if err == nil {
-			ok, err = h.AgentRuleReport(in.Entry, in.Session, in.Project, checkout, in.Invocation, string(in.Detail), time.Now())
-		}
-		_ = json.NewEncoder(stdout).Encode(map[string]bool{"ok": ok && err == nil})
-		return 0
-	}
 	if in.Kind == "recall" {
 		_ = json.NewEncoder(stdout).Encode(map[string]bool{"ok": recallReceipt(h, in)})
 		return 0
