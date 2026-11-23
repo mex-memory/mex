@@ -490,7 +490,7 @@ async function unreadCandidates({ context, plan, deps }: PipelineInput, candidat
 }
 
 function hasReviewHistory(plan: PipelineInput["plan"], state: PipelineState): boolean {
-  return plan.harvest.inventory.bands.some(band => band.source === "merged" && band.count > 0)
+  return !!plan.harvest.inventory?.bands.some(band => band.source === "merged" && band.count > 0)
     || !!(state.cursor as HarvestCursor | undefined)?.sources.merged;
 }
 
