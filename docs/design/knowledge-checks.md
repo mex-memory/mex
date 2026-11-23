@@ -122,6 +122,10 @@ the Node codec.
 
 ## `mex check`
 
+A check someone asks for waits up to two seconds for the record, where a live hook waits 100 ms. If it still can't read
+the rule-change evidence, the linked-source observations or the judge's confirmations, the check fails: a verdict on
+evidence it couldn't read would look like a result.
+
 `mex check` evaluates every team entry, personal note and hint through the
 native evaluator (`mex-hook --check-run`) and stores the verdicts when MEX is
 set up on the machine. It prints per-entry verdicts ("120 held, 9 being

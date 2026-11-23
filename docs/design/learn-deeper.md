@@ -38,9 +38,9 @@ wording ("always", "we don't", "instead use"), and a small pull request.
 | Harvest | none | Newest first, spread across the review window, until the run's token budget is reached. A cursor is saved, so weekly learning reads only what is newer |
 | Triage | cheap | Keep or drop each item from its comment text alone, with a category and a one-line lesson. Nits, one-offs, questions, status and generic advice are dropped |
 | First rules | best | The strongest items of the first batch are written right away, so the first rules arrive within minutes |
-| Cluster | none | Lessons are grouped across the whole window by shared code identifiers and lesson words. A cluster is led by its strongest item, so unrelated lessons don't chain together. A lesson counts when 2 or more pull requests show it, or one pull request with a strong signal |
+| Cluster | none | Lessons that say the same thing, in the same direction, are grouped across the whole window. A shared code identifier is only a hint: two comments about one API are usually two lessons. A cluster is led by its strongest item, so unrelated lessons don't chain together. In doubt two lessons stay apart, because a missed repeat costs a duplicate and a wrong one gives a rule support it doesn't have |
 | Write | best | Several clusters per call. The writer sees each thread with the code as reviewed, the author's fix and today's code. It keeps only what this team decided, ruled out or got burned by, that a capable newcomer couldn't tell from the code |
-| Prove | none | Every clause must quote its evidence verbatim. A pattern is kept only if it matches reviewed code in at least one before/after pair, matches no fixed code and not its own "ok" example, is not already common in its area, and later commits on the default branch didn't keep adding it anyway |
+| Prove | none | Every clause must quote its evidence verbatim. Support, reviewers, label and sources come only from the members quoted for the claim; the others get one round of their own, and a claim resting on one pull request without a strong signal is dropped. A pattern is kept only if it matches reviewed code in at least one before/after pair, matches no fixed code and not its own "ok" example, is rare today (at most 3 occurrences in scope, and not in 2 or more files that are over 1% of it), and later commits on the default branch didn't keep adding it anyway. Every text file in scope up to 512 KB is read; a scope that can't be read in full is unknown, not rare |
 | Repair | best | One turn for the entries that failed, with each failure's reason. A pattern that still fails is removed; the rule stays as text. A weak pattern is never kept |
 | Route and save | none | Each lesson becomes one entry through the producer gate, with the checks below |
 
@@ -85,7 +85,7 @@ by a pointer ("MEX is re-checking a learned rule: `mex recall <id>`"), never ser
 a rule and renew its baselines. When a symbol a rule names moves, the entry follows it.
 
 Agents can report a wrong rule with `mex wrong <id> "<reason>"`, and every rule file says so. A reason can be typed:
-`contradicted <file>:<line>` (a line in this checkout), `outdated`, `wrong-scope`, `noisy`, or free text. From an
+`contradicted <file>:<line>` (a line in this checkout), `rejected-by-ci`, `not-applicable`, or free text. From an
 agent this never retires anything: it asks MEX to re-check the rule and puts a proposed correction in Review. From a
 person's own terminal it retires the rule, as before.
 
@@ -98,24 +98,36 @@ deleted comment makes the rule changed: it goes to the judge, and agents get a p
 A comment that can't be read this week is skipped, not counted as deleted.
 
 A rule with no check that reads the repository (URL sources alone don't count) goes to Review after 90 days without
-a tick or a judge confirmation. Anchored rules have no time limit. When the team retires a rule on the default
+a tick, a judge confirmation or a recorded follow. Nothing records a follow for a prose rule, because a delivery can't
+show that it was followed. Anchored rules have no time limit. When the team retires a rule on the default
 branch, the person's copy is retired too: by id, by the source both were learned from, or by exactly the same claim.
 
 ## The review list
 
-At the end of a run, bare `mex` in a terminal lists what was learned: each rule's claim and where it came from,
-corroborated or proven rules pre-ticked, single-signal ones waiting. A number toggles one, Enter keeps the ticks,
-`d` drops the unticked for good (they are never proposed again), `q` decides later. `v` then a number offers to have
-the person's own agent read the checkout, read-only and for a few steps, and say whether a waiting rule holds; the
-estimate is shown first.
+At the end of a run, bare `mex` in a terminal lists everything that was learned, a page at a time: each rule's claim,
+why, fix and source, corroborated or proven rules pre-ticked, single-signal ones waiting. A number toggles one, Enter
+goes to the next page and on the last one saves every decision together, `d` there drops the unticked, and `q` leaves
+without saving anything. If an entry changed meanwhile, nothing is saved and the list is shown again next time.
 
-It also replays the person's last 20 commits in the repository, by their git email, through the speed bump's own
-matching, at no cost, and shows which rules would have stopped which change.
+A dropped rule is retired and its drop recorded in one step, so nothing delivers it again. A later lesson that is
+clearly the same is refused before the writer is paid, and one with the same trigger under other words is never
+saved. A lesson that is only about the same thing may be a different one: it is written with the dropped rules in
+view and waits for a tick, even when the code proves it. A rule the person unticked is never switched on by later
+evidence; a single-signal rule left waiting is listed again once a second pull request supports it.
+
+`v` then a number offers to have the person's own agent read the checkout, read-only, and say whether a waiting rule
+holds; the estimate is shown first. It stops after 8 tool calls or two minutes, and a stopped run gives no answer.
+
+The list also replays the person's last 20 commits in the repository, by their git email, through delivery's own
+matching, at no cost: up to three lines on which rules would have stopped an edit, then which would have been shown
+when a file was touched.
 
 Without a terminal (an agent, a script, CI) nothing is asked; the next `mex` in a terminal asks.
 
 ## Cost, consent and privacy
 
+- `mex learn --dry-run` shows the estimate, ceiling, source counts and gaps. It reads review history and git, spends no
+  tokens, and saves and queues nothing.
 - The estimate is shown before anything starts; Enter starts it, one key skips it. It runs through the person's own
   Claude Code or Codex with no tools, in an empty private folder, and never from an agent, a script or CI. The
   ceiling is 1.5 times the estimate.
