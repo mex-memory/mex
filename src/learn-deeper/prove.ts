@@ -16,7 +16,7 @@
 import { globToRegExp } from "../file-index/glob.js";
 import { checkPatterns, type PatternCandidate, type PatternVerdict } from "../knowledge/pattern-check.js";
 import type { GateContext } from "../knowledge/gate.js";
-import { writerMembers, type Cluster, type Triaged } from "./cluster.js";
+import { backedBy, writerMembers, type Cluster, type Triaged } from "./cluster.js";
 import { command, type PatternStage, type PinnedTree } from "./git.js";
 import { safePath } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
@@ -43,7 +43,10 @@ export type ProvenPattern = NonNullable<WriterEntry["when"]>[number] & {
 };
 export interface ProvenFix { snippet: string; path: string; commit: string; lines: string }
 export interface ProofResult {
+  /** Only the members whose quotes back the claim: the rule's support, label and sources come from these. */
   cluster: Cluster;
+  /** Members that back nothing the rule claims: they may hold a lesson of their own. */
+  unbacked: Triaged[];
   draft: WriterEntry;
   pairs: EvidencePair[];
   /** The claim, and the clauses of the reason the evidence supports. */
@@ -218,7 +221,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   const members = new Map(cluster.members.map((member: Triaged) => [member.candidate.id, member.candidate]));
   const shown = writerMembers(cluster);
   const pairs = evidencePairs([...shown, ...cluster.members.filter(member => !shown.includes(member))]);
-  const result: ProofResult = { cluster, draft, pairs, claim: draft.claim, reasons: [], quotes: [], scope: [], when: [], historyAdds: 0,
+  const result: ProofResult = { cluster, unbacked: [], draft, pairs, claim: draft.claim, reasons: [], quotes: [], scope: [], when: [], historyAdds: 0,
     notAlwaysFollowed: false, alternatives: [], failures };
   const drop = (why: string) => ({ ...result, dropped: why });
 
@@ -243,6 +246,12 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     return drop("the claim isn't supported by a verbatim quote");
   }
   result.quotes = supported.flatMap(item => item.quotes);
+  // A cluster is a guess. Only members quoted for the claim itself count toward it, and only their code proves it.
+  const backing = new Set(claimClauses.flatMap(item => item.quotes.map(quote => quote.id)));
+  result.unbacked = cluster.members.filter(member => !backing.has(member.candidate.id));
+  cluster = backedBy(cluster, backing);
+  result.cluster = cluster;
+  if (cluster.decision === "drop") return drop("one pull request without a strong signal backs the claim");
   // Rebuild the reason from verified source clauses so a model-only explanation cannot reach delivery.
   result.reasons = supported.filter(item => !claimClauses.includes(item) && item.quotes.length && overlap(item.clause.text, draft.claim) < 0.9)
     .map(item => item.clause.text);
@@ -283,7 +292,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   const codeRoutes = new Set(["code-rule", "ruled-out", "pitfall"]);
   if (draft.when.length && !codeRoutes.has(draft.route)) failures.push(`a ${draft.route} carries no edit pattern`);
   const wanted = codeRoutes.has(draft.route) ? draft.when : [];
-  if (wanted.length && !pairs.length) failures.push("no before/after code to prove a pattern on");
+  if (wanted.length && !pairs.some(pair => backing.has(pair.member))) failures.push("no before/after code to prove a pattern on");
   const coverage = wanted.some(item => item.type !== "required") && context.check.checkTree && context.check.checkIndex
     ? patternScopeCoverage(context.tree, result.scope, context.patternStage) : undefined;
   if (coverage?.unread.length) failures.push(unreadScopeFailure(coverage.unread));
@@ -294,6 +303,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     const proofPairs = pairs;
     for (const [i, item] of wanted.entries()) {
       for (const [p, pair] of proofPairs.entries()) {
+        if (!backing.has(pair.member)) continue;
         candidates.push({ ...item, objected: pair.before.text, fixed: pair.after.text, ...(pair.anchor ? { anchor: pair.anchor } : {}) });
         owner.push({ pattern: i, pair: p });
         // The contrast check stops at the first miss, so a pattern that misses this pair's reviewed code
@@ -373,7 +383,8 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
 
   // The fix: a verbatim slice of the after code, and the literal it relies on, present today.
   if (draft.route === "code-rule" || draft.fix) {
-    const fix = fixFrom(draft, pairs);
+    const fix = draft.fix && pairs[draft.fix.pair] && !backing.has(pairs[draft.fix.pair]!.member)
+      ? "the fix comes from evidence that doesn't back the claim" : fixFrom(draft, pairs);
     if (typeof fix === "string") { if (draft.fix || result.when.length) failures.push(fix); }
     else {
       result.fix = fix;

@@ -172,7 +172,8 @@ it.each([
         expect(request.prompt).toContain("Narrow the scope");
       }
       return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim,
-        clauses: [{ text: claim, quotes: [{ id: repeat ? repeatedId : candidateId, quote: "Prefer the stable adapter over the fallback." }] }],
+        // As the prompt asks: a quote from every member that says it.
+        clauses: [{ text: claim, quotes: [candidateId, repeatedId].filter(id => request.prompt.includes(id)).map(id => ({ id, quote: "Prefer the stable adapter over the fallback." })) }],
         scope: gap !== "none" && !repair ? ["src/**"] : [path], ...(!repeat || noisy ? { when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
           fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } } : {}) }] });
     });

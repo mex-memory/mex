@@ -45,6 +45,8 @@ export interface Cluster {
   files: string[];
   identifiers: string[];
   earlier?: string;
+  /** The support the earlier entry already has, from its own evidence. */
+  prior?: LessonSupport;
   decision: ClusterDecision;
   /** Why the decision was made, for the receipt. */
   why: string;
@@ -277,6 +279,23 @@ export function clusterLessons(items: readonly Triaged[], options: ClusterOption
 
 function summarize(leader: Profile, members: Profile[], earlier: readonly EarlierLearned[], common: ReadonlySet<string>,
   packageOf: (path: string | undefined) => string): Cluster {
+  const earlierMatch = earlier.find(entry => compare(leader, earlierProfile(entry, leader.item, packageOf), common) === "same");
+  return total(members.map(({ item, identifiers }) => ({ item, identifiers })), earlierMatch && { id: earlierMatch.id, support: earlierMatch.support });
+}
+
+/**
+ * The same cluster with only the members that back a claim: what a rule may say it was learned from. Its key stays,
+ * so the entry keeps its id.
+ */
+export function backedBy(cluster: Cluster, ids: ReadonlySet<string>): Cluster {
+  const members = cluster.members.filter(member => ids.has(member.candidate.id));
+  if (members.length === cluster.members.length) return cluster;
+  const backed = total(members.map(item => ({ item, identifiers: new Set(identifiersOf(item)) })),
+    cluster.earlier ? { id: cluster.earlier, support: cluster.prior } : undefined);
+  return { ...backed, key: cluster.key };
+}
+
+function total(members: ReadonlyArray<{ item: Triaged; identifiers: ReadonlySet<string> }>, earlierMatch?: { id: string; support?: LessonSupport }): Cluster {
   const pulls = new Set<number>(), commits = new Set<string>(), reviewers = new Set<string>();
   const files = new Set<string>(), identifiers = new Set<string>();
   const sources = new Set<ClusterSource>();
@@ -297,8 +316,7 @@ function summarize(leader: Profile, members: Profile[], earlier: readonly Earlie
   }
   const strong = members.some(member => member.item.candidate.signal === "strong");
   const source: ClusterSource = sources.has("review") ? "review" : sources.has("history") ? "history" : "docs";
-  const category = [...categories].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
-  const earlierMatch = earlier.find(entry => compare(leader, earlierProfile(entry, leader.item, packageOf), common) === "same");
+  const category = [...categories].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? "one-off";
   for (const pull of earlierMatch?.support?.pulls ?? []) pulls.add(pull);
   for (const commit of earlierMatch?.support?.commits ?? []) commits.add(commit);
   for (const reviewer of earlierMatch?.support?.reviewers ?? []) reviewers.add(reviewer);
@@ -310,10 +328,10 @@ function summarize(leader: Profile, members: Profile[], earlier: readonly Earlie
     : strong ? "one PR with a strong signal" : "one PR, no strong signal";
   const ids = members.map(member => member.item.candidate.id).sort();
   return {
-    key: createHash("sha256").update(ids[0]!).digest("hex").slice(0, 24),
+    key: createHash("sha256").update(ids[0] ?? "").digest("hex").slice(0, 24),
     members: members.map(member => member.item), pulls: [...pulls].sort((a, b) => a - b), commits: [...commits].sort(),
     reviewers: reviewers.size, reviewerKeys: [...reviewers].sort(), support, strong, source, category, files: [...files].sort(), identifiers: [...identifiers].sort(),
-    ...(earlierMatch ? { earlier: earlierMatch.id } : {}), decision, why,
+    ...(earlierMatch ? { earlier: earlierMatch.id, ...(earlierMatch.support ? { prior: earlierMatch.support } : {}) } : {}), decision, why,
   };
 }
 
