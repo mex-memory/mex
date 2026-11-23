@@ -271,11 +271,16 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 		if snap == nil {
 			continue
 		}
-		added := boundedText(v.added, 32768)
+		// A Write sends the whole file. The prefix a hunk is bounded to would
+		// hide a pattern added further down, while the file compared against
+		// is read much further.
+		limit := 32768
 		old := v.removed
 		if v.name == contract.ToolWrite {
+			limit = bumpOldBytes
 			old = currentText(v.path)
 		}
+		added := boundedText(v.added, limit)
 		for _, m := range matchEdit(snap, v.rel, added, old) {
 			m.project, m.check = v.project, v.checkout
 			out = append(out, m)

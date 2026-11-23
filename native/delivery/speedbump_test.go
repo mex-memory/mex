@@ -86,6 +86,20 @@ func TestSpeedBumpOnlyWhenTheEditIntroducesThePattern(t *testing.T) {
 	}
 }
 
+func TestSpeedBumpSeesAPatternPastThePrefixOfALargeWrite(t *testing.T) {
+	f := newFixture(t)
+	datesRule(f)
+	f.start("startup")
+	// Farther down than the prefix a hunk is bounded to, in a file the bump still reads.
+	old := strings.Repeat("x", 40<<10)
+	p := f.file("apps/api/big.ts", old+"\n")
+	content := old + "\nimport m from 'moment'\n"
+	r := preEdit(f, contract.Tool{Name: contract.ToolWrite, RawName: "Write", Input: contract.ToolInput{Path: p, Content: &content}})
+	if r.Decision != contract.Deny {
+		t.Fatalf("a pattern added past the prefix of a large write was not stopped: %+v", r)
+	}
+}
+
 func TestSpeedBumpNeverForWeakOrOutOfScopeRules(t *testing.T) {
 	cases := map[string]struct {
 		rule func(*spec)
