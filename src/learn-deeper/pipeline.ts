@@ -299,6 +299,7 @@ function linters(tree: PinnedTree): string[] {
 
 function proofDropReason(reason: string): string {
   if (reason.includes("verbatim quote")) return "unverified-claim";
+  if (reason.includes("backs the claim")) return "one-weak-source";
   if (reason.includes("nothing today")) return "no-scope";
   if (reason.includes("maintainer")) return "no-maintainer-reason";
   if (reason.includes("restates")) return "restated-source";
@@ -317,7 +318,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   if (saved) {
     for (const [counted, n] of Object.entries(saved.counts)) add(state.counts, counted, n);
     for (const gap of saved.gaps) input.gaps.add(gap);
-    return saved.accepted;
+    return saved.accepted + await writeUnbacked(input, state, name);
   }
   const refusals = reviewRefusals(context.writer, project, plan);
   const allowed = clusters.filter(cluster => !refusals.cluster(cluster));
@@ -352,6 +353,8 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
       if (index >= 0 && !again.dropped && (proofs[index]!.dropped || again.when.length >= proofs[index]!.when.length)) proofs[index] = again;
     }
     const model = repair?.model ?? first.model;
+    const unbacked = proofs.filter(proof => !proof.dropped).flatMap(proof => proof.unbacked);
+    if (unbacked.length) save(context, `${name}.unbacked`, unbacked);
     const routed = proofs.map(proof => ({ proof, routed: routeEntry(proof, plan.origin, model) }));
     const team = input.weekly ? await readTeamCoverage(plan.checkout, plan.head, plan.since) : undefined;
     const duplicate = await existingKnowledge(deps.tree);
@@ -517,17 +520,18 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   });
 
   const firstPass = await verify();
-  if (firstPass.failing === undefined) return firstPass.acceptedCount;
+  if (firstPass.failing === undefined) return firstPass.acceptedCount + await writeUnbacked(input, state, name);
   const current = reviewRefusals(context.writer, project, plan);
   const failing = firstPass.failing.filter(proof => !current.cluster(proof.cluster) && !current.claim(proof.claim));
-  if (!failing.length) return (await verify({ entries: [], model: first.model })).acceptedCount ?? 0;
+  if (!failing.length) return ((await verify({ entries: [], model: first.model })).acceptedCount ?? 0) + await writeUnbacked(input, state, name);
   let repair = { entries: [] as WriterEntry[], model: first.model };
   // Close the staged proof tree before opening the model's separate, empty workspace.
   try {
     const answer = await call(input, `${name}.repair`,
-      repairPrompt(failing.map(proof => ({ cluster: proof.cluster, entry: proof.draft, failures: proof.failures })), writerContext), "best", failing.length);
+      // The writer's pair numbers are those of the whole cluster it was shown.
+      repairPrompt(failing.map(proof => ({ cluster: byKey.get(proof.draft.cluster)!, entry: proof.draft, failures: proof.failures })), writerContext), "best", failing.length);
     add(counts, "tokens.repair", answer.tokens);
-    repair = { entries: parseWriter(answer.text, failing.map(proof => proof.cluster)).entries, model: answer.model };
+    repair = { entries: parseWriter(answer.text, failing.map(proof => byKey.get(proof.draft.cluster)!)).entries, model: answer.model };
     add(counts, "repaired", repair.entries.length);
   } catch (error) {
     if (error instanceof AgentActive || error instanceof ModelWaitError && error.reason !== "cap") throw error;
@@ -535,7 +539,20 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
       : "The repair turn could not run. Only the proven parts were kept.");
   }
   const checked = await verify(repair);
-  return checked.acceptedCount ?? 0;
+  return (checked.acceptedCount ?? 0) + await writeUnbacked(input, state, name);
+}
+
+/** Members a written rule didn't rest on: grouped with what they don't say, they may hold a lesson of their own. One round only. */
+async function writeUnbacked(input: PipelineInput, state: PipelineState, name: string): Promise<number> {
+  if (name.endsWith(".own")) return 0;
+  // A member already written early backs the rule it was written for: it isn't left over.
+  const early = new Set(load<string[]>(input.context, "early.members") ?? []);
+  const items = (load<Triaged[]>(input.context, `${name}.unbacked`) ?? []).filter(item => !early.has(item.candidate.id));
+  if (!items.length) return 0;
+  const refusals = reviewRefusals(input.context.writer, input.context.job.project_id!, input.plan);
+  const clusters = clusterLessons(items, { earlier: refusals.earlier }).filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs");
+  if (!load(input.context, `${name}.own.done`)) add(state.counts, "cluster.unbacked", items.length);
+  return writeUnit(input, state, `${name}.own`, clusters);
 }
 
 /** Stage the pinned files the proof and the gate read, with a file index that counts learned literals. */

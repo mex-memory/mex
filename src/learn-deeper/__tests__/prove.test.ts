@@ -64,11 +64,13 @@ function clusterOf(candidates: Candidate[], lesson = "Log through `apiLogger`, n
 
 function draft(cluster: Cluster, over: Partial<WriterEntry> = {}): WriterEntry {
   const id = cluster.members[0]!.candidate.id;
+  const everyone = cluster.members.filter(member => member.candidate.text.includes("Use apiLogger instead.")).slice(0, 4)
+    .map(member => ({ id: member.candidate.id, quote: "Use apiLogger instead." }));
   return {
     cluster: cluster.key, route: "code-rule", kind: "rule", claim: "Log through apiLogger in packages/api, not console.log.",
     why: "console.log skips the structured logs.",
     clauses: [
-      { text: "Log through apiLogger in packages/api, not console.log.", quotes: [{ id, quote: "Use apiLogger instead." }] },
+      { text: "Log through apiLogger in packages/api, not console.log.", quotes: everyone.length ? everyone : [{ id, quote: "Use apiLogger instead." }] },
       { text: "console.log skips the structured logs.", quotes: [{ id, quote: "it skips our structured logs" }] },
     ],
     scope: ["packages/api/**"], when: [{ type: "anti", match: "literal", pattern: "console.log(" }],
@@ -260,6 +262,27 @@ describe("proving a learned rule", () => {
     // Proven against the code, one reviewer is enough.
     const proven = routeEntry(await proveEntry(draft(solo), solo, context()), plan, model);
     expect("dropped" in proven ? proven.dropped : [proven.status, proven.proven]).toEqual(["active", true]);
+  });
+
+  it("counts only the members whose quotes back the claim, and hands back the rest", async () => {
+    const other = thread(40, "packages/api/src/orders.ts", { reviewers: ["r2"], text: "Please sort these imports. Use apiLogger instead." });
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts"), other]);
+    expect([cluster.support, cluster.reviewers, cluster.decision]).toEqual([2, 2, "write"]);
+    // The writer rests the claim on one of the two: the other was grouped with it, but says something else.
+    const only = cluster.members.find(member => member.candidate.pull === 3)!.candidate.id;
+    const entry = draft(cluster, { when: [], fix: undefined, clauses: [{ text: "Log through apiLogger in packages/api, not console.log.", quotes: [{ id: only, quote: "Use apiLogger instead." }] }] });
+    const proof = await proveEntry(entry, cluster, context());
+    expect([proof.cluster.key, proof.cluster.support, proof.cluster.reviewers]).toEqual([cluster.key, 1, 1]);
+    expect(proof.unbacked.map(member => member.candidate.pull)).toEqual([40]);
+    const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect([routed.status, routed.proposal.label]).toEqual(["proposed", "Learned from 1 PR, 1 maintainer"]);
+    expect(routed.sources.map(source => source.pull)).toEqual([3]);
+    // A weak single source is dropped, however many were grouped with it.
+    const weak = clusterOf([thread(3, "packages/api/src/users.ts", { signal: "weak" }), thread(40, "packages/api/src/orders.ts", { signal: "weak" })]);
+    const one = weak.members[0]!.candidate.id;
+    expect((await proveEntry(draft(weak, { clauses: [{ text: "Log through apiLogger in packages/api, not console.log.", quotes: [{ id: one, quote: "Use apiLogger instead." }] }] }), weak, context())).dropped)
+      .toMatch(/without a strong signal/u);
   });
 
   it("drops a ruled-out lesson without a maintainer's contrastive reason", async () => {
