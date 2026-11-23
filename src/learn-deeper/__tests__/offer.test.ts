@@ -88,7 +88,8 @@ it("prints the normal estimate and measured source counts through the non-intera
   expect(offer.mock.calls.flat()).toEqual([]);
   expect(confirm).toHaveBeenCalledTimes(1);
   const [quote, details] = confirm.mock.calls[0]!;
-  expect(quote).toContain("Estimate 89,964 tokens · ceiling 134,946 tokens.");
+  expect(quote).toContain("Estimate 208,534 tokens · ceiling 312,801 tokens.");
+  expect(details).toContain("Cheap model checks compare lessons and verify supporting quotes.");
   expect(details).toContain("Counted 5 merged or closed pull requests, 0 reverts and past fixes, and 1 doc or decision record.");
   expect(details).toContain("Counted 10 closed issues for the issues trial.");
 

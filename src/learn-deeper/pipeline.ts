@@ -1,6 +1,6 @@
 /**
  * Learn deeper v2, phase by phase: harvest (no model) -> triage (cheap) -> first rules early -> cluster
- * (no model) -> write, prove, repair once, route and publish (best) -> finish.
+ * (cheap comparisons) -> write, judge quotes, prove, repair once, route and publish -> finish.
  *
  * Each `runBatch` does one bounded unit, so a restart redoes at most one unit. Every model reply is saved
  * before its result is used, so an interruption never pays for the same call twice. All raw text the run
@@ -29,7 +29,7 @@ import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/co
 import type { BatchContext } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
 import { shortHash } from "../record/project.js";
-import { applyDocQuota, clusterLessons, matchEarlier, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
+import { applyDocQuota, earlierCandidates, earlierClaim, earlierPair, planClusters, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
 import { procedureProposal, procedureSamples, type ProcedureSample } from "./procedures.js";
@@ -38,7 +38,8 @@ import { harvestBatch } from "./harvest/index.js";
 import { networkGroups, networkProofKey, networkRowKey, readNetworkGroups } from "./network-proof.js";
 import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harvest/types.js";
 import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
-import { gitHistory, proveEntry, type ProofContext, type ProofResult } from "./prove.js";
+import { gitHistory, proveEntry, quoteChecks, type ProofContext, type ProofJudgment, type ProofResult } from "./prove.js";
+import { LESSON_PAIR_BATCH, MEANING_PURPOSE, meaningPrompt, meaningVerdicts, type MeaningQuestion, type MeaningVerdict } from "./meaning.js";
 import { routeEntry } from "./route.js";
 import { parseTriage, triageCounts, triagePrompt, type TriageResult } from "./triage.js";
 import { packClusters, parseWriter, repairPrompt, writerPrompt, type WriterContext, type WriterEntry } from "./write.js";
@@ -176,13 +177,15 @@ export function chunkCandidates(candidates: readonly Candidate[]): Candidate[][]
 }
 
 /** One model call under the run's consent: the approved ceiling, or weekly's automatic allowance. */
-interface Reply { text: string; model: WriterModel; tokens: number; lost?: true }
-async function call(input: PipelineInput, name: string, prompt: string, role: "cheap" | "best", rules: number): Promise<Reply> {
+interface Reply { text: string; model: WriterModel; tokens: number; lost?: true; promptHash?: string }
+async function call(input: PipelineInput, name: string, prompt: string, role: "cheap" | "best", rules: number, bindPrompt = false): Promise<Reply> {
   const { context, plan, deps, weekly } = input;
+  const promptHash = bindPrompt ? sourceDigest(prompt) : undefined;
   const saved = load<Reply>(context, `reply.${name}`);
   if (saved) {
     if (saved.lost) input.gaps.add("A paid model reply could not be recovered after an interruption.");
-    return saved;
+    // Earlier entries can change while a job is paused. A saved answer only describes its original questions.
+    return saved.promptHash === promptHash ? saved : { ...saved, text: "" };
   }
   const { writer, job } = context;
   const stage = `call.${name}`;
@@ -191,7 +194,7 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
     .get(job.id, started.lastBatch)) {
     // The runner recorded the charge but died before saving the answer.
     input.gaps.add("A paid model reply could not be recovered after an interruption.");
-    const reply: Reply = { text: "", lost: true, model: { id: "unknown", version: "unknown" }, tokens: Math.max(0, recordedModelSpend(writer, job.id) - started.spent) };
+    const reply: Reply = { text: "", lost: true, model: { id: "unknown", version: "unknown" }, tokens: Math.max(0, recordedModelSpend(writer, job.id) - started.spent), promptHash };
     save(context, `reply.${name}`, reply);
     return reply;
   }
@@ -205,12 +208,12 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   save(context, stage, { lastBatch, spent });
   const reply = await deps.tree.withCheckFiles(writer.location.home, job.id, [], async executionDirectory => {
     const output = await deps.model({
-      agent: plan.agent, setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
-      purpose: procedure ? "learn-deeper-procedure" : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
+      agent: plan.agent, setup: procedure || bindPrompt ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
+      purpose: procedure ? "learn-deeper-procedure" : bindPrompt ? MEANING_PURPOSE : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
       ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
     });
     const { writerModel } = await import("./job.js");
-    const reply: Reply = { text: output.text, model: writerModel(output), tokens: Math.max(0, recordedModelSpend(writer, job.id) - spent) };
+    const reply: Reply = { text: output.text, model: writerModel(output), tokens: Math.max(0, recordedModelSpend(writer, job.id) - spent), promptHash };
     save(context, `reply.${name}`, reply);
     return reply;
   });
@@ -225,6 +228,42 @@ async function retry(...[input, name, prompt, role, rules]: Parameters<typeof ca
     if (!(error instanceof ModelWaitError && error.reason === "cap")) throw error;
     return undefined;
   }
+}
+
+async function judgeMeaning(input: PipelineInput, counts: PipelineState["counts"], name: string, metric: "pairs" | "quotes",
+  questions: readonly MeaningQuestion[]): Promise<MeaningVerdict[] | undefined> {
+  if (!questions.length) return [];
+  const { context } = input;
+  const { writer, job } = context;
+  const spent = recordedModelSpend(writer, job.id);
+  const gap = `A lesson ${metric === "pairs" ? "comparison" : "evidence"} batch could not be judged.`;
+  const skipped = `unavailable.${name}`;
+  try {
+    const unavailable = load<{ tokens: number }>(context, skipped);
+    if (unavailable) { add(counts, `tokens.${metric}`, unavailable.tokens); input.gaps.add(gap); return; }
+    const reply = await call(input, name, meaningPrompt(questions), "cheap", 0, true);
+    add(counts, `tokens.${metric}`, reply.tokens);
+    const verdicts = meaningVerdicts(reply.text, questions);
+    if (!verdicts) input.gaps.add(gap);
+    return verdicts;
+  } catch {
+    const tokens = Math.max(0, recordedModelSpend(writer, job.id) - spent);
+    save(context, skipped, { tokens });
+    add(counts, `tokens.${metric}`, tokens);
+    input.gaps.add(gap);
+  }
+}
+
+async function groupLessons(input: PipelineInput, counts: PipelineState["counts"], name: string, items: readonly Triaged[],
+  earlier?: readonly EarlierLearned[]): Promise<Cluster[]> {
+  const plan = planClusters(items, { earlier });
+  const verdicts: Array<MeaningVerdict | undefined> = [];
+  for (let start = 0; start < plan.questions.length; start += LESSON_PAIR_BATCH) {
+    const questions = plan.questions.slice(start, start + LESSON_PAIR_BATCH);
+    const answers = await judgeMeaning(input, counts, `${name}.pairs.${start / LESSON_PAIR_BATCH}`, "pairs", questions);
+    if (answers) answers.forEach((answer, i) => { verdicts[start + i] = answer; });
+  }
+  return plan.resolve(verdicts);
 }
 
 type PriorLesson = EarlierLearned & { refused: boolean; waiting: boolean };
@@ -271,21 +310,20 @@ function reviewRefusals(writer: RecordWriter, project: string, plan: LearningPla
   const idRefused = (id: string | undefined) => !!id &&
     (refusedIds.has(id) || !!writer.setting(project, learnedRefusalKey(id)) || !!tombstone(writer, project, id));
   return {
-    earlier,
+    earlier, refused,
     claim: (text: string) => claims.has(claimHash(text)),
     /** Clearly the lesson someone refused: nothing is spent on it. */
     cluster(cluster: Cluster): boolean {
       const id = clusterEntryId(plan, cluster);
       return idRefused(cluster.earlier) || idRefused(id) || idRefused(writer.setting(project, clusterAliasKey(id)))
-        || cluster.members.some(member => claims.has(claimHash(member.triage.lesson)))
-        || refused.some(entry => matchEarlier(cluster, entry) === "same");
+        || cluster.members.some(member => claims.has(claimHash(member.triage.lesson)));
     },
     /**
      * Refused rules about the same thing, when this isn't clearly one of them. The lesson may be a different one,
      * so it is written, but the writer is told what was refused and the result waits for a tick.
      */
     related(cluster: Cluster): PriorLesson[] {
-      return refused.filter(entry => matchEarlier(cluster, entry) === "related").slice(0, 8);
+      return refused.filter(entry => cluster.relatedRefusals?.includes(entry.id)).slice(0, 8);
     },
     /** The trigger of a refused rule coming back under other words: it would stop the edits the person refused. */
     trigger(when: ReadonlyArray<{ type: string; pattern: string }> | undefined, scope: readonly string[]): boolean {
@@ -319,6 +357,35 @@ function proofDropReason(reason: string): string {
   if (reason.includes("restates")) return "restated-source";
   if (reason.includes("linter config")) return "already-enforced";
   return "no-check";
+}
+
+async function judgeDrafts(input: PipelineInput, counts: PipelineState["counts"], name: string, drafts: readonly WriterEntry[],
+  clusters: ReadonlyMap<string, Cluster>, current: ReturnType<typeof reviewRefusals>) {
+  const questions: MeaningQuestion[] = [];
+  const checks = drafts.map(draft => {
+    const cluster = clusters.get(draft.cluster)!;
+    const citations = quoteChecks(draft, cluster).flatMap(({ citations }) => citations.flatMap(({ citation, question }) => {
+      if (!question) return [];
+      return [{ citation, index: questions.push(question) - 1 }];
+    }));
+    const prior = current.earlier.find(entry => entry.id === cluster.earlier && !entry.refused && earlierClaim(entry) === cluster.earlierClaim);
+    const nominated = earlierCandidates(cluster, draft.claim, current.refused);
+    const lesson = cluster.members[0]!.triage.lesson;
+    const compare = (entry: EarlierLearned) => questions.push({ lesson: earlierPair(lesson, entry, draft.claim) }) - 1;
+    return { draft, citations, prior: prior && compare(prior), refused: nominated.map(compare) };
+  });
+  const verdicts = await judgeMeaning(input, counts, name, "quotes", questions);
+  const judgments = new Map<WriterEntry, ProofJudgment>();
+  const refused = new Set<WriterEntry>(), related = new Set<WriterEntry>();
+  for (const check of checks) {
+    judgments.set(check.draft, {
+      supportingQuotes: new Set(check.citations.filter(({ index }) => verdicts?.[index] === "supports").map(({ citation }) => citation)),
+      sameEarlier: check.prior !== undefined && verdicts?.[check.prior] === "same",
+    });
+    if (check.refused.some(index => verdicts?.[index] === "same")) refused.add(check.draft);
+    if (check.refused.some(index => verdicts?.[index] === "related")) related.add(check.draft);
+  }
+  return { judgments, refused, related, unavailable: verdicts === undefined };
 }
 
 /** Write, prove, repair once, route and publish one batch of clusters. */
@@ -361,21 +428,26 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   if (parsed.response !== "valid") input.gaps.add("A model batch returned no readable entries.");
   for (const item of parsed.rejected) add(counts, `writer-rejected.${item.reason}`);
   const areas = [...new Set(clusters.flatMap(cluster => [...cluster.files, ...cluster.members.flatMap(m => m.candidate.changedPaths ?? [])]))];
-  const verify = (repair?: { entries: WriterEntry[]; model: WriterModel }) => withProofContext(
+  const checkedRefusals = reviewRefusals(context.writer, project, plan);
+  const checkedDrafts = await judgeDrafts(input, counts, `${name}.quotes`, parsed.entries, byKey, checkedRefusals);
+  const verify = (repair?: { entries: WriterEntry[]; model: WriterModel; judged: Awaited<ReturnType<typeof judgeDrafts>> }) => withProofContext(
     input, [...parsed.entries, ...(repair?.entries ?? [])], areas, async (proofContext, checked) => {
-    const prove = (entry: WriterEntry) => proveEntry(entry, byKey.get(entry.cluster)!, proofContext);
+    const prove = (entry: WriterEntry, judged: Awaited<ReturnType<typeof judgeDrafts>>) =>
+      proveEntry(entry, byKey.get(entry.cluster)!, proofContext, judged.judgments.get(entry));
     const proofs: ProofResult[] = [];
-    for (const entry of parsed.entries) proofs.push(await prove(entry));
-    const failing = proofs.filter(proof => proof.failures.length);
-    if (failing.length && !repair) return { failing };
-    for (const entry of repair?.entries ?? []) {
-      const again = await prove(entry);
+    for (const entry of parsed.entries) proofs.push(await prove(entry, checkedDrafts));
+    const refusedDraft = (draft: WriterEntry) => checkedDrafts.refused.has(draft) || repair?.judged.refused.has(draft);
+    const failing = proofs.filter(proof => proof.failures.length && !refusedDraft(proof.draft));
+    if (failing.length && !repair && !checkedDrafts.unavailable) return { failing };
+    if (repair) for (const entry of repair.entries) {
+      const again = await prove(entry, repair.judged);
       const index = proofs.findIndex(proof => proof.draft.cluster === entry.cluster);
       // Keep the repair only when it proves at least as much as the first answer.
-      if (index >= 0 && !again.dropped && (proofs[index]!.dropped || again.when.length >= proofs[index]!.when.length)) proofs[index] = again;
+      if (!refusedDraft(entry) && index >= 0 && !again.dropped
+        && (proofs[index]!.dropped || again.when.length >= proofs[index]!.when.length)) proofs[index] = again;
     }
     const model = repair?.model ?? first.model;
-    const unbacked = proofs.filter(proof => !proof.dropped).flatMap(proof => proof.unbacked);
+    const unbacked = proofs.filter(proof => !proof.dropped && !refusedDraft(proof.draft)).flatMap(proof => proof.unbacked);
     if (unbacked.length) save(context, `${name}.unbacked`, unbacked);
     const routed = proofs.map(proof => ({ proof, routed: routeEntry(proof, plan.origin, model) }));
     const team = input.weekly ? await readTeamCoverage(plan.checkout, plan.head, plan.since) : undefined;
@@ -386,6 +458,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     const sources = new Map<Proposal, Candidate[]>();
     const routedOf = new Map<Proposal, { proof: ProofResult; proven: boolean }>();
     for (const { proof, routed: item } of routed) {
+      if (refusedDraft(proof.draft)) { add(counts, "cluster.forgotten"); continue; }
       if ("dropped" in item) {
         add(counts, "dropped");
         add(counts, `proof-dropped.${proofDropReason(item.dropped)}`);
@@ -397,7 +470,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
         continue;
       }
       // About something the person refused a rule on: a person decides, even when the code proves it.
-      if (near.has(proof.cluster.key)) item.proposal.status = "proposed";
+      if (near.has(proof.cluster.key) || checkedDrafts.related.has(proof.draft) || repair?.judged.related.has(proof.draft)) item.proposal.status = "proposed";
       if (team?.retired.has(claim) || team?.claimed.has(claim)) { add(counts, "team-covered"); continue; }
       if (!proof.cluster.earlier && duplicate(item.proposal.text, proof.claim)) {
         add(counts, "duplicate-existing");
@@ -409,11 +482,13 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
       sources.set(item.proposal, item.sources);
       routedOf.set(item.proposal, { proof, proven: item.proven });
       const id = proof.cluster.earlier;
+      // A stable candidate ID can already name an entry from a previous run.
+      // Writing over it still requires a same verdict for the final claim.
+      if (!id && before.has(clusterEntryId(plan, proof.cluster))) { add(counts, "duplicate-existing"); continue; }
       const raw = id && before.get(id);
       if (id && raw && !item.proven) {
         const prior = parseEntry(raw);
-        if (prior.mex.status === "active" && prior.mex.checks.some(check => check.kind === "fixture")
-          && claimHash(prior.mex.one_line) === claimHash(proof.claim)) {
+        if (prior.mex.status === "active" && prior.mex.checks.some(check => check.kind === "fixture")) {
           carry.set(id, { entry: prior, raw, proposal: item.proposal });
           continue;
         }
@@ -441,14 +516,21 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
           throw new Error("Learning lost its job before saving.");
         }
         const current = reviewRefusals(gate, project, plan);
+        const currentById = new Map(current.earlier.map(entry => [entry.id, entry]));
+        const newlyRefused = current.refused.filter(entry => !checkedRefusals.refused.some(old =>
+          old.id === entry.id && earlierClaim(old) === earlierClaim(entry)));
         blocked = new Set([...proposals, ...[...carry.values()].map(item => item.proposal)].filter(proposal => {
           const cluster = routedOf.get(proposal)!.proof.cluster;
+          const earlier = cluster.earlier && currentById.get(cluster.earlier);
+          const storedId = clusterEntryId(plan, cluster);
           return current.cluster(cluster) || current.claim(proposal.text) || current.claim(proposal.oneLine ?? "")
-            || current.trigger(proposal.anchors?.when, proposal.anchors?.scope ?? []);
+            || current.trigger(proposal.anchors?.when, proposal.anchors?.scope ?? [])
+            || (cluster.earlier ? !earlier || earlierClaim(earlier) !== cluster.earlierClaim : currentById.has(storedId));
         }));
-        // A rule refused while the writer ran: a lesson about the same thing is kept, but not switched on.
+        // A newly refused subject needs review if it appeared after the evidence judgment.
         for (const proposal of proposals) {
-          if (proposal.status !== "proposed" && !blocked.has(proposal) && current.related(routedOf.get(proposal)!.proof.cluster).length) held.add(proposal);
+          const { cluster, claim } = routedOf.get(proposal)!.proof;
+          if (proposal.status !== "proposed" && !blocked.has(proposal) && earlierCandidates(cluster, claim, newlyRefused).length) held.add(proposal);
         }
         if (blocked.size || held.size) throw new Error("The review changed before learning could save.");
       },
@@ -557,7 +639,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
   if (firstPass.failing === undefined) return firstPass.acceptedCount + await writeUnbacked(input, state, name);
   const current = reviewRefusals(context.writer, project, plan);
   const failing = firstPass.failing.filter(proof => !current.cluster(proof.cluster) && !current.claim(proof.claim));
-  if (!failing.length) return ((await verify({ entries: [], model: first.model })).acceptedCount ?? 0) + await writeUnbacked(input, state, name);
+  if (!failing.length) return ((await verify({ entries: [], model: first.model, judged: checkedDrafts })).acceptedCount ?? 0) + await writeUnbacked(input, state, name);
   let repair = { entries: [] as WriterEntry[], model: first.model };
   // Close the staged proof tree before opening the model's separate, empty workspace.
   try {
@@ -572,7 +654,8 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     input.gaps.add(error instanceof ModelWaitError ? "The allowance could not cover a repair. Only the proven parts were kept."
       : "The repair turn could not run. Only the proven parts were kept.");
   }
-  const checked = await verify(repair);
+  const judged = await judgeDrafts(input, counts, `${name}.repair.quotes`, repair.entries, byKey, checkedRefusals);
+  const checked = await verify({ ...repair, judged });
   return (checked.acceptedCount ?? 0) + await writeUnbacked(input, state, name);
 }
 
@@ -585,7 +668,7 @@ async function writeUnbacked(input: PipelineInput, state: PipelineState, name: s
   if (!items.length) return 0;
   // No earlier entry is matched, and the key is its own: these were grouped with a rule they didn't back, so they must
   // not be saved over it. The gate still drops a lesson that turns out to repeat one.
-  const clusters = clusterLessons(items).filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs")
+  const clusters = (await groupLessons(input, state.counts, `${name}.own`, items)).filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs")
     .map(cluster => ({ ...cluster, key: sourceDigest(`own:${cluster.key}`).slice(7, 31) }));
   if (!load(input.context, `${name}.own.done`)) add(state.counts, "cluster.unbacked", items.length);
   return writeUnit(input, state, `${name}.own`, clusters);
@@ -778,9 +861,18 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
         const byId = new Map(candidates.map(candidate => [candidate.id, candidate]));
         const strong: Triaged[] = outcome.results.filter(result => result.keep && byId.get(result.id)?.signal === "strong")
           .map(result => ({ candidate: byId.get(result.id)!, triage: result })).slice(0, PIPELINE_LIMITS.earlyRules);
-        const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
-        const clusters = clusterLessons(strong, { earlier: refusals.earlier })
-          .filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs" && !cluster.earlier && !refusals.cluster(cluster));
+        let grouped = load<{ clusters: Cluster[]; counts: PipelineState["counts"]; gaps: string[] }>(context, "early.grouped");
+        if (!grouped) {
+          const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
+          const counts: PipelineState["counts"] = {};
+          const clusters = (await groupLessons(input, counts, "early", strong, refusals.earlier))
+            .filter(cluster => cluster.decision !== "drop" && cluster.source !== "docs" && !cluster.earlier && !refusals.cluster(cluster));
+          grouped = { clusters, counts, gaps: [...input.gaps] };
+          save(context, "early.grouped", grouped);
+        }
+        const { clusters, counts, gaps } = grouped;
+        for (const [metric, n] of Object.entries(counts)) add(state.counts, metric, n);
+        for (const gap of gaps) input.gaps.add(gap);
         if (clusters.length) {
           progress(`Writing the first ${clusters.length} rules`);
           results = await writeUnit(input, state, "early", clusters);
@@ -805,7 +897,7 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       const early = new Set(load<string[]>(context, "early.members") ?? []);
       const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
       const waiting = new Set(refusals.earlier.filter(entry => entry.waiting).map(entry => entry.id));
-      const clusters = clusterLessons(items, { earlier: refusals.earlier });
+      const clusters = await groupLessons(input, state.counts, "cluster", items, refusals.earlier);
       for (const cluster of clusters) add(state.counts, `cluster.${cluster.decision}`);
       const eligible = clusters.filter(cluster => !refusals.cluster(cluster));
       add(state.counts, "cluster.forgotten", clusters.length - eligible.length);

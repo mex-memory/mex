@@ -210,7 +210,8 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     }));
     if (planWindow(windows, Date.now()).blocked) lines.push("Your agent's usage window needs to reset before model work can start.");
     const details = [...sources,
-      `Agent: ${agent === "claude" ? "Claude Code" : "Codex"} · ${plan.setup === "mixed" ? "cheap sorting, best writer" : "best model"}.`,
+      `Agent: ${agent === "claude" ? "Claude Code" : "Codex"} · ${plan.setup === "mixed" ? "cheap sorting, best writer" : "best sorting and writer"}.`,
+      "Cheap model checks compare lessons and verify supporting quotes.",
       "Each learned rule is checked against the code that prompted it before it's kept.",
       "Checked rules reach your sessions as learned, not shared. See `mex jobs` for progress and pause or cancel."];
     if (!await (options.confirm ?? ((lines, details) => askEnter(lines, details, write)))(lines, details)) return;

@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { PatternCandidate, PatternVerdict } from "../../knowledge/pattern-check.js";
 import { realPath } from "../../record/project.js";
-import { clusterLessons, type Cluster, type Triaged } from "../cluster.js";
+import { planClusters, type Cluster, type Triaged } from "../cluster.js";
 import type { PinnedTree } from "../git.js";
 import type { Candidate, Region } from "../harvest/types.js";
 import { PIPELINE_LIMITS } from "../pipeline.js";
-import { addedOccurrences, proveEntry, processConfirmed, type ProofContext } from "../prove.js";
+import { addedOccurrences, proveEntry as proveWithJudgment, processConfirmed, quoteChecks, type ProofContext } from "../prove.js";
 import { keptQuote, routeEntry } from "../route.js";
 import { parseTriage } from "../triage.js";
 import { packClusters, parseWriter, type WriterEntry } from "../write.js";
@@ -40,9 +40,11 @@ function tree(files: Record<string, string>): PinnedTree {
     read: async (p: string) => files[p] } as unknown as PinnedTree;
 }
 
+const loggingClaim = "Use apiLogger instead of console.log in the API.";
+const loggingReason = "The console logger skips our structured logs.";
 const HEAD = {
   "packages/api/src/users.ts": "import { apiLogger } from \"../log\";\nexport function list() { apiLogger.info(\"list\"); }\n",
-  "packages/api/src/orders.ts": "import { apiLogger } from \"../log\";\nexport function make() { apiLogger.info(\"make\"); }\n",
+  "packages/api/src/orders.ts": "import { apiLogger } from \"../log\";\nexport function make() { apiLogger.info(\"list\"); }\n",
   "packages/api/src/log.ts": "export const apiLogger = { info() {} };\n",
   "CONTRIBUTING.md": "# Contributing\n\n## Commits\n\nCommit messages start with a conventional prefix like fix: or feat:.\n",
 };
@@ -53,7 +55,7 @@ function thread(pull: number, file: string, over: Partial<Candidate> = {}): Cand
   return {
     id: `gh:thread:${pull}`, kind: "review-thread", link: `https://github.com/acme/app/pull/${pull}#discussion_r${pull}`,
     hash: sha(`thread ${pull}`), nodeIds: [`N${pull}`], at: `2026-0${pull % 9 + 1}-02T00:00:00Z`, pull, path: file,
-    text: "Please don't use console.log in the API: it skips our structured logs. Use apiLogger instead.",
+    text: loggingClaim + " " + loggingReason,
     code: { before, after, anchor: "  console.log(\"list\");" }, reviewers: ["r1"],
     weights: { actedOn: true, familiar: true, guidelineLink: false, generalising: true, smallPr: true, hotUnknown: false },
     signal: "strong", ...over,
@@ -62,24 +64,31 @@ function thread(pull: number, file: string, over: Partial<Candidate> = {}): Cand
 
 function clusterOf(candidates: Candidate[], lesson = "Log through `apiLogger`, not console.log, in packages/api."): Cluster {
   const items: Triaged[] = candidates.map(candidate => ({ candidate, triage: { id: candidate.id, keep: true, category: candidate.kind === "doc" ? "process" : "api-use", lesson } }));
-  const [cluster] = clusterLessons(items);
+  const [cluster] = planClusters(items).resolve();
   return cluster!;
 }
 
 function draft(cluster: Cluster, over: Partial<WriterEntry> = {}): WriterEntry {
   const id = cluster.members[0]!.candidate.id;
-  const everyone = cluster.members.filter(member => member.candidate.text.includes("Use apiLogger instead.")).slice(0, 4)
-    .map(member => ({ id: member.candidate.id, quote: "Use apiLogger instead." }));
+  const everyone = cluster.members.filter(member => member.candidate.text.includes(loggingClaim)).slice(0, 4)
+    .map(member => ({ id: member.candidate.id, quote: loggingClaim }));
   return {
-    cluster: cluster.key, route: "code-rule", kind: "rule", claim: "Log through apiLogger in packages/api, not console.log.",
-    why: "console.log skips the structured logs.",
+    cluster: cluster.key, route: "code-rule", kind: "rule", claim: loggingClaim,
+      why: loggingReason,
     clauses: [
-      { text: "Log through apiLogger in packages/api, not console.log.", quotes: everyone.length ? everyone : [{ id, quote: "Use apiLogger instead." }] },
-      { text: "console.log skips the structured logs.", quotes: [{ id, quote: "it skips our structured logs" }] },
+      { text: loggingClaim, quotes: everyone.length ? everyone : [{ id, quote: loggingClaim }] },
+      { text: loggingReason, quotes: [{ id, quote: loggingReason }] },
     ],
     scope: ["packages/api/**"], when: [{ type: "anti", match: "literal", pattern: "console.log(" }],
     fix: { pair: 0, start: 11, end: 11 }, examples: { flag: "console.log(user)", ok: "apiLogger.info(user)" }, aliases: [], ...over,
   };
+}
+
+function proveEntry(entry: WriterEntry, cluster: Cluster, context: ProofContext, unsupported: readonly string[] = []) {
+  // Recorded support for these proof fixtures. Specific negative verdicts are supplied by the test.
+  const supportingQuotes = new Set(quoteChecks(entry, cluster).flatMap(({ clause, citations }) =>
+    unsupported.includes(clause.text) ? [] : citations.map(({ citation }) => citation)));
+  return proveWithJudgment(entry, cluster, context, { supportingQuotes, sameEarlier: false });
 }
 
 const context = (over: Partial<ProofContext> = {}): ProofContext => ({
@@ -104,7 +113,7 @@ describe("proving a learned rule", () => {
     expect(proof.dropped).toBeUndefined();
     expect(proof.when.map(item => item.pattern)).toEqual(["console.log("]);
     expect(proof.fix).toMatchObject({ snippet: "  apiLogger.info(\"list\");", commit: "b".repeat(40), lines: "11-11" });
-    expect(proof.fixLiteral).toBe("apiLogger.info(");
+    expect(proof.fixLiteral).toBe('apiLogger.info("list");');
     const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
     if ("dropped" in routed) throw new Error(routed.dropped);
     const kinds = routed.proposal.checks!.map(check => `${check.kind}:${check.role}`);
@@ -113,6 +122,55 @@ describe("proving a learned rule", () => {
     expect(routed.proposal.fix?.snippet).toContain("apiLogger.info");
     expect(routed.proposal.label).toBe("Learned from 2 PRs, 1 maintainer");
     expect(routed.proposal.source.quote!.split(/\s+/u).length).toBeLessThanOrEqual(25);
+  });
+
+  it("stores a stop across root-level scopes, with exact baselines and a fix in its own file", async () => {
+    const path = "users.ts";
+    const cluster = clusterOf([thread(3, path)]);
+    const proof = await proveEntry(draft(cluster, { scope: [path, "orders.ts"] }), cluster, context({
+      tree: tree({ [path]: 'apiLogger.info("list");', "orders.ts": 'apiLogger.info("orders");' }),
+    }));
+    const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proven).toBe(true);
+    expect(routed.status).toBe("proposed");
+    expect(routed.proposal.checks!.filter(check => check.kind === "pattern").map(check => check.target)).toEqual([
+      { scope: path, pattern: 'apiLogger.info("list");', match: "literal", expect: "present" },
+      { scope: path, pattern: "console.log(", match: "literal", expect: "at-most" },
+      { scope: "orders.ts", pattern: "console.log(", match: "literal", expect: "at-most" },
+    ]);
+  });
+
+  it.each([
+    ["pitfall", "pitfall", "anti"],
+    ["decision", "decision", "anti"],
+    ["rule", "code-rule", "rejected"],
+    ["rule", "code-rule", "required"],
+  ] as const)("keeps %s/%s with only a %s as prose", async (kind, route, type) => {
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
+    const proof = await proveEntry(draft(cluster, {
+      kind, route, when: [{ type, match: "literal", pattern: "console.log(" }],
+    }), cluster, context());
+    const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proven).toBe(false);
+    expect(routed.proposal.anchors?.when).toBeUndefined();
+  });
+
+  it("stores a rejected decision trigger when its code passes contrast", async () => {
+    const path = "packages/api/src/users.ts";
+    const cluster = clusterOf([thread(3, path)]);
+    const proof = await proveEntry(draft(cluster, {
+      kind: "decision", route: "decision", scope: [path],
+      when: [{ type: "rejected", match: "literal", pattern: "console.log(" }],
+    }), cluster, context());
+    const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proven).toBe(true);
+    expect(routed.proposal.anchors?.when).toEqual([{ type: "rejected", match: "literal", pattern: "console.log(" }]);
+    expect(routed.proposal.checks).toContainEqual(expect.objectContaining({ kind: "pattern", role: "supporting",
+      target: { scope: path, pattern: "console.log(", match: "literal", expect: "at-most" },
+    }));
   });
 
   it("drops a pattern that also matches a fixed version, and says why for the repair turn", async () => {
@@ -136,7 +194,7 @@ describe("proving a learned rule", () => {
   });
 
 
-  it("keeps a pattern proven on one pair when another member shows the lesson in another shape, and stores only that pair", async () => {
+  it("drops an anti that misses a backed pair rather than omitting its fixture", async () => {
     const path = "packages/api/src/orders.ts";
     const other = thread(9, path, { code: {
       before: region(path, 4, "make()"),
@@ -144,13 +202,11 @@ describe("proving a learned rule", () => {
     } });
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts"), other]);
     const proof = await proveEntry(draft(cluster), cluster, context());
-    expect(proof.when).toHaveLength(1);
+    expect(proof.when).toEqual([]);
+    expect(proof.failures.join(" ")).toContain("failed contrast on pair");
     const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
     if ("dropped" in routed) throw new Error(routed.dropped);
-    const fixtures = routed.proposal.checks!.filter(check => check.kind === "fixture") as unknown as Array<{ target: { pairs: Array<{ path: string }>; proves: number[] } }>;
-    expect(fixtures).toHaveLength(1);
-    expect(fixtures[0]!.target.proves).toEqual([0]);
-    expect(fixtures[0]!.target.pairs.map(pair => pair.path)).toEqual(["packages/api/src/users.ts"]);
+    expect(routed.proposal.checks!.some(check => check.kind === "fixture")).toBe(false);
   });
 
   it("keeps the pattern of a fix that only removes code, and drops it when the code a fix introduced is gone today", async () => {
@@ -161,16 +217,16 @@ describe("proving a learned rule", () => {
       anchor: "  console.log(\"list\");",
     } });
     const cleanup = clusterOf([removal]);
-    const kept = await proveEntry(draft(cleanup, { fix: { pair: 0, start: 10, end: 11 }, examples: { flag: "console.log(user)", ok: "return rows" } }),
-      cleanup, context());
+    const kept = await proveEntry(draft(cleanup, { fix: { pair: 0, start: 11, end: 11 }, examples: { flag: "console.log(user)", ok: "return rows" } }),
+      cleanup, context({ tree: tree({ ...HEAD, [path]: "export function list() { return rows; }" }) }));
     expect(kept.when.map(item => item.pattern)).toEqual(["console.log("]);
-    expect(kept.fixLiteral).toBeUndefined();
+    expect(kept.fixLiteral).toBe("return rows;");
     // The fix called apiLogger.info, and nothing in scope calls it today: the team moved on.
     const moved = clusterOf([thread(3, path)]);
     const gone = await proveEntry(draft(moved), moved, context({ tree: tree({ ...HEAD,
       [path]: "export function list() { logger.write(\"list\"); }\n", "packages/api/src/orders.ts": "export function make() {}\n" }) }));
     expect(gone.when).toEqual([]);
-    expect(gone.failures.join(" ")).toMatch(/the code the fix introduced isn't in scope today/u);
+    expect(gone.failures.join(" ")).toMatch(/the fix needs a target in its reviewed file today/u);
   });
 
   it("requires the flag example to demonstrate the pattern", async () => {
@@ -243,10 +299,12 @@ describe("proving a learned rule", () => {
   it("removes an unsupported clause and drops an entry whose claim is invented", async () => {
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
     const invented = draft(cluster, { clauses: [
-      { text: "Log through apiLogger in packages/api, not console.log.", quotes: [{ id: cluster.members[0]!.candidate.id, quote: "Use apiLogger instead." }] },
+      { text: loggingClaim, quotes: [{ id: cluster.members[0]!.candidate.id, quote: loggingClaim }] },
       { text: "Logs are shipped to the billing team nightly.", quotes: [{ id: cluster.members[0]!.candidate.id, quote: "shipped to billing nightly" }] },
+      { text: loggingReason + " That breaks customer billing.", quotes: [{ id: cluster.members[0]!.candidate.id, quote: loggingReason }] },
     ] });
-    const proof = await proveEntry(invented, cluster, context());
+    const proof = await proveEntry(invented, cluster, context(), [loggingReason + " That breaks customer billing."]);
+    expect(proof.dropped).toBeUndefined();
     expect(proof.reasons).toEqual([]);
     const noClaim = draft(cluster, { clauses: [{ text: "Log through apiLogger.", quotes: [{ id: cluster.members[0]!.candidate.id, quote: "we always use apiLogger" }] }] });
     expect((await proveEntry(noClaim, cluster, context())).dropped).toMatch(/claim/u);
@@ -280,12 +338,14 @@ describe("proving a learned rule", () => {
   });
 
   it("counts only the members whose quotes back the claim, and hands back the rest", async () => {
-    const other = thread(40, "packages/api/src/orders.ts", { reviewers: ["r2"], text: "Please sort these imports. Use apiLogger instead." });
+    const other = thread(40, "packages/api/src/orders.ts", { reviewers: ["r2"], text: "Please sort these imports. Never use apiLogger instead of console.log in the API." });
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts"), other]);
     expect([cluster.support, cluster.reviewers, cluster.decision]).toEqual([2, 2, "write"]);
-    // The writer rests the claim on one of the two: the other was grouped with it, but says something else.
+    // The writer cites both members, but the second explicitly says the opposite.
     const only = cluster.members.find(member => member.candidate.pull === 3)!.candidate.id;
-    const entry = draft(cluster, { when: [], fix: undefined, clauses: [{ text: "Log through apiLogger in packages/api, not console.log.", quotes: [{ id: only, quote: "Use apiLogger instead." }] }] });
+    const entry = draft(cluster, { when: [], fix: undefined, clauses: [{ text: loggingClaim, quotes: [
+      { id: only, quote: loggingClaim }, { id: other.id, quote: "Never use apiLogger instead of console.log in the API." },
+    ] }] });
     const proof = await proveEntry(entry, cluster, context());
     expect([proof.cluster.key, proof.cluster.support, proof.cluster.reviewers]).toEqual([cluster.key, 1, 1]);
     expect(proof.unbacked.map(member => member.candidate.pull)).toEqual([40]);
@@ -296,22 +356,22 @@ describe("proving a learned rule", () => {
     // A weak single source is dropped, however many were grouped with it.
     const weak = clusterOf([thread(3, "packages/api/src/users.ts", { signal: "weak" }), thread(40, "packages/api/src/orders.ts", { signal: "weak" })]);
     const one = weak.members[0]!.candidate.id;
-    expect((await proveEntry(draft(weak, { clauses: [{ text: "Log through apiLogger in packages/api, not console.log.", quotes: [{ id: one, quote: "Use apiLogger instead." }] }] }), weak, context())).dropped)
+    expect((await proveEntry(draft(weak, { clauses: [{ text: loggingClaim, quotes: [{ id: one, quote: loggingClaim }] }] }), weak, context())).dropped)
       .toMatch(/without a strong signal/u);
   });
 
   it("drops a ruled-out lesson without a maintainer's contrastive reason", async () => {
-    const closed = thread(12, "packages/api/src/users.ts", { kind: "closed-pr", text: "Closing this one." });
+    const closed = thread(12, "packages/api/src/users.ts", { kind: "closed-pr", text: "The repo has one logger." });
     const cluster = clusterOf([closed], "Don't add a second logger package.");
-    const proof = await proveEntry(draft(cluster, { route: "ruled-out", kind: "decision", when: [], claim: "Don't add a second logger.",
-      clauses: [{ text: "Don't add a second logger.", quotes: [{ id: closed.id, quote: "Closing this one." }] }] }), cluster, context());
+    const proof = await proveEntry(draft(cluster, { route: "ruled-out", kind: "decision", when: [], claim: "The repo has one logger.",
+      clauses: [{ text: "The repo has one logger.", quotes: [{ id: closed.id, quote: "The repo has one logger." }] }] }), cluster, context());
     expect(proof.dropped).toMatch(/contrastive/u);
   });
 
   it("makes a confirmed process rule repo-wide and routes an unconfirmed one as scoped prose", async () => {
-    const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
+    const cluster = clusterOf([thread(3, "packages/api/src/users.ts", { text: "Commit messages start with a conventional prefix." })]);
     const process = await proveEntry(draft(cluster, { route: "process-rule", when: [], fix: undefined, claim: "Commit messages start with a conventional prefix.",
-      clauses: [{ text: "Commit messages start with a conventional prefix.", quotes: [{ id: cluster.members[0]!.candidate.id, quote: "Use apiLogger instead." }] }] }), cluster, context());
+      clauses: [{ text: "Commit messages start with a conventional prefix.", quotes: [{ id: cluster.members[0]!.candidate.id, quote: "Commit messages start with a conventional prefix." }] }] }), cluster, context());
     expect(process.scope).toEqual(["**"]);
     expect(processConfirmed({ claim: "Name handlers after their route.", why: "" })).toBe(false);
   });
@@ -319,7 +379,7 @@ describe("proving a learned rule", () => {
   it("anchors a doc lesson to its quoted passage, complete when the doc is the only evidence", async () => {
     const text = "Commit messages start with a conventional prefix like fix: or feat:.";
     const doc: Candidate = { id: "doc:CONTRIBUTING.md#commits", kind: "doc", link: "CONTRIBUTING.md", hash: sha(text), nodeIds: [], at: "2026-05-01T00:00:00Z",
-      path: "CONTRIBUTING.md", text, document: { headings: ["Contributing", "Commits"], consumerUsage: false }, reviewers: [],
+      path: "CONTRIBUTING.md", text: text.replace("with a", "with\n  a"), document: { headings: ["Contributing", "Commits"], consumerUsage: false }, reviewers: [],
       weights: { actedOn: false, familiar: false, guidelineLink: false, generalising: false, smallPr: false, hotUnknown: false }, signal: "weak" };
     const cluster = clusterOf([doc], "Commit messages use conventional prefixes.");
     const proof = await proveEntry(draft(cluster, { route: "process-rule", when: [], fix: undefined, scope: [], claim: "Commit messages start with a conventional prefix.",
@@ -412,14 +472,14 @@ describe("trials", () => {
     expect((await proveEntry(entry, cluster, context({ tree: tree(enabled) }))).dropped).toMatch(/already names no-console/u);
   });
 
-  it("turns a decision's rejected alternative into a rejected pattern only while nobody uses it", async () => {
-    const reason = thread(5, "packages/api/src/users.ts", { kind: "closed-pr", text: "We decided against moment: it is too large. We use date-fns instead." });
+  it("keeps a sourced alternative as prose until a rejected pattern passes contrast", async () => {
+    const reason = thread(5, "packages/api/src/users.ts", { kind: "closed-pr", text: "Dates use date-fns, not moment. We decided against moment because it is too large." });
     const cluster = clusterOf([reason], "Dates use date-fns, not moment.");
     const decision = draft(cluster, { route: "decision", kind: "decision", when: [], fix: undefined, claim: "Dates use date-fns, not moment.",
-      clauses: [{ text: "Dates use date-fns, not moment.", quotes: [{ id: reason.id, quote: "We use date-fns instead." }] }],
+      clauses: [{ text: "Dates use date-fns, not moment.", quotes: [{ id: reason.id, quote: "Dates use date-fns, not moment." }] }],
       alternatives: [{ option: "moment", reason: "too large", rejected: { match: "literal", pattern: "from 'moment'" } }] });
     const proof = await proveEntry(decision, cluster, context());
-    expect(proof.when).toEqual([{ type: "rejected", match: "literal", pattern: "from 'moment'", pairs: [], migration: false }]);
+    expect(proof.when).toEqual([]);
     const routed = routeEntry(proof, plan, model);
     if ("dropped" in routed) throw new Error(routed.dropped);
     expect(routed.proposal.text).toContain("Considered and ruled out: moment (too large).");
@@ -427,6 +487,6 @@ describe("trials", () => {
     const inUse = { ...HEAD, "packages/api/src/dates.ts": "import day from 'moment';\nimport x from 'moment'\n" };
     const reversed = await proveEntry(decision, cluster, context({ tree: tree({ ...inUse, "packages/api/src/old.ts": "import m from 'moment'" }) }));
     expect(reversed.when).toEqual([]);
-    expect(reversed.failures.join(" ")).toMatch(/in use today/u);
+    expect(reversed.alternatives).toEqual(proof.alternatives);
   });
 });
