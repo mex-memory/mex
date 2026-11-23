@@ -357,11 +357,17 @@ func (ev *Evaluator) urlCheck(c Check) CheckResult {
 		if row, ok := ev.urlSource(str(c.Target, "url"), captured); ok {
 			switch row.State {
 			case "same":
+				at, err := time.Parse(time.RFC3339Nano, row.At)
+				if err != nil || time.Since(at) > 14*24*time.Hour {
+					return CheckResult{Status: Floor, Reason: "the linked source check is stale"}
+				}
 				return CheckResult{Status: Pass, Now: captured}
 			case "edited":
 				return CheckResult{Status: Fail, Reason: "the linked source was edited"}
 			case "deleted":
 				return CheckResult{Status: Gone, Reason: "the linked source no longer exists"}
+			case "unavailable":
+				return CheckResult{Status: Floor, Reason: "the linked source could not be read"}
 			}
 		}
 	}

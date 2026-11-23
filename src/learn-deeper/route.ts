@@ -11,6 +11,7 @@
  * - every learned entry has at least one check.
  */
 import { createHash } from "node:crypto";
+import { slashPath } from "../file-index/glob.js";
 import { hasSecret } from "../knowledge/gates.js";
 import { KNOWLEDGE_LIMITS } from "../knowledge/entry.js";
 import type { Proposal, ProposedCheck } from "../knowledge/gate.js";
@@ -40,9 +41,10 @@ export function trimRegion(region: Region, lines: number = ROUTE_LIMITS.fixtureL
 
 /** The scope glob a single check uses: the one glob, or the common folder of several. */
 export function checkGlob(scope: readonly string[]): string | undefined {
-  if (scope.includes("**")) return undefined;
-  if (scope.length === 1) return scope[0];
-  return commonFolder(scope.map(glob => glob.replace(/\/\*\*.*$/u, "/x").replace(/\*.*$/u, "x"))) ?? undefined;
+  const paths = scope.map(slashPath);
+  if (paths.includes("**")) return undefined;
+  if (paths.length === 1) return paths[0];
+  return commonFolder(paths.map(glob => glob.replace(/\/\*\*.*$/u, "/x").replace(/\*.*$/u, "x"))) ?? undefined;
 }
 
 function primary(cluster: Cluster): Candidate {
@@ -129,7 +131,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
       const size = Buffer.byteLength(before.text) + Buffer.byteLength(after.text);
       if (bytes + size > ROUTE_LIMITS.fixtureBytes) return [];
       bytes += size;
-      return [{ path: pair.after.path, commit: pair.after.commit,
+      return [{ path: slashPath(pair.after.path), commit: pair.after.commit,
         before: { start: before.start, end: before.end, text: before.text, hash: before.hash },
         after: { start: after.start, end: after.end, text: after.text, hash: after.hash } }];
     });
@@ -147,12 +149,16 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
       checks.push({ kind: "pattern", role: "complete", target: { scope: glob, pattern: proof.fixLiteral, match: "literal", expect: "present" } } as ProposedCheck);
     }
     for (const item of stored) {
-      if (item.type === "anti" && item.match === "literal") {
+      if (item.match !== "literal") continue;
+      // Anti counts may only rise into a failure. A required form needs its own count so a migration can be measured.
+      if (item.type === "anti") {
         checks.push({ kind: "pattern", role: "supporting", target: { scope: glob, pattern: item.pattern, match: "literal", expect: "at-most" } } as ProposedCheck);
+      } else if (item.type === "required") {
+        checks.push({ kind: "pattern", role: "supporting", target: { scope: glob, pattern: item.pattern, match: "literal", expect: "present" } } as ProposedCheck);
       }
     }
   }
-  for (const scope of proof.scope) checks.push({ kind: "scope", role: "complete", target: { glob: scope } } as ProposedCheck);
+  for (const scope of proof.scope) checks.push({ kind: "scope", role: "complete", target: { glob: slashPath(scope) } } as ProposedCheck);
   const reviews = members.filter(candidate => candidate.link.startsWith("https://github.com/") && pullLink(candidate));
   for (const candidate of [...new Map(reviews.map(candidate => [`${candidate.link}\n${candidate.hash}`, candidate])).values()].slice(0, ROUTE_LIMITS.sourceChecks)) {
     checks.push({ kind: "source", role: "supporting", target: { url: candidate.link }, saw: { hash: candidate.hash } } as ProposedCheck);

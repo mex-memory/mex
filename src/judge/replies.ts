@@ -52,21 +52,37 @@ export function parseAnswers(text: string, ids: string[]): JudgeAnswer[] {
 }
 interface Attempt { value: ResolvedAnswer; errors?: Recording["errors"] }
 
-/** The judgement confirms the claim. Only the evaluator can mint new
- * observations. Edited anchors name the passage or source it just checked. */
+/** A failed check takes the observation the judge just made: the count, the quote or source hash, and file hashes. */
+function withObservedFiles(check: EntryCheck, paths: readonly string[] | undefined, inputs?: Record<string, string>): EntryCheck {
+  if (!paths?.length || !inputs) return check;
+  const files: Record<string, string> = { ...check.files };
+  let changed = false;
+  for (const path of paths) {
+    const hash = inputs[path];
+    if (typeof hash === "string" && hash !== files[path]) { files[path] = hash; changed = true; }
+  }
+  return changed ? { ...check, files } as EntryCheck : check;
+}
+
+export function rebaselineFailedCheck(check: EntryCheck, result: { status: string; now?: unknown; files_changed?: string[] } | undefined, inputs?: Record<string, string>): EntryCheck {
+  if (result?.status !== "fail") return check;
+  if (check.kind === "pattern" && typeof result.now === "number" && Number.isSafeInteger(result.now) && result.now >= 0) {
+    return withObservedFiles({ ...check, saw: { count: result.now } }, result.files_changed, inputs);
+  }
+  if (typeof result.now === "string" && check.kind === "quote") {
+    return withObservedFiles({ ...check, target: { ...check.target, exact: result.now } }, result.files_changed, inputs);
+  }
+  if (typeof result.now === "string" && check.kind === "source" && "url" in check.target) {
+    return withObservedFiles({ ...check, saw: { hash: result.now } }, result.files_changed, inputs);
+  }
+  return withObservedFiles(check, result.files_changed, inputs);
+}
+
 function renewAfterConfirmation(candidate: Candidate): KnowledgeEntry | undefined {
   const { entry } = candidate;
   if (!isLearnedEntry(entry.mex) || !candidate.checks.some(c => c.status === "fail")) return undefined;
   const observations = new Map(candidate.checks.map(result => [result.index, result]));
-  const checks = entry.mex.checks.map((check, index): EntryCheck => {
-    const result = observations.get(index);
-    if (result?.status !== "fail") return check;
-    if (check.kind === "pattern" && typeof result.now === "number") return { ...check, saw: { count: result.now } };
-    if (typeof result.now !== "string") return check;
-    if (check.kind === "quote") return { ...check, target: { ...check.target, exact: result.now } };
-    if (check.kind === "source" && "url" in check.target) return { ...check, saw: { hash: result.now } };
-    return check;
-  });
+  const checks = entry.mex.checks.map((check, index): EntryCheck => rebaselineFailedCheck(check, observations.get(index), candidate.inputs));
   try {
     const renewed = validateEntry({ ...entry, mex: { ...entry.mex, checks } });
     assertNoSecrets(renewed);
