@@ -21,6 +21,7 @@ import { indexDirectory } from "../file-index/store.js";
 import { registerLiterals } from "../knowledge/check.js";
 import { parseEntry, serializeEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { propose, type Proposal } from "../knowledge/gate.js";
+import { producerEntryId } from "../knowledge/producers.js";
 import { readNotes, snapshotNotes } from "../knowledge/personal-store.js";
 import { ModelWaitError, type runModel } from "../model-runner/index.js";
 import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/consent.js";
@@ -29,6 +30,8 @@ import { shortHash } from "../record/project.js";
 import { applyDocQuota, clusterLessons, type Cluster, type EarlierLearned, type Triaged } from "./cluster.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import type { PinnedTree } from "./git.js";
+import { hasDecisionsSection } from "./harvest/forge.js";
+import { procedureProposal, procedureSamples, type ProcedureSample } from "./procedures.js";
 import { harvestBatch } from "./harvest/index.js";
 import { networkGroups, networkProofKey, readNetworkGroups } from "./network-proof.js";
 import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harvest/types.js";
@@ -50,6 +53,8 @@ export const PIPELINE_LIMITS = {
 } as const;
 
 export const Phase = z.enum(["harvest", "triage", "cluster", "write", "finish"]);
+export const trialReceiptKey = (jobId: string) => `learning.deep.trials.${jobId}`;
+type TrialEntry = { id: string; issues?: number; linter?: true; alternatives?: number; procedure?: true };
 const Counts = z.record(z.string().max(64), z.number().int().nonnegative());
 export const PipelineState = z.object({
   phase: Phase,
@@ -61,6 +66,7 @@ export const PipelineState = z.object({
   batches: z.number().int().nonnegative(),
   written: z.number().int().nonnegative(),
   counts: Counts,
+  procedures: z.number().int().nonnegative().max(5).optional(),
 }).strict();
 export type PipelineState = z.infer<typeof PipelineState>;
 export const CURSOR_KEY = "learning.deep.cursor";
@@ -174,15 +180,17 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   }
   const spent = recordedModelSpend(writer, job.id);
   const estimate = promptEstimate(prompt, plan.agent, role === "cheap" ? 0 : rules);
-  if (!weekly && tokenCount(estimate) > plan.ceiling - spent) throw new ModelWaitError("cap", CEILING_WAIT);
+  // Procedure naming is a trial on the automatic allowance, not part of the consented quote.
+  const procedure = name.startsWith("procedure.");
+  if (!weekly && !procedure && tokenCount(estimate) > plan.ceiling - spent) throw new ModelWaitError("cap", CEILING_WAIT);
   if (weekly && sessionsActive(writer, deps.now())) throw new AgentActive();
   const lastBatch = Number(writer.db.prepare("SELECT max(id) id FROM model_batches WHERE job_id=?").get(job.id)?.id ?? 0);
   save(context, stage, { lastBatch, spent });
   const reply = await deps.tree.withCheckFiles(writer.location.home, job.id, [], async executionDirectory => {
     const output = await deps.model({
-      agent: plan.agent, setup: plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
-      purpose: role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
-      ...(weekly ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
+      agent: plan.agent, setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
+      purpose: procedure ? "learn-deeper-procedure" : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
+      ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
     });
     const { writerModel } = await import("./job.js");
     const reply = { text: output.text, model: writerModel(output), tokens: Math.max(0, recordedModelSpend(writer, job.id) - spent) };
@@ -348,6 +356,17 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
           const cluster = proposal && routedOf.get(proposal)?.proof.cluster;
           const support = cluster && { pulls: cluster.pulls.slice(-256), commits: cluster.commits.slice(-256),
             reviewers: (cluster.reviewerKeys ?? []).slice(-256) };
+          const proof = proposal && routedOf.get(proposal);
+          const issues = members.filter(candidate => candidate.kind === "issue").length;
+          const linter = proof?.proof.lint && !proof.proven
+            && item.entry.text.includes(`enable \`${proof.proof.lint.rule}\` in \`${proof.proof.lint.config}\`.`);
+          const alternatives = proof?.proof.alternatives.filter(({ option, reason }) =>
+            item.entry.text.includes(`Considered and ruled out: ${option} (${reason}).`)).length ?? 0;
+          if (issues || linter || alternatives) {
+            const record: TrialEntry = { id: item.entryId, ...(issues ? { issues } : {}),
+              ...(linter ? { linter: true } : {}), ...(alternatives ? { alternatives } : {}) };
+            set.run(project, key(context.job, `trial.${item.entryId}`), JSON.stringify(record));
+          }
           set.run(project, noteKey(item.entry.mex.id), makeNoteProof(plan, serializeEntry(item.entry), refs, day, support));
           saveSourceReads(gate, project, plan, refs);
           // The node group behind each URL check, for the weekly network pass. A check whose evidence came from an
@@ -475,6 +494,46 @@ function hasReviewHistory(plan: PipelineInput["plan"], state: PipelineState): bo
     || !!(state.cursor as HarvestCursor | undefined)?.sources.merged;
 }
 
+function saveTrialReceipt(context: Context, project: string, receipt: { counts: Record<string, number>; entries: TrialEntry[] }): void {
+  context.writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+    .run(project, trialReceiptKey(context.job.id), JSON.stringify(receipt));
+}
+
+async function writeProcedure(input: PipelineInput, project: string, index: number, sample: ProcedureSample): Promise<number> {
+  const { context, plan } = input;
+  const name = `procedure.${index}`;
+  const previous = load<number>(context, `${name}.done`);
+  if (previous !== undefined) return previous;
+  const id = producerEntryId("learn-deeper", JSON.stringify([plan.origin, "procedure", sample.roles]));
+  if (snapshotNotes(context.writer, project).files.has(id)) return 0;
+  const reply = await call(input, name, sample.prompt, "cheap", 0);
+  const proposal = procedureProposal(sample, reply.text, reply.model, plan);
+  if (!proposal) return 0;
+  let count = 0;
+  await withProofContext(input, [], sample.paths, async (_proof, checked) => propose([proposal], {
+    projectPath: plan.checkout, home: context.writer.location.home, ...checked,
+    validate(gate) {
+      const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(context.job.id);
+      if (live?.owner !== context.job.owner || live?.state !== "running") throw new Error("Learning lost its job before saving.");
+    },
+    onAccepted(gate, accepted) {
+      count = accepted.length;
+      const set = gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
+      for (const item of accepted) {
+        const reviewKey = reviewRowsKey(context.job.id);
+        const rows = reviewRows(gate, project, context.job.id);
+        rows.push({ entryId: item.entryId, claim: item.entry.mex.one_line, label: proposal.label!, support: sample.commits.length,
+          reviewers: 0, proven: false, status: "proposed", route: "procedure", signal: "weak", link: proposal.source.ref });
+        set.run(project, reviewKey, JSON.stringify(rows.slice(-200)));
+        set.run(project, key(context.job, `trial.${item.entryId}`), JSON.stringify({ id: item.entryId, procedure: true }));
+        set.run(project, noteKey(item.entryId), makeNoteProof(plan, serializeEntry(item.entry), []));
+      }
+      set.run(project, key(context.job, `${name}.done`), JSON.stringify(count));
+    },
+  }));
+  return count;
+}
+
 /** One bounded unit of the run. Returns the next state, or done. */
 export async function runPipelineBatch(input: PipelineInput): Promise<{ state: PipelineState; done: boolean; progress: string; results: number }> {
   const { context, plan, deps } = input;
@@ -491,6 +550,12 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       for (const candidate of batch.candidates) add(state.counts, `harvested.${candidate.kind}`);
       add(state.counts, "covered-sources", current.length - candidates.length);
       add(state.counts, "historical-docs", batch.candidates.length - current.length);
+      if (context.writer.setting(context.job.project_id!, "learning.prDecisions") === "true") {
+        for (const candidate of batch.candidates) {
+          if (candidate.kind !== "pr-text" && candidate.kind !== "closed-pr") continue;
+          add(state.counts, hasDecisionsSection(candidate.prText ?? "") ? "trial.pr.followed" : "trial.pr.ignored");
+        }
+      }
       state.cursor = batch.cursor;
       state.harvestDone = batch.done;
       if (!state.early && state.chunks) state.phase = "triage";
@@ -508,6 +573,8 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       save(context, `triage.${state.triaged}`, outcome.results);
       const { kept, dropped } = triageCounts(outcome.results);
       add(state.counts, "triage-kept", kept);
+      const issueIds = new Set(candidates.filter(candidate => candidate.kind === "issue").map(candidate => candidate.id));
+      add(state.counts, "trial.issues", outcome.results.filter(result => result.keep && issueIds.has(result.id)).length);
       for (const [category, n] of Object.entries(dropped)) add(state.counts, `triage-dropped.${category}`, n);
       add(state.counts, "triage-missing", outcome.missing.length);
       state.triaged++;
@@ -572,6 +639,30 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       return { state, done: false, progress: `${state.written} of ${state.batches} writer batches checked`, results };
     }
     case "finish": {
+      const project = context.job.project_id!;
+      if (plan.procedures && context.writer.setting(project, "learning.procedures") === "true") {
+        state.counts["trial.procedures"] ??= 0;
+        const existing = load<ProcedureSample[]>(context, "procedures");
+        const samples = existing ?? await procedureSamples(context.writer, project, deps.tree);
+        if (!existing) save(context, "procedures", samples);
+        const index = state.procedures ?? 0;
+        const sample = samples[index];
+        if (sample) {
+          progress(`Naming procedure ${index + 1} of ${samples.length}`);
+          const accepted = await writeProcedure(input, project, index, sample);
+          state.procedures = index + 1;
+          add(state.counts, "trial.procedures", accepted);
+          return { state, done: false, progress: `${index + 1} of ${samples.length} procedure samples checked`, results: accepted };
+        }
+      }
+      const entries = context.writer.db.prepare("SELECT value FROM settings WHERE scope=? AND substr(key,1,?)=? ORDER BY key")
+        .all(project, key(context.job, "trial.").length, key(context.job, "trial."))
+        .map(row => JSON.parse(String(row.value)) as TrialEntry);
+      add(state.counts, "trial.linter", entries.filter(entry => entry.linter).length);
+      add(state.counts, "trial.alternatives", entries.reduce((total, entry) => total + (entry.alternatives ?? 0), 0));
+      const counts = Object.fromEntries(Object.entries(state.counts).filter(([name]) => name.startsWith("trial.")));
+      if (plan.harvest.issues) { counts["trial.issues"] ??= 0; state.counts["trial.issues"] ??= 0; }
+      if (entries.length || Object.keys(counts).length) saveTrialReceipt(context, project, { counts, entries });
       return { state, done: true, progress: "Done", results: 0 };
     }
   }

@@ -407,12 +407,21 @@ function followedFields({ reviewers, nodeIds, commentHashes }: Discussion): Pick
   return { reviewers, nodeIds, commentHashes };
 }
 
+const decisionsHeading = /^(?:#{1,4}\s*Decisions?\b.*|\*\*Decisions?\*\*:?[ \t]*)$/iu;
+
+export function hasDecisionsSection(body: string): boolean {
+  const lines = body.split(/\r?\n/u);
+  const start = lines.findIndex(line => decisionsHeading.test(line.trim()));
+  const content = lines.slice(start + 1).find(line => line.trim());
+  return start >= 0 && content !== undefined && !/^(?:#{1,6}\s|\*\*[^*]+\*\*:?\s*$)/u.test(content.trim());
+}
+
 /** Move a PR description's "Decisions" section (a heading, or a bold line) to the front; otherwise unchanged. */
 export function decisionsFirst(body: string): string {
   const lines = body.replace(/\r\n?/gu, "\n").split("\n");
   const heading = (line: string) => /^(#{1,4})\s/u.exec(line.trim())?.[1]?.length;
   const bold = (line: string) => /^\*\*[^*]+\*\*:?\s*$/u.test(line.trim());
-  const start = lines.findIndex(line => /^(?:#{1,4}\s*Decisions?\b.*|\*\*Decisions?\*\*:?\s*)$/iu.test(line.trim()));
+  const start = lines.findIndex(line => decisionsHeading.test(line.trim()));
   if (start <= 0) return body;
   const level = heading(lines[start]!) ?? 4;
   let end = start + 1;

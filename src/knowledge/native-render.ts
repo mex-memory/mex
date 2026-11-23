@@ -17,6 +17,8 @@ export const PRECEDENCE_LINE = "Existing code takes precedence over these notes.
 export const CAPS = { "claude-rules": 6 * 1024, "codex-agents": 8 * 1024, "copilot-instructions": 6 * 1024 } as const;
 export type NativeFormat = keyof typeof CAPS;
 
+const PR_DECISIONS_LINE = "- When you chose between options, add a short Decisions section to the PR description. Say what you chose, what you ruled out, and why.";
+
 const EVIDENCE_ORDER = ["person", "ci", "docs", "review", "mined", "observed"];
 
 /** Strongest first, so a cap drops the weakest. */
@@ -44,8 +46,10 @@ function frame(format: NativeFormat, area: string): { head: string; tail: string
 export interface Rendered { text: string; ids: string[]; dropped: string[]; }
 
 /** Render one file, dropping the weakest items that don't fit the format's cap. */
-export function renderNative(format: NativeFormat, area: string, candidates: Candidate[]): Rendered {
-  const { head, tail } = frame(format, area);
+export function renderNative(format: NativeFormat, area: string, candidates: Candidate[], prDecisions = false): Rendered {
+  const framed = frame(format, area);
+  const { tail } = framed;
+  const head = prDecisions ? framed.head + PR_DECISIONS_LINE + "\n" : framed.head;
   const ordered = [...candidates].sort(byStrength);
   const lines: string[] = [], ids: string[] = [], dropped: string[] = [];
   let bytes = Buffer.byteLength(head + tail);

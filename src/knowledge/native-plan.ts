@@ -65,7 +65,7 @@ function byArea(candidates: Candidate[]): Map<string, Candidate[]> {
   return new Map([...areas.entries()].sort(([a], [b]) => a.localeCompare(b)));
 }
 
-export function planNative(root: string, agents: readonly NativeAgent[], selected: Candidate[]): NativePlan {
+export function planNative(root: string, agents: readonly NativeAgent[], selected: Candidate[], prDecisions = false): NativePlan {
   const files: PlannedFile[] = [], notes: string[] = [];
   const taken = new Set<string>();
   const add = (file: PlannedFile) => {
@@ -75,6 +75,7 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
     if (file.dropped.length) notes.push(`${file.path}: ${file.dropped.length} entries left out to stay under the size cap.`);
   };
   for (const sharing of ["shared", "local"] as const) {
+    const decisions = prDecisions && sharing === "local";
     const mine = selected.filter(c => (c.level === "team") === (sharing === "shared"));
     for (const [area, group] of byArea(mine)) {
       const folder = area ? `${area}/` : "";
@@ -94,7 +95,7 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
           ];
           notes.push(`${path} ${reason}. ${fallbacks.filter(Boolean).join(" ")}`);
         } else {
-          const out = renderNative("codex-agents", area, agentsGroup);
+          const out = renderNative("codex-agents", area, agentsGroup, decisions);
           add({ path, format: "codex-agents", sharing, area, agents: ["codex"], ...out });
           codexCovers = out.ids.length > 0;
         }
@@ -105,7 +106,7 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
         if (!generatedAgents || learned.length) {
           const path = copilotPath(area, sharing);
           if (ownedByPerson(root, path)) notes.push(`${path} is yours, so MEX doesn't write into it.`);
-          else add({ path, format: "copilot-instructions", sharing, area, agents: ["copilot"], ...renderNative("copilot-instructions", area, generatedAgents ? learned : group) });
+          else add({ path, format: "copilot-instructions", sharing, area, agents: ["copilot"], ...renderNative("copilot-instructions", area, generatedAgents ? learned : group, decisions) });
         }
       }
       if (agents.includes("claude-code")) {
@@ -116,7 +117,7 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
         }
         const path = claudePath(area, sharing);
         if (ownedByPerson(root, path)) { notes.push(`${path} is yours, so MEX doesn't write into it.`); continue; }
-        add({ path, format: "claude-rules", sharing, area, agents: ["claude-code"], ...renderNative("claude-rules", area, claudeReadsAgents ? learned : group) });
+        add({ path, format: "claude-rules", sharing, area, agents: ["claude-code"], ...renderNative("claude-rules", area, claudeReadsAgents ? learned : group, decisions) });
       }
     }
   }

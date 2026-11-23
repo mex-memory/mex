@@ -79,7 +79,10 @@ export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions
   if (home && !rebuild.sharedOnly && mexOnHere(home, project.projectId)) candidates.push(...personalNotes(home, project.projectId, project.retired, project.root));
   const verdicts = candidates.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
   const { selected } = selectNative(candidates, verdicts);
-  const plan = planNative(project.root, agents, selected);
+  const reader = home ? openRecordReadOnly({ home }) : undefined;
+  let prDecisions: boolean;
+  try { prDecisions = reader?.setting(project.projectId, "learning.prDecisions") === "true"; } finally { reader?.close(); }
+  const plan = planNative(project.root, agents, selected, prDecisions);
   const unchecked = candidates.filter(c => c.entry.mex.checks.length && verdicts.get(`${c.level}/${c.entry.mex.id}`) !== "held").length;
   if (unchecked) plan.notes.push(`${unchecked} checked entries withheld until their current checks hold.`);
   if (rebuild.sharedOnly) plan.files = plan.files.filter(f => f.sharing === "shared");

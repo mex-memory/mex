@@ -514,11 +514,13 @@ it("quotes both calibration shapes using packed calls, prose-only triage and an 
 
 describe("PR descriptions", () => {
   it("reads a Decisions section first, so a long description's excerpt keeps it", async () => {
-    const { decisionsFirst } = await import("../harvest/forge.js");
+    const { decisionsFirst, hasDecisionsSection } = await import("../harvest/forge.js");
     const body = "Adds the export.\n\n## Testing\nRan the suite.\n\n## Decisions\n- Chose streaming over buffering: large exports ran out of memory.\n\n## Notes\nNone.";
     expect(decisionsFirst(body).startsWith("## Decisions\n- Chose streaming over buffering")).toBe(true);
     expect(decisionsFirst(body)).toContain("## Testing\nRan the suite.");
     expect(decisionsFirst("No sections here.")).toBe("No sections here.");
     expect(decisionsFirst("**Decisions**\nKeep the cache.\n")).toBe("**Decisions**\nKeep the cache.\n");
+    expect(hasDecisionsSection(decisionsFirst(body))).toBe(true);
+    expect(hasDecisionsSection("## Decisions\n\n## Tests\nRan unit tests.")).toBe(false);
   });
 });

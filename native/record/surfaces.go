@@ -213,6 +213,9 @@ func Acted(surface string, target SurfaceTarget, tool SurfaceTool) bool {
 	case "prompt-anchor", "prompt-vocabulary":
 		return (tool.Open || tool.Edit) && namedTouch()
 	case "read-pitfall", "read-risk", "edit", "area-digest":
+		if surface == "edit" && target.Origin == "learned-procedure" {
+			return tool.Edit && scopeTouch()
+		}
 		if !tool.Edit || !touch() {
 			return false
 		}

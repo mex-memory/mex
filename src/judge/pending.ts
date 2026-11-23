@@ -35,7 +35,7 @@ function restoreClaim(claim: string, target: string): boolean {
 }
 
 /** Queue first. Claim afterwards so a crash can never remove the only intent. */
-function consume(directory: string, name: string, expected: string): void {
+export function consume(directory: string, name: string, expected: string): void {
   const original = join(directory, name), claim = `${original}.${randomUUID()}.claim`;
   renameSync(original, claim);
   // An atomic Go replacement between our read and rename may be a newer edit.

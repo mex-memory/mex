@@ -114,3 +114,21 @@ Without a terminal (an agent, a script, CI) nothing is asked; the next `mex` in 
   ends; the rules, their proofs and the kept quote remain. Learned rules stay personal ("learned, not shared")
   until `mex share`, which needs two pull requests' evidence for a review rule.
 - Past-session learning is not part of learn deeper.
+
+## Trials
+
+Change the project trials with `mex config set <key> on|off --project`. The learning receipt keeps trial totals
+and the IDs of entries the trials saved. Delivery outcomes are counted separately from proposals.
+
+| Trial | Setting and default | Cost | How outcomes are counted |
+| --- | --- | --- | --- |
+| Prose checks after Stop | `learning.stopCheck`, off | One cheap call for up to three scoped rules and up to 12 KiB of diff. Runs when agents are idle, within the 3% automatic allowance | The next prompt gets each pointer once. Recall or a change to the flagged line counts as followed. A delivered pointer with neither counts as ignored when the observation ends |
+| Procedures from Git history | `learning.procedures`, off | Up to five cheap calls within the 3% automatic allowance. The estimate includes them when enabled | A procedure waits for a tick. After it fires on file creation, the delivery receipt counts a successful edit in another role as followed. A settled delivery without one counts as ignored |
+| Rejected alternatives | Included in learn deeper | Part of the writer call | The learning receipt counts alternatives present in the saved text. Speed bump receipts distinguish edits that heed the bump from explicit overrides by entry ID |
+| PR Decisions section | `learning.prDecisions`, off | No extra model call. The instruction adds one line to local generated rule files | Among PR descriptions read, count those with and without a nonempty Decisions section. The count describes adoption in that sample |
+| Linter suggestions | Included in learn deeper | Part of the writer call | The receipt counts saved suggestions to enable a linter rule. Speed bump outcomes can be read by entry ID when a bump fires |
+| Closed issues | `learning.deep.issues`, off | Qualifying issues spend from the learning estimate | The receipt counts issue sources kept after sorting. For saved entries with issue evidence, read the usual delivery receipts by entry ID |
+
+Stop records paths and rule IDs and returns before the background job runs. The job checks the diff in an empty
+private directory and keeps diff text in memory for the call. Each pointer stores the rule ID, location and line
+hash and reaches the agent on prompt submission.

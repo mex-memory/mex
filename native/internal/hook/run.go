@@ -332,6 +332,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	judgeReady := false
 	if ev.Kind == contract.Stop {
 		judgeReady = requestJudge(ev, recordDirectory, nil)
+		judgeReady = requestStopCheck(ev, h, recordDirectory, now) || judgeReady
 	}
 	canNotice := false
 	switch ev.Kind {
@@ -430,7 +431,24 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			reply.PersonLine += text
 		}
 	}
+	var completeStopPointer func(bool)
+	if ev.Kind == contract.Prompt && !failed && known && toModel.Context != adapter.ChannelNone && h.afterOutput != nil {
+		if pointer, complete := stopCheckPrompt(ev, recordDirectory, now); pointer != "" {
+			if reply.Context != "" {
+				reply.Context += "\n\n"
+			}
+			reply.Context += pointer
+			completeStopPointer = complete
+		}
+	}
 	out, dropped := profile.Render(ev, reply)
+	if completeStopPointer != nil {
+		if slices.Contains(dropped, "all") || slices.Contains(dropped, "context") {
+			completeStopPointer(false)
+		} else {
+			h.afterOutput(func() { completeStopPointer(true) })
+		}
+	}
 	if captureOn && h.afterOutput != nil && !failed {
 		first := ev.Kind == contract.SessionStart && ev.Source == "startup"
 		context := reply.Context

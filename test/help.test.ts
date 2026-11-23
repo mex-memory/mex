@@ -20,6 +20,11 @@ it("keeps compatibility commands runnable but out of top-level help", () => {
   for (const flag of ["--legacy", "--cli", "--browser", "--mode", "--dry-run", "--port", "--no-open", "--tool", "--yes", "--force"]) expect(setup.options.find(option => option.long === flag)?.hidden).toBe(true);
 });
 
+it("lists the project learning trials in config set help", () => {
+  const config = program.commands.find(command => command.name() === "config")!;
+  expect(config.commands.find(command => command.name() === "set")!.helpInformation()).toMatchSnapshot();
+});
+
 it("names a replacement for each removed command", () => {
   for (const message of Object.values(REMOVED_COMMANDS)) expect(message).toMatch(/;.*(?:mex |no replacement in 0\.9)/u);
   expect(REMOVED_COMMANDS.tui).toContain("mex status");

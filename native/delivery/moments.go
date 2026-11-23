@@ -357,7 +357,10 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 				out = append(out, candidate{item: it, moment: momentAnchor, tier: scopeTier(it, v.rel), rel: v.rel,
 					exempt: true, anchorRelease: true, anchorPaths: []string{v.rel}})
 			}
-			if prose || e.Kind != "decision" || !isEdit(v) {
+			// Past this point a learned entry reaches only the edit moments that carry its own proof: a decision's
+			// rejected pattern coming back, or a procedure's `creates` role. One delivered as prose (no pattern, or a
+			// pattern silenced as noisy) is done here.
+			if prose || e.Kind != "decision" && e.Kind != "procedure" || !isEdit(v) {
 				continue
 			}
 		}

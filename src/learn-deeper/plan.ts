@@ -43,6 +43,7 @@ export const Plan = z.object({
   estimate: z.number().int().positive(), ceiling: z.number().int().positive(),
   /** Learn deeper v2: the harvest plan (`harvest/types.ts` HarvestPlan). Its presence selects the v2 pipeline. */
   harvest: z.record(z.string(), z.unknown()).optional(),
+  procedures: z.literal(true).optional(),
 }).strict();
 export type LearningPlan = z.infer<typeof Plan>;
 
