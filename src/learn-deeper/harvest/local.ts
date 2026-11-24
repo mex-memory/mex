@@ -126,9 +126,11 @@ Promise<Omit<HarvestPlan["inventory"], "bands">> {
     else seen.count++;
   }
   const checkHeadings: HarvestPoint[] = [];
-  for (const [path, meta] of paths) {
+  // A guide can carry active policy even if nobody edited it in the review window.
+  const documentPaths = options.mode === "weekly" ? paths.keys() : tree.paths();
+  for (const path of documentPaths) {
     const kind = tree.has(path) && documentPathKind(path);
-    const point = { id: path, at: meta.at };
+    const point = { id: path, at: paths.get(path)?.at ?? options.since };
     if (kind === "heading") checkHeadings.push(point);
     else if (kind) local[kind].push(point);
   }

@@ -1,7 +1,7 @@
 /**
  * The learn-deeper review list (ticket part H): at the end of a run, the person sees what was learned
- * and keeps or drops each rule. Pre-ticked: rules corroborated by 2+ PRs or proven against the code that
- * prompted them. Unticked: one PR with a strong signal; they wait and are never delivered until ticked.
+ * and keeps or drops each rule. Active trials are pre-ticked and become permanent when saved.
+ * Proposed rules wait for a tick before delivery.
  * The replay shows rules that would have stopped an edit or appeared on a file touch.
  *
  * Only a person at a terminal is asked. Anyone else gets one line, and the next `mex` in a terminal asks.
@@ -42,7 +42,7 @@ type Decision = "keep" | "wait" | "drop";
 const PAGE_SIZE = 5;
 
 async function pending(writer: RecordWriter, projectId: string): Promise<Pending | undefined> {
-  const [{ reviewRows, reviewRowsKey }, { snapshotNotes }, { parseEntry, isLearnedEntry }, { learnedRefused, learnedReviewedKey, learnedWaitingKey }] = await Promise.all([
+  const [{ reviewRows, reviewRowsKey }, { snapshotNotes }, { parseEntry, isLearnedEntry }, { learnedRefused, learnedReviewedKey }] = await Promise.all([
     import("../learn-deeper/pipeline.js"), import("../knowledge/personal-store.js"), import("../knowledge/entry.js"), import("../knowledge/mutations.js")]);
   const jobs = writer.db.prepare(`SELECT id FROM jobs WHERE kind IN ('learn-deeper','learn-deeper-weekly') AND project_id=? AND state IN ('done','done with gaps','failed','cancelled')
     AND EXISTS (SELECT 1 FROM settings WHERE scope=jobs.project_id AND key=? || jobs.id AND value<>'[]')
@@ -54,8 +54,7 @@ async function pending(writer: RecordWriter, projectId: string): Promise<Pending
     const items: ReviewItem[] = [];
     for (const row of reviewRows(writer, projectId, id)) {
       const raw = notes.get(row.entryId);
-      if (!raw || tombstone(writer, projectId, row.entryId)
-        || (row.support < 2 && writer.setting(projectId, learnedWaitingKey(row.entryId)))) continue;
+      if (!raw || tombstone(writer, projectId, row.entryId)) continue;
       try {
         const entry = parseEntry(raw);
         if (entry.mex.status !== "retired" && isLearnedEntry(entry.mex) && !learnedRefused(writer, projectId, entry, raw)) items.push({ row, entry, raw });
@@ -209,13 +208,13 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
 /** Queue the check's recommendation alongside the person's other decisions. */
 async function verifyOne(context: ReviewListContext, entry: KnowledgeEntry, next: () => Promise<string>,
   out: (lines: string[]) => void, rewrites: Map<string, string>): Promise<Decision | "quit" | undefined> {
-  const [{ chooseAgent }, { verifyRule, VERIFY_ESTIMATE, VERIFY_CEILING, VERIFY_TURNS, VERIFY_TIMEOUT_MS }, { runModel, ModelRunError, ModelToolLimitError }, { gateEntry }, { references }] = await Promise.all([
+  const [{ chooseAgent }, { verifyRule, VERIFY_ESTIMATE, VERIFY_CEILING, VERIFY_TIMEOUT_MS }, { runModel, ModelRunError, ModelToolLimitError }, { gateEntry }, { references }] = await Promise.all([
     import("../learn-deeper/offer.js"), import("../learn-deeper/verify.js"), import("../model-runner/index.js"), import("../knowledge/gates.js"), import("../knowledge/references.js")]);
   const agent = chooseAgent(context.projectId);
   if (!agent) { out(["Checking a rule needs Claude Code or Codex on PATH."]); return undefined; }
   const claim = clean(entry.mex.one_line, context.mode.ascii);
   out([`Ask ${agent === "claude" ? "Claude Code" : "Codex"} to check "${claim}"?`,
-    `Read-only, up to ${VERIFY_TURNS} ${agent === "codex" ? "tool calls" : "turns"} or ${VERIFY_TIMEOUT_MS / 60_000} minutes. About ${VERIFY_ESTIMATE.toLocaleString("en-US")} tokens, estimated. The ceiling is ${VERIFY_CEILING.toLocaleString("en-US")} tokens; an answer over it is discarded.`,
+    `One read-only call with evidence from the checkout, up to ${VERIFY_TIMEOUT_MS / 60_000} minutes. About ${VERIFY_ESTIMATE.toLocaleString("en-US")} tokens, estimated. The ceiling is ${VERIFY_CEILING.toLocaleString("en-US")} tokens; an answer over it is discarded.`,
     "Enter checks it. q leaves the review. Any other key cancels the check."]);
   const consent = await next();
   if (consent === "q" || consent === "quit") return "quit";

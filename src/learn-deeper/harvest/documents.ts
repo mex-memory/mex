@@ -1,13 +1,14 @@
 import { posix } from "node:path";
-import { ruleFormat } from "../../knowledge/rule-files.js";
+import { GENERATED_MARK, ruleFormat } from "../../knowledge/rule-files.js";
 import { getTextContent, parseMarkdown } from "../../markdown.js";
 import { Reviewers } from "../reviewers.js";
 import { sourceDigest } from "../source.js";
+import { templatePath } from "./description.js";
 import { cleanText, excerpt, newCandidate, safePath, safeRaw, TEXT_BYTES, type Gaps } from "./evidence.js";
 import type { Candidate, HarvestPoint } from "./types.js";
 
 type DocKind = "adr" | "doc";
-const prose = /\.(?:mdx?|rst|adoc)$/iu;
+const prose = /\.(?:mdx?|rst|txt|adoc)$/iu;
 const excludedDocs = {
   sections: /^(?:codeofconduct|securitypolicy|licen[cs]es?|changelogs?|history|releasenotes?|funding|supportpolicy|(?:author|contributor)lists?|governance|(?:issue|pullrequest)templates?)$/iu,
   files: /^(?:security|support|authors?|contributors?)$/iu,
@@ -21,14 +22,17 @@ const consumer = /\b(?:install(?:ation|ing)?|quick[- ]?start|usage|using the pac
 export function documentPathKind(path: string): DocKind | "heading" | undefined {
   if (!safePath(path) || !prose.test(path)) return undefined;
   const segments = path.split("/");
-  if (segments.some((_, i) => ruleFormat(segments.slice(i).join("/")))
-    || /(?:^|\/)\.(?:cursor|claude)\/rules\/|(?:^|\/)\.github\/instructions\//u.test(path)
-    || segments.some(part => part.startsWith(".") || ["node_modules", "vendor"].includes(part))) return undefined;
   const name = posix.basename(path).replace(prose, "");
+  if (segments.some((_, i) => ruleFormat(segments.slice(i).join("/")))
+    || /^(?:agents(?:\.override)?|claude(?:\.local)?|gemini|copilot-instructions)$/iu.test(name)
+    || /(?:^|\/)\.(?:cursor|claude|mex)\/|(?:^|\/)\.github\/instructions\//iu.test(path)
+    || segments.some(part => ["node_modules", "vendor"].includes(part.toLowerCase()))) return undefined;
+  if (templatePath.test(path) || segments[0] === ".github" && segments.length === 2 && /^contributing/iu.test(name)) return "doc";
+  if (segments.some(part => part.startsWith("."))) return undefined;
   if (excludedDocs.files.test(docName(name))
     || [...segments.slice(0, -1), name].some(part => excludedDocs.sections.test(docName(part)))) return undefined;
   if (/(?:^|\/)(?:adrs?|decisions|rfcs)\//iu.test(path) || /adr/iu.test(name)) return "adr";
-  if (guides.test(name)) return "doc";
+  if (guides.test(name) || /^contributing/iu.test(name)) return "doc";
   if (/(?:^|\/)docs?\//iu.test(path)) return contributor.test(path.replace(prose, "").replace(/[\/._-]+/gu, " ")) ? "doc" : "heading";
   if (/^readme$/iu.test(name)) return "doc";
 }
@@ -81,6 +85,7 @@ export function documentCandidates(point: HarvestPoint, kind: DocKind, raw: stri
   const pathKind = documentPathKind(path);
   if (pathKind !== kind && (pathKind !== "heading" || kind !== "doc")) return [];
   // Check the whole file before splitting. A private marker or key can span section boundaries.
+  if (raw.includes(GENERATED_MARK)) return [];
   if (safeRaw(raw) === undefined) { gaps.withheld(false); return []; }
   const tree = headings(raw, path);
   if (pathKind === "heading" && !contributor.test(tree[0]?.name ?? "")) return [];
@@ -88,7 +93,7 @@ export function documentCandidates(point: HarvestPoint, kind: DocKind, raw: stri
   const counts = new Map<string, number>();
   const used = new Set<string>();
   const output: Candidate[] = [];
-  const readme = /(?:^|\/)readme\.(?:mdx?|rst|adoc)$/iu.test(path);
+  const readme = /^readme$/iu.test(posix.basename(path).replace(prose, ""));
   const hasContributorSection = tree.some(heading => contributor.test(heading.name));
   const title = tree[0]?.level === 1 ? tree[0].name : "";
   const slots = [{ level: 0, name: "", start: 0, end: 0 }, ...tree];

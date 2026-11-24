@@ -26,7 +26,7 @@ const ForgeSource = SourceRef.refine(source => {
   const url = /^https:\/\/(github\.com|gitlab\.com)\/([^?#\s]+?)(?:\/-)?\/(?:blob\/|pull\/|issues\/|merge_requests\/)[^?\s]+$/u.exec(source.link);
   return !!url && !!repository(url[1]!, url[2]!) && (source.id.startsWith("doc:") ? repoPath(source.id.slice(4).split("#", 1)[0]!)
     : /^(?:github:[a-z_-]+:\d+|gitlab:(?:note|description):\d+)$/u.test(source.id)
-      || url[1] === "github.com" && /^gh:(?:(?:pr|closed|issue):[1-9]\d*|thread:[A-Za-z0-9_+/=-]{1,200})$/u.test(source.id));
+      || url[1] === "github.com" && /^gh:(?:(?:pr|closed|issue):[1-9]\d*|(?:thread|conversation|review-summary):[A-Za-z0-9_+/=-]{1,200})$/u.test(source.id));
 });
 const Shared = z.object({ id: EntryIdSchema, claim: hash, sources: z.array(ForgeSource).max(8) }).strict();
 export type SharedCoverage = z.infer<typeof Shared>;

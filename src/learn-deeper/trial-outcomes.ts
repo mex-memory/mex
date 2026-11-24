@@ -1,8 +1,9 @@
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 
-export type TrialKind = "issues" | "linter" | "alternatives";
+export const LEARNED_TRIAL_LABEL = "Learned, trial. ";
+export type TrialKind = "learned" | "issues" | "linter" | "alternatives";
 export interface TrialDelivery { entryId: string; kind: TrialKind; acted: number; settled: number }
-export interface TrialReceiptEntry { id: string; issues?: number; linter?: boolean; alternatives?: number }
+export interface TrialReceiptEntry { id: string; learned?: boolean; issues?: number; linter?: boolean; alternatives?: number }
 
 /** Follow and ignore are counted from the delivery of that entry, after the window settles. */
 export function trialFollowCounts(rows: readonly TrialDelivery[]): Record<string, number> {
@@ -17,6 +18,7 @@ export function trialFollowCounts(rows: readonly TrialDelivery[]): Record<string
 
 export function trialKinds(entry: TrialReceiptEntry): TrialKind[] {
   const kinds: TrialKind[] = [];
+  if (entry.learned) kinds.push("learned");
   if (entry.issues) kinds.push("issues");
   if (entry.linter) kinds.push("linter");
   if (entry.alternatives) kinds.push("alternatives");
@@ -36,7 +38,7 @@ export function recordTrialDeliveryOutcomes(writer: RecordWriter): void {
       const rows: TrialDelivery[] = [];
       for (const entry of (parsed.entries ?? []).slice(0, 200)) {
         if (!entry || typeof entry.id !== "string") continue;
-        const kinds = trialKinds(entry);
+        const kinds = trialKinds(entry).filter(kind => kind !== "learned" || writer.setting(receipt.scope, "learning.deep.trial." + entry.id) === "trial");
         if (!kinds.length) continue;
         const found = hooks.all<{ acted: number; settled: number }>(`SELECT w.acted AS acted, w.settled AS settled FROM deliveries d
           JOIN surface_windows w ON w.delivery_id=d.id WHERE d.entry_id=? AND d.project_id=? LIMIT 32`, entry.id, receipt.scope);

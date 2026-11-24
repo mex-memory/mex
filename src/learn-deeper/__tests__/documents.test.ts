@@ -2,16 +2,16 @@ import { expect, it } from "vitest";
 import { docKind } from "../harvest/documents.js";
 
 it.each([
-  "docs/CODE_OF_CONDUCT.md", "SECURITY.md", ".github/PULL_REQUEST_TEMPLATE.md",
+  "docs/CODE_OF_CONDUCT.md", "SECURITY.md",
   ".github/ISSUE_TEMPLATE/bug.md", "docs/nested/code-of-conduct.md", "docs/policies/Security Policy.rst",
-  "docs/LICENCE.adoc", "docs/history.md", "docs/CHANGELOG/2.0.md", "docs/decisions/release-notes.mdx",
+  "docs/LICENCE.adoc", "docs/history.md", "docs/CHANGELOG/2.0.md", "docs/AGENTS.override.md", "docs/GEMINI.md", ".claude/workflows/development.md", ".cursor/rules/STYLE.txt", "docs/decisions/release-notes.mdx",
   "docs/funding.md", "docs/SUPPORT.md", "docs/AUTHORS.md", "docs/contributor_list.md", "docs/governance/process.md",
   "docs/ISSUE_TEMPLATE/bug.md", "docs/release_notes/upgrading.md",
 ])("excludes repository policy or boilerplate at %s", path => {
   expect(docKind(path)).toBeUndefined();
 });
 
-it.each(["docs/CONTRIBUTING.md", "docs/development/supporting-formats.md", "docs/contributors/testing.md",
+it.each(["docs/CONTRIBUTING.md", ".github/CONTRIBUTING.txt", ".github/PULL_REQUEST_TEMPLATE.md", "docs/internals/contributing/coding-style.txt", "docs/development/supporting-formats.md", "docs/contributors/testing.md",
   "docs/html/development/architecture/overview.rst", "MAINTAINING.md", "HACKING.md", "STYLE.md", "release-process.md"])(
   "keeps contributor guidance at %s", path => {
     expect(docKind(path)).toBe("doc");

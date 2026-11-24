@@ -20,9 +20,9 @@ import type { GateContext } from "../knowledge/gate.js";
 import { sanitizeText } from "../knowledge/gates.js";
 import { references, type References } from "../knowledge/references.js";
 import { linterRuleEnabled } from "./linter-config.js";
-import { backedBy, writerMembers, type Cluster, type Triaged } from "./cluster.js";
+import { draftSupport, type DraftSupport } from "./draft-evidence.js";
 import { command, type PatternStage, type PinnedTree } from "./git.js";
-import { contrastive, safePath } from "./harvest/evidence.js";
+import { safePath } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
 import { polarityMismatch, squash, unclippedQuote, readsAsComment, statesAction } from "./lesson-text.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
@@ -44,9 +44,7 @@ export type ProvenPattern = NonNullable<WriterEntry["when"]>[number] & {
 export interface ProvenFix { snippet: string; path: string; commit: string; lines: string }
 export interface ProofResult {
   /** Only the members whose quotes back the claim: the rule's support, label and sources come from these. */
-  cluster: Cluster;
-  /** Members that back nothing the rule claims: they may hold a lesson of their own. */
-  unbacked: Triaged[];
+  cluster: DraftSupport;
   draft: WriterEntry;
   pairs: EvidencePair[];
   /** The claim, and the clauses of the reason the evidence supports. */
@@ -93,17 +91,8 @@ function sources(candidate: Candidate): string[] {
     .filter((text): text is string => !!text);
 }
 
-type Citation = WriterEntry["clauses"][number]["quotes"][number];
-
-export interface ProofJudgment {
-  supportingQuotes: ReadonlySet<Citation>;
-  /** Eligible citations we did not need to ask about. They do not add support. */
-  skippedQuotes?: ReadonlySet<Citation>;
-  sameEarlier: boolean;
-}
-
 /** Only a verbatim, complete quote with compatible explicit polarity can be judged. */
-export function quoteChecks(draft: WriterEntry, cluster: Cluster) {
+export function quoteChecks(draft: WriterEntry, cluster: DraftSupport) {
   const byId = new Map(cluster.members.map(({ candidate }) =>
     [candidate.id, sources(candidate).map(raw => ({ raw, text: squash(raw) }))]));
   return draft.clauses.map(clause => ({
@@ -246,58 +235,13 @@ export function gitHistory(tree: PinnedTree) {
 }
 
 /** Prove one writer entry against its cluster's evidence and today's tree. */
-export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: ProofContext, judgment?: ProofJudgment): Promise<ProofResult> {
+export async function proveEntry(draft: WriterEntry, cluster: DraftSupport, context: ProofContext): Promise<ProofResult> {
   const failures: string[] = [];
-  const members = new Map(cluster.members.map((member: Triaged) => [member.candidate.id, member.candidate]));
-  const shown = writerMembers(cluster);
-  const pairs = evidencePairs([...shown, ...cluster.members.filter(member => !shown.includes(member))]);
-  const result: ProofResult = { cluster, unbacked: [], draft, pairs, claim: draft.claim, reasons: [], quotes: [], scope: [], when: [], historyAdds: 0,
+  const members = new Map(cluster.members.map(({ candidate }) => [candidate.id, candidate]));
+  const pairs = evidencePairs(cluster.members);
+  const result: ProofResult = { cluster, draft, pairs, claim: draft.claim, reasons: [], quotes: [], scope: [], when: [], historyAdds: 0,
     notAlwaysFollowed: false, alternatives: [], failures };
   const drop = (why: string) => ({ ...result, dropped: why });
-
-  const supported = quoteChecks(draft, cluster).map(({ clause, citations }) => {
-    const quotes = citations.filter(({ citation, question }) => question && judgment?.supportingQuotes.has(citation))
-      .map(({ citation }) => citation);
-    const missing = citations.filter(({ found }) => !found).length;
-    const label = `clause "${clause.text.slice(0, 80)}"`;
-    if (missing) failures.push(`${label}: ${missing} quote(s) not found in the cited evidence`);
-    const unsupported = citations.filter(({ citation, found, question }) =>
-      found && (!question || (!judgment?.supportingQuotes.has(citation) && !judgment?.skippedQuotes?.has(citation)))).length;
-    if (unsupported) failures.push(`${label}: ${unsupported} quote(s) don't support it`);
-    return { clause, quotes };
-  });
-  const claimClauses = supported.slice(0, claimClauseCount(draft));
-  // A PR must independently support the whole instruction before it adds support.
-  const backing = new Set([...members.keys()].filter(id => claimClauses.every(item => item.quotes.some(quote => quote.id === id))));
-  if (!claimClauses.length || !backing.size) {
-    failures.push("the claim isn't supported by a verbatim quote");
-    return drop("the claim isn't supported by a verbatim quote");
-  }
-  result.quotes = claimClauses.flatMap(item => item.quotes.filter(quote => backing.has(quote.id)));
-  result.unbacked = cluster.members.filter(member => !backing.has(member.candidate.id));
-  cluster = backedBy(cluster, backing, judgment?.sameEarlier === true);
-  result.cluster = cluster;
-  if (cluster.decision === "drop") return drop("one pull request without a strong signal backs the claim");
-  // Rebuild the reason from verified source clauses so a model-only explanation cannot reach delivery.
-  const reasons = supported.filter(item => !claimClauses.includes(item) && item.quotes.some(quote => backing.has(quote.id)) &&
-    overlap(item.clause.text, draft.claim) < 0.9);
-  result.reasons = reasons.map(item => item.clause.text);
-  result.quotes.push(...reasons.flatMap(item => item.quotes.filter(quote => backing.has(quote.id))));
-
-  // Post-filters: a restated PR title or commit subject adds nothing.
-  for (const candidate of members.values()) {
-    if (candidate.title && overlap(candidate.title, draft.claim) >= 0.9 && words(draft.claim).size <= words(candidate.title).size + 2) {
-      return drop("it restates a PR title");
-    }
-  }
-  // "Ruled out" and issue lessons need contrastive wording from a maintainer and a resolvable anchor.
-  const cited = cluster.members.map(member => member.candidate);
-  const ruledOut = draft.route === "ruled-out" || cited.every(candidate => candidate.kind === "issue" || candidate.kind === "closed-pr");
-  if (ruledOut && !cited.some(candidate => candidate.reviewers.length > 0 && contrastive(`${candidate.text} ${candidate.prText ?? ""}`))) {
-    return drop("a ruled-out lesson needs a maintainer's contrastive reason");
-  }
-
-  // An entry is an instruction. A described trap or a pasted comment gets one repair turn, then is dropped.
   if (!statesAction(draft.claim, draft.kind)) {
     failures.push("the claim states no action: say what an agent should do or avoid, in your own words");
     return drop("the claim states no action");
@@ -306,18 +250,39 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     failures.push("the claim is a pasted review comment: state the rule as an instruction and keep the comment as its quote");
     return drop("the claim is a pasted review comment");
   }
-
-  // Scope: today's files only. Process rules are repo-wide once their words confirm it.
-  if (draft.route === "process-rule" && processConfirmed({ claim: result.claim, why: result.reasons.join(" ") })) result.scope = ["**"];
+  const supported = quoteChecks(draft, cluster).map(({ clause, citations }) => ({
+    clause, quotes: citations.filter(item => item.question).map(item => item.citation),
+  }));
+  const claimCount = claimClauseCount(draft);
+  const claimClauses = supported.slice(0, claimCount);
+  const backing = new Set([...members.keys()].filter(id => claimClauses.every(item => item.quotes.some(quote => quote.id === id))));
+  if (!claimCount || !backing.size) return drop("the claim isn't supported by a verbatim quote");
+  const backed = cluster.members.filter(member => backing.has(member.candidate.id));
+  if (backed.length < cluster.members.length) {
+    const checked = draftSupport(backed.map(member => member.candidate), cluster.observations.filter(item => backing.has(item.id)), cluster.source, cluster.key);
+    if (cluster.observations.length && !cluster.earlier && checked.pulls.length < 2
+      && !checked.observations.some(item => item.pull !== undefined && item.stated_as_rule && item.response !== "disputed")) {
+      return drop("the checked quotes no longer supply enough support");
+    }
+    result.cluster = { ...cluster, ...checked };
+  }
+  result.quotes = claimClauses.flatMap(item => item.quotes.filter(quote => backing.has(quote.id)));
+  for (const { clause, quotes } of supported.slice(claimCount)) {
+    const eligible = quotes.filter(quote => backing.has(quote.id));
+    if (!eligible.length) continue;
+    const evidence = [...eligible.map(item => item.quote), ...result.cluster.observations.map(item => item.why)];
+    // A quote that supports the instruction can also carry its reason. Every sentence of
+    // the reason still needs evidence, so an extra invented sentence is left out.
+    const sentences = clause.text.split(/(?<=[.!?])\s+/u);
+    if (!sentences.every(sentence => evidence.some(item => overlap(sentence, item) >= 0.7
+      && words(sentence).size <= words(item).size + 2))) continue;
+    result.reasons.push(clause.text);
+    result.quotes.push(...quotes.filter(quote => backing.has(quote.id)));
+  }
+  if (draft.scope.length === 1 && draft.scope[0] === "**") result.scope = ["**"];
   else {
-    if (draft.route === "process-rule") failures.push("routed as scoped prose: its words don't read as a process rule");
-    const valid = draft.scope.filter(glob => glob !== "**" && !glob.startsWith("/") && !glob.includes("..") && scopeMatches(context.tree, glob));
-    if (valid.length < draft.scope.filter(glob => glob !== "**").length) failures.push("some scope globs match no file today");
-    const changed = [...new Set(cited.flatMap(candidate => candidate.path ? [candidate.path] : candidate.changedPaths ?? []))]
-      .filter(path => safePath(path) && context.tree.has(path));
-    const folder = commonFolder(changed);
-    result.scope = [...new Set(valid.length ? valid : folder ? [folder] : changed.slice(0, 12))];
-    if (!result.scope.length) return drop("nothing today for it to govern");
+    result.scope = [...new Set(draft.scope.filter(glob => !glob.startsWith("/") && !glob.includes("..") && scopeMatches(context.tree, glob)))];
+    if (result.scope.length !== draft.scope.length || !result.scope.length) return drop("some scope globs match no file today");
   }
 
   if (draft.symbol) {
@@ -336,7 +301,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     ? patternScopeCoverage(context.tree, result.scope, context.patternStage) : undefined;
   if (coverage?.unread.length) failures.push(unreadScopeFailure(coverage.unread));
   const run = context.patterns ?? checkPatterns;
-  if (wanted.some(item => item.type === stop) && !coverage?.unread.length && result.scope[0] !== "**") {
+  if (wanted.some(item => item.type === stop) && !coverage?.unread.length ) {
     const scope = result.scope.map(globToRegExp);
     const example = draft.examples;
     const inScope = proofPairs.length > 0 && proofPairs.every(({ pair }) => scope.some(glob => glob.test(pair.after.path)));
@@ -386,7 +351,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
         continue;
       }
       const common = contrast.find(verdict => verdict.common);
-      if (common && cluster.support < 2) {
+      if (common && result.cluster.support < 2) {
         failures.push(label + " is " + common.reason + ". Narrow the scope or remove this pattern.");
         continue;
       }
@@ -408,7 +373,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     if (log !== undefined) {
       result.historyAdds = Math.max(...replayed.map(item => addedOccurrences(log, item.pattern)));
       if (result.historyAdds > PROOF_LIMITS.historyAdds) {
-        if (cluster.support < 2) {
+        if (result.cluster.support < 2) {
           failures.push(`later commits added the anti-pattern ${result.historyAdds} times: the team doesn't hold to it`);
           result.when = result.when.filter(item => item.type === "required");
         } else result.notAlwaysFollowed = true;
@@ -458,7 +423,7 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   // rejected pattern with a contrasting code pair can stop edits.
   for (const alternative of draft.alternatives ?? []) {
     if ((draft.route === "decision" || draft.route === "ruled-out") &&
-        cited.some(candidate => [candidate.text, candidate.prText ?? ""].some(source =>
+        [...members.values()].some(candidate => [candidate.text, candidate.prText ?? ""].some(source =>
           squash(source).toLowerCase().split(/[.!?;](?=\s|$)/u).some(statement =>
             /\b(?:ruled out|decided against|rejected)\b/u.test(statement) &&
             statement.includes(squash(alternative.option).toLowerCase()) &&

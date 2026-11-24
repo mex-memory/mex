@@ -16,8 +16,9 @@ import { origin, PinnedTree, repoPath, revision } from "./git.js";
 import { hosts } from "./hosts.js";
 import { LEARN_COMMAND, LEARN_KIND, Plan, quoteCeiling,
   reviewWindow, type LearningPlan } from "./plan.js";
+import { censusLine } from "./harvest/estimate.js";
 import { procedureEstimate } from "./procedures.js";
-import { planHarvest } from "./harvest/index.js";
+import { previewHarvest, planHarvest } from "./harvest/index.js";
 import { harvestClient, savedCursor } from "./pipeline.js";
 
 type Print = (line: string) => void;
@@ -158,8 +159,11 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const access = await hosts[repo.host].access(forge);
     // GitLab review mining comes in 0.9.1; its repos still learn from local history and contributor docs.
     const issues = reader.setting(projectId, "learning.deep.issues") === "true";
-    const harvest = await planHarvest({ checkout: root, head, source: access.source, agent, ...window, issues },
-      { client: repo.host === "github.com" ? harvestClient(forge, access.source) : undefined, tree }, savedCursor(reader, projectId));
+    const harvestDeps = { client: repo.host === "github.com" ? harvestClient(forge, access.source) : undefined, tree };
+    const cursor = savedCursor(reader, projectId);
+    const inventory = await planHarvest({ checkout: root, head, source: access.source, agent, ...window, issues }, harvestDeps, cursor);
+    const harvest = await previewHarvest(inventory, harvestDeps, cursor);
+    const census = harvest.census!;
     const pulls = harvest.inventory.bands.reduce((sum, band) => sum + (band.source === "issue" ? 0 : band.count), 0);
     const closedIssues = harvest.inventory.bands.reduce((sum, band) => sum + (band.source === "issue" ? band.count : 0), 0);
     const local = harvest.inventory.local;
@@ -167,11 +171,11 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const docs = local.adr.length + local.doc.length;
     const procedures = reader.setting(projectId, "learning.procedures") === "true";
     const extra = procedures ? procedureEstimate(agent) : 0;
-    const hasSources = pulls + closedIssues + fixes + docs > 0 || procedures;
+    const hasSources = census.triageBatches > 0 || census.docBatches > 0 || procedures;
     const estimate = hasSources ? Math.max(1, harvest.estimate + extra) : 0;
     const ceiling = hasSources ? Math.max(1, harvest.ceiling + quoteCeiling(extra)) : 0;
     const gaps = harvest.gaps.map(gap => gap.slice(0, 180)).slice(0, 12);
-    const quote = [`Estimate ${count(estimate)} tokens · ceiling ${count(ceiling)} tokens.`];
+    const quote = [censusLine(census), `Estimate ${count(estimate)} tokens · ceiling ${count(ceiling)} tokens.`];
     if (procedures) quote.push("Includes an estimate for up to five cheap procedure calls within the 3% automatic allowance.");
     const sources = [
       `Counted ${counted(pulls, "merged or closed pull request", "merged or closed pull requests")}, ${counted(fixes, "revert or past fix", "reverts and past fixes")}, and ${counted(docs, "doc or decision record", "docs and decision records")}.`,
@@ -191,7 +195,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       for (const line of [...quote, ...sources]) write(line);
       return;
     }
-    const setup = options.modelSetup ?? "best-only";
+    const setup = options.modelSetup ?? "mixed";
     plan = Plan.parse({ checkout: root, head, origin: repo, source: access.source, visibility: access.visibility, agent,
       setup, ...window, preferred: preferredFolders(projectId, root), pulls: [], docs: [], sessions: [], refresh: options.weekly !== false,
       gaps, estimate, ceiling, harvest,
@@ -211,7 +215,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     if (planWindow(windows, Date.now()).blocked) lines.push("Your agent's usage window needs to reset before model work can start.");
     const details = [...sources,
       `Agent: ${agent === "claude" ? "Claude Code" : "Codex"} · ${plan.setup === "mixed" ? "cheap sorting, best writer" : "best sorting and writer"}.`,
-      "Cheap model checks compare lessons and verify supporting quotes.",
+      "MEX checks supporting quotes and asks the writer to group repeated team policies.",
       "Each learned rule is checked against the code that prompted it before it's kept.",
       "Checked rules reach your sessions as learned, not shared. See `mex jobs` for progress and pause or cancel."];
     if (!await (options.confirm ?? ((lines, details) => askEnter(lines, details, write)))(lines, details)) return;

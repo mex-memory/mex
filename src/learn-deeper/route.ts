@@ -15,11 +15,13 @@ import { slashPath } from "../file-index/glob.js";
 import { hasSecret } from "../knowledge/gates.js";
 import { KNOWLEDGE_LIMITS } from "../knowledge/entry.js";
 import type { Proposal, ProposedCheck } from "../knowledge/gate.js";
-import type { Cluster } from "./cluster.js";
+import type { DraftSupport } from "./draft-evidence.js";
 import type { Candidate, Region } from "./harvest/types.js";
 import type { ProofResult, ProvenPattern } from "./prove.js";
 import { stoppingType } from "./prove.js";
 import { squash } from "./lesson-text.js";
+import type { WriterEntry } from "./write.js";
+import { LEARNED_TRIAL_LABEL } from "./trial-outcomes.js";
 import type { WriterModel } from "./entries.js";
 
 export const ROUTE_LIMITS = { fixtureLines: 40, fixtureBytes: 12 << 10, sourceChecks: 6, quoteWords: 25, quoteContext: 32 } as const;
@@ -40,7 +42,7 @@ export function trimRegion(region: Region, lines: number = ROUTE_LIMITS.fixtureL
   return { ...region, start: region.start + start, end: region.start + start + lines - 1, text, hash: sha(text) };
 }
 
-function primary(cluster: Cluster): Candidate {
+function primary(cluster: DraftSupport): Candidate {
   return cluster.members[0]!.candidate;
 }
 
@@ -70,7 +72,7 @@ function counted(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-function label(cluster: Cluster): string {
+function label(cluster: DraftSupport): string {
   if (cluster.source === "docs") {
     const path = primary(cluster).path ?? "the docs";
     return `Learned from ${path}`.slice(0, 80);
@@ -101,30 +103,21 @@ function quoteChecks(proof: ProofResult, docs: Candidate[], complete: boolean): 
   return checks;
 }
 
-/** Active when repeated evidence or a fixture supports it. One pull request stays proposed, and so does a first batch that had no strong item. */
-export function learnedStatus(waiting: boolean | undefined, corroborated: boolean, proven: boolean, notAlwaysFollowed: boolean, support = 0): "active" | "proposed" {
-  if (waiting) return "proposed";
-  // Proof lifts only repeated support from one reviewer (R19), not a single pull request.
-  const backed = corroborated || proven && support >= 2;
-  return backed && !notAlwaysFollowed ? "active" : "proposed";
+export function learnedStatus(gateKept: boolean, refused: boolean, keptQuote: boolean): "active" | "proposed" {
+  return gateKept && !refused && keptQuote ? "active" : "proposed";
 }
 
-export function corroboratedLesson(cluster: Cluster): boolean {
-  return cluster.decision === "write" && (cluster.source !== "review" || cluster.reviewers >= 2 ||
-    cluster.members.some(({ candidate }) => candidate.kind === "doc" || candidate.kind === "adr"));
-}
-
-export interface Routed { proposal: Proposal; sources: Candidate[]; status: "active" | "proposed"; proven: boolean }
+export interface Routed { proposal: Proposal; sources: Candidate[]; status: "active" | "proposed"; proven: boolean; convertedPitfall: boolean; route: WriterEntry["route"] }
 
 /** Build the gate proposal for one proven lesson, or say why there is none. */
-export function routeEntry(proof: ProofResult, plan: { host: string; slug: string }, model: WriterModel): Routed | { dropped: string } {
+export function routeEntry(proof: ProofResult, plan: { host: string; slug: string }, model: WriterModel, gateKept = true): Routed | { dropped: string } {
   if (proof.dropped) return { dropped: proof.dropped };
   const { cluster, draft } = proof;
   const members = cluster.members.map(member => member.candidate);
   const checks: ProposedCheck[] = [];
   const scopes = proof.scope.map(slashPath);
   for (const scope of scopes) checks.push({ kind: "scope", role: "complete", target: { glob: scope } } as ProposedCheck);
-  const reviews = members.filter(candidate => candidate.link.startsWith("https://github.com/") && pullLink(candidate));
+  const reviews = members.filter(candidate => pullLink(candidate) && candidate.nodeIds.length);
   for (const candidate of [...new Map(reviews.map(candidate => [candidate.link + "\n" + candidate.hash, candidate])).values()].slice(0, ROUTE_LIMITS.sourceChecks)) {
     checks.push({ kind: "source", role: "supporting", target: { url: candidate.link }, saw: { hash: candidate.hash } } as ProposedCheck);
   }
@@ -189,19 +182,18 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const migration = stored.some(item => item.migration) ? ["Older code here still does this; don't add more."] : [];
   const text = [proof.claim, ...proof.reasons, ...migration, ...lint, ...alternatives].join(" ").slice(0, 1000);
   const fixKinds = new Set(["rule", "pitfall", "decision"]);
-  // R19: repeated support from one reviewer is that person's habit until the code proves it, a doc agrees, or a
-  // person ticks it, so it waits for the tick rather than reaching sessions on support alone.
-  const status = learnedStatus(cluster.waiting, corroboratedLesson(cluster), proven, proof.notAlwaysFollowed, cluster.support);
+  const convertedPitfall = draft.kind === "pitfall" && scopes.length === 1 && scopes[0] === "**" && !proof.symbol && !proven;
+  const status = learnedStatus(gateKept, !!cluster.refused, !!kept);
   const key = JSON.stringify([plan.host, plan.slug.toLowerCase(), "lesson", cluster.key]);
   const proposal: Proposal = {
     producer: "learn-deeper", ...(cluster.earlier ? { id: cluster.earlier } : { key }),
-    kind: draft.kind as Proposal["kind"], text, oneLine: proof.claim.slice(0, KNOWLEDGE_LIMITS.oneLineCharacters),
+    kind: convertedPitfall ? "rule" : draft.kind as Proposal["kind"], text, oneLine: proof.claim.slice(0, KNOWLEDGE_LIMITS.oneLineCharacters),
     ...(draft.aliases.length ? { aliases: draft.aliases } : {}),
     ...(proof.fix && fixKinds.has(draft.kind) ? { fix: { ...proof.fix, path: slashPath(proof.fix.path) } } : {}),
     source: { type: sourceType, ref, ...(kept ? { quote: kept.quote, text: kept.text } : {}) },
     evidenceClass: sourceType, evidence: members.map(candidate => candidate.id).slice(0, 32),
     anchors: { scope: scopes, ...(stored.length ? { when: stored.map(({ type, match, pattern }) => ({ type, match, pattern })) } : {}) },
-    checks, model, label: `${label(cluster)}${migration.length ? " · migration in progress" : ""}`.slice(0, 80), status,
+    checks, model, label: `${status === "active" ? LEARNED_TRIAL_LABEL : ""}${label(cluster)}${migration.length ? " · migration in progress" : ""}`.slice(0, 80), status,
   };
-  return { proposal, sources: members, status, proven };
+  return { proposal, sources: members, status, proven, convertedPitfall, route: convertedPitfall ? "code-rule" : draft.route };
 }

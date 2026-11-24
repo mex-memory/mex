@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { buildSync } from "esbuild";
 import { openRecord, openRecordReadOnly, openHooksReadOnly, migrateRecord, schemaVersion, projectIdentity, recordLocation, projectDataDirectory, JOB_STATES } from "../index.js";
 import { absolutePath, realPath, shortHash } from "../project.js";
-import { HOOKS_SCHEMA_VERSION } from "../schema.js";
+import { HOOKS_SCHEMA_VERSION, RECORD_SCHEMA_VERSION } from "../schema.js";
 import { mexHomeDir } from "../../global-config.js";
 import { darwinNetworkMount, windowsNetworkHome, WINDOWS_NETWORK_QUERY_TIMEOUT_MS } from "../location.js";
 
@@ -21,15 +21,15 @@ function open(home = temp()) { const record = openRecord({ home, isNetwork: () =
 import { git, fixtureRepos } from "./fixtures/repos.js";
 
 describe("record schema and ownership", () => {
-  it("creates every Node-owned table with WAL, version 4, and idempotent project/checkout registration", () => {
+  it("creates every Node-owned table with WAL, the current version, and idempotent project/checkout registration", () => {
     const directory = temp(); const project = temp();
     const writer = openRecord({ home: directory, projectPath: project, isNetwork: () => false }); closes.push(() => writer.close());
     writer.register(projectIdentity(project));
-    expect(schemaVersion(writer.db)).toBe(6);
+    expect(schemaVersion(writer.db)).toBe(RECORD_SCHEMA_VERSION);
     expect(writer.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
     expect(writer.db.prepare("PRAGMA busy_timeout").get()!.timeout).toBe(5000);
     expect(writer.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map((row) => row.name))
-      .toEqual(["aid_verdicts", "background", "build_usage", "checkouts", "counters_node", "decision_events", "installs", "job_results", "jobs", "judgements", "model_batches", "model_calls", "notices", "own_usage", "projects", "review", "settings", "sqlite_sequence", "usage_events", "usage_files", "usage_snapshots", "usage_windows"]);
+      .toEqual(["aid_verdicts", "background", "build_usage", "checkouts", "counters_node", "decision_events", "installs", "job_results", "jobs", "judgements", "learning_observations", "model_batches", "model_calls", "notices", "own_usage", "projects", "review", "settings", "sqlite_sequence", "usage_events", "usage_files", "usage_snapshots", "usage_windows"]);
     expect(writer.db.prepare("SELECT count(*) n FROM checkouts").get()!.n).toBe(1);
     expect(writer.project(projectIdentity(project).id)?.kind).toBe("folder");
     expect(existsSync(join(directory, "projects"))).toBe(false);
@@ -50,7 +50,7 @@ describe("record schema and ownership", () => {
       const home = temp(); const file = join(home, "record.db"); const db = new DatabaseSync(file);
       if (synthetic) db.exec("CREATE TABLE settings(scope TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,key)); INSERT INTO settings VALUES('global','kept','yes')");
       db.close(); const writer = open(home);
-      expect(schemaVersion(writer.db)).toBe(6);
+      expect(schemaVersion(writer.db)).toBe(RECORD_SCHEMA_VERSION);
       if (synthetic) expect(writer.setting("global", "kept")).toBe("yes");
     }
   });
@@ -59,7 +59,7 @@ describe("record schema and ownership", () => {
     expect(() => migrateRecord(db, [{ version: 1, sql: "CREATE TABLE partial(n); INSERT INTO no_such_table VALUES(1)" }])).toThrow();
     expect(schemaVersion(db)).toBe(0);
     expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='partial'").get()).toBeUndefined();
-    migrateRecord(db); expect(schemaVersion(db)).toBe(6);
+    migrateRecord(db); expect(schemaVersion(db)).toBe(RECORD_SCHEMA_VERSION);
   });
   it("refuses to write a newer schema, reports it to readers, and reads older tables without migrating", () => {
     const writer = open(); const home = writer.location.home;

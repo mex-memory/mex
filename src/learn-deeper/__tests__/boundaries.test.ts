@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { openRecord } from "../../record/index.js";
 import { clearLearningRows, learningRunPrefix } from "../../record/learning-rows.js";
 import { dispositionKey, mergeDispositions, readDispositions } from "../dispositions.js";
 import { linterRuleEnabled } from "../linter-config.js";
-import { preserveWaiting, reviewBoundaryNotes } from "../review-policy.js";
+import { reviewBoundaryNotes } from "../review-policy.js";
 import { learnedStatus } from "../route.js";
 import { trialFollowCounts } from "../trial-outcomes.js";
 import { VERIFY_CEILING, verifyRule, verifySpend } from "../verify.js";
@@ -15,11 +16,11 @@ import { VERIFY_CEILING, verifyRule, verifySpend } from "../verify.js";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-it("keeps a waiting lesson proposed when later evidence supports it", () => {
-  const cluster = preserveWaiting({ earlier: "mx_wait01", waiting: false }, new Set(["mx_wait01"]));
-  expect(cluster.waiting).toBe(true);
-  expect(learnedStatus(cluster.waiting, true, true, false)).toBe("proposed");
-  expect(learnedStatus(false, true, true, false)).toBe("active");
+it("activates a trial only when the gate kept its checked evidence", () => {
+  expect(learnedStatus(true, false, true)).toBe("active");
+  expect(learnedStatus(false, false, true)).toBe("proposed");
+  expect(learnedStatus(true, true, true)).toBe("proposed");
+  expect(learnedStatus(true, false, false)).toBe("proposed");
 });
 
 it("says when a shared copy or a loaded rule file still has the old text", () => {
@@ -79,11 +80,29 @@ it("discards a verify answer that spent over the ceiling and keeps one with no u
   roots.push(root);
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "api.ts"), "export const ok = 1;\n");
-  const over = async () => ({ text: JSON.stringify({ verdict: "keep", evidence: ["src/api.ts:1"] }), selectedModel: "fixture",
-    usage: { input: VERIFY_CEILING + 1, output: 0, cache_read: 0, cache_write: 0, model: "fixture", estimated: false } });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
+  git("init", "-q");
+  git("add", ".");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture");
+  writeFileSync(join(root, "src", "api.ts"), "workingOnlyContent\n");
+  let calls = 0;
+  const over = async () => {
+    calls++;
+    return { text: JSON.stringify({ verdict: "keep", evidence: ["src/api.ts:1"] }), selectedModel: "fixture",
+      usage: { input: VERIFY_CEILING + 1, output: 0, cache_read: 0, cache_write: 0, model: "fixture", estimated: false } };
+  };
   expect(verifySpend({ input: VERIFY_CEILING + 1 })).toBe(VERIFY_CEILING + 1);
   expect(await verifyRule({ claim: "Use the pooled client.", why: "The review asked for it.", scope: ["src/**"] }, root, "claude", over as never)).toBeUndefined();
-  const quiet = async () => ({ text: JSON.stringify({ verdict: "keep", evidence: ["src/api.ts:1"] }), selectedModel: "fixture",
-    usage: { input: 0, output: 0, cache_read: 0, cache_write: 0, model: "fixture", estimated: false } });
-  expect(await verifyRule({ claim: "Use the pooled client.", why: "The review asked for it.", scope: ["src/**"] }, root, "claude", quiet as never)).toMatchObject({ verdict: "keep" });
+  expect(calls).toBe(1);
+  const quiet = async (request: Parameters<typeof import("../../model-runner/index.js").runModel>[0]) => {
+    expect(request.agent).toBe("codex");
+    expect(request.isolatedText).toBe(true);
+    expect(request.readOnlyTools).toBeUndefined();
+    expect(request.prompt).toContain("export const ok = 1;");
+    expect(request.prompt).not.toContain("workingOnlyContent");
+    return { text: JSON.stringify({ verdict: "keep", evidence: ["SRC\\API.ts:1", "src/api.ts:9"] }), selectedModel: "fixture",
+      usage: { input: 0, output: 0, cache_read: 0, cache_write: 0, model: "fixture", estimated: false } };
+  };
+  expect(await verifyRule({ claim: "Use the pooled client.", why: "The review asked for it.", scope: ["SRC\\**"] }, root, "codex", quiet as never))
+    .toEqual({ verdict: "keep", evidence: ["src/api.ts:1"] });
 });

@@ -8,6 +8,7 @@ import { isAgentCaller } from "../repo-start/caller.js";
 import { expand } from "./store.js";
 
 const DAY = 86_400_000;
+export const UNANCHORED_MAX_MS = 90 * DAY;
 const noiseKey = (id: string) => `learning.noise.${id}`;
 const restoredKey = (id: string) => `learning.noise.restored.${id}`;
 export const UpkeepReview = z.object({ version: z.literal(1), status: z.literal("proposed"), kind: z.enum(["report", "noise", "age"]),
@@ -56,7 +57,7 @@ export function upkeepAction(action: "restore" | "verify", id: string, options: 
   finally { writer.close(); }
 }
 
-function unanchored(entry: KnowledgeEntry): boolean {
+export function unanchored(entry: KnowledgeEntry): boolean {
   return !entry.mex.checks.some(check => {
     switch (check.kind) {
       case "fixture": case "pattern": case "symbol": case "quote": case "until": case "key": case "value": case "command": case "section": case "relation": return true;
@@ -118,7 +119,7 @@ export function upkeepScan(writer: RecordWriter, project: string, checkout: stri
         verified = Math.max(created, Date.parse(row.at) || 0);
       }
     } catch { /* Creation is the baseline for older entries. */ }
-    if (at - verified < 90 * DAY) { dismiss(writer, project, "age", id); continue; }
+    if (at - verified < UNANCHORED_MAX_MS) { dismiss(writer, project, "age", id); continue; }
     stageUpkeep(writer, project, { ...target, kind: "age" }, "This rule has gone 90 days without verification.", `${entryHash}\n${verified}`, at);
   }
 }

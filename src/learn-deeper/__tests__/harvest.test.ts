@@ -14,9 +14,8 @@ import { authored, decides, decisionsFirst, hasDecisionsSection } from "../harve
 import { reviewedFiles, ReviewRead } from "../harvest/forge.js";
 import { Gaps } from "../harvest/evidence.js";
 import { align, hunkSpan, RegionReader, reviewRegions } from "../harvest/regions.js";
-import { planClusters } from "../cluster.js";
+import { prUnits, renderUnits } from "../pr-units.js";
 import { sourceDigest } from "../source.js";
-import { writerPrompt } from "../write.js";
 
 const source = { host: "github.com", slug: "fiction/transports" } as const;
 const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
@@ -398,51 +397,34 @@ describe("harvest", () => {
 
   it("stops at the run allowance, resumes without duplicate IDs, and reads weekly points strictly newer", async () => {
     const deps = forge({ textOnly: true });
-    const budget = 51_130;
+    const budget = 37_500;
     const bounds = { since: "2026-11-12T00:00:00Z" };
     const first = await drain(options({ ...bounds, budget }), deps);
-    expect(first.candidates).toHaveLength(4);
+    expect(first.candidates.length).toBeGreaterThan(0);
     expect(first.spent).toBeLessThanOrEqual(budget);
     expect(first.spent).toBe(projectHarvestSpend(first.cursor.run!.evidence, "claude"));
     expect(first.gaps).toContain("Learning reached its estimated token budget.");
     const second = await drain(options(bounds), deps, first.cursor);
-    expect([first, second].map(run => run.batches.reduce((sum, batch) => sum + batch.descriptions.plain, 0))).toEqual([2, 0]);
+    expect([...first.batches, ...second.batches].reduce((sum, batch) => sum + batch.descriptions.plain, 0)).toBe(2);
     const joined = [...first.candidates, ...second.candidates].map(candidate => candidate.id);
     expect(new Set(joined).size).toBe(joined.length);
-    expect(joined.sort()).toEqual(["gh:closed:41", ...[1, 2, 3, 4].map(number => `gh:thread:PRRT_fixture${number}`)]);
+    const complete = await drain(options(bounds), forge({ textOnly: true }));
+    expect(joined.sort()).toEqual(complete.candidates.map(item => item.id).sort());
+    expect(joined).toContain("gh:closed:41");
     const weekly = await drain(options({ ...bounds, mode: "weekly", until: "2026-11-30T00:00:00Z" }), forge({ weekly: true }), second.cursor);
     expect(weekly.candidates.map(candidate => candidate.id).sort()).toEqual(["gh:pr:51", "gh:pr:52"]);
     expect(weekly.cursor.sources.merged?.newest.at).toBe("2026-11-27T10:00:00.000Z");
   }, GIT_FIXTURE_TIMEOUT);
 
-  it("stops earlier on long doc passages than on short comments at the same token budget", async () => {
-    const budget = 54_441;
-    const docs = await drain(options({ budget, until: "2026-11-02T00:00:00Z" }), forge());
-    const reviews = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true }));
-    expect(docs.candidates).toHaveLength(1);
-    expect(docs.candidates[0]?.kind).toBe("doc");
-    expect(Buffer.byteLength(docs.candidates[0]!.text)).toBeGreaterThan(4_000);
-    expect(docs.gaps).toContain("Learning reached its estimated token budget.");
-    expect(docs.spent).toBeGreaterThan(budget / 4);
-    expect(docs.spent).toBeLessThanOrEqual(budget);
-    expect(reviews.candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(4);
-    expect(reviews.candidates).toHaveLength(4);
-    expect(reviews.gaps).not.toContain("Learning reached its estimated token budget.");
-    expect(reviews.spent).toBeLessThan(docs.spent);
-  }, GIT_FIXTURE_TIMEOUT);
-
-  it("caps document and ADR evidence across batches and keeps reading review threads", async () => {
-    const budget = 315_000;
-    const { candidates, batches } = await drain(options({ budget }), forge({ textOnly: true, mergedCount: 9 }));
-    const docs = candidates.filter(candidate => candidate.kind === "doc" || candidate.kind === "adr");
-    expect(docs.some(candidate => candidate.kind === "doc")).toBe(true);
-    expect(docs.some(candidate => candidate.kind === "adr")).toBe(true);
-    const size = docs.reduce(addHarvestEvidence, emptyHarvestEvidence);
-    expect(projectHarvestSpend(size, "claude")).toBeLessThanOrEqual(budget / 4);
-    const capped = batches.findIndex(batch => batch.gaps.includes("Contributor documents reached their share of the estimated token budget."));
-    expect(capped).toBeGreaterThanOrEqual(0);
-    expect(batches.slice(capped + 1).flatMap(batch => batch.candidates).some(candidate => candidate.kind === "review-thread")).toBe(true);
-    expect(candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(36);
+  it("reads every contributor passage with reviews, without allocating a source share", async () => {
+    const only = await drain(options(), forge({ mergedCount: 0 }));
+    const both = await drain(options(), forge({ textOnly: true, mergedCount: 9 }));
+    const docs = (run: typeof only) => run.candidates.filter(item => item.kind === "doc" || item.kind === "adr").map(item => item.id).sort();
+    expect(docs(both)).toEqual(docs(only));
+    expect(docs(both)).toContain("doc:.github/PULL_REQUEST_TEMPLATE.md#what");
+    expect(docs(both).length).toBeGreaterThan(5);
+    expect(both.candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(36);
+    expect(both.gaps.some(gap => gap.includes("share of the estimated token budget"))).toBe(false);
   }, GIT_FIXTURE_TIMEOUT);
 
   it("reads a long change's threads page by page, and stops at the fifth", async () => {
@@ -457,7 +439,7 @@ describe("harvest", () => {
     expect(short.captures.filter(query => query === "query HarvestThreadPages").length).toBeLessThan(2);
   }, GIT_FIXTURE_TIMEOUT);
 
-  it("gives docs and descriptions the same share on either agent", async () => {
+  it("reads the same sources for both agents when the total limit permits", async () => {
     const body = CHOSEN + " " + "The other name stays in the notes for readers. ".repeat(30);
     const read = async (agent: "claude" | "codex") => {
       const { candidates } = await drain(options({ agent, budget: 500_000 }), forge({ textOnly: true, mergedCount: 12, merged: { body, author: { __typename: "User", login: "cedar-owner" } } }));
@@ -470,11 +452,11 @@ describe("harvest", () => {
     expect(await read("codex")).toEqual(claude);
   }, GIT_FIXTURE_TIMEOUT);
 
-  it("reserves budget for closed PRs even without merged PRs", async () => {
-    const { candidates, gaps } = await drain(options({ budget: 80_000 }), forge({ mergedCount: 0 }));
-    expect(candidates.some(candidate => candidate.kind === "doc" || candidate.kind === "adr")).toBe(false);
+  it("still reads closed PR evidence when there is no merged review", async () => {
+    const { candidates, gaps } = await drain(options(), forge({ mergedCount: 0 }));
+    expect(candidates.some(candidate => candidate.kind === "doc" || candidate.kind === "adr")).toBe(true);
     expect(candidates.some(candidate => candidate.kind === "closed-pr")).toBe(true);
-    expect(gaps).toContain("Contributor documents reached their share of the estimated token budget.");
+    expect(gaps.some(gap => gap.includes("share of the estimated token budget"))).toBe(false);
   }, GIT_FIXTURE_TIMEOUT);
 
   it("keeps queued changes for a later run when the forge budget ends after search", async () => {
@@ -485,7 +467,7 @@ describe("harvest", () => {
     expect(blocked.gaps).toContain("Learning reached its forge request budget.");
     expect(deps.captures).toEqual(["query HarvestSearch", "query HarvestSearch"]);
     const resumed = await drain(options(reviewWindow), deps, blocked.cursor);
-    expect(resumed.candidates).toHaveLength(4);
+    expect(resumed.candidates.filter(item => item.kind === "review-thread")).toHaveLength(4);
   }, GIT_FIXTURE_TIMEOUT);
 
   it("recognizes verified CODEOWNERS teams and two distinct earlier PRs in the same package", async () => {
@@ -523,15 +505,16 @@ it("recovers context when the reviewed object is missing and GitHub ends the hun
   expect(location).toMatchObject({ actedOn: true, code: { before: { end: 3 }, after: { commit: merge }, anchor } });
 }, GIT_FIXTURE_TIMEOUT);
 
-it("projects UTF-8 prose and charges PR excerpts and code toward writing", () => {
+it("counts presentation characters and charges review pairs and document input to their stages", () => {
   const bare = addHarvestEvidence(emptyHarvestEvidence, { text: "設定" });
   const region = { path: "src/example.ts", commit: "a".repeat(40), start: 1, end: 1, text: "const answer = 42;", hash: "" };
-  const full = addHarvestEvidence(emptyHarvestEvidence, { text: "設定", prText: "See the rollout.",
-    code: { before: region, after: region, head: region, anchor: "const" },
-    related: { reland: { before: region, after: region } } });
-  expect(full.triageTokens).toBe(2);
-  expect(full.writerTokens).toBe(Math.ceil(Buffer.byteLength("設定See the rollout.const" + region.text.repeat(5)) / 3));
-  expect(projectHarvestSpend(full, "claude")).toBeGreaterThan(projectHarvestSpend(bare, "claude"));
+  const longer = addHarvestEvidence(emptyHarvestEvidence, { text: "設定", prText: "See the rollout.",
+    code: { before: region, after: region } });
+  const doc = addHarvestEvidence(emptyHarvestEvidence, { kind: "doc", text: "Use the release checklist.".repeat(100) });
+  expect(longer.triageTokens).toBeGreaterThan(bare.triageTokens);
+  expect(longer.largestWriterTokens).toBe(1);
+  expect(doc.triageTokens).toBe(0);
+  expect(projectHarvestSpend(longer, "claude")).toBeGreaterThan(projectHarvestSpend(bare, "claude"));
 });
 
 it("caps reviewed-file requests per batch and caches missing files", async () => {
@@ -547,24 +530,13 @@ it("caps reviewed-file requests per batch and caches missing files", async () =>
   expect(gaps.list()).toContain("Some reviewed files exceeded the forge request budget.");
 });
 
-it("includes the comparison and quote checks in both calibration shapes", () => {
-  const hono = estimateHarvest(forecastCounts({ merged: 48, doc: 17 }), "claude");
-  const novu = estimateHarvest(forecastCounts({ merged: 45, doc: 36 }), "codex");
-  expect([hono.total, novu.total]).toEqual([377_162, 786_592]);
-  expect([hono.comparisons + hono.grounding, novu.comparisons + novu.grounding]).toEqual([55_148, 105_680]);
-  expect(hono.total).toBeLessThan(DEFAULT_HARVEST_BUDGET);
-  expect(novu.total).toBeGreaterThan(DEFAULT_HARVEST_BUDGET);
-});
-
-it("forecasts a measured live run's spend from the evidence it read", () => {
-  // OSS-92 receipt: Hono at 9075031e, 104 sources, Codex, 22 calls (4 triage, 8 writer,
-  // 7 repair, 3 meaning) recorded 551,731 tokens. The old forecast said 307,061.
-  const hono = { candidates: 104, triageTokens: 26_657, writerTokens: 54_571, largestWriterTokens: 2_258 };
-  const projected = projectHarvestSpend(hono, "codex");
-  expect(projected).toBeGreaterThan(551_731 * 0.9);
-  expect(projected).toBeLessThan(551_731 * 1.1);
-  // The shown estimate stops the harvest, so a run that reads to it spends at most the ceiling.
-  expect(projected * 1.1).toBeLessThan(Math.floor(DEFAULT_HARVEST_BUDGET * 1.5));
+it("estimates each v2.2 stage and has no baseline spend for an empty run", () => {
+  const details = estimateHarvest(forecastCounts({ merged: 48, doc: 17 }), "claude");
+  const empty = estimateHarvest({}, "codex");
+  expect(Object.values(empty).every(value => value === 0)).toBe(true);
+  expect([details.triage, details.writer, details.documents, details.pattern, details.gate].every(value => value > 0)).toBe(true);
+  expect(details.total).toBe(details.triage + details.writer + details.documents + details.pattern + details.gate);
+  expect(details.total).toBeLessThan(DEFAULT_HARVEST_BUDGET);
 });
 
 describe("PR descriptions", () => {
@@ -630,18 +602,21 @@ describe("PR descriptions", () => {
       const { candidates, cursor } = await drain(options(kind === "merged" ? reviewWindow : { since: "2026-11-15T00:00:00Z", until: "2026-11-17T00:00:00Z" }), deps);
       // A change that isn't read counts as done: the next run starts after it.
       expect(cursor.sources[kind]?.newest.at).toBeDefined();
-      return { detail: deps.captures.filter(query => query === "query HarvestChanges").length, found: candidates.length };
+      return { detail: deps.captures.filter(query => query === "query HarvestChanges").length, found: candidates.filter(item => item.id.startsWith("gh:")).length, kinds: candidates.filter(item => item.id.startsWith("gh:")).map(item => item.kind).sort() };
     };
-    const quiet = { reviewThreads: { ...row.merged.reviewThreads, nodes: [], totalCount: 0 } };
+    const zero = { nodes: [], totalCount: 0 };
+    const quiet = { reviewThreads: zero, comments: zero, reviews: zero };
     expect((await read("merged", { ...quiet, authorAssociation: "CONTRIBUTOR" })).detail).toBe(0);
+    expect((await read("merged", { ...quiet, comments: { nodes: [], totalCount: 1 }, authorAssociation: "CONTRIBUTOR" })).detail).toBe(1);
+    expect((await read("merged", { ...quiet, comments: { nodes: [] }, authorAssociation: "CONTRIBUTOR" })).detail).toBe(1);
     expect((await read("merged", { ...quiet, author: { __typename: "Bot", login: "fern-bot" } })).detail).toBe(0);
     // A writer may have described a decision, a reply may be missing from the counts, and anyone's change may be reviewed.
-    expect((await read("merged", { ...quiet, authorAssociation: "MEMBER", author, body: CHOSEN }))).toEqual({ detail: 1, found: 1 });
+    expect((await read("merged", { ...quiet, authorAssociation: "MEMBER", author, body: CHOSEN }))).toEqual({ detail: 1, found: 1, kinds: ["pr-text"] });
     expect((await read("merged", { authorAssociation: "CONTRIBUTOR", reviewThreads: { ...row.merged.reviewThreads, totalCount: undefined } })).detail).toBe(1);
     expect((await read("merged", { authorAssociation: "CONTRIBUTOR" })).found).toBe(4);
     const nothing = { nodes: [], totalCount: 0 };
-    expect((await read("closed", {})).found).toBe(1);
-    expect((await read("closed", { comments: nothing })).found).toBe(1);
+    expect((await read("closed", {})).kinds).toEqual(["closed-pr", "review-summary"]);
+    expect((await read("closed", { comments: nothing })).kinds).toEqual(["closed-pr", "review-summary"]);
     expect((await read("closed", { comments: nothing, reviews: nothing })).found).toBe(0);
   }, GIT_FIXTURE_TIMEOUT);
 
@@ -714,7 +689,7 @@ describe("PR descriptions", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("treats an author's note on their own lines like their description", async () => {
-    expect(await threadCase("fern-owner", [["fern-owner", "Moved this up a bit."]])).toBeUndefined();
+    expect((await threadCase("fern-owner", [["fern-owner", "Moved this up a bit."]]))?.reviewers).toEqual([]);
     const decided = await threadCase("fern-owner", [["fern-owner", "We chose the stable adapter over the fallback. See [why](docs/CONTRIBUTING.md)."]]);
     expect(decided).toMatchObject({ signal: "weak", reviewers: [], weights: { actedOn: false, familiar: false, guidelineLink: false, generalising: false } });
     // The same words from a reviewer are an objection the author acted on.
@@ -728,28 +703,20 @@ describe("PR descriptions", () => {
     expect(candidate.text).toContain(candidate.prText);
   }, GIT_FIXTURE_TIMEOUT);
 
-  it("can take a quarter of the budget, and the reviews are still read", async () => {
-    const budget = 315_000;
+  it("keeps eligible PR descriptions throughout the bounded run", async () => {
     const body = CHOSEN + " " + "The other name stays in the notes for readers. ".repeat(30);
-    const { candidates, gaps } = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true, mergedCount: 24, merged: { body, author } }));
-    const texts = candidates.filter(candidate => candidate.kind === "pr-text");
-    expect(texts.length).toBeGreaterThan(5);
-    expect(texts.length).toBeLessThan(24);
-    expect(projectHarvestSpend(texts.reduce(addHarvestEvidence, emptyHarvestEvidence), "claude")).toBeLessThanOrEqual(budget / 4);
-    expect(gaps).toContain("Pull request descriptions reached their share of the estimated token budget.");
-    expect(candidates.filter(candidate => candidate.kind === "review-thread").length).toBeGreaterThan(texts.length);
+    const { candidates, gaps } = await drain(options(reviewWindow), forge({ textOnly: true, mergedCount: 24, merged: { body, author } }));
+    expect(candidates.filter(candidate => candidate.kind === "pr-text")).toHaveLength(24);
+    expect(candidates.filter(candidate => candidate.kind === "review-thread")).toHaveLength(96);
+    expect(gaps.some(gap => gap.includes("share of the estimated token budget"))).toBe(false);
   }, GIT_FIXTURE_TIMEOUT);
 
-  it("is paid for once when it is already in the text", () => {
-    const size = (candidate: { text: string; prText?: string }) => addHarvestEvidence(emptyHarvestEvidence, candidate);
-    expect(size({ text: CHOSEN, prText: CHOSEN })).toEqual(size({ text: CHOSEN }));
-    expect(size({ text: "No.\n\n" + CHOSEN, prText: CHOSEN })).toEqual(size({ text: "No.\n\n" + CHOSEN }));
-    expect(size({ text: "No.", prText: CHOSEN }).writerTokens).toBeGreaterThan(size({ text: "No." }).writerTokens);
+  it("uses the description line as evidence and otherwise carries the description as context", () => {
     const candidate = { id: "gh:pr:31", kind: "pr-text", link: "https://github.com/fiction/transports/pull/31", at: "2026-11-12T00:00:00Z", title: "Unify", pull: 31,
       text: CHOSEN, prText: CHOSEN, hash: "", nodeIds: [], reviewers: [], weights: {}, signal: "strong" } as unknown as Candidate;
-    const prompt = (own: Candidate) => writerPrompt(planClusters([{ candidate: own, triage: { id: own.id, keep: true, category: "api-use", lesson: CHOSEN } }]).resolve(), { linters: [] });
-    expect(prompt(candidate).split(CHOSEN)).toHaveLength(prompt({ ...candidate, prText: undefined }).split(CHOSEN).length);
-    expect(prompt({ ...candidate, text: "Keep it.", prText: CHOSEN })).toContain('"prText"');
+    const prompt = (own: Candidate) => renderUnits(prUnits([own])).text;
+    expect(prompt(candidate).split(CHOSEN)).toHaveLength(2);
+    expect(prompt({ ...candidate, kind: "review-thread", text: "Keep it.", prText: CHOSEN })).toContain("Description: " + CHOSEN);
   });
 
   it("reads a Decisions section first, so a long description's excerpt keeps it", () => {

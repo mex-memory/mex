@@ -1,8 +1,21 @@
 import type { ForgeClient } from "../forge.js";
 import type { PinnedTree } from "../git.js";
 import type { Repository, SourceWindow } from "../source.js";
+import type { Census } from "./estimate.js";
 
-export type CandidateKind = "review-thread" | "pr-text" | "closed-pr" | "revert" | "cause-commit" | "adr" | "doc" | "issue";
+export type CandidateKind = "review-thread" | "conversation" | "review-summary" | "pr-text" | "closed-pr" | "revert" | "cause-commit" | "adr" | "doc" | "issue";
+export type DiscussionRole = "maintainer" | "maintainer (PR author)" | "PR author" | "other user";
+export interface DiscussionLine {
+  id: string;
+  role: DiscussionRole;
+  at: string;
+  text: string;
+  path?: string;
+  hunk?: string;
+  link?: string;
+  reviewer?: string;
+  hash?: string;
+}
 export interface Region { path: string; commit: string; start: number; end: number; text: string; hash: string; }
 export interface Candidate {
   id: string;
@@ -25,6 +38,10 @@ export interface Candidate {
   changedPaths?: string[];
   document?: { headings: string[]; consumerUsage: boolean };
   commentHashes?: Record<string, string>;
+  prState?: "merged" | "closed";
+  /** Citeable lines in this candidate and context that cannot be cited. */
+  lines?: DiscussionLine[];
+  context?: DiscussionLine[];
 }
 
 export type HarvestSource = "merged" | "closed" | "revert" | "cause" | "adr" | "doc" | "issue";
@@ -89,6 +106,7 @@ export interface HarvestPlan extends Omit<HarvestOptions, "mode" | "budget" | "r
   defaultHead: string;
   estimate: number;
   ceiling: number;
+  census?: Census;
   inventory: {
     bands: Array<SourceWindow & { source: ForgeSource; count: number }>;
     local: Record<"revert" | "cause" | "adr" | "doc", HarvestPoint[]>;
@@ -104,4 +122,5 @@ export interface HarvestDeps {
   knownPaths?: ReadonlySet<string>;
   /** Verified team membership keyed by lower-case login. CODEOWNERS alone cannot establish it. */
   teams?: ReadonlyMap<string, readonly string[]>;
+  censusOnly?: boolean;
 }

@@ -3,8 +3,6 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { MEANING_PURPOSE } from "../meaning.js";
-import { recordedMeaning } from "./fixtures/meaning.js";
 import { setCheckoutEnabled } from "../../controls/index.js";
 import { buildIndex } from "../../file-index/build.js";
 import { createJudgeKind } from "../../judge/job.js";
@@ -23,6 +21,8 @@ import { ZERO } from "../../record/usage.js";
 import type { Candidate, HarvestPlan } from "../harvest/types.js";
 import { createLearnKind } from "../job.js";
 import { initialState, reviewRows, trialReceiptKey } from "../pipeline.js";
+import { prUnits } from "../pr-units.js";
+import { sourceDigest } from "../source.js";
 import { LEARN_KIND, Plan } from "../plan.js";
 import { procedureEstimate, procedureGroups } from "../procedures.js";
 import { createStopCheckKind, diffLocations, queueStopChecks, STOP_CHECK, stopCheckFlags } from "../stop-check.js";
@@ -31,8 +31,8 @@ import { setLearningTrial } from "../trial-settings.js";
 let suite: string, binary: string;
 beforeAll(() => {
   suite = mkdtempSync(join(tmpdir(), "mex-learning-trials-"));
-  binary = join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
-  execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
+  binary = process.env.MEX_HOOK_BINARY ?? join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+  if (!process.env.MEX_HOOK_BINARY) execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
 }, 250_000);
 afterAll(() => { if (suite) rmSync(suite, { recursive: true, force: true }); });
 
@@ -165,7 +165,11 @@ async function runLearning(f: Fixture, model: typeof runModel, state: ReturnType
   registerJobKind(createLearnKind({ model }));
   const job = enqueueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan }).job;
   writer.db.prepare("UPDATE jobs SET checkpoint=? WHERE id=?").run(JSON.stringify({ pull: 0, doc: 0, gaps: [], v2: state }), job.id);
-  if (candidates.length) writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `learning.deep.v2.${job.id}.cand.0`, JSON.stringify(candidates));
+  if (candidates.length) {
+    const put = writer.db.prepare("INSERT INTO settings VALUES(?,?,?)");
+    put.run(project, `learning.deep.v2.${job.id}.cand.0`, JSON.stringify(candidates));
+    put.run(project, `learning.deep.v2.${job.id}.triage.units.0`, JSON.stringify(prUnits(candidates)));
+  }
   for (let i = 0; i < 8; i++) {
     if (await runOneBatch(writer, ownerId("foreground"), { only: new Set([job.id]) }) === "idle") break;
   }
@@ -189,7 +193,7 @@ it("uses one cheap call for an opted-in, three-commit procedure and leaves it un
       return modelReply({ name: "Update an endpoint", steps: ["Update the endpoint.", "Update the SDK client."] });
     });
     const start = { ...initialState(), phase: "finish" as const };
-    expect((await runLearning(f, model, start)).receipt).toBeUndefined();
+    expect((await runLearning(f, model, start)).receipt.entries).toEqual([]);
     expect(model).not.toHaveBeenCalled();
     expect(procedureEstimate("codex")).toBeGreaterThan(0);
     setLearningTrial(f.writer, "learning.procedures", "on", f.root);
@@ -201,7 +205,7 @@ it("uses one cheap call for an opted-in, three-commit procedure and leaves it un
       when: [{ type: "creates", match: "literal", pattern: "api/*.ts" }, { type: "creates", match: "literal", pattern: "sdk/*.ts" }],
       checks: [{ kind: "scope", role: "complete" }] });
     expect(reviewRows(f.writer, f.project, result.job.id)).toMatchObject([{ entryId: entry!.mex.id, status: "proposed", route: "procedure" }]);
-    expect(result.receipt).toEqual({ counts: { "trial.procedures": 1 }, entries: [{ id: entry!.mex.id, procedure: true }] });
+    expect(result.receipt).toMatchObject({ counts: { "trial.procedures": 1 }, entries: [{ id: entry!.mex.id, procedure: true }] });
     expect(result.summary).toContain("Counted 1 procedure waiting for a tick.");
 
     const create = (session: string, path: string) => {
@@ -241,14 +245,15 @@ it("keeps a separate count of issue candidates that pass sorting", async () => {
       hash: `sha256:${"a".repeat(64)}`, nodeIds: [], at: "2026-05-01T00:00:00Z", text: "The old protocol omits the version handshake.",
       signal: "weak", reviewers: [], weights: { actedOn: false, familiar: false, guidelineLink: false, generalising: false, smallPr: false, hotUnknown: false } });
     const model = vi.fn<typeof runModel>(async request => {
-      expect(request.purpose).toBe("learn-deeper-filter");
-      return modelReply({ results: [{ id: "gh:issue:1", keep: true, category: "api-use", lesson: "Require the version handshake." },
-        { id: "gh:issue:2", keep: false, category: "one-off", lesson: "" }] });
+      if (request.role === "best") return modelReply({ policies: [], norms: [] });
+      return modelReply({ observations: [{ item: "i1", quote: "The old protocol omits the version handshake.",
+        kind: "api-design", scope: "repo", norm: "Require the version handshake.", why: "",
+        form: "stated", stated_as_rule: false, response: "unknown" }] });
     });
-    const result = await runLearning(f, model, { ...initialState(), phase: "triage", chunks: 1 }, [issue(1), issue(2)]);
-    expect(model).toHaveBeenCalledTimes(1);
+    const result = await runLearning(f, model, { ...initialState(), phase: "triage", chunks: 1, batches: 1, harvestDone: true }, [issue(1), issue(2)]);
+    expect(model).toHaveBeenCalledTimes(2);
     expect(result.summary).toContain("Counted 1 issue source kept.");
-    expect(result.receipt).toEqual({ counts: { "trial.issues": 1 }, entries: [] });
+    expect(result.receipt).toMatchObject({ counts: { "trial.issues": 1 }, entries: [] });
   } finally { f.close(); }
 }, 60_000);
 
@@ -261,29 +266,28 @@ it("receipts linter suggestions and alternatives only after the gate saves them"
     f.head = f.git("rev-parse", "HEAD");
     const review = (n: number, text: string, path: string): Candidate => ({ id: `gh:thread:${n}`, kind: "review-thread",
       link: `https://github.com/acme/service/pull/${n}#discussion_r${n}`, pull: n, hash: `sha256:${"a".repeat(64)}`, nodeIds: [],
-      at: "2026-05-01T00:00:00Z", text, path, signal: "strong", reviewers: ["reviewer"],
+      at: "2026-05-01T00:00:00Z", text, path, signal: "strong", reviewers: [sourceDigest("reviewer")],
       weights: { actedOn: false, familiar: false, guidelineLink: true, generalising: true, smallPr: true, hotUnknown: false } });
-    const lint = review(1, "Avoid console output in the endpoint. It bypasses the structured log.", "api/endpoint.ts");
-    const decision = review(2, "Use the local client. The team ruled out a remote proxy because offline requests must work.", "sdk/client.ts");
+    const lint = review(1, "Avoid console output in `api/endpoint.ts`. It bypasses the structured log.", "api/endpoint.ts");
+    const decision = review(2, "Use the local client in `sdk/client.ts`. The team ruled out a remote proxy because offline requests must work.", "sdk/client.ts");
     const model = vi.fn<typeof runModel>(async request => {
-      if (request.purpose === "learn-deeper-filter") return modelReply({ results: [
-        { id: lint.id, keep: true, category: "correctness", lesson: "Avoid console output at the endpoint." },
-        { id: decision.id, keep: true, category: "api-use", lesson: "Use the local client." },
-      ] });
-      if (request.purpose === MEANING_PURPOSE) return modelReply(recordedMeaning(request.prompt));
-      const clusters = [...request.prompt.matchAll(/"cluster":"([a-f0-9]{24})"[^\n]*?"id":"(gh:thread:[12])"/gu)];
-      return modelReply({ entries: clusters.map(([, cluster, id]) => {
-        const linter = id === lint.id;
-        const claim = linter ? "Avoid console output in the endpoint." : "Use the local client.";
-        return { cluster, route: linter ? "code-rule" : "decision", kind: linter ? "rule" : "decision", claim, why: "",
-          clauses: [{ text: claim, quotes: [{ id, quote: claim }] }], scope: [linter ? "api/**" : "sdk/**"], when: [], examples: { flag: "", ok: "" }, aliases: [],
-          ...(linter ? { lint: { config: ".eslintrc.json", rule: "no-console" } } : { alternatives: [{ option: "Remote proxy", reason: "offline requests must work",
-            rejected: { match: "literal", pattern: "makeRemoteProxy(" } }] }) };
-      }) });
+      if (request.role === "cheap") return modelReply({ observations: [lint, decision].map((item, i) => ({
+        item: "i" + (i + 1), quote: item.text, norm: item.text.split(". ")[0] + ".", why: i ? "Offline requests must work." : "",
+        kind: "api-design", scope: [item.path], form: i ? "decision" : "stated", stated_as_rule: true, response: "unknown",
+      })) });
+      if (request.prompt.startsWith("You turn observations")) {
+        const observations = request.prompt.split("\n").filter(line => line.startsWith('{"id":"sha256:')).map(line => JSON.parse(line));
+        return modelReply({ policies: [], norms: observations.map(item => ({
+          text: item.norm, kind: item.kind, scope: item.scope, support: [item.id], patternable: false,
+          ...(item.pr === 1 ? { lint: { config: ".eslintrc.json", rule: "no-console" } }
+            : { alternatives: [{ option: "Remote proxy", reason: "offline requests must work" }] }),
+        })) });
+      }
+      return modelReply({ verdicts: [] });
     });
-    const result = await runLearning(f, model, { ...initialState(), phase: "triage", chunks: 1 }, [lint, decision]);
-    expect(result.receipt?.counts).toEqual({ "trial.linter": 1, "trial.alternatives": 1 });
-    expect(result.receipt.entries).toEqual(expect.arrayContaining([{ id: expect.any(String), linter: true }, { id: expect.any(String), alternatives: 1 }]));
+    const result = await runLearning(f, model, { ...initialState(), phase: "triage", chunks: 1, batches: 1, harvestDone: true }, [lint, decision]);
+    expect(result.receipt?.counts, JSON.stringify(result.receipt)).toMatchObject({ "trial.linter": 1, "trial.alternatives": 1 });
+    expect(result.receipt.entries).toEqual(expect.arrayContaining([expect.objectContaining({ linter: true }), expect.objectContaining({ alternatives: 1 })]));
     expect(result.summary).toContain("Counted 1 linter suggestion saved.");
     expect(result.summary).toContain("Counted 1 alternative stored.");
   } finally { f.close(); }

@@ -22,7 +22,7 @@ const SchemaVersion = 15
 
 // Node's additive migrations (model admission, alias verdicts, the build usage
 // log) do not change the tables read here.
-const RecordSchemaVersion = 6
+const RecordSchemaVersion = 7
 const ReaderBusyTimeoutMS = 10
 const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond

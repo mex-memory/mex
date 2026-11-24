@@ -4,20 +4,36 @@ import { command, PinnedTree } from "../git.js";
 import { quoteCeiling } from "../plan.js";
 import { Reviewers } from "../reviewers.js";
 import { repository, type SourceWindow } from "../source.js";
-import { addHarvestEvidence, DEFAULT_HARVEST_BUDGET, emptyHarvestEvidence, estimateHarvest, forecastCounts, projectHarvestSpend } from "./estimate.js";
+import { addHarvestEvidence, censusFor, DEFAULT_HARVEST_BUDGET, emptyHarvestEvidence, estimateCensus, estimateHarvest, forecastCounts, projectHarvestSpend } from "./estimate.js";
 import { Gaps, rankCandidates, safeRaw } from "./evidence.js";
 import { templateLines } from "./description.js";
 import { Familiarity } from "./familiarity.js";
 import { changeCandidates, changes, discussions, observeAuthors, readyThreads, revertDiscussion, reviewedFiles, ReviewRead, search, type ForgeItem } from "./forge.js";
 import { localCandidates, localInventory, readRevert, revertedPulls } from "./local.js";
 import { oid, RegionReader } from "./regions.js";
-import type { Candidate, ForgeSource, HarvestBatch, HarvestCursor, HarvestDeps, HarvestEvidenceSize, HarvestLane, HarvestOptions, HarvestPlan,
+import type { Candidate, ForgeSource, HarvestBatch, HarvestCursor, HarvestDeps, HarvestLane, HarvestOptions, HarvestPlan,
   HarvestPoint, HarvestScan, HarvestSource, SearchPage } from "./types.js";
 
 export type { Candidate, CandidateKind, HarvestBatch, HarvestCursor, HarvestDeps, HarvestOptions, HarvestPlan, Region } from "./types.js";
 export { DEFAULT_HARVEST_BUDGET, estimateHarvest, forecastCounts } from "./estimate.js";
 export { corroborateReviewFamiliarity } from "./familiarity.js";
 export { evidenceDigest } from "./evidence.js";
+
+/** Use the same bounded sources as the job, without retrieving reviewed blobs or sending text to a model. */
+export async function previewHarvest(plan: HarvestPlan, deps: HarvestDeps, cursor?: HarvestCursor): Promise<HarvestPlan> {
+  const tree = await openTree(plan, deps), candidates: Candidate[] = [];
+  const gaps = new Set(plan.gaps);
+  for (;;) {
+    const batch = await harvestBatch(plan, cursor, { ...deps, tree, censusOnly: true });
+    candidates.push(...batch.candidates);
+    for (const gap of batch.gaps) gaps.add(gap);
+    if (batch.done) break;
+    cursor = batch.cursor;
+  }
+  const census = censusFor(candidates, tree);
+  const estimate = estimateCensus(census, plan.agent).total;
+  return { ...plan, census, estimate, ceiling: quoteCeiling(estimate), gaps: [...gaps] };
+}
 
 const FORGE_PER_BATCH = 4;
 const LOCAL_PER_BATCH = 2;
@@ -30,10 +46,6 @@ const SECOND = 1000;
 const localSources = ["revert", "cause", "adr", "doc"] as const;
 const forgeSource = (source: HarvestSource): source is ForgeSource => source === "merged" || source === "closed" || source === "issue";
 const documentSource = (source: string) => source === "doc" || source === "adr";
-const DOCUMENT_BUDGET_GAP = "Contributor documents reached their share of the estimated token budget.";
-const DESCRIPTION_BUDGET_GAP = "Pull request descriptions reached their share of the estimated token budget.";
-// Private run accounting. Older cursors only have the aggregate evidence size.
-type HarvestRun = NonNullable<HarvestCursor["run"]> & { documentEvidence?: HarvestEvidenceSize; descriptionEvidence?: HarvestEvidenceSize };
 const byPoint = (a: HarvestPoint, b: HarvestPoint) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id, "en");
 
 function bands(window: SourceWindow): SourceWindow[] {
@@ -210,15 +222,14 @@ function divide(page: SearchPage): SearchPage[] | undefined {
   ];
 }
 
-async function fill(plan: HarvestPlan, cursor: HarvestCursor, scan: HarvestScan, client: ReturnType<typeof clientFor>, gaps: Gaps,
-  describe: boolean): Promise<void> {
+async function fill(plan: HarvestPlan, cursor: HarvestCursor, scan: HarvestScan, client: ReturnType<typeof clientFor>, gaps: Gaps): Promise<void> {
   const pending = active(scan, plan).filter((lane): lane is HarvestLane & { source: ForgeSource } =>
     forgeSource(lane.source) && !lane.ready.length && lane.remaining.length > 0).slice(0, SEARCHES_PER_BATCH);
   if (!client) {
     if (pending.length) throw new SourceError("login");
     return;
   }
-  const replies = await search(client, pending.map(lane => ({ source: lane.source, page: lane.remaining[0]! })), false, describe);
+  const replies = await search(client, pending.map(lane => ({ source: lane.source, page: lane.remaining[0]! })));
   for (const [i, lane] of pending.entries()) {
     const page = lane.remaining.shift()!;
     const { points, next, count } = replies[i]!;
@@ -285,22 +296,12 @@ export const REVERTED_GAP = "Review threads on changes the team later reverted w
 export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | undefined, deps: HarvestDeps = {}): Promise<HarvestBatch> {
   const next: HarvestCursor = structuredClone(cursor ?? { sources: {} });
   // All search totals come from a single inventory request.
-  const run: HarvestRun = next.run?.id === plan.id ? next.run : {
-    id: plan.id, evidence: emptyHarvestEvidence, documentEvidence: emptyHarvestEvidence, descriptionEvidence: emptyHarvestEvidence, requests: Number(plan.inventory.bands.length > 0),
+  const run: NonNullable<HarvestCursor["run"]> = next.run?.id === plan.id ? next.run : {
+    id: plan.id, evidence: emptyHarvestEvidence, requests: Number(plan.inventory.bands.length > 0),
   };
   next.run = run;
   const already = projectHarvestSpend(run.evidence, plan.agent);
   const scan = next[plan.mode] = scanFor(plan, next);
-  const hasReviewHistory = plan.inventory.bands.some(band => band.count > 0 && (band.source === "merged" || band.source === "closed"))
-    || (scan.totals.merged ?? 0) > 0 || (scan.totals.closed ?? 0) > 0;
-  // A share of the evidence. What one agent rereads from its cache on every call would leave Codex a handful of items.
-  const fitsShare = (evidence: HarvestEvidenceSize) => projectHarvestSpend(evidence, "claude") <= plan.budget / 4;
-  // An older checkpoint has no source breakdown, so reserve its prior spend.
-  let documentEvidence = run.documentEvidence ??= run.evidence;
-  const canFitDocument = (evidence: HarvestEvidenceSize) => !hasReviewHistory || fitsShare(evidence);
-  const canReadDocs = canFitDocument(addHarvestEvidence(documentEvidence, { text: "" }));
-  // A description was written by the change's own author and reviewed by nobody, so it can't crowd out the reviews.
-  let descriptionEvidence = run.descriptionEvidence ??= run.evidence;
   const descriptions = { decisions: 0, plain: 0 };
   const gaps = new Gaps();
   if (already === 0) for (const gap of plan.gaps) gaps.messages.add(gap);
@@ -324,8 +325,7 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
     budgetStopped = true;
     return result();
   }
-  if (!scan.partial.some(item => item.source !== "issue" || plan.issues)) await fill(plan, next, scan, client, gaps,
-    fitsShare(addHarvestEvidence(descriptionEvidence, { text: "" })));
+  if (!scan.partial.some(item => item.source !== "issue" || plan.issues)) await fill(plan, next, scan, client, gaps);
   const work = take(scan, plan);
   if (!work.length) return result();
   const forge = work.filter((item): item is typeof item & ForgeItem => forgeSource(item.source));
@@ -336,13 +336,13 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
     return result();
   }
   const tree = await openTree(plan, deps);
-  const docTree = scan.head !== tree.head && canReadDocs && work.some(item => documentSource(item.source))
+  const docTree = scan.head !== tree.head && work.some(item => documentSource(item.source))
     ? await openTree({ ...plan, head: scan.head }, deps) : tree;
   const read = client ? new ReviewRead(client, gaps, run.access ??= {}) : undefined;
   const reviewers = read?.reviewers ?? new Reviewers();
   const reader = new RegionReader(tree.root, client && reviewedFiles(client, available, gaps));
   const changesByPull = client ? await changes(client, forge, gaps, available) : [];
-  const familiarity = changesByPull.some(change => change.threads.length)
+  const familiarity = !deps.censusOnly && changesByPull.some(change => change.threads.length)
     ? await Familiarity.open(plan.source.slug, tree, next.familiarity ??= {}, deps.teams) : undefined;
   const reverts = new Map<string, Awaited<ReturnType<typeof readRevert>>>();
   for (const item of work) if (item.source === "revert") reverts.set(item.point.id, await readRevert(plan, item.point));
@@ -352,19 +352,14 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
   const threads = new Map<string, Awaited<ReturnType<typeof readyThreads>>>();
   if (read) {
     observeAuthors(read, changesByPull, related);
-    if (familiarity) for (const change of changesByPull) {
-      threads.set(itemKey({ ...change.item, emitted: [] }), await readyThreads(change, read, familiarity));
+    for (const change of changesByPull) {
+      threads.set(itemKey({ ...change.item, emitted: [] }), await readyThreads(change, read, familiarity, plan.until));
     }
   }
   const template = changesByPull.length ? await templateLines(tree) : new Set<string>();
   const byItem = new Map(changesByPull.map(change => [change.item, change]));
   const foundByItem = new Map<typeof work[number], Candidate[]>();
   for (const item of work) {
-    if (!canReadDocs && documentSource(item.source)) {
-      gaps.messages.add(DOCUMENT_BUDGET_GAP);
-      foundByItem.set(item, []);
-      continue;
-    }
     const change = byItem.get(item as ForgeItem);
     const revert = reverts.get(item.point.id);
     let discussion;
@@ -387,20 +382,8 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
   for (const { item, candidate } of ranked) {
     if (item.emitted.includes(candidate.id)) continue;
     // The team undid this change and never re-landed it: its review is not what the code holds.
-    if ((candidate.kind === "review-thread" || candidate.kind === "pr-text") && candidate.pull !== undefined && reverted.has(candidate.pull)) {
+    if (candidate.prState === "merged" && candidate.pull !== undefined && reverted.has(candidate.pull)) {
       gaps.messages.add(REVERTED_GAP);
-      skipped.add(candidate);
-      continue;
-    }
-    const projectedDocuments = documentSource(candidate.kind) ? addHarvestEvidence(documentEvidence, candidate) : undefined;
-    if (projectedDocuments && !canFitDocument(projectedDocuments)) {
-      gaps.messages.add(DOCUMENT_BUDGET_GAP);
-      skipped.add(candidate);
-      continue;
-    }
-    const projectedDescriptions = candidate.kind === "pr-text" ? addHarvestEvidence(descriptionEvidence, candidate) : undefined;
-    if (projectedDescriptions && !fitsShare(projectedDescriptions)) {
-      gaps.messages.add(DESCRIPTION_BUDGET_GAP);
       skipped.add(candidate);
       continue;
     }
@@ -408,16 +391,10 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
     const estimate = projectHarvestSpend(evidence, plan.agent);
     if (estimate > plan.budget) {
       gaps.messages.add("Learning reached its estimated token budget.");
-      if (projectedDocuments && hasReviewHistory) {
-        skipped.add(candidate);
-        continue;
-      }
       budgetStopped = true;
       break;
     }
     run.evidence = evidence;
-    if (projectedDocuments) documentEvidence = run.documentEvidence = projectedDocuments;
-    if (projectedDescriptions) descriptionEvidence = run.descriptionEvidence = projectedDescriptions;
     spent = estimate;
     candidates.push(candidate);
     item.emitted.push(candidate.id);

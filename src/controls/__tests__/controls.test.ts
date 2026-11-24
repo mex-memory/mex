@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openRecord } from "../../record/index.js";
 import { shortHash } from "../../record/project.js";
+import { RECORD_SCHEMA_VERSION } from "../../record/schema.js";
 import { automaticWorkEnabled, offDeadline, setCheckoutEnabled, setGlobalEnabled, setCaptureEnabled } from "../index.js";
 import { enqueueJob, registerJobKind, runOneBatch } from "../../record/jobs.js";
 
@@ -76,7 +77,7 @@ describe("global and capture policy", () => {
     writer = openRecord({ home, isNetwork: () => false });
     expect(JSON.parse(readFileSync(join(home, "controls.json"), "utf8")).off).toBe(true);
     expect(JSON.parse(readFileSync(join(home, "hook-capture", `${id}.json`), "utf8")).enabled).toBe(false);
-    expect(writer.db.prepare("PRAGMA user_version").get()!.user_version).toBe(6);
+    expect(writer.db.prepare("PRAGMA user_version").get()!.user_version).toBe(RECORD_SCHEMA_VERSION);
     writer.close();
   });
   it("reports a failed publication and does not let an unrelated corrupt mirror block global off", () => {

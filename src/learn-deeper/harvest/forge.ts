@@ -5,7 +5,7 @@ import { authored, decides, decisionsFirst, hasDecisionsSection } from "./descri
 import { cleanText, contrastive, evidenceDigest, excerpt, newCandidate, PR_BYTES, PROPOSAL_BYTES, reviewerKey, safePath, safeRaw, type Gaps } from "./evidence.js";
 import type { Familiarity } from "./familiarity.js";
 import { MAX_BLOB, oid, reviewRegions, type ReadReviewedFile, type RegionReader } from "./regions.js";
-import type { Candidate, ForgeSource, HarvestDeps, HarvestPlan, HarvestPoint, SearchPage } from "./types.js";
+import type { Candidate, DiscussionLine, ForgeSource, HarvestDeps, HarvestPlan, HarvestPoint, SearchPage } from "./types.js";
 
 const THREAD_PAGE = 12;
 // Beyond this a change is mostly a bot's remarks.
@@ -22,7 +22,7 @@ const actor = "author{__typename login ... on User{name}}";
 const common = `id fullDatabaseId body createdAt isMinimized authorAssociation ${actor}`;
 const discussionFields = `comments(last:${COMMENT_PAGE}){pageInfo{hasPreviousPage} nodes{${common}}}
 reviews(last:${COMMENT_PAGE},states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){
-  pageInfo{hasPreviousPage} nodes{${common} submittedAt authorCanPushToRepository isCopilotCodeReview}
+  pageInfo{hasPreviousPage} nodes{${common} state submittedAt authorCanPushToRepository isCopilotCodeReview}
 }`;
 const threadFields = `id path isResolved isOutdated line originalLine startLine originalStartLine diffSide startDiffSide
 comments(first:${REPLIES}){totalCount pageInfo{hasNextPage} nodes{
@@ -128,7 +128,7 @@ const total = (value: unknown) => connection(value).total;
 /** A change that holds no evidence, known from its search row: nobody said anything, or only an outsider described it. */
 function silent(source: ForgeSource, row: Raw, describe: boolean): boolean {
   if (source === "closed") return total(row.comments) === 0 && total(row.reviews) === 0;
-  return source === "merged" && total(row.reviewThreads) === 0
+  return source === "merged" && total(row.reviewThreads) === 0 && total(row.comments) === 0 && total(row.reviews) === 0
     && (!describe || object(row.author)?.__typename === "Bot" || OUTSIDERS.includes(string(row.authorAssociation) ?? ""));
 }
 
@@ -146,7 +146,7 @@ Promise<Array<{ count: number; points: Array<HarvestPoint & { silent: boolean }>
     variables[`a${i}`] = page.after ?? null;
     params.push(`$q${i}:String!,$a${i}:String`);
     const nodes = source === "issue" ? "nodes{... on Issue{number closedAt}}"
-      : `nodes{... on PullRequest{number ${source === "merged" ? "mergedAt authorAssociation author{__typename} reviewThreads{totalCount}"
+      : `nodes{... on PullRequest{number ${source === "merged" ? "mergedAt authorAssociation author{__typename} reviewThreads{totalCount} comments{totalCount} reviews{totalCount}"
         : "closedAt comments{totalCount} reviews{totalCount}"}}}`;
     fields.push(`s${i}:search(type:ISSUE,query:$q${i},first:${countsOnly ? 1 : SEARCH_PAGE},after:$a${i}){
       issueCount pageInfo{hasNextPage endCursor} ${countsOnly ? "" : nodes}}`);
@@ -168,6 +168,11 @@ Promise<Array<{ count: number; points: Array<HarvestPoint & { silent: boolean }>
 
 interface Comment { id: string; databaseId?: string; at: string; raw: string; login: string; }
 export interface Discussion { raw: string; bodies: string[]; reviewers: string[]; nodeIds: string[]; commentHashes: Record<string, string>; }
+
+export function trivialDiscussion(text: string): boolean {
+  if (/^(?:done|fixed|updated|merged|released|agreed)[,.! ]+(?:thanks|thank you)[.! ]*$/iu.test(text.trim())) return true;
+  return /^(?:(?:@\S+|\[reviewer\])\s+)?(?:thanks(?: a lot| so much| for (?:this|the (?:fix|review|feedback|report|update)))?|thank you(?: so much)?|lgtm|looks good(?: to me)?|great|nice|merged|released|done|ok(?:ay)?|cool|approved|agreed|fixed|updated)(?:\s*(?:in|as|on)\s+(?:#\d+|[a-f\d]{7,40}|v?\d+(?:\.\d+){1,3}))?[.!\s]*$/iu.test(text.trim());
+}
 
 function directPermission(row: Raw, login: string): boolean | undefined {
   if (typeof row.authorCanPushToRepository === "boolean") return row.authorCanPushToRepository;
@@ -217,17 +222,36 @@ export class ReviewRead {
     return this.writer(row, login);
   }
 
-  async comments(rows: Raw[], start?: string): Promise<Comment[]> {
+  private comment(row: Raw, start?: string, end?: string): Comment | undefined {
+    const author = person(row.author), id = nodeId(row.id), raw = string(row.body);
+    const at = timestamp(row.submittedAt ?? row.createdAt);
+    if (!author?.human || !id || !raw?.trim() || !at || start && at <= start || end && at > end
+      || row.isMinimized === true || row.isCopilotCodeReview === true || row.state === "PENDING") return;
+    if (safeRaw(raw) === undefined) { this.gaps.withheld(false); return; }
+    return { id, at, raw, login: author.login, databaseId: databaseId(row.fullDatabaseId) };
+  }
+
+  async comments(rows: Raw[], start?: string, end?: string): Promise<Comment[]> {
     const result: Comment[] = [];
     for (const row of rows) {
-      const author = person(row.author), id = nodeId(row.id), raw = string(row.body);
-      const at = timestamp(row.submittedAt ?? row.createdAt);
-      if (!author?.human || !id || !raw?.trim() || !at || start && at <= start
-        || row.isMinimized === true || row.isCopilotCodeReview === true) continue;
-      if (safeRaw(raw) === undefined) { this.gaps.withheld(false); continue; }
-      if (await this.canWrite(row, author.login)) result.push({ id, at, raw, login: author.login, databaseId: databaseId(row.fullDatabaseId) });
+      const comment = this.comment(row, start, end);
+      if (comment && await this.canWrite(row, comment.login)) result.push(comment);
     }
     return result;
+  }
+
+  async line(row: Raw, author: Person | undefined, until: string, path?: string, hunk?: string):
+  Promise<{ line: DiscussionLine; comment: Comment; writer: boolean } | undefined> {
+    const comment = this.comment(row, undefined, until);
+    if (!comment) return;
+    const text = cleanText(comment.raw, this.gaps, this.reviewers);
+    if (!text) return;
+    const writer = await this.canWrite(row, comment.login);
+    const owns = comment.login === author?.login;
+    const role = writer ? owns ? "maintainer (PR author)" : "maintainer" : owns ? "PR author" : "other user";
+    return { comment, writer, line: { id: comment.id, at: comment.at, role, text, path,
+      ...(writer ? { hash: evidenceDigest([comment.raw]), hunk,
+        reviewer: owns ? undefined : reviewerKey(this.client.repo.slug, comment.login) } : {}) } };
   }
 
   discussion(comments: Comment[]): Discussion {
@@ -337,7 +361,7 @@ export function observeAuthors(read: ReviewRead, items: Change[], related: Reado
 }
 
 interface ReadyThread { row: Raw; root: Raw; path: string; id: string; comments: Comment[]; }
-export async function readyThreads(change: Change, read: ReviewRead, familiarity: Familiarity): Promise<ReadyThread[]> {
+export async function readyThreads(change: Change, read: ReviewRead, familiarity: Familiarity | undefined, until?: string): Promise<ReadyThread[]> {
   const ready: ReadyThread[] = [];
   for (const row of change.threads) {
     const id = nodeId(row.id), path = row.path;
@@ -345,9 +369,9 @@ export async function readyThreads(change: Change, read: ReviewRead, familiarity
     const nodes = connection(row.comments).nodes, root = nodes[0];
     // A human reply cannot make a bot's or a minimized root eligible.
     if (!root || !person(root.author)?.human || root.isMinimized === true || root.isCopilotCodeReview === true) continue;
-    const comments = await read.comments(nodes);
-    if (!comments.length || comments[0]!.id !== root.id) continue;
-    for (const comment of comments) familiarity.observe(comment.login, path, Number(change.item.point.id), change.item.point.at);
+    const comments = await read.comments(nodes, undefined, until);
+    if (!comments.length) continue;
+    for (const comment of comments) familiarity?.observe(comment.login, path, Number(change.item.point.id), change.item.point.at);
     ready.push({ row, root, path, id, comments });
   }
   return ready;
@@ -369,7 +393,31 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
   const readDescription = () => { if (prText && descriptions) descriptions[hasDecisionsSection(prText) ? "decisions" : "plain"]++; };
   const changedPaths = [...new Set(connection(row.files).nodes.map(file => file.path).filter(safePath))];
   const smallPr = typeof row.changedFiles === "number" && Number.isSafeInteger(row.changedFiles) && row.changedFiles >= 0 && row.changedFiles < 20;
-  const base = { at: point.at, title, changedPaths, ...(source === "issue" ? {} : { pull }) };
+  const prState = source === "issue" ? undefined : source;
+  const base = { at: point.at, title, changedPaths, prState, ...(source === "issue" ? {} : { pull }) };
+  const author = person(row.author);
+  const context: DiscussionLine[] = [];
+  const candidates: Candidate[] = [];
+  const attachContext = () => {
+    if (candidates[0] && context.length) candidates[0].context = context;
+    return candidates;
+  };
+  const discussionCandidates = async (kind: "conversation" | "review-summary", connectionValue: unknown) => {
+    for (const item of connection(connectionValue).nodes) {
+      const rendered = await read.line(item, author, plan.until);
+      if (!rendered) continue;
+      const { line, writer, comment } = rendered;
+      if (!writer) { context.push(line); continue; }
+      if (trivialDiscussion(line.text)) continue;
+      const fragment = kind === "conversation" ? "issuecomment-" : "pullrequestreview-";
+      candidates.push(newCandidate({ ...base, ...followedFields(read.discussion([comment])),
+        id: `gh:${kind}:${comment.id}`, kind,
+        link: comment.databaseId ? `${link}#${fragment}${comment.databaseId}` : link,
+        at: line.at, text: line.text, prText, hash: line.hash!, lines: [line],
+        reviewers: comment.login === author?.login ? [] : [reviewerKey(plan.source.slug, comment.login)],
+      }, { smallPr }));
+    }
+  };
   if (source !== "merged") {
     if (source === "closed" && row.state !== "CLOSED") return [];
     const events = connection(row.timelineItems).nodes;
@@ -393,7 +441,7 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
       return author?.login === closer?.login && near >= -24 * 60 * 60 * 1000 && near <= 60_000;
     }).sort((a, b) => Math.abs(distance(a.submittedAt ?? a.createdAt)) - Math.abs(distance(b.submittedAt ?? b.createdAt)))[0];
     if (labels.nodes.some(label => inactivity.test(string(label.name) ?? "")) || inactivity.test(string(closing?.body) ?? "")) return [];
-    const comments = await read.comments(closing ? [closing, ...facts.filter(fact => fact !== closing)] : facts);
+    const comments = await read.comments(closing ? [closing, ...facts.filter(fact => fact !== closing)] : facts, undefined, plan.until);
     const followed = read.discussion(comments);
     if (source === "closed" && !comments.length) return [];
     if (source === "issue" && !(comments.length && (row.stateReason === "NOT_PLANNED" || notPlanned.test(followed.raw))
@@ -404,23 +452,46 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     if (!text) return [];
     const node = nodeId(row.id);
     const nodeIds = prText ? [...followed.nodeIds, node ?? ""] : followed.nodeIds;
+    const reviewIds = new Set(connection(row.reviews).nodes.map(item => item.id));
+    const lines = comments.flatMap(comment => {
+      if (source === "closed" && reviewIds.has(comment.id)) return [];
+      const clean = cleanText(comment.raw, gaps, read.reviewers);
+      return clean && !trivialDiscussion(clean) ? [{ id: comment.id, at: comment.at, text: clean,
+        role: comment.login === author?.login ? "maintainer (PR author)" as const : "maintainer" as const,
+        hash: evidenceDigest([comment.raw]), reviewer: comment.login === author?.login ? undefined : reviewerKey(plan.source.slug, comment.login) }] : [];
+    });
     const candidate = newCandidate({ ...base, ...followedFields(followed), nodeIds, id: `gh:${source}:${pull}`, kind: source === "closed" ? "closed-pr" : "issue",
-      link, hash: evidenceDigest(prText ? [...followed.bodies, rawDescription] : followed.bodies), text, prText: proposal }, { smallPr }, followed.raw);
+      link, hash: evidenceDigest(prText ? [...followed.bodies, rawDescription] : followed.bodies), text, prText: proposal, lines }, { smallPr }, followed.raw);
     if (source === "issue") return [candidate];
     readDescription();
     // Superseded, stacked and abandoned changes are closed without a reason anyone could rule something out with.
-    return candidate.signal === "strong" || contrastive(followed.raw) ? [candidate] : [];
+    if (candidate.signal === "strong" || contrastive(followed.raw)) candidates.push(candidate);
+    await discussionCandidates("review-summary", row.reviews);
+    for (const item of connection(row.comments).nodes) {
+      const rendered = await read.line(item, author, plan.until);
+      if (rendered && !rendered.writer) context.push(rendered.line);
+    }
+    return attachContext();
   }
 
-  const candidates: Candidate[] = [];
-  const author = person(row.author);
   if (author?.human) readDescription();
+  await discussionCandidates("conversation", row.comments);
+  await discussionCandidates("review-summary", row.reviews);
   // It travels with the change's review threads as context. Alone it is evidence only when someone with write access
   // says what was chosen or ruled out, and strong only under a Decisions heading: nobody reviewed it.
   if (prText && author?.human && decides(prText) && await read.canWrite(row, author.login)) {
     candidates.push({ ...newCandidate({ ...base, id: `gh:pr:${pull}`, kind: "pr-text", link,
-      text: prText, prText, hash: evidenceDigest([rawDescription]), nodeIds: [nodeId(row.id) ?? ""], reviewers: [] }, { smallPr, guidelineLink: false }),
+      text: prText, prText, hash: evidenceDigest([rawDescription]), nodeIds: [nodeId(row.id) ?? ""], reviewers: [],
+      lines: [{ id: nodeId(row.id) ?? `pr-${pull}`, at: point.at, role: "maintainer (PR author)", text: prText }] }, { smallPr, guidelineLink: false }),
       signal: hasDecisionsSection(prText) ? "strong" : "weak" });
+  }
+  const eligible = new Map(threads.map(thread => [thread.id, thread]));
+  for (const row of change.threads) {
+    const thread = eligible.get(String(row.id));
+    if (!thread && safePath(row.path)) for (const item of connection(row.comments).nodes) {
+      const rendered = await read.line(item, author, plan.until, row.path);
+      if (rendered && !rendered.writer) context.push(rendered.line);
+    }
   }
   for (const thread of threads) {
     const { row: position, root, path, id, comments } = thread;
@@ -431,15 +502,26 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     // objection: it is evidence like their description, when it says what was chosen.
     const others = read.discussion(comments.filter(comment => comment.login !== author?.login));
     const reviewed = others.reviewers.length > 0;
-    if (!reviewed && !decides(text)) continue;
     const hunk = string(root.diffHunk);
     if (hunk && safeRaw(hunk) !== hunk) { gaps.withheld(true); continue; }
+    const lines: DiscussionLine[] = [];
+    for (const item of connection(position.comments).nodes) {
+      const rendered = await read.line(item, author, plan.until, path,
+        item === root && hunk ? excerpt(read.reviewers.redact(hunk, "all"), 500) : undefined);
+      if (!rendered) continue;
+      if (rendered.writer && !trivialDiscussion(rendered.line.text)) {
+        const fragment = rendered.comment.databaseId;
+        lines.push({ ...rendered.line, link: fragment ? link + "#discussion_r" + fragment : link });
+      }
+      else if (!rendered.writer) context.push(rendered.line);
+    }
+    if (!lines.length) continue;
     const orig = gitId(object(root.originalCommit)?.oid);
     const original = orig ?? (position.isOutdated !== true ? gitId(object(root.commit)?.oid) ?? gitId(row.headRefOid) : undefined);
     const last = orig ? root.originalLine ?? position.originalLine ?? position.line : position.line;
     const first = orig ? root.originalStartLine ?? position.originalStartLine ?? last : position.startLine ?? last;
     const side = string(position.diffSide);
-    const location = hunk && original && side && positive(first) && positive(last)
+    const location = !deps.censusOnly && comments[0]?.id === root.id && hunk && original && side && positive(first) && positive(last)
       && (position.startDiffSide == null || position.startDiffSide === side)
       ? await reviewRegions({ path, side, first, last, original, hunk, merge: gitId(object(row.mergeCommit)?.oid),
         head: plan.head, changedPaths, headRepo: string(object(row.headRepository)?.nameWithOwner) }, reader, gaps) : { actedOn: false };
@@ -450,11 +532,11 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
         || afterPath !== undefined && afterPath !== path && familiarity.knows(comment.login, afterPath, pull, point.at)));
     const number = comments[0]?.databaseId;
     candidates.push(newCandidate({ ...base, ...followedFields(followed), id: `gh:thread:${id}`, kind: "review-thread",
-      link: number ? `${link}#discussion_r${number}` : link, path, text, prText, hash: evidenceDigest(followed.bodies), code: location.code, reviewers: others.reviewers },
+      link: number ? `${link}#discussion_r${number}` : link, path, text, prText, hash: evidenceDigest(followed.bodies), code: location.code, reviewers: others.reviewers, lines },
     { actedOn: reviewed && location.actedOn, familiar, smallPr, hotUnknown: plan.inventory.hotPaths.includes(afterPath ?? path)
       && !deps.knownPaths?.has(afterPath ?? path) }, others.raw));
   }
-  return candidates;
+  return attachContext();
 }
 
 function followedFields({ reviewers, nodeIds, commentHashes }: Discussion): Pick<Candidate, "reviewers" | "nodeIds" | "commentHashes"> {

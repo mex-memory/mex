@@ -503,7 +503,12 @@ func bumpReason(b bump, full *entries.Item, limit int) string {
 	}
 	source := ""
 	if e.Learned() {
-		source = "\nLearned from " + learnedEvidence(e.Source.Label) + " \u00b7 `mex recall " + e.ID + "`"
+		label := strings.TrimPrefix(e.Source.Label, "Learned, trial. ")
+		trial := ""
+		if label != e.Source.Label {
+			trial = " (learned, trial)"
+		}
+		source = "\nLearned from " + learnedEvidence(label) + trial + " \u00b7 `mex recall " + e.ID + "`"
 	}
 	if len(where)+len(source) >= limit {
 		return ""

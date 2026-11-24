@@ -118,33 +118,40 @@ it("leaves everything as it is when the person decides later", async () => {
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
 });
 
-it("checks a waiting rule with the person's agent, read-only, only after they approve the estimate", async () => {
+it("checks a waiting rule from pinned evidence only after consent and stages the answer until save", async () => {
   const [a] = await propose([learned("e", "Use the pooled client in src.", "new Client(", "proposed")], options());
   if (a?.status !== "accepted") throw new Error(JSON.stringify(a));
   await finishedRun([{ id: a.entryId, claim: "Use the pooled client in src.", status: "proposed" }]);
   vi.spyOn(await import("../../learn-deeper/offer.js"), "chooseAgent").mockReturnValue("claude");
-  const model = vi.fn(async (request: { readOnlyTools?: unknown; executionDirectory?: string; timeoutMs?: number }) => {
-    expect(request.readOnlyTools).toEqual({ maxTurns: 8 });
-    expect(request.executionDirectory).toBe(root);
+  const model = vi.fn(async (request: Parameters<typeof import("../../model-runner/index.js").runModel>[0]) => {
+    expect(request.readOnlyTools).toBeUndefined();
+    expect(request.executionDirectory).toBeUndefined();
+    expect(request.projectRoot).toBe(root);
     expect(request.timeoutMs).toBe(VERIFY_TIMEOUT_MS);
+    expect(request.prompt).toContain("export const ok = 1;");
     return { text: JSON.stringify({ verdict: "keep", evidence: ["src/api.ts:1"] }), selectedModel: "fixture", usage: { ...ZERO, model: "fixture", estimated: false } };
   });
-  const keys = ["v", "1", "enter", "enter"], lines: string[] = [];
+  const keys = ["v", "1", "n", "v", "1", "enter", "enter"], lines: string[] = [];
   const result = await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { color: false, ascii: true } as never,
-    interactive: true, env: process.env, home, keys: async () => keys.shift()!, model: model as never });
-  expect(lines.join(" ").replace(/ +/gu, " ")).toMatch(/About 40,000 tokens, estimated/u);
+    interactive: true, env: process.env, home, keys: async () => {
+      if (keys.length === 4) expect(model).not.toHaveBeenCalled();
+      if (keys.length === 1) expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
+      return keys.shift()!;
+    }, model: model as never });
+  expect(lines.join(" ").replace(/ +/gu, " ")).toMatch(/About 32,000 tokens, estimated/u);
   expect(model).toHaveBeenCalledTimes(1);
   expect(result).toEqual({ kept: 1, waiting: 0, dropped: 0 });
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("active");
 });
 
-it("ignores a verify answer that cites no real place in the code", () => {
-  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src/missing.ts:3"] }), root)).toBeUndefined();
-  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["package.json"] }), root)).toBeUndefined();
-  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src:1"] }), root)).toBeUndefined();
-  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["src/api.ts:99"] }), root)).toBeUndefined();
-  expect(parseVerify(JSON.stringify({ verdict: "drop", evidence: ["package.json:1"] }), root)).toMatchObject({ verdict: "drop", evidence: ["package.json:1"] });
-  expect(parseVerify("not json", root)).toBeUndefined();
+it("requires a verify answer to cite a file and lines shown in the evidence", () => {
+  const files = [{ path: "src/api.ts", lines: [{ line: 1, text: "export const ok = 1;" }] }];
+  const parse = (site: string) => parseVerify(JSON.stringify({ verdict: "drop", evidence: [site] }), files);
+  for (const site of ["src/missing.ts:3", "src/api.ts", "src:1", "src/api.ts:99", "src/api.ts:1-99", "C:\\src\\api.ts:1", "../src/api.ts:1"]) {
+    expect(parse(site)).toBeUndefined();
+  }
+  expect(parse("src\\api.ts:1")).toEqual({ verdict: "drop", evidence: ["src/api.ts:1"] });
+  expect(parseVerify("not json", files)).toBeUndefined();
 });
 
 it("pages through every rule and saves all choices only on the last page", async () => {

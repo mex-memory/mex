@@ -1,7 +1,7 @@
 import type { PinnedTree } from "../git.js";
 import { contrastive, generalising } from "./evidence.js";
 
-const templatePath = /^(?:\.github\/|docs\/)?pull_request_template(?:\.(?:md|txt|rst)|\/[^/]+)?$/iu;
+export const templatePath = /^(?:\.github\/|docs\/)?pull_request_template(?:\.(?:md|txt|rst)|\/[^/]+)?$/iu;
 const checkbox = /^\s*(?:[-*+]|\d{1,3}[.)])\s+\[[ xX]\](?:\s|$)/u;
 const decisionsHeading = /^(?:#{1,4}\s*Decisions?\b.*|\*\*Decisions?\*\*:?[ \t]*)$/iu;
 const chosen = /\b(?:decided|decisions?|chose|chosen|opted|trade-?offs?|alternatives?|in favou?r of|on purpose|intentional(?:ly)?|deliberate(?:ly)?|by design)\b/iu;

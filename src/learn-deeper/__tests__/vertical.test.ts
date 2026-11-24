@@ -1,11 +1,10 @@
+import { gateReply, isGatePrompt } from "./fixtures/gate.js";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { MEANING_PURPOSE } from "../meaning.js";
-import { recordedMeaning } from "./fixtures/meaning.js";
 import * as cliTools from "../../cli-tools.js";
 import { literalPattern } from "../../file-index/classify.js";
 import { buildIndex } from "../../file-index/build.js";
@@ -53,8 +52,8 @@ function commit(message: string) {
 
 beforeAll(() => {
   suite = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-vertical-")));
-  binary = join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
-  execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
+  binary = process.env.MEX_HOOK_BINARY ?? join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+  if (!process.env.MEX_HOOK_BINARY) execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
 }, 300_000);
 afterAll(() => rmSync(suite, { recursive: true, force: true }));
 beforeEach(() => {
@@ -109,15 +108,11 @@ function mockGithub(options: { head?: () => string; at?: string; fetches?: strin
 }
 const reply = (value: object) => ({ text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } });
 type ModelRequest = Parameters<typeof runModel>[0];
-const clusters = (prompt: string) => [...prompt.matchAll(/"cluster":"([a-f0-9]{24})"/gu)].map(match => match[1]!);
 function docReply(request: ModelRequest, id = sourceId, text = claim, citation = quote) {
-  if (request.purpose === MEANING_PURPOSE) return reply(recordedMeaning(request.prompt));
-  if (request.purpose === "learn-deeper-filter") {
-    const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as { id: string }[];
-    return reply({ results: items.map(item => ({ id: item.id, keep: item.id === id, category: "process", lesson: text })) });
-  }
-  return reply({ entries: [{ cluster: clusters(request.prompt)[0], kind: "rule", route: "process-rule", claim: text,
-    clauses: [{ text, quotes: [{ id, quote: citation }] }], scope: [] }] });
+  if (isGatePrompt(request.prompt)) return reply(gateReply(request.prompt));
+  expect(request.role).toBe("best");
+  expect(request.prompt).toContain("=== FILE " + id.slice(4).split("#", 1)[0]);
+  return reply({ rules: [{ text, quote: citation, kind: "process", scope: "repo", source: id.slice(4).split("#", 1)[0] }] });
 }
 
 async function accept(ask = vi.fn(async (_lines: readonly string[]) => true)) {
@@ -159,7 +154,7 @@ function fixtureModel() {
   return vi.fn<typeof runModel>(async request => docReply(request));
 }
 
-it("quotes the ceiling before any model call, accounts for sorting, writing and evidence, and saves a private process rule", async () => {
+it("quotes the ceiling before any model call, accounts for doc writing and evidence, and saves a private process rule", async () => {
   const model = vi.fn<typeof runModel>(async request => runModel({ ...request, __internal: { spawn: (_file, _args, options) => {
     expect(options.env?.GH_TOKEN).toBeUndefined();
     return spawn(process.execPath, ["-e", `process.stdin.resume(); process.stdin.on("end", () => {
@@ -183,9 +178,9 @@ it("quotes the ceiling before any model call, accounts for sorting, writing and 
     expect(job.project_id).toBe(result.projectId);
     expect(plan.ceiling).toBe(Math.floor(plan.estimate * 1.5));
     const done = await advance(writer, job);
-    expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1, tokens_used: 3600 });
-    expect(state(done).v2.counts).toMatchObject({ "tokens.triage": 1200, "tokens.write": 1200, "tokens.quotes": 1200, saved: 1 });
-    expect(writer.db.prepare("SELECT count(*) n FROM model_batches WHERE job_id=? AND state='done'").get(job.id)?.n).toBe(3);
+    expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1, tokens_used: 2400 });
+    expect(state(done).v2.counts).toMatchObject({ "tokens.docs": 1200, "tokens.gate": 1200, saved: 1 });
+    expect(writer.db.prepare("SELECT count(*) n FROM model_batches WHERE job_id=? AND state='done'").get(job.id)?.n).toBe(2);
     const schedule = JSON.parse(weeklySchedule(writer, job.project_id!)!);
     expect(schedule.due).toBeGreaterThanOrEqual(Date.parse(plan.until) + 7 * DAY_MS);
     expect(weeklyWakeDue(writer.location.home, schedule.due - 1_000)).toBe(false);
@@ -221,7 +216,7 @@ it("joins the unfinished job and keeps its pinned docs across a branch switch", 
   writeFileSync(join(repo, path), doc("This is the other branch."));
   commit("Change the guide on the other branch");
   const model = vi.fn<typeof runModel>(async request => {
-    expect(request.prompt).toContain(quote);
+    if (request.prompt.startsWith("You read the contributor")) expect(request.prompt).toContain(quote);
     expect(request.prompt).not.toContain("This is the other branch");
     return docReply(request);
   });
@@ -229,7 +224,7 @@ it("joins the unfinished job and keeps its pinned docs across a branch switch", 
   const writer = openRecord();
   try {
     expect(await advance(writer, jobRow(writer))).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND]);
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual([LEARN_KIND, LEARN_KIND]);
     expect(git("status", "--porcelain")).toBe("");
   } finally { writer.close(); }
 }, 60_000);
@@ -263,11 +258,11 @@ it.each(["offline", "expired login"] as const)("waits and resumes the same harve
   } finally { writer.close(); }
 }, 60_000);
 
-it("reuses completed triage when a provider limit stops the writer and the app restarts", async () => {
+it("reuses the completed docs writer when a provider limit stops the gate and the app restarts", async () => {
   await accept();
   let now = Date.now(), limited = true;
   const model = vi.fn<typeof runModel>(async request => {
-    if (request.purpose === LEARN_KIND && limited) throw new ModelRunError("usage_limit", "codex", new Date(now + 2000).toISOString());
+    if (isGatePrompt(request.prompt) && limited) throw new ModelRunError("usage_limit", "codex", new Date(now + 2000).toISOString());
     return docReply(request);
   });
   registerJobKind(createLearnKind({ model, now: () => now }));
@@ -278,7 +273,7 @@ it("reuses completed triage when a provider limit stops the writer and the app r
     expect(waiting.state).toBe("waiting");
     expect(waiting.reason).toContain("usage limit");
     expect(state(waiting).v2.phase).toBe("write");
-    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["cheap", "best"]);
+    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["best", "best"]);
     writer.close();
     writer = openRecord();
     expect(requeueReadyJobs(writer)).toBe(0);
@@ -286,7 +281,7 @@ it("reuses completed triage when a provider limit stops the writer and the app r
     limited = false;
     expect(requeueReadyJobs(writer)).toBe(1);
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["cheap", "best", "best"]);
+    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["best", "best", "best"]);
     expect(rawRows(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);
@@ -452,7 +447,10 @@ it("uses shared full receipts before triage and respects a deleted legacy rule",
   const fetch = mockGithub({ head: () => head });
   const model = vi.fn<typeof runModel>(async request => {
     expect(request.prompt).not.toContain(sourceId);
-    if (request.purpose !== MEANING_PURPOSE) expect(request.prompt).toContain(otherId);
+    if (request.prompt.startsWith("You read the contributor")) {
+      expect(request.prompt).toContain("=== FILE " + other);
+      expect(request.prompt).not.toContain("=== FILE " + path);
+    }
     return docReply(request, otherId);
   });
   registerJobKind(createLearnKind({ client: async () => new ForgeClient(original, "forge-fixture-token", fetch), model, now: () => now }, true));
@@ -470,11 +468,11 @@ it("uses shared full receipts before triage and respects a deleted legacy rule",
     const job = due(writer, old, now);
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 0 });
-    // The comparison confirms the retired rule before the writer is paid.
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", MEANING_PURPOSE]);
+    // A full receipt skips the old source and the earlier retirement blocks publication before the model gate.
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual([LEARN_KIND]);
     expect(notes(writer, job).map(entry => entry.mex.status)).toEqual(["retired"]);
     expect(writer.setting(project, noteKey(seeded.entryId))).toBeUndefined();
-    expect(state(done).v2.counts).toMatchObject({ "covered-sources": 1, "cluster.forgotten": 1 });
+    expect(state(done).v2.counts).toMatchObject({ "covered-sources": 1, "producer-dropped.forgotten": 1 });
   } finally { writer.close(); }
 }, 75_000);
 
@@ -530,7 +528,7 @@ it("finishes a published writer batch after its runner dies without another mode
   } finally { writer.close(); }
 }, 75_000);
 
-it.each(["harvest", "triage", "cluster", "write", "finish"])("resumes after the %s runner dies before committing its checkpoint", async phase => {
+it.each(["harvest", "write", "finish"])("resumes after the %s runner dies before committing its checkpoint", async phase => {
   await accept();
   const model = fixtureModel(), kind = createLearnKind({ model });
   registerJobKind(kind);
@@ -546,8 +544,8 @@ it.each(["harvest", "triage", "cluster", "write", "finish"])("resumes after the 
     expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND]);
-    expect(state(done).v2.counts).toMatchObject({ "harvested.doc": 1, "triage-kept": 1, saved: 1 });
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual([LEARN_KIND, LEARN_KIND]);
+    expect(state(done).v2.counts).toMatchObject({ "harvested.doc": 1, "doc-rules": 1, saved: 1 });
     expect(rawRows(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);
@@ -585,45 +583,37 @@ it("does not publish or save a model reply after it loses the job owner", async 
     });
     registerJobKind(createLearnKind({ model }));
     await advance(writer, job);
-    expect(model).toHaveBeenCalledTimes(2);
+    expect(model).toHaveBeenCalledTimes(1);
     expect(notes(writer, job)).toEqual([]);
-    expect(rawRows(writer, job).map(row => row.key)).not.toContain(`learning.deep.v2.${job.id}.reply.batch.0.write`);
+    expect(rawRows(writer, job).map(row => row.key)).not.toContain(`learning.deep.v2.${job.id}.reply.docs.0`);
     expect(reviewRows(writer, job.project_id!, job.id)).toEqual([]);
     expect(writer.db.prepare("SELECT key FROM settings WHERE key LIKE 'knowledge.gate.%'").all()).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);
 
-it.each([false, true])("proves a repair only when the ceiling allows it (cap=%s)", async capped => {
+it.each([false, true])("does not save a doc draft the guide cannot support (cap=%s)", async capped => {
   await accept();
   const writer = openRecord();
   try {
     const job = jobRow(writer);
     const model = vi.fn<typeof runModel>(async request => {
-      if (request.prompt.includes("failed verification")) {
-        expect(request.prompt).toContain("quote(s) not found in the cited evidence");
-        return docReply(request, sourceId, paraphrase);
+      if (capped) {
+        const plan = Plan.parse(JSON.parse(job.params));
+        const reserved = { ...ZERO, input: plan.ceiling - 1 };
+        const spend = enqueueModelBatch(writer, { agent: "codex", model: "gpt-6.1-sol", projectPath: repo,
+          consented: { estimate: reserved, ceiling: plan.ceiling }, job: { jobId: job.id, batch: jobRow(writer).batch,
+            projectId: job.project_id, recordHome: writer.location.home } });
+        expect(claimModelBatch(writer, spend)).toBeUndefined();
+        recoverModelBatches(writer, Date.now(), () => false);
       }
-      if (request.purpose === LEARN_KIND) {
-        if (capped) {
-          const plan = Plan.parse(JSON.parse(job.params));
-          const reserved = { ...ZERO, input: plan.ceiling - 1 };
-          const spend = enqueueModelBatch(writer, { agent: "codex", model: "gpt-6.1-sol", projectPath: repo,
-            consented: { estimate: reserved, ceiling: plan.ceiling }, job: { jobId: job.id, batch: jobRow(writer).batch,
-              projectId: job.project_id, recordHome: writer.location.home } });
-          expect(claimModelBatch(writer, spend)).toBeUndefined();
-          recoverModelBatches(writer, Date.now(), () => false);
-        }
-        return docReply(request, sourceId, claim, "This sentence is absent from the guide.");
-      }
-      return docReply(request);
+      return docReply(request, sourceId, claim, "This sentence is absent from the guide.");
     });
     registerJobKind(createLearnKind({ model }));
     const done = await advance(writer, job);
-    expect(done.state, JSON.stringify(state(done).gaps)).toBe(capped ? "done with gaps" : "done");
-    expect(done.results).toBe(capped ? 0 : 1);
-    expect(model).toHaveBeenCalledTimes(capped ? 2 : 4);
-    if (capped) expect(state(done).gaps.join(" ")).toContain("allowance could not cover a repair");
-    else expect(notes(writer, job)[0]?.mex.source.quote).toBe(quote);
+    expect(done, String(done.reason)).toMatchObject({ state: "done", results: 0 });
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(state(done).v2.counts).toMatchObject({ "doc-dropped.quote-not-found": 1 });
+    expect(notes(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);
 
@@ -642,48 +632,28 @@ it("keeps past-session learning disabled without fetching or queuing a job", asy
 });
 
 
-it.each(["prove", "repair"] as const)("reuses paid replies if interrupted during %s", async phase => {
+it.each(["proof", "publication"] as const)("reuses paid replies if interrupted during %s", async phase => {
   await accept();
   const proves = vi.spyOn(proofEngine, "proveEntry");
   const gate = vi.spyOn(gateEngine, "propose");
-  const model = vi.fn<typeof runModel>(async request => request.purpose === LEARN_KIND && phase === "repair" && !request.prompt.includes("failed verification")
-    ? docReply(request, sourceId, claim, "A sentence the guide never says.")
-    : docReply(request, sourceId, paraphrase));
+  const model = fixtureModel();
   const kind = createLearnKind({ model });
   registerJobKind(kind);
   const writer = openRecord();
   try {
     const job = jobRow(writer);
-    const at = await advance(writer, job, row => row.state !== "queued" || state(row).v2?.quoteBatch?.round === 1);
+    const at = await advance(writer, job, row => row.state !== "queued" || state(row).v2?.phase === "write");
     expect(at.state).toBe("queued");
-    if (phase === "prove") proves.mockRejectedValueOnce(new Error("Fixture interruption after the writer reply"));
-    else gate.mockRejectedValueOnce(new Error("Fixture interruption after the repair reply"));
+    if (phase === "proof") proves.mockRejectedValueOnce(new Error("Fixture interruption after the writer reply"));
+    else gate.mockRejectedValueOnce(new Error("Fixture interruption after the gate reply"));
     writer.db.prepare("UPDATE jobs SET state='running',owner=? WHERE id=?").run(ownerId("background", 989898), job.id);
     const claimed = jobRow(writer);
     await expect(kind.runBatch({ writer, job: claimed, params: JSON.parse(job.params), checkpoint: state(claimed) }))
       .rejects.toThrow("Fixture interruption");
     expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
-    expect(model).toHaveBeenCalledTimes(phase === "prove" ? 3 : 4);
+    expect(model).toHaveBeenCalledTimes(2);
     expect(rawRows(writer, job)).toEqual([]);
-  } finally { writer.close(); }
-}, 60_000);
-
-it("reuses a quote judgment when repair only removes an unsupported reason", async () => {
-  await accept();
-  const model = vi.fn<typeof runModel>(async request => {
-    const result = docReply(request, sourceId, paraphrase);
-    if (request.purpose !== LEARN_KIND || request.prompt.includes("failed verification")) return result;
-    const { entries } = JSON.parse(result.text);
-    entries[0].clauses.push({ text: "This releases a lock.", quotes: [{ id: sourceId, quote: "The guide doesn't contain this." }] });
-    return reply({ entries });
-  });
-  registerJobKind(createLearnKind({ model }));
-  const writer = openRecord();
-  try {
-    const done = await advance(writer, jobRow(writer));
-    expect(done).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND, MEANING_PURPOSE, LEARN_KIND]);
   } finally { writer.close(); }
 }, 60_000);
 
@@ -711,7 +681,7 @@ it("withholds private and historical docs and applies pinned duplicate checks", 
     const job = jobRow(writer), done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done with gaps", results: 0 });
     expect(model).toHaveBeenCalledTimes(2);
-    expect(state(done).v2.counts).toMatchObject({ "historical-docs": 1, "gate-dropped.duplicate-rule-line": 1 });
+    expect(state(done).v2.counts).toMatchObject({ "historical-docs": 1, "producer-dropped.duplicate-rule-line": 1 });
     expect(state(done).gaps).toContain("Some rule files could not be read for duplicate checks.");
     expect(rawRows(writer, job)).toEqual([]);
     expect(notes(writer, job)).toEqual([]);
@@ -719,47 +689,24 @@ it("withholds private and historical docs and applies pinned duplicate checks", 
 }, 60_000);
 
 
-it("keeps weekly repair inside automatic admission and preserves the schedule when refused", async () => {
+it("keeps the weekly gate inside automatic admission and preserves the schedule when refused", async () => {
   const now = Date.now() + 2_000, head = git("rev-parse", "HEAD");
   const fetch = mockGithub({ head: () => head });
   const model = vi.fn<typeof runModel>(async request => {
     expect(request.automatic?.measuredUsageOnly).toBe(true);
     expect(request.consented).toBeUndefined();
-    if (request.prompt.includes("failed verification")) throw new ModelWaitError("cap");
-    return docReply(request, sourceId, claim, "This quote is absent.");
-  });
-  registerJobKind(createLearnKind({ client: async () => new ForgeClient(original, "forge-fixture-token", fetch), model, now: () => now,
-    next: at => at + 7 * DAY_MS }, true));
-  const writer = openWeekly();
-  try {
-    const job = due(writer, head, now);
-    const done = await advance(writer, job);
-    expect(done, String(done.reason)).toMatchObject({ state: "done with gaps", results: 0 });
-    expect(model).toHaveBeenCalledTimes(3);
-    expect(state(done).gaps.join(" ")).toContain("allowance could not cover a repair");
-    expect(JSON.parse(weeklySchedule(writer, job.project_id!)!).due).toBe(now + 7 * DAY_MS);
-    expect(notes(writer, job)).toEqual([]);
-  } finally { writer.close(); }
-}, 60_000);
-
-it.each(["allowance", "unreadable"] as const)("withholds a paraphrased claim when the weekly judgment is %s", async failure => {
-  const now = Date.now() + 2_000, head = git("rev-parse", "HEAD");
-  const fetch = mockGithub({ head: () => head });
-  const model = vi.fn<typeof runModel>(async request => {
-    if (request.purpose !== MEANING_PURPOSE) return docReply(request, sourceId, paraphrase);
-    expect(request).toMatchObject({ setup: "mixed", role: "cheap", automatic: { measuredUsageOnly: true } });
-    expect(request.consented).toBeUndefined();
-    if (failure === "allowance") throw new ModelWaitError("cap");
-    return reply({ results: [] });
+    if (isGatePrompt(request.prompt)) throw new ModelWaitError("cap");
+    return docReply(request);
   });
   registerJobKind(createLearnKind({ client: async () => new ForgeClient(original, "forge-fixture-token", fetch), model, now: () => now }, true));
   const writer = openWeekly();
   try {
     const job = due(writer, head, now);
     const done = await advance(writer, job);
-    expect(done).toMatchObject({ state: "done with gaps", results: 0 });
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND, MEANING_PURPOSE]);
-    expect(state(done).gaps).toContain("A lesson evidence batch could not be judged.");
+    expect(done, String(done.reason)).toMatchObject({ state: "done with gaps", results: 0 });
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(writer.db.prepare("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1").get(job.id)?.summary).toContain("3% allowance");
+    expect(JSON.parse(weeklySchedule(writer, job.project_id!)!).due).toBe(now + DAY_MS);
     expect(notes(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);

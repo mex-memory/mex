@@ -11,6 +11,8 @@ import { entryLabel } from "./labels.js";
 import { recordVerified } from "./gate.js";
 import { publishNotes, snapshotNotes } from "./personal-store.js";
 import { noteKey } from "../learn-deeper/coverage.js";
+import { LEARNED_TRIAL_LABEL } from "../learn-deeper/trial-outcomes.js";
+import { forgetObservations } from "../learn-deeper/observations.js";
 import { sourceDigest } from "../learn-deeper/source.js";
 
 export const learnedRefusalKey = (id: string) => `learning.deep.refused.${id}`;
@@ -32,7 +34,10 @@ function retiredEntry(entry: KnowledgeEntry, retired: Retirement): string {
 
 function retireNote(writer: RecordWriter, project: string, entry: KnowledgeEntry, retired: Retirement): Tombstone {
   const marker = saveTombstone(writer, project, entry, retired);
-  if (isLearnedEntry(entry.mex)) recordRefusal(writer, project, entry);
+  if (isLearnedEntry(entry.mex)) {
+    recordRefusal(writer, project, entry);
+    forgetObservations(writer.db, project, entry.mex.id);
+  }
   return marker;
 }
 
@@ -55,6 +60,7 @@ function recordStatusChange(writer: RecordWriter, project: string, entry: Knowle
   const id = entry.mex.id;
   if (status === "active") {
     recordVerified(writer, project, id, "person", now);
+    putSetting(writer, project, "learning.deep.trial." + id, "permanent");
     writer.db.prepare("DELETE FROM settings WHERE scope=? AND key IN (?,?)").run(project, learnedRefusalKey(id), learnedWaitingKey(id));
   } else recordRefusal(writer, project, entry);
   // A status-only change does not invalidate the source receipt. Only renew it
@@ -174,6 +180,11 @@ export function wrong(id: string, reason: string, options: KnowledgeOptions, now
   return forget(id, reason, options, now, "wrong");
 }
 
+function reviewedStatus(entry: KnowledgeEntry, status: "active" | "proposed"): KnowledgeEntry {
+  const label = entry.mex.source.label?.replace(LEARNED_TRIAL_LABEL, "");
+  return { ...entry, mex: { ...entry.mex, status, source: { ...entry.mex.source, label } } };
+}
+
 /**
  * A person's tick on the learn-deeper review list: a learned rule that waited for it comes into force,
  * and the tick is recorded as its verification. Only learned rules wait for a tick; nothing else changes.
@@ -192,12 +203,13 @@ function setLearnedStatus(id: string, options: KnowledgeOptions, to: "active" | 
   const writer = openRecord(options);
   try {
     writer.db.exec("BEGIN IMMEDIATE");
-    const from = to === "active" ? "proposed" : "active";
-    const found = current(writer, options, id, [from]);
-    if (found.entry.mex.status !== from || !isLearnedEntry(found.entry.mex)) {
+    const from = to === "active" ? ["proposed", "active"] as const : ["active"] as const;
+    const found = current(writer, options, id, from);
+    if (!isLearnedEntry(found.entry.mex) || (to === "active" && found.entry.mex.status === "active"
+      && !found.entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL))) {
       throw new KnowledgeError("INVALID_CHANGE", "Only a learned rule can be ticked or unticked on the review list.");
     }
-    const changed: KnowledgeEntry = { ...found.entry, mex: { ...found.entry.mex, status: to } };
+    const changed = reviewedStatus(found.entry, to);
     const before = snapshotNotes(writer, found.projectId);
     if (before.files.get(id) !== found.content) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again.");
     const after = serializeEntry(changed);
@@ -260,8 +272,8 @@ export function finishLearnedReview(jobId: string, project: string, decisions: r
       const status = decision === "keep" ? "active" : "proposed";
       if (decision === "keep") outcome.kept++;
       else outcome.waiting++;
-      if (entry.mex.status !== status) {
-        const after = serializeEntry({ ...entry, mex: { ...entry.mex, status } });
+      if (entry.mex.status !== status || decision === "keep" && entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL)) {
+        const after = serializeEntry(reviewedStatus(entry, status));
         files.set(id, after);
         metadata.push(() => recordStatusChange(writer, project, entry, raw, after, status, now));
       } else if (decision === "wait") {

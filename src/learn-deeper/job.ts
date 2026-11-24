@@ -16,7 +16,7 @@ import { hosts } from "./hosts.js";
 import { LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
 import { AgentActive, CURSOR_KEY, harvestClient, initialState, PipelineState, publishedBatch, reviewRows, runPipelineBatch, savedCursor } from "./pipeline.js";
 import type { HarvestPlan } from "./harvest/types.js";
-import { planWeekly, queuePatternRecount, RefreshDeferred, sweepWeeklyRetirements, weeklySources } from "./weekly.js";
+import { planWeekly, queuePatternRecount, RefreshDeferred, sweepExpiredTrials, sweepWeeklyRetirements, weeklySources } from "./weekly.js";
 import { DAY_MS, nextWeeklyAt, publishWeeklyWake, SCHEDULE, scheduleFromPlan, sessionsActive, WEEKLY_KIND, WeeklySchedule, weeklySchedule } from "./weekly-schedule.js";
 import type { WriterModel } from "./entries.js";
 
@@ -26,7 +26,7 @@ const checkpointSchema = z.object({
   pull: z.number().int().nonnegative().optional(), doc: z.number().int().nonnegative().optional(),
   gaps: z.array(z.string().max(180)).max(24),
   retryAt: z.number().optional(), recovered: z.number().int().nonnegative().optional(),
-  weeklyPlan: Plan.optional(), v2: PipelineState.optional(),
+  weeklyPlan: Plan.optional(), v2: z.unknown().optional(),
   finish: z.boolean().optional(), home: z.string().optional(), weeklyDue: z.number().optional(), rawPurged: z.literal(true).optional(),
 }).passthrough();
 type Checkpoint = z.infer<typeof checkpointSchema>;
@@ -66,8 +66,8 @@ function pipelineSummary(state: PipelineState, gaps: readonly string[]): string 
   const dropped = Object.entries(c).filter(([name]) => name.startsWith("triage-dropped.")).reduce((sum, [, v]) => sum + v, 0);
   const parts = [`Read ${harvested} sources and kept ${n("triage-kept")} after sorting (${dropped} dropped).`];
   if (state.phase === "write" || state.phase === "finish") {
-    parts.push(`Lessons: ${n("cluster.write")} corroborated, ${n("cluster.propose")} single strong, ${n("cluster.drop")} dropped.`);
-    parts.push(`Saved ${n("saved")} entries, including updates. ${n("proven")} had a proven pattern, ${n("prose")} had scoped text, and ${n("proposed")} await your tick.`);
+    parts.push(`Wrote ${n("norms")} norms and ${n("doc-rules")} doc rules. The evidence gate kept ${n("gate.keep")}.`);
+    parts.push(`Saved ${n("saved")} entries, including updates. ${n("proven")} had a proven pattern, ${n("prose")} had prose, and ${n("proposed")} await your tick.`);
   }
   for (const [key, one, many] of [
     ["trial.issues", "issue source kept", "issue sources kept"], ["trial.linter", "linter suggestion saved", "linter suggestions saved"],
@@ -122,7 +122,8 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       if (!state.finish && due === undefined) return;
       const plan = state.finish ? (weeklyMode ? state.weeklyPlan! : Plan.parse(JSON.parse(job.params))) : undefined;
       const set = db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
-      if (state.finish && state.v2?.cursor) set.run(project, CURSOR_KEY, JSON.stringify(state.v2.cursor));
+      const pipeline = PipelineState.safeParse(state.v2);
+      if (state.finish && pipeline.success && pipeline.data.cursor) set.run(project, CURSOR_KEY, JSON.stringify(pipeline.data.cursor));
       if (weeklyMode || plan?.refresh) {
         const source = weeklyMode ? WeeklySchedule.parse(JSON.parse(job.params)) : undefined;
         const saved = db.prepare("SELECT value FROM settings WHERE scope=? AND key=?").get(project, SCHEDULE)?.value;
@@ -200,6 +201,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
           }
           const next = await planWeekly(client, weekly, tree, now, savedCursor(writer, project), writer.setting(project, "learning.deep.issues") === "true");
           await sweepWeeklyRetirements(context, next, team);
+          await sweepExpiredTrials(context, next, now);
           try { refreshOwnUsage(writer, { maxBytes: 512 << 10, maxFiles: 12, maxDiscoveryEntries: 256 }); } catch { /* admission requires measured usage */ }
           const gaps = recountGap ? [...next.gaps, "The weekly pattern recount could not be queued."] : next.gaps;
           return { checkpoint: { gaps, weeklyPlan: next }, progress: "Weekly sources selected" };
@@ -207,7 +209,9 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         if (!plan?.harvest) return finishGap("This run needs a new quote. Run mex learn to use the current pipeline.");
         const tree = await PinnedTree.open(plan.checkout, plan.head);
         if (!tree) return finishGap("The approved Git revision is no longer readable in this checkout.");
-        const v2 = state.v2 ?? initialState(savedCursor(writer, project), !weekly && plan.agent === "codex");
+        const decoded = PipelineState.safeParse(state.v2);
+        if (state.v2 && !decoded.success) return finishGap("This run needs a new quote. Run mex learn to use the current pipeline.");
+        const v2 = decoded.success ? decoded.data : initialState(savedCursor(writer, project));
         let active = plan;
         if (v2.phase === "harvest") {
           client = await deps.client(active);

@@ -1,494 +1,288 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, beforeAll, beforeEach, afterEach, expect, it, vi } from "vitest";
-import { MEANING_PURPOSE } from "../meaning.js";
-import { meaningQuestions, recordedMeaning } from "./fixtures/meaning.js";
-import { runCheck } from "../../knowledge/check.js";
-import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
-import { snapshotNotes } from "../../knowledge/personal-store.js";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { setCheckoutEnabled } from "../../controls/index.js";
 import { buildIndex } from "../../file-index/build.js";
+import { runCheck } from "../../knowledge/check.js";
+import { parseEntry } from "../../knowledge/entry.js";
+import { propose } from "../../knowledge/gate.js";
+import { forget, tickLearned } from "../../knowledge/mutations.js";
+import { snapshotNotes } from "../../knowledge/personal-store.js";
 import type { runModel } from "../../model-runner/index.js";
 import { queueJob } from "../../record/background.js";
 import { openRecord } from "../../record/index.js";
 import { ownerId, registerJobKind, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { ZERO } from "../../record/usage.js";
-import { saveTombstone } from "../../knowledge/state.js";
-import { forget, learnedRefusalKey, tickLearned } from "../../knowledge/mutations.js";
-import { reviewLearned } from "../../repo-start/review-list.js";
 import { runRepoStart } from "../../repo-start/command.js";
+import { reviewLearned } from "../../repo-start/review-list.js";
 import { ForgeClient } from "../forge.js";
 import { PinnedTree } from "../git.js";
-import { planHarvest } from "../harvest/index.js";
+import { planHarvest, previewHarvest } from "../harvest/index.js";
 import { createLearnKind } from "../job.js";
+import { gateReply, isGatePrompt } from "./fixtures/gate.js";
+import { readObservations } from "../observations.js";
+import { learnedTrialKey, reviewRows, trialReceiptKey } from "../pipeline.js";
 import { LEARN_KIND, Plan } from "../plan.js";
-import { CURSOR_KEY, reviewRows } from "../pipeline.js";
-import { noteKey } from "../coverage.js";
-
-// This file is the release-01 joined fixture. The recorded thread is the seed, and the removal
-// checks that SessionStart and a later edit withhold the full claim.
-const recorded = readFileSync(new URL("./fixtures/harvest/changes.json", import.meta.url), "utf8");
-const reviewed: string[] = JSON.parse(recorded).originalLines;
-const path = "src/changed.ts";
-const origin = { host: "github.com" as const, slug: "acme/app" };
-const candidateId = "gh:thread:PRRT_fixture1";
-const repeatedId = "gh:thread:PRRT_fixture_repeat";
-const claim = "Use the stable adapter for changedEntry instead of calling fallback.";
-let suite: string, binary: string, fixture: string, repo: string, originalHead: string, mergedHead: string;
-const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-function commit(message: string, date: string) {
-  git("add", ".");
-  git("-c", "commit.gpgsign=false", "-c", `user.name=Fixture`, "-c", "user.email=fixture@example.invalid",
-    "commit", "-qm", message, "--date", date);
-  return git("rev-parse", "HEAD");
-}
-
-beforeAll(() => {
-  suite = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-e2e-")));
-  binary = join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
-  execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
-}, 300_000);
-afterAll(() => rmSync(suite, { recursive: true, force: true }));
-beforeEach(() => {
-  fixture = realpathSync(mkdtempSync(join(suite, "case-")));
-  repo = join(fixture, "repo");
-  mkdirSync(join(repo, "src"), { recursive: true });
-  git("init", "-qb", "main");
-  git("remote", "add", "origin", "https://github.com/acme/app.git");
-  for (const [key, value] of Object.entries({ MEX_HOME: fixture, MEX_BACKGROUND: "0", MEX_OFFLINE: "1", MEX_HOOK_BINARY: binary,
-    CLAUDE_CONFIG_DIR: join(fixture, "claude"), CODEX_HOME: join(fixture, "codex") })) vi.stubEnv(key, value);
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", scripts: { test: "node test.js" } }));
-  vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-11T10:00:00Z");
-  writeFileSync(join(repo, path), reviewed.join("\n") + "\n");
-  originalHead = commit("Prepare the adapter change", "2026-11-11T10:00:00Z");
-  vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-13T10:00:00Z");
-  writeFileSync(join(repo, path), reviewed.join("\n").replace("fallback(label)", "stable(label)") + "\n");
-  mergedHead = commit("Wire the adapters (#31)", "2026-11-13T10:00:00Z");
-});
-afterEach(() => {
-  registerJobKind(createLearnKind());
-  vi.unstubAllEnvs();
-  rmSync(fixture, { recursive: true, force: true });
-});
-
-function recordedForge(numbers = [31, 40], repeatedAt = "2026-11-13T09:59:59Z", additionalReview = "") {
-  const { merged } = JSON.parse(recorded.replaceAll("OID_ORIGINAL", originalHead).replaceAll("OID_MERGE", mergedHead));
-  merged.changedFiles = 1;
-  merged.files.nodes = [{ path }];
-  merged.reviewThreads.nodes = merged.reviewThreads.nodes.slice(0, 1);
-  merged.reviewThreads.totalCount = 1;
-  const originalComment = merged.reviewThreads.nodes[0].comments.nodes[0];
-  originalComment.body = originalComment.body.replace("Prefer the stable adapter over the fallback.", claim);
-  const repeated = structuredClone(merged);
-  repeated.number = 40;
-  repeated.mergedAt = repeated.closedAt = repeatedAt;
-  repeated.body = "";
-  const thread = repeated.reviewThreads.nodes[0];
-  thread.id = "PRRT_fixture_repeat";
-  const comment = thread.comments.nodes[0];
-  comment.id = "PRRC_fixture_repeat";
-  comment.fullDatabaseId = "2040";
-  comment.body = comment.body.replace("Fern Example", "Cedar Example") + " " + additionalReview;
-  comment.author = { __typename: "User", login: "cedar-owner", name: "Cedar Example" };
-  comment.pullRequestReview.author.login = "cedar-owner";
-  const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/acme/app") return Response.json({ full_name: "acme/app", private: false });
-    if (url.pathname !== "/graphql") throw Error(`Unexpected fixture path ${url.pathname}`);
-    const { query, variables }: { query: string; variables: Record<string, string> } = JSON.parse(String(init?.body));
-    if (query.includes("HarvestSearch(")) {
-      return Response.json({ data: Object.fromEntries(Object.entries(variables).filter(([key]) => /^q\d+$/u.test(key)).map(([key, term]) => {
-        const dates = /merged:([^ ]+)\.\.([^ ]+)$/u.exec(term);
-        const nodes = [merged, repeated].filter(pr => numbers.includes(pr.number) && dates
-          && Date.parse(pr.mergedAt) >= Date.parse(dates[1]!) && Date.parse(pr.mergedAt) <= Date.parse(dates[2]!));
-        return [`s${key.slice(1)}`, { issueCount: nodes.length, nodes, pageInfo: { hasNextPage: false } }];
-      })) });
-    }
-    expect(query).toMatch(/p0:pullRequest\(number:(?:31|40)\)/u);
-    return Response.json({ data: { repository: { p0: query.includes("number:40") ? repeated : merged } } });
-  });
-  return { fetch, client: new ForgeClient(origin, "fixture-login", fetch) };
-}
+import { SCHEDULE, WEEKLY_KIND } from "../weekly-schedule.js";
+import { LEARNED_TRIAL_LABEL } from "../trial-outcomes.js";
 
 const reply = (value: unknown) => ({ text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } });
+const adapter = "src/changed.ts";
+const proofClaim = "Use the stable adapter for changedEntry instead of calling fallback.";
+const guidance = "Use `queueTransport` for retry dispatch in `src/changed.ts`.";
+const repeatGuidance = "Leave this on `queueTransport` because retry dispatch must stay serialized.";
+const policyClaim = "Route retry dispatch through `queueTransport` in `src/changed.ts`.";
+const docQuote = "Keep the verification report in `src/verification.txt` when changing the renderer.";
+const docClaim = "Keep the renderer verification report in `src/verification.txt`.";
+const duplicate = "Use `renderFrame` for all adapter frames.";
+const weeklyHint = "Keep `MAX_ATTEMPTS` at three in the retry package.";
+const weeklyRepeat = "Leave `MAX_ATTEMPTS` at three, since a fourth attempt repeats an external write.";
+const weeklyClaim = "Keep the retry limit at three in `MAX_ATTEMPTS`.";
+const missingQuote = "Keep `dispatchReceipt` calls outside the adapter transaction.";
+const missingClaim = "Call `dispatchReceipt` outside adapter transactions.";
 
-it.each([
-  { area: "quiet scope", gap: "none" },
-  { area: "40 HEAD occurrences in large text alongside binary data", gap: "common" },
-  { area: "unread oversized and private files, then scope repair", gap: "unread" },
-])("learns from a recorded review and stops an edit before the fix is gone ($area)", async ({ gap }) => {
-  const noisy = gap === "common";
-  const unread = gap === "unread";
-  let head = mergedHead;
-  if (gap !== "none") {
-    vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-14T10:00:00Z");
-    if (noisy) {
-      // A text file with a binary-looking extension still counts, even after 96 KiB.
-      writeFileSync(join(repo, "src", "legacy.exe"), "// padding\n".repeat(12_000) + "fallback('legacy');\n".repeat(40));
-      // A file with a code extension can be binary even when it exceeds the native limit.
-      writeFileSync(join(repo, "src", "archive.ts"), Buffer.alloc(600 << 10));
-    } else {
-      writeFileSync(join(repo, "src", "oversize.ts"), "//" + "x".repeat(512 << 10));
-      writeFileSync(join(repo, "src", "private.ts"), "// <private>Withheld fixture text</private>\nfallback('private');\n");
+let binary: string, built: string | undefined;
+beforeAll(() => {
+  binary = process.env.MEX_HOOK_BINARY ?? "";
+  if (binary) return;
+  built = mkdtempSync(join(tmpdir(), "mex-learn-e2e-hook-"));
+  binary = join(built, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
+  execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
+}, 300_000);
+afterEach(() => {
+  vi.unstubAllEnvs();
+  registerJobKind(createLearnKind());
+  registerJobKind(createLearnKind({}, true));
+});
+afterAll(() => { if (built) rmSync(built, { recursive: true, force: true }); });
+
+const recorded = readFileSync(new URL("./fixtures/harvest/changes.json", import.meta.url), "utf8");
+const reviewed: string[] = JSON.parse(recorded).originalLines;
+const source = { host: "github.com" as const, slug: "acme/app" };
+function discussion(id: number, body: string, createdAt: string, maintainer = true) {
+  return { id: "IC_fixture" + id, fullDatabaseId: id, body, createdAt, isMinimized: false,
+    authorAssociation: maintainer ? "OWNER" : "CONTRIBUTOR",
+    author: { __typename: "User", login: maintainer ? "cedar-owner" : "iris-dev", name: maintainer ? "Cedar Example" : "Iris Example" } };
+}
+function pull(number: number, at: string, texts: ReturnType<typeof discussion>[], commits: { before: string; after: string }, thread = false) {
+  const pr = JSON.parse(recorded.replaceAll("OID_ORIGINAL", commits.before).replaceAll("OID_MERGE", commits.after)).merged;
+  pr.number = number;
+  pr.mergedAt = pr.closedAt = at;
+  pr.changedFiles = 1;
+  pr.files = { nodes: [{ path: adapter }] };
+  pr.body = "";
+  pr.comments = { nodes: texts, totalCount: texts.length };
+  pr.reviews = { nodes: [{
+    ...discussion(900 + number, "", at), submittedAt: at, authorCanPushToRepository: true,
+  }], totalCount: 1 };
+  pr.reviewThreads.nodes = thread ? pr.reviewThreads.nodes.slice(0, 1) : [];
+  pr.reviewThreads.totalCount = pr.reviewThreads.nodes.length;
+  if (thread) {
+    const original = pr.reviewThreads.nodes[0].comments.nodes[0];
+    original.body = proofClaim;
+    pr.reviewThreads.nodes[0].comments.nodes = [original];
+    pr.reviewThreads.nodes[0].comments.totalCount = 1;
+  }
+  return pr;
+}
+
+it("delivers checked trial rules, withholds removed evidence, and learns a repeated policy weekly", async () => {
+  const fixture = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-e2e-")));
+  const home = join(fixture, ".mex"), root = join(fixture, "repo");
+  mkdirSync(join(root, "src"), { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  function commit(message: string, date: string) {
+    vi.stubEnv("GIT_COMMITTER_DATE", date);
+    git("add", ".");
+    git("-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", message, "--date", date);
+    return git("rev-parse", "HEAD");
+  }
+  for (const [name, value] of Object.entries({ MEX_HOME: fixture, MEX_HOOK_BINARY: binary, MEX_BACKGROUND: "0", MEX_OFF: "", MEX_OFFLINE: "1",
+    CLAUDE_CONFIG_DIR: join(home, "claude"), CODEX_HOME: join(home, "codex"), GH_TOKEN: "forge-fixture-token" })) vi.stubEnv(name, value);
+  git("init", "-qb", "main");
+  git("remote", "add", "origin", "https://github.com/acme/app.git");
+  writeFileSync(join(root, "AGENTS.md"), duplicate + "\n");
+  writeFileSync(join(root, "src", "verification.txt"), "Fixture\n");
+  writeFileSync(join(root, "CONTRIBUTING.md"), "# Development\n\n" + docQuote + "\n");
+  writeFileSync(join(root, adapter), reviewed.join("\n") + "\n");
+  const before = commit("Prepare the adapter change", "2026-11-11T10:00:00Z");
+  writeFileSync(join(root, adapter), reviewed.join("\n").replace("fallback(label)", "stable(label)") + "\n");
+  const after = commit("Wire the stable adapter (#31)", "2026-11-13T10:00:00Z");
+  const first = pull(31, "2026-11-13T10:00:00Z", [
+    discussion(101, guidance, "2026-11-12T12:00:00Z"), discussion(102, weeklyHint, "2026-11-12T13:00:00Z"),
+    discussion(103, duplicate, "2026-11-12T14:00:00Z"), discussion(104, missingQuote, "2026-11-12T15:00:00Z"),
+    discussion(105, "Please delete the verification report.", "2026-11-12T16:00:00Z", false),
+  ], { before, after }, true);
+  const second = pull(40, "2026-11-19T10:00:00Z", [discussion(201, repeatGuidance, "2026-11-18T10:00:00Z")], { before, after });
+  const later = pull(53, "2026-11-24T10:00:00Z", [discussion(301, weeklyRepeat, "2026-11-23T10:00:00Z")], { before, after });
+  let head = after, pulls = [first, second], now = Date.parse("2026-11-20T10:00:00Z");
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/repos/acme/app") return Response.json({ full_name: "acme/app", default_branch: "main", private: false });
+    if (path === "/repos/acme/app/branches/main") return Response.json({ commit: { sha: head } });
+    if (path === "/repos/acme/app/collaborators/cedar-owner/permission") return Response.json({ permission: "write" });
+    if (path !== "/graphql") throw Error("Unexpected fixture path " + path);
+    const { query, variables } = JSON.parse(String(init?.body)) as { query: string; variables: Record<string, string> };
+    if (query.includes("HarvestSearch(")) {
+      return Response.json({ data: Object.fromEntries(Object.entries(variables).flatMap(([key, term]) => {
+        const match = /^q(\d+)$/u.exec(key);
+        if (!match) return [];
+        const dates = /merged:([^ ]+)\.\.([^ ]+)$/u.exec(term);
+        const nodes = dates ? pulls.filter(pr => Date.parse(pr.mergedAt) >= Date.parse(dates[1]!) && Date.parse(pr.mergedAt) <= Date.parse(dates[2]!)) : [];
+        return [["s" + match[1], { issueCount: nodes.length, nodes, pageInfo: { hasNextPage: false } }]];
+      })) });
     }
-    head = commit("Keep the existing legacy callers", "2026-11-14T10:00:00Z");
-  }
-  if (noisy) {
-    const tree = (await PinnedTree.open(repo, head))!;
-    await tree.withCheckTree(fixture, "c".repeat(36), ["src/legacy.exe"], async (_checkout, files) => {
-      expect(files.has("src/legacy.exe")).toBe(false);
-    });
-  }
-  await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
-  const writer = openRecord();
-  try {
-    const real = realpathSync(repo);
-    const { path: checkout, project_id: project } = writer.checkout(real)!;
-    writer.db.prepare("UPDATE checkouts SET state='on' WHERE path=?").run(checkout);
-    const index = () => buildIndex({ root: real, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
-    await index();
-    const forge = recordedForge();
-    const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
-    const harvest = await planHarvest({ checkout, head, source: origin, agent: "codex", ...window }, { client: forge.client });
-    const plan = Plan.parse({ checkout, head, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
-      ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
-    const job = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan }).job;
-    const model = vi.fn<typeof runModel>(async request => {
-      expect(request.prompt).not.toMatch(/Fern Example|Cedar Example/u);
-      expect(request.prompt).not.toContain("Withheld fixture text");
-      if (request.purpose === MEANING_PURPOSE) {
-        expect(request).toMatchObject({ role: "cheap", setup: "mixed", consented: { ceiling: plan.ceiling } });
-        expect(request.readOnlyTools).toBeUndefined();
-        expect(readdirSync(request.executionDirectory!)).toEqual([]);
-        expect(request.prompt).not.toContain("return fallback(label);");
-        return reply(recordedMeaning(request.prompt));
+    const repository = Object.fromEntries([...query.matchAll(/(p\d+):pullRequest\(number:(\d+)\)/gu)]
+      .map(([, alias, number]) => [alias, pulls.find(pr => pr.number === Number(number)) ?? null]));
+    return Response.json({ data: { repository } });
+  });
+  const client = new ForgeClient(source, "fixture-login", fetch);
+  const model = vi.fn<typeof runModel>(async request => {
+    const { prompt } = request;
+    expect(prompt).not.toMatch(/Iris Example|Cedar Example|Fern Example/u);
+    if (request.role === "cheap") {
+      const observations = [...prompt.matchAll(/^\[(i\d+)\] (?:maintainer(?: \(PR author\))?)(?: \([^\n]+\))?: ([^\n]+)/gmu)].flatMap(([, item, quote]) => {
+        if (quote === guidance || quote === repeatGuidance) return [{ item, quote, norm: policyClaim, kind: "placement", scope: [adapter],
+          form: quote === guidance ? "stated" : "decision", why: quote === guidance ? "" : "Retry dispatch must stay serialized.",
+          stated_as_rule: false, response: "unknown" }];
+        if (quote === weeklyHint || quote === weeklyRepeat) return [{ item, quote, norm: weeklyClaim, kind: "api-design", scope: [adapter],
+          form: "decision", why: "A fourth attempt repeats an external write.", stated_as_rule: false, response: "unknown" }];
+        if (quote === proofClaim || quote === missingQuote || quote === duplicate) return [{ item, quote, norm: quote === missingQuote ? missingClaim : quote,
+          kind: "api-design", scope: [adapter], form: "stated", why: "", stated_as_rule: true, response: "changed" }];
+        return [];
+      });
+      return reply({ observations });
+    }
+    if (prompt.startsWith("You turn observations")) {
+      const items = prompt.split("\n").filter(line => line.startsWith('{"id":"sha256:')).map(line => JSON.parse(line));
+      const groups = new Map<string, Array<{ id: string; norm: string; kind: string; stated_as_rule: boolean }>>();
+      for (const item of items) {
+        const group = groups.get(item.norm) ?? [];
+        group.push(item);
+        groups.set(item.norm, group);
       }
-      if (request.purpose === "learn-deeper-filter") {
-        expect(request.prompt).not.toContain("return fallback(label);");
-        const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
-        return reply({ results: items.map(({ id }) => ({ id, keep: id === candidateId || id === repeatedId, category: "api-use", lesson: claim })) });
-      }
-      const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
-      expect(request.prompt).toContain("3|   return fallback(label);");
-      expect(request.prompt).toContain("3|   return stable(label);");
-      const repeat = request.prompt.includes(repeatedId);
-      const repair = request.prompt.includes("Your earlier entries for these clusters failed verification");
-      if (repair) {
-        expect(gap !== "none" && !repeat).toBe(true);
-        if (noisy) expect(request.prompt).toContain("40 occurrences in 1 of 2 scoped files");
-        if (unread) {
-          expect(request.prompt).toContain("Could not read 2 scoped files");
-          expect(request.prompt).toContain("src/oversize.ts");
-          expect(request.prompt).toContain("src/private.ts");
-        }
-        expect(request.prompt).toContain("Narrow the scope");
-      }
-      return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim,
-        // As the prompt asks: a quote from every member that says it.
-        clauses: [{ text: claim, quotes: [candidateId, repeatedId].filter(id => request.prompt.includes(id)).map(id => ({ id, quote: claim })) }],
-        scope: (noisy || unread && !repeat) && !repair ? ["src/**"] : [path],
-        when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
+      return reply({ policies: [], norms: [...groups].flatMap(([text, items]) => items.length > 1 || items[0].stated_as_rule ? [{
+        text, kind: items[0].kind, scope: [adapter], support: items.map(item => item.id), patternable: text === proofClaim,
+      }] : []) });
+    }
+    if (prompt.startsWith("You read the contributor documentation")) {
+      if (!prompt.includes(docQuote)) return reply({ rules: [] });
+      return reply({ rules: [{ text: docClaim, kind: "docs-comments", scope: ["src/verification.txt"], source: "CONTRIBUTING.md", quote: docQuote }] });
+    }
+    if (prompt.startsWith("Find a code pattern")) {
+      const items = JSON.parse(prompt.split("\n").at(-1)!);
+      expect(items).toHaveLength(1);
+      return reply({ patterns: [{ id: items[0].id, when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
         fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } }] });
-    });
-    registerJobKind(createLearnKind({ model, client: async () => forge.client, firstRules: 1 }));
-    const row = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
-    const owner = ownerId("foreground");
-    await runOneBatch(writer, owner, { only: new Set([job.id]) }); // harvest
-    expect(model).not.toHaveBeenCalled();
-    expect(forge.fetch.mock.calls.some(([, init]) => String(init?.body).includes("p0:pullRequest(number:31)"))).toBe(true);
-    await runOneBatch(writer, owner, { only: new Set([job.id]) }); // triage and early publication
-    expect(row()).toMatchObject({ state: "queued", results: 1 });
-    expect(JSON.parse(row().checkpoint!).v2.phase).toBe("harvest");
-    const [early] = reviewRows(writer, project, job.id);
-    expect(early).toMatchObject({ support: 1, reviewers: 1, proven: true, status: "proposed" });
-    // Its pattern is counted without waiting for the rest of the run, or for the next commit.
-    const recounts = () => writer.db.prepare("SELECT id,state,params FROM jobs WHERE kind='file-index'").all()
-      .filter(row => JSON.parse(String(row.params)).full === true);
-    expect(recounts()).toHaveLength(1);
-    while (recounts().some(row => row.state === "queued")) await runOneBatch(writer, owner, { only: new Set([String(recounts().at(-1)!.id)]) });
-    const hook = (session: string, event: string, payload: Record<string, unknown> = {}) => execFileSync(binary, ["claude-code", event], {
-      encoding: "utf8", timeout: 20_000, input: JSON.stringify({ session_id: session, cwd: real, hook_event_name: event, ...payload }),
-    });
-    const edit = (from: string) => ({ tool_name: "Edit", tool_input: { file_path: join(real, path), old_string: `  return ${from}(label);`, new_string: "  return fallback(label);" } });
-    const verdict = () => runCheck({ home: writer.location.home, projectPath: checkout }).entries.find(item => item.id === early!.entryId)?.verdict;
-    expect(verdict()).toBeUndefined();
-    hook("waiting", "SessionStart", { source: "startup" });
-    expect(hook("waiting", "PreToolUse", edit("stable"))).not.toContain("deny");
-    const firstRule = parseEntry(snapshotNotes(writer, project).files.get(early!.entryId)!);
-    expect(firstRule.mex.scope).toEqual([path]);
-    expect(firstRule.mex.checks).toContainEqual(expect.objectContaining({
-      kind: "pattern", target: expect.objectContaining({ pattern: "fallback(", expect: "at-most" }), saw: { count: 0 },
-    }));
-    expect(forge.fetch.mock.calls.some(([, init]) => String(init?.body).includes("p0:pullRequest(number:40)"))).toBe(false);
-    for (let i = 0; i < 8 && row().state === "queued"; i++) await runOneBatch(writer, owner, { only: new Set([job.id]) });
-    const done = row();
-    expect(done.state, String(done.reason)).toMatch(/^done/u);
-    expect(recounts().filter(row => row.state === "queued")).toHaveLength(1);
-    expect(model).toHaveBeenCalledTimes(gap !== "none" ? 7 : 6);
-    expect(model.mock.calls.filter(([request]) => request.prompt.includes("Your earlier entries for these clusters failed verification"))).toHaveLength(gap !== "none" ? 1 : 0);
-    expect(JSON.parse(done.checkpoint!).v2.counts).toMatchObject({ "harvested.review-thread": 2, "triage-kept": 2, saved: 2 });
-    const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
-    expect(learned).toHaveLength(1);
-    const rule = learned[0]!;
-    expect(rule.mex.id).toBe(early!.entryId);
-    expect(rule.mex.status).toBe("active");
-    // The current fix still holds on a Windows checkout of the same code.
-    expect(verdict()).toBe("held");
-    const working = readFileSync(join(repo, path), "utf8");
-    writeFileSync(join(repo, path), working.replaceAll("\n", "\r\n"));
-    expect(verdict()).toBe("held");
-    writeFileSync(join(repo, path), working);
-    expect(rule.mex.when).toEqual([{ type: "anti", match: "literal", pattern: "fallback(" }]);
-    if (noisy) {
-      expect(rule.mex.scope).toEqual(["src/**"]);
-      expect(rule.mex.source.label).toContain("migration in progress");
-      expect(rule.mex.checks).toContainEqual(expect.objectContaining({
-        kind: "pattern", target: expect.objectContaining({ pattern: "fallback(", expect: "at-most" }), saw: { count: 40 },
-      }));
     }
-    expect(rule.mex.fix).toMatchObject({ snippet: "  return stable(label);", path, lines: "3-3" });
-    expect(rule.mex.checks.map(check => `${check.kind}:${check.role}`)).toEqual(expect.arrayContaining(["fixture:complete", "pattern:complete", "scope:complete", "source:supporting"]));
-    expect(rule.mex.source.quote).toBe(claim);
-    expect(reviewRows(writer, project, job.id)).toMatchObject([{ entryId: early!.entryId, claim, proven: true, support: 2, reviewers: 2,
-      status: "active", route: "code-rule", signal: "strong" }]);
-    expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE ?").get(`learning.deep.v2.${job.id}.%`)?.n).toBe(0);
-
-    expect(hook("first", "SessionStart", { source: "startup" })).not.toContain(claim);
-    const stopped = hook("first", "PreToolUse", edit("stable"));
-    expect(stopped).toContain("deny");
-    expect(stopped).toContain("Do this instead");
-    expect(stopped).toContain("return stable(label);");
-
-    vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-19T10:00:00Z");
-    writeFileSync(join(repo, path), reviewed.join("\n").replace("fallback(label)", "transport(label)") + "\n");
-    commit("Switch adapters", "2026-11-19T10:00:00Z");
+    expect(isGatePrompt(prompt)).toBe(true);
+    return reply(gateReply(prompt, rule => rule.text.startsWith(missingClaim) ? undefined
+      : rule.text.startsWith(duplicate) ? { verdict: "drop-duplicate", duplicateOf: "AGENTS.md:1" } : { verdict: "keep" }));
+  });
+  await runRepoStart({ cwd: root, write: () => {}, caller: "script", install: false, wait: false });
+  const writer = openRecord({ projectPath: root, home });
+  try {
+    const { path: checkout, project_id: project } = writer.checkout(root)!;
+    setCheckoutEnabled(writer, checkout, true);
+    const index = () => buildIndex({ root: checkout, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
     await index();
-    expect(hook("second", "SessionStart", { source: "startup" })).not.toContain(claim);
-    const afterRemoval = hook("second", "PreToolUse", edit("transport"));
-    expect(afterRemoval).not.toContain("deny");
-    expect(afterRemoval).not.toContain(claim);
-  } finally { writer.close(); }
-}, 120_000);
-
-it.each(["plain", "fenced and incomplete", "unreadable twice"])("writes a review that backs nothing as its own lesson, and leaves the rule it was grouped with alone (%s replies)", async replies => {
-  const sorted: string[][] = [];
-  let written = 0;
-  await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
-  const writer = openRecord();
-  try {
-    const { path: checkout, project_id: project } = writer.checkout(realpathSync(repo))!;
-    writer.db.prepare("UPDATE checkouts SET state='on' WHERE path=?").run(checkout);
-    await buildIndex({ root: checkout, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
-    const other = "Name the adapter's caller in the label.";
-    const forge = recordedForge(undefined, undefined, other);
-    const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
-    const harvest = await planHarvest({ checkout, head: mergedHead, source: origin, agent: "codex", ...window }, { client: forge.client });
-    const plan = Plan.parse({ checkout, head: mergedHead, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
-      ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
-    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES (?,'learning.prDecisions','true')").run(project);
-    const model = vi.fn<typeof runModel>(async request => {
-      if (request.purpose === MEANING_PURPOSE) return reply(recordedMeaning(request.prompt, question =>
-        "lesson" in question ? "same" : question.clause === question.quote ? "supports" : "unrelated"));
-      if (request.purpose === "learn-deeper-filter") {
-        const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
-        sorted.push(items.map(item => item.id));
-        const answer = { results: items.map(({ id }) => ({ id, keep: id === candidateId || id === repeatedId, category: "api-use", lesson: claim })) };
-        if (replies === "plain") return reply(answer);
-        if (replies === "unreadable twice") return { ...reply({}), text: "I can't help with that." };
-        // The first answer leaves one item out, and both come in a fence with a sentence before it.
-        if (sorted.length === 1) answer.results = answer.results.filter(({ id }) => id !== repeatedId);
-        return { ...reply({}), text: "Here you go:\n```json\n" + JSON.stringify(answer) + "\n```" };
-      }
-      if (replies !== "plain" && written++ === 0) return { ...reply({}), text: "{\"entries\": [" };
-      const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
-      // Grouped together, the writer rests the rule on the first review only. Alone, the second says something else.
-      const alone = request.prompt.includes(repeatedId) && !request.prompt.includes(candidateId);
-      return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim: alone ? other : claim, scope: [path],
-        clauses: [{ text: alone ? other : claim, quotes: alone ? [{ id: repeatedId, quote: other }] :
-          [{ id: candidateId, quote: claim }, { id: repeatedId, quote: other }] }] }] });
-    });
-    const { job } = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan });
-    registerJobKind(createLearnKind({ model, client: async () => forge.client }));
-    const row = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
-    for (let i = 0; i < 12 && row().state === "queued"; i++) await runOneBatch(writer, ownerId("foreground"), { only: new Set([job.id]) });
-    expect(row().state, row().reason ?? "").toMatch(/^done/u);
-    const counts = JSON.parse(row().checkpoint!).v2.counts;
-    if (replies === "unreadable twice") {
-      // Asked once more, then given up with a gap. Nothing is written on a guess, and nothing is asked a third time.
-      expect([sorted.length, written]).toEqual([2, 0]);
-      expect(JSON.parse(row().checkpoint!).gaps).toContain("A triage batch returned no readable answer.");
-      return;
+    registerJobKind(createLearnKind({ client: async () => client, model, now: () => now }));
+    registerJobKind(createLearnKind({ client: async () => client, model, now: () => now }, true));
+    const window = { since: "2026-11-01T00:00:00.000Z", until: new Date(now).toISOString() };
+    const tree = (await PinnedTree.open(checkout, head))!;
+    const harvest = await previewHarvest(await planHarvest({ checkout, head, source, agent: "codex", ...window }, { client, tree }), { client, tree });
+    const plan = Plan.parse({ checkout, head, origin: source, source, agent: "codex", setup: "mixed", visibility: "public", ...window,
+      preferred: [], pulls: [], docs: [], gaps: [], refresh: true, estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
+    async function run(kind: string, params: unknown) {
+      const { job } = queueJob(writer, { kind, projectId: project, params });
+      const get = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
+      for (let i = 0; i < 55 && get().state === "queued"; i++) await runOneBatch(writer, ownerId("foreground"), { only: new Set([job.id]) });
+      const row = get();
+      expect(row.state, String(row.reason)).toMatch(/^done/u);
+      return { job, rows: reviewRows(writer, project, job.id), receipt: JSON.parse(writer.setting(project, trialReceiptKey(job.id))!) };
     }
-    // What was left out is asked for again, alone. The unreadable writer reply is asked for again once.
-    if (replies !== "plain") expect(sorted[1]).toEqual([repeatedId]);
-    expect(JSON.parse(row().checkpoint!).gaps.filter((gap: string) => /readable/u.test(gap))).toEqual([]);
-    const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
-    expect(learned.map(entry => entry.mex.one_line).sort()).toEqual([claim, other].sort());
-    expect(counts).toMatchObject({ "cluster.unbacked": 1 });
-    // Two changes came in two batches and were sorted in one call.
-    expect(forge.fetch.mock.calls.filter(([, init]) => String(init?.body).includes("HarvestChanges"))).toHaveLength(2);
-    expect(sorted).toHaveLength(replies === "plain" ? 1 : 2);
-    // The Decisions trial counts every description read: one change has one, without a Decisions section.
-    expect([counts["trial.pr.followed"] ?? 0, counts["trial.pr.ignored"]]).toEqual([0, 1]);
-    // Neither rule may claim the other's review.
-    expect(reviewRows(writer, project, job.id).map(item => [item.claim, item.support]).sort()).toEqual([[claim, 1], [other, 1]].sort());
-    // Saved raw rows are gone, and the leftover was written once.
-    expect(model.mock.calls.filter(([request]) => request.purpose === LEARN_KIND && request.prompt.includes(repeatedId) && !request.prompt.includes(candidateId))).toHaveLength(1);
-    expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE ?").get(`learning.deep.v2.${job.id}.%`)?.n).toBe(0);
-  } finally { writer.close(); }
-}, 120_000);
-
-it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", "leave waiting, then the claim changes",
-  "forget, then a different lesson", "forget, then the same trigger", "forget, then an unavailable comparison"] as const)("honors %s when a different PR teaches something", async decision => {
-  await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
-  const writer = openRecord();
-  try {
-    const { path: checkout, project_id: project } = writer.checkout(realpathSync(repo))!;
-    writer.db.prepare("UPDATE checkouts SET state='on' WHERE path=?").run(checkout);
-    await buildIndex({ root: checkout, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
-
-    async function learn(second: boolean) {
-      const start = second ? "2026-11-14" : "2026-11-01";
-      const end = second ? "2026-11-20" : "2026-11-13";
-      const window = { since: `${start}T00:00:00.000Z`, until: `${end}T23:59:59.000Z` };
-      const pr = second ? 40 : 31;
-      const id = second ? repeatedId : candidateId;
-      const unavailable = second && decision === "forget, then an unavailable comparison";
-      const wording = !second ? claim
-        : decision === "forget, then a different lesson" || unavailable ? "Validate the label before changedEntry builds the response."
-        : decision === "forget, then the same trigger" ? "Keep the transport name out of changedEntry labels."
-        : "Use the stable adapter for changedEntry rather than calling fallback.";
-      const changedClaim = second && decision === "leave waiting, then the claim changes";
-      const writtenClaim = changedClaim ? "Validate the label before changedEntry builds the response." : wording;
-      const forge = recordedForge([pr], "2026-11-14T10:00:00Z", second ? writtenClaim : "");
-      const pattern = !second ? "fallback(" : decision === "forget, then a different lesson" || unavailable ? "return fallback"
-        : decision === "forget, then the same trigger" ? "fallback(label)" : "fallback(";
-      const proven = second || !decision.startsWith("leave waiting");
-      const model = vi.fn<typeof runModel>(async request => {
-        if (request.purpose === MEANING_PURPOSE) {
-          if (unavailable && meaningQuestions(request.prompt).some(question => "lesson" in question && question.lesson.left.claim)) {
-            return reply({ results: [] });
-          }
-          return reply(recordedMeaning(request.prompt, question => {
-            if (!("lesson" in question)) return "supports";
-            return decision.startsWith("forget, then") || (changedClaim && question.lesson.left.claim === writtenClaim) ? "related" : "same";
-          }));
-        }
-        if (request.purpose === "learn-deeper-filter") {
-          const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
-          return reply({ results: items.map(item => ({ id: item.id, keep: item.id === id, category: "api-use", lesson: wording })) });
-        }
-        const cluster = /"cluster":"([a-f0-9]{24})"/u.exec(request.prompt)![1];
-        return reply({ entries: [{ cluster, route: "code-rule", kind: "rule", claim: writtenClaim, scope: [path],
-          clauses: [{ text: writtenClaim, quotes: [{ id, quote: writtenClaim }] }],
-          ...(proven ? { when: [{ type: "anti", match: "literal", pattern }],
-            fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } } : {}) }] });
-      });
-      // Separate quotes for the two windows. Neither a cursor nor a seen-source receipt can hide PR 40.
-      writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, CURSOR_KEY);
-      const harvest = await planHarvest({ checkout, head: mergedHead, source: origin, agent: "codex", ...window }, { client: forge.client });
-      const plan = Plan.parse({ checkout, head: mergedHead, origin, source: origin, visibility: "public", agent: "codex", setup: "best-only",
-        ...window, preferred: [], pulls: [], docs: [], gaps: [], estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
-      const { job } = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan });
-      registerJobKind(createLearnKind({ model, client: async () => forge.client }));
-      const row = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
-      const owner = ownerId("foreground");
-      for (let i = 0; i < 12 && row().state === "queued"; i++) await runOneBatch(writer, owner, { only: new Set([job.id]) });
-      const result = row();
-      expect(result.state, result.reason ?? "").toMatch(/^done/u);
-      const counts = JSON.parse(result.checkpoint!).v2.counts;
-      expect(counts).toMatchObject({ "harvested.review-thread": 1, "triage-kept": 1 });
-      expect(forge.fetch.mock.calls.some(([, init]) => String(init?.body).includes(`p0:pullRequest(number:${pr})`))).toBe(true);
-      return { result, counts, model, rows: reviewRows(writer, project, job.id), wording: writtenClaim };
+    const initial = await run(LEARN_KIND, plan);
+    expect(initial.rows.map(row => row.claim).sort()).toEqual([policyClaim, proofClaim, docClaim, missingClaim].sort());
+    const rule = initial.rows.find(row => row.claim === proofClaim)!;
+    const doc = initial.rows.find(row => row.claim === docClaim)!;
+    const policy = initial.rows.find(row => row.claim === policyClaim)!;
+    expect(policy).toMatchObject({ support: 2, status: "active" });
+    expect(rule).toMatchObject({ support: 1, status: "active", proven: true });
+    expect(doc).toMatchObject({ status: "active" });
+    expect(initial.rows.find(row => row.claim === missingClaim)?.status).toBe("proposed");
+    expect(initial.receipt.counts).toMatchObject({ "gate.drop-duplicate": 1, "gate.missing": 1, "calls.gate": 2, "proven-code-norms": 1 });
+    expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE ?").get("learning.deep.v2." + initial.job.id + ".%")?.n).toBe(0);
+    expect(readObservations(writer.db, project, window.since, true).some(item => item.norm === weeklyClaim)).toBe(true);
+    expect(writer.setting(project, learnedTrialKey(policy.entryId))).toBe("trial");
+    await index();
+    function hook(session: string, event: string, payload: Record<string, unknown> = {}) {
+      return execFileSync(binary, ["claude-code", event], { cwd: root, encoding: "utf8", timeout: 20_000,
+        input: JSON.stringify({ session_id: session, cwd: root, hook_event_name: event, ...payload }) });
     }
-
-    const first = await learn(false);
-    expect(first.rows).toHaveLength(1);
-    const id = first.rows[0]!.entryId;
-    expect(first.rows[0]).toMatchObject({ support: 1, status: "proposed" });
-    if (decision === "untick" || decision === "legacy untick" || decision === "legacy forget") {
-      tickLearned(id, { projectPath: checkout, home: writer.location.home });
+    function read(session: string, path: string) {
+      hook(session, "SessionStart", { source: "startup" });
+      return hook(session, "PostToolBatch", { tool_calls: [{ tool_name: "Read", tool_input: { file_path: join(checkout, path) },
+        tool_use_id: path, tool_response: readFileSync(join(checkout, path), "utf8") }] });
     }
-    if (decision.startsWith("forget")) {
-      forget(id, "Dropped the lesson", { projectPath: checkout, home: writer.location.home });
-      expect(writer.setting(project, `knowledge.retired.${id}`)).toBeTruthy();
-    } else if (decision === "legacy forget") {
-      const entry = parseEntry(snapshotNotes(writer, project).files.get(id)!);
-      writer.db.exec("BEGIN IMMEDIATE");
-      saveTombstone(writer, project, entry, { reason: "Dropped before the entry was updated", by: "mex forget", at: "2026-11-14" });
-      writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, noteKey(id));
-      writer.db.exec("COMMIT");
-    } else if (decision === "legacy untick") {
-      const entry = parseEntry(snapshotNotes(writer, project).files.get(id)!);
-      writeFileSync(join(writer.location.home, "projects", project, "notes", `${id}.md`),
-        serializeEntry({ ...entry, mex: { ...entry.mex, status: "proposed" } }));
-    } else {
-      const keys = decision === "untick" ? ["1", "enter"] : ["enter"];
-      expect(await reviewLearned({ root: checkout, projectId: project, write: () => {}, mode: { plain: true, ascii: true, color: false, width: 80 },
-        interactive: true, env: process.env, home: writer.location.home, keys: async () => keys.shift() ?? "quit" })).toEqual({ kept: 0, waiting: 1, dropped: 0 });
-      expect(!!writer.setting(project, learnedRefusalKey(id))).toBe(decision === "untick");
-    }
+    expect(runCheck({ home, projectPath: checkout }).entries.find(item => item.id === policy.entryId)?.verdict).toBe("held");
+    const delivered = read("policy", adapter);
+    expect(delivered).toContain(policyClaim);
+    expect(delivered).toContain("[learned, trial]");
+    const edit = (current: string) => ({ tool_name: "Edit", tool_input: { file_path: join(checkout, adapter),
+      old_string: "  return " + current + "(label);", new_string: "  return fallback(label);" } });
+    expect(hook("bump", "SessionStart", { source: "startup" })).not.toContain(proofClaim);
+    const deny = hook("bump", "PreToolUse", edit("stable"));
+    expect(deny).toContain("deny");
+    expect(deny).toContain("return stable(label);");
+    expect(deny).toContain("learned, trial");
+    expect(runCheck({ home, projectPath: checkout }).entries.find(item => item.id === doc.entryId)?.verdict).toBe("held");
+    const keys = ["enter"];
+    const reviewed = await reviewLearned({ root: checkout, projectId: project, write: () => {}, home, env: process.env,
+      interactive: true, mode: { width: 80, plain: true, ascii: true, color: false }, keys: async () => keys.shift() ?? "quit" });
+    expect(reviewed).toEqual({ kept: 3, waiting: 1, dropped: 0 });
+    expect(writer.setting(project, learnedTrialKey(policy.entryId))).toBe("permanent");
+    expect(parseEntry(snapshotNotes(writer, project).files.get(policy.entryId)!).mex.source.label).not.toContain("trial");
+    tickLearned(initial.rows.find(row => row.claim === missingClaim)!.entryId, { home, projectPath: checkout });
+    writeFileSync(join(checkout, adapter), readFileSync(join(checkout, adapter), "utf8").replace("stable(label)", "transport(label)"));
+    writeFileSync(join(checkout, "CONTRIBUTING.md"), "# Development\n\nRenderer rules moved.\n");
+    head = commit("Remove the old adapter and renderer guidance", "2026-11-23T10:00:00Z");
+    await index();
+    hook("after", "SessionStart", { source: "startup" });
+    expect(hook("after", "PreToolUse", edit("transport"))).not.toContain("deny");
+    expect(read("doc-after", "src/verification.txt")).not.toContain(docClaim);
+    expect(runCheck({ home, projectPath: checkout }).entries.find(item => item.id === doc.entryId)?.verdict).toBe("broken");
+    forget(policy.entryId, "The rule was withdrawn.", { home, projectPath: checkout });
+    expect(readObservations(writer.db, project, window.since).filter(item => item.normId === policy.entryId).map(item => item.forgotten)).toEqual([true, true]);
 
-    const before = [...snapshotNotes(writer, project).files];
-    const later = await learn(true);
-    expect(later.wording).not.toBe(claim);
-    const after = [...snapshotNotes(writer, project).files];
-    const edited = () => {
-      const hook = (event: string, payload: Record<string, unknown>) => execFileSync(binary, ["claude-code", event], {
-        encoding: "utf8", timeout: 20_000, input: JSON.stringify({ session_id: "after-drop", cwd: checkout, hook_event_name: event, ...payload }),
-      });
-      hook("SessionStart", { source: "startup" });
-      return hook("PreToolUse", { tool_name: "Edit", tool_input: { file_path: join(checkout, path),
-        old_string: "  return stable(label);", new_string: "  return fallback(label);" } });
-    };
-    const written = later.model.mock.calls.filter(([request]) => request.purpose === LEARN_KIND);
-    if (decision === "forget, then a different lesson") {
-      // Kept, because it is another lesson; not switched on, because the person refused one about the same thing.
-      expect(written).toHaveLength(1);
-      expect(written[0]![0].prompt).toContain(`"refusedByTeam":${JSON.stringify([claim])}`);
-      expect(later.counts).toMatchObject({ "cluster.near-refused": 1, saved: 1, proposed: 1 });
-      expect(later.rows).toMatchObject([{ claim: later.wording, proven: true, status: "proposed" }]);
-      expect(later.rows[0]!.entryId).not.toBe(id);
-      expect(edited()).not.toContain("deny");
-    } else if (decision === "forget, then an unavailable comparison") {
-      expect(written).toHaveLength(1);
-      expect(later.counts).toMatchObject({ "proof-dropped.unjudged-refusal": 1 });
-      expect(later.result).toMatchObject({ state: "done with gaps", results: 0 });
-      expect(later.rows).toEqual([]);
-      expect(after).toEqual(before);
-      expect(edited()).not.toContain("deny");
-    } else if (decision === "forget, then the same trigger") {
-      expect(written).toHaveLength(1);
-      expect(later.counts).toMatchObject({ "cluster.forgotten": 1 });
-      expect(later.rows).toEqual([]);
-      expect(after).toEqual(before);
-      expect(edited()).not.toContain("deny");
-    } else if (decision === "leave waiting, then the claim changes") {
-      expect(later.rows).toMatchObject([{ claim: later.wording, support: 1, status: "proposed" }]);
-      expect(later.rows[0]!.entryId).not.toBe(id);
-      expect(new Map(after).get(id)).toBe(new Map(before).get(id));
-    } else if (decision === "leave waiting") {
-      expect(later.rows).toMatchObject([{ entryId: id, claim: later.wording, support: 2, status: "proposed" }]);
-      expect(later.model.mock.calls.some(([request]) => request.purpose === LEARN_KIND)).toBe(true);
-      expect(parseEntry(new Map(after).get(id)!).mex.status).toBe("proposed");
-      expect(edited()).not.toContain("deny");
-    } else {
-      expect(later.model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", MEANING_PURPOSE, MEANING_PURPOSE]);
-      expect(later.counts).toMatchObject({ "cluster.forgotten": 1 });
-      expect(later.counts["tokens.write"] ?? 0).toBe(0);
-      expect(later.result.results).toBe(0);
-      expect(later.rows).toEqual([]);
-      expect(after).toEqual(before);
-      expect(parseEntry(new Map(after).get(id)!).mex.status).toBe(
-        decision === "forget" ? "retired" : decision === "legacy forget" ? "active" : "proposed");
+    now = Date.parse("2026-11-27T10:00:00Z");
+    pulls = [first, second, later];
+    const weekly = await run(WEEKLY_KIND, JSON.parse(writer.setting(project, SCHEDULE)!));
+    expect(weekly.rows).toMatchObject([{ claim: weeklyClaim, support: 2, status: "active" }]);
+    expect(weekly.receipt.counts).toMatchObject({ "observations.conversation": 1, "gate.keep": 1 });
 
-      const hook = (event: string, payload: Record<string, unknown>) => execFileSync(binary, ["claude-code", event], {
-        encoding: "utf8", timeout: 20_000, input: JSON.stringify({ session_id: "after-review", cwd: checkout, hook_event_name: event, ...payload }),
-      });
-      hook("SessionStart", { source: "startup" });
-      expect(hook("PreToolUse", { tool_name: "Edit", tool_input: { file_path: join(checkout, path),
-        old_string: "  return stable(label);", new_string: "  return fallback(label);" } })).not.toContain("deny");
-    }
-  } finally { writer.close(); }
-}, 120_000);
+    const aging = await propose([{
+      producer: "learn-deeper", key: "old-trial", kind: "rule", text: "Run the sparrow migration before refreshing the manifest.",
+      source: { type: "review", ref: "https://github.com/acme/app/pull/57" },
+      evidenceClass: "review", model: "none", label: LEARNED_TRIAL_LABEL + "Fixture",
+      anchors: { scope: ["**"] }, checks: [{ kind: "scope", role: "complete", target: { glob: "**" } }],
+    }, {
+      producer: "learn-deeper", key: "old-anchored-trial", kind: "rule", text: "Restrict dispatch receipts to the sparrow queue.",
+      source: { type: "mined", ref: "fixture" }, evidenceClass: "mined", model: "none", label: LEARNED_TRIAL_LABEL + "Fixture",
+      anchors: { scope: [adapter] }, checks: [{ kind: "scope", role: "complete", target: { glob: adapter } }],
+    }], { home, projectPath: checkout, now: new Date(now - 90 * 86_400_000) });
+    const [old, anchored] = aging;
+    if (old?.status !== "accepted" || anchored?.status !== "accepted") throw new Error(JSON.stringify(aging));
+    const calls = model.mock.calls.length;
+    now += 7 * 86_400_000;
+    await run(WEEKLY_KIND, JSON.parse(writer.setting(project, SCHEDULE)!));
+    const notes = snapshotNotes(writer, project).files;
+    expect(parseEntry(notes.get(old.entryId)!).mex.status).toBe("retired");
+    expect(parseEntry(notes.get(anchored.entryId)!).mex.status).toBe("active");
+    expect(model).toHaveBeenCalledTimes(calls);
+  } finally {
+    writer.close();
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}, 180_000);

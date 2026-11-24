@@ -9,6 +9,8 @@ import { fromNpxCache, installAgents, installationChanges, recoveryFile, uninsta
 import { applyOrphanRecovery } from "../recovery.js";
 import { readSnapshot } from "../files.js";
 import { EVENTS, installSettings, parseSettings } from "../settings.js";
+import { readObservations, saveObservations } from "../../learn-deeper/observations.js";
+import { fixtureAt, observation } from "../../learn-deeper/__tests__/fixtures/observations.js";
 import { openRecord } from "../../record/index.js";
 import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
 import { acceptCompact, prepareCompact, type CompactSelection } from "../../compaction/control.js";
@@ -85,6 +87,21 @@ describe("machine-wide hook installation", () => {
     expect(readFileSync(join(f.home, "bin", "launcher.json"), "utf8")).toBe("original launcher bytes\n");
     expect(installationChanges({ home: f.home })).toEqual([]);
     expect(existsSync(join(f.home, "record.db"))).toBe(true);
+  });
+
+  it("removes learn-deeper observations on uninstall while keeping the local record", async () => {
+    const f = fixture();
+    await installAgents(f.options);
+    const writer = openRecord({ home: f.home, projectPath: f.repo, isNetwork: () => false });
+    const project = writer.checkout(f.repo)!.project_id;
+    try {
+      saveObservations(writer.db, project, [observation(1)], fixtureAt);
+      expect(readObservations(writer.db, project, fixtureAt)).toHaveLength(1);
+    } finally { writer.close(); }
+    expect(await uninstallAgents({ home: f.home })).toMatchObject({ conflicts: [], purged: false });
+    const restored = openRecord({ home: f.home, isNetwork: () => false });
+    try { expect(readObservations(restored.db, project, fixtureAt)).toEqual([]); }
+    finally { restored.close(); }
   });
 
   it("is idempotent and retains original bytes rather than a serialized equivalent", async () => {

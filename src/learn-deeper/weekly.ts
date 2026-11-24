@@ -1,5 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
-import type { RecordWriter } from "../record/index.js";
+import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
+import { isLearnedEntry, parseEntry } from "../knowledge/entry.js";
+import { unanchored, UNANCHORED_MAX_MS } from "../knowledge/upkeep.js";
 import { enqueueJob } from "../record/jobs.js";
 import { readTeamCoverage, teamRetired, type TeamCoverage } from "./coverage.js";
 import { ForgeClient, object, SourceError } from "./forge.js";
@@ -9,11 +11,13 @@ import { Plan, reviewWindow, type LearningPlan } from "./plan.js";
 import type { WeeklySchedule } from "./weekly-schedule.js";
 
 import { harvestClient } from "./pipeline.js";
-import { planHarvest, type HarvestCursor } from "./harvest/index.js";
+import { planHarvest, previewHarvest, type HarvestCursor } from "./harvest/index.js";
 import { propose } from "../knowledge/gate.js";
 import { snapshotNotes } from "../knowledge/personal-store.js";
 import type { BatchContext } from "../record/jobs.js";
 import { noteKey } from "./coverage.js";
+import { forgetObservations } from "./observations.js";
+import { LEARNED_TRIAL_LABEL } from "./trial-outcomes.js";
 
 export class RefreshDeferred extends Error {}
 
@@ -49,8 +53,10 @@ export async function planWeekly(client: ForgeClient, schedule: WeeklySchedule, 
   const bounds = reviewWindow(new Date(now));
   const start = Math.min(Date.parse(schedule.since), Date.parse(cursor?.weekly?.window.since ?? schedule.since), now - 1);
   const window = { since: new Date(Math.max(Date.parse(bounds.since), start)).toISOString(), until: bounds.until };
-  const harvest = await planHarvest({ checkout: schedule.checkout, head: tree.head, defaultHead: tree.head, source: schedule.source,
-    agent: schedule.agent, ...window, mode: "weekly", issues }, { client: harvestClient(client, schedule.source), tree }, cursor);
+  const deps = { client: harvestClient(client, schedule.source), tree };
+  const inventory = await planHarvest({ checkout: schedule.checkout, head: tree.head, defaultHead: tree.head, source: schedule.source,
+    agent: schedule.agent, ...window, mode: "weekly", issues }, deps, cursor);
+  const harvest = await previewHarvest(inventory, deps, cursor);
   return Plan.parse({ checkout: schedule.checkout, origin: schedule.origin, source: schedule.source, visibility: schedule.visibility,
     agent: schedule.agent, setup: schedule.setup, preferred: schedule.preferred, head: tree.head, ...window,
     pulls: [], docs: [], gaps: harvest.gaps.slice(0, 12), estimate: Math.max(1, harvest.estimate), ceiling: Math.max(1, harvest.ceiling), harvest });
@@ -80,7 +86,10 @@ export async function sweepWeeklyRetirements({ writer, job }: BatchContext, plan
     },
     onAccepted(gate) {
       const remove = gate.db.prepare("DELETE FROM settings WHERE scope=? AND key=?");
-      for (const id of swept) remove.run(job.project_id!, noteKey(id));
+      for (const id of swept) {
+        remove.run(job.project_id!, noteKey(id));
+        forgetObservations(gate.db, job.project_id!, id);
+      }
     },
   });
 }
@@ -92,4 +101,40 @@ export async function queuePatternRecount(writer: RecordWriter, project: string,
   const personal = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.status === "active");
   registerPatterns(writer.location.directory, project, [...(team?.entries ?? []), ...personal]);
   if (readPatterns(indexDirectory(writer.location.directory, project)).length) enqueueJob(writer, { kind: "file-index", projectId: project, params: { checkout, full: true } });
+}
+
+/** Age only active trials whose personal rule has never reached an agent. */
+export async function sweepExpiredTrials({ writer, job }: BatchContext, plan: LearningPlan, now: number): Promise<void> {
+  const project = job.project_id!;
+  const expired = new Set<string>();
+  const hooks = openHooksReadOnly({ home: writer.location.home });
+  try {
+    if (hooks?.diagnostic) return;
+    for (const raw of snapshotNotes(writer, project).files.values()) {
+      const entry = parseEntry(raw), { id, created, status, source } = entry.mex;
+      if (status !== "active" || !isLearnedEntry(entry.mex) || !source.label?.startsWith(LEARNED_TRIAL_LABEL)
+        || now - Date.parse(created) < UNANCHORED_MAX_MS || !unanchored(entry)) continue;
+      if (hooks?.get("SELECT 1 FROM deliveries WHERE project_id=? AND entry_id=? AND action='given' LIMIT 1", project, id)) continue;
+      expired.add(id);
+    }
+  } catch { return; }
+  finally { hooks?.close(); }
+  if (!expired.size) return;
+  const swept = new Set<string>();
+  await propose([], {
+    projectPath: plan.checkout, home: writer.location.home,
+    sweep: { producer: "learn-deeper", includes(entry) {
+      const yes = expired.has(entry.mex.id) && entry.mex.status === "active"
+        && !!entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL) && unanchored(entry);
+      if (yes) swept.add(entry.mex.id);
+      return yes;
+    }, tombstone: { reason: "This trial rule was never delivered in 90 days.", by: "mex learn" } },
+    validate(gate) {
+      const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
+      if (live?.owner !== job.owner || live?.state !== "running") throw new Error("Learning lost its job before saving.");
+    },
+    onAccepted(gate) {
+      for (const id of swept) forgetObservations(gate.db, project, id);
+    },
+  });
 }

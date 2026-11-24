@@ -140,6 +140,11 @@ export class RecordWriter {
       this.db.prepare(`UPDATE ${table} SET project_id=? WHERE project_id=?`).run(project.id, oldId);
     }
     this.db.prepare("UPDATE checkouts SET project_id=?,provisional=NULL WHERE project_id=?").run(project.id, oldId);
+    this.db.prepare(`INSERT INTO learning_observations SELECT ?,id,at,payload,norm_id,forgotten
+      FROM learning_observations WHERE project_id=? AND true
+      ON CONFLICT(project_id,id) DO UPDATE SET forgotten=max(excluded.forgotten,learning_observations.forgotten),
+      norm_id=coalesce(learning_observations.norm_id,excluded.norm_id)`).run(project.id, oldId);
+    this.db.prepare("DELETE FROM learning_observations WHERE project_id=?").run(oldId);
     // Preserve colliding records under the retired id, linked by the alias below.
     this.db.prepare(`INSERT OR IGNORE INTO judgements SELECT ?,entry_id,inputs_hash,result,at FROM judgements WHERE project_id=?`).run(project.id, oldId);
     this.db.prepare(`DELETE FROM judgements WHERE project_id=? AND EXISTS

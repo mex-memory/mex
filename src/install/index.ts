@@ -1,3 +1,4 @@
+import { clearObservations } from "../learn-deeper/observations.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -358,6 +359,7 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
           result.restored.push(row.path);
         } catch { blockedPaths.add(row.path); result.conflicts.push(row.path); }
       }
+      if (!result.conflicts.length) clearObservations(writer.db);
       writeRecovery(writer);
       if (options.purge && !result.conflicts.length) {
         const running = writer.db.prepare("SELECT pid FROM background WHERE owner IS NOT NULL").get();
