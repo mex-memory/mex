@@ -17,13 +17,19 @@ type Reason = &'static str;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Syntax {
-    /// Import and export declarations, dynamic imports, and import types.
+    /// Import and export declarations, and type references without a mode override.
     Import,
     /// Require calls and import-equals declarations with an external module reference.
     Require,
 }
 
-impl Syntax {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResolutionMode {
+    Import,
+    Require,
+}
+
+impl ResolutionMode {
     fn condition(self) -> &'static str {
         match self {
             Self::Import => "import",
@@ -54,7 +60,6 @@ pub struct ConfigIssue {
 pub struct ModuleResolver {
     paths: RepositoryPaths,
     files: HashSet<String>,
-    directories: HashSet<String>,
     packages: PackageIndex,
     projects: ProjectIndex,
     outputs: OutputIndex,
@@ -99,9 +104,6 @@ impl ModuleResolver {
     ) -> Self {
         let files: HashSet<_> = files.into_iter().filter_map(index_path).collect();
         let configs = config::parse_configs(configs);
-        let packages = PackageIndex::new(&configs);
-        let projects = ProjectIndex::new(&paths, &files, &configs, &packages);
-        let outputs = OutputIndex::new(&projects);
         let mut directories = HashSet::new();
         for path in files.iter().chain(configs.keys()) {
             let mut dir = dirname(path);
@@ -112,10 +114,12 @@ impl ModuleResolver {
                 dir = dirname(dir);
             }
         }
+        let packages = PackageIndex::new(&configs, directories);
+        let projects = ProjectIndex::new(&paths, &files, &configs, &packages);
+        let outputs = OutputIndex::new(&projects);
         Self {
             paths,
             files,
-            directories,
             packages,
             projects,
             outputs,
@@ -153,20 +157,42 @@ impl ModuleResolver {
             };
         }
         let project = self.projects.for_file(from_path);
+        let options = project.map_or(&self.defaults, |(_, project)| &project.options);
+        let from_dir = dirname(from_path);
         let lookup = Lookup {
             resolver: self,
             project_id: project.map(|(id, _)| id),
-            options: project.map_or(&self.defaults, |(_, project)| &project.options),
+            options,
             config_issue: project.and_then(|(_, project)| project.inheritance_issue),
-            syntax,
+            mode: match syntax {
+                Syntax::Require => ResolutionMode::Require,
+                Syntax::Import if options.kind == ResolutionKind::Node16 => {
+                    self.implied_node_format(from_path, from_dir)
+                }
+                Syntax::Import => ResolutionMode::Import,
+            },
         };
-        let from_dir = dirname(from_path);
         let result = if is_path(specifier) {
             lookup.resolve_relative(from_dir, specifier)
         } else {
             lookup.resolve_bare(from_dir, specifier, 0)
         };
         result.unwrap_or_else(|reason| ModuleTarget::Unresolved { reason })
+    }
+
+    fn implied_node_format(&self, path: &str, dir: &str) -> ResolutionMode {
+        match extension(path) {
+            Some(".mts" | ".d.mts" | ".mjs") => ResolutionMode::Import,
+            Some(".ts" | ".d.ts" | ".tsx" | ".js" | ".jsx")
+                if self
+                    .packages
+                    .scope(dir)
+                    .is_some_and(|manifest| manifest.esm) =>
+            {
+                ResolutionMode::Import
+            }
+            _ => ResolutionMode::Require,
+        }
     }
 }
 
@@ -220,7 +246,7 @@ struct Lookup<'a> {
     project_id: Option<usize>,
     options: &'a Options,
     config_issue: Option<Reason>,
-    syntax: Syntax,
+    mode: ResolutionMode,
 }
 
 impl<'a> Lookup<'a> {
@@ -232,7 +258,7 @@ impl<'a> Lookup<'a> {
     }
 
     fn strict_esm(self) -> bool {
-        self.options.kind == ResolutionKind::Node16 && self.syntax == Syntax::Import
+        self.options.kind == ResolutionKind::Node16 && self.mode == ResolutionMode::Import
     }
 
     fn resolve_relative(self, from_dir: &str, specifier: &str) -> Result<ModuleTarget, Reason> {
@@ -529,7 +555,7 @@ impl<'a> Lookup<'a> {
 
     fn matches_condition(self, condition: &str) -> bool {
         matches!(condition, "types" | "node" | "default")
-            || condition == self.syntax.condition()
+            || condition == self.mode.condition()
             || self.options.custom_conditions.contains(condition)
     }
 
@@ -540,7 +566,7 @@ impl<'a> Lookup<'a> {
         }
         if implicit
             && self.options.kind != ResolutionKind::Classic
-            && self.resolver.directories.contains(path)
+            && self.resolver.packages.has_directory(path)
         {
             return self.load_directory(path, extensions, self.resolver.packages.at(path), false);
         }

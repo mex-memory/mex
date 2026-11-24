@@ -1,19 +1,25 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
 use super::{Reason, RepositoryPaths, basename, dirname, is_dependency_component, is_path};
 
 pub(super) struct PackageIndex {
-    by_directory: HashMap<String, PackageManifest>,
-    by_name: HashMap<String, Vec<String>>,
+    manifests: Vec<PackageManifest>,
+    by_directory: HashMap<String, usize>,
+    by_name: HashMap<String, Vec<usize>>,
+    scopes: HashMap<String, Option<usize>>,
 }
 
 impl PackageIndex {
-    pub(super) fn new(configs: &BTreeMap<String, Option<Value>>) -> Self {
+    pub(super) fn new(
+        configs: &BTreeMap<String, Option<Value>>,
+        directories: HashSet<String>,
+    ) -> Self {
+        let mut manifests = Vec::new();
         let mut by_directory = HashMap::new();
-        let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (path, manifest) in configs {
             if basename(path) != "package.json" {
                 continue;
@@ -36,28 +42,49 @@ impl PackageIndex {
                     .as_object()
                     .map(|object| PackageMap::new(object.clone())),
             };
+            let index = manifests.len();
             if let Some(name) = &package.name {
-                by_name
-                    .entry(name.to_owned())
-                    .or_default()
-                    .push(dir.to_owned());
+                by_name.entry(name.to_owned()).or_default().push(index);
             }
-            by_directory.insert(dir.to_owned(), package);
+            by_directory.insert(dir.to_owned(), index);
+            manifests.push(package);
         }
-        Self {
+        let mut index = Self {
+            manifests,
             by_directory,
             by_name,
-        }
+            scopes: HashMap::new(),
+        };
+        index.scopes = directories
+            .into_iter()
+            .map(|dir| {
+                let scope = index.find_scope(&dir);
+                (dir, scope)
+            })
+            .collect();
+        index
+    }
+
+    pub(super) fn has_directory(&self, dir: &str) -> bool {
+        self.scopes.contains_key(dir)
     }
 
     pub(super) fn at(&self, dir: &str) -> Option<&PackageManifest> {
-        self.by_directory.get(dir)
+        self.by_directory.get(dir).map(|&id| &self.manifests[id])
     }
 
-    pub(super) fn scope(&self, mut dir: &str) -> Option<&PackageManifest> {
+    pub(super) fn scope(&self, dir: &str) -> Option<&PackageManifest> {
+        self.scopes
+            .get(dir)
+            .copied()
+            .unwrap_or_else(|| self.find_scope(dir))
+            .map(|id| &self.manifests[id])
+    }
+
+    fn find_scope(&self, mut dir: &str) -> Option<usize> {
         loop {
-            if let Some(package) = self.at(dir) {
-                return Some(package);
+            if let Some(&id) = self.by_directory.get(dir) {
+                return Some(id);
             }
             if dir.is_empty() {
                 return None;
@@ -71,11 +98,11 @@ impl PackageIndex {
         from_dir: &str,
         name: &str,
     ) -> Result<Option<&PackageManifest>, Reason> {
-        let Some(dirs) = self.by_name.get(name) else {
+        let Some(ids) = self.by_name.get(name) else {
             return Ok(None);
         };
-        if dirs.len() == 1 {
-            return Ok(self.at(&dirs[0]));
+        if let &[id] = ids.as_slice() {
+            return Ok(Some(&self.manifests[id]));
         }
         if let Some(own) = self.scope(from_dir)
             && own.name.as_deref() == Some(name)
