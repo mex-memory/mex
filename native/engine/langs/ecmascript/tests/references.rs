@@ -64,6 +64,98 @@ impl Graph {
 }
 
 #[test]
+fn resolves_node_import_forms_with_the_correct_package_conditions() {
+    let graph = Graph::configured(
+        &[
+            (
+                "app.cts",
+                "\
+import type { Entry } from 'dual';
+import type { Entry as Esm } from 'dual' with { 'resolution-mode': 'import' };
+export { work } from 'dual';
+type PlainQuery = import('dual').Entry;
+type ValueQuery = typeof import('dual').work;
+import('dual');
+import('./local');
+",
+            ),
+            (
+                "consumer.mts",
+                "\
+import { work } from './app.cjs';
+import type { Entry } from 'dual' with { 'resolution-mode': 'require' };
+import cjs = require('dual');
+work(); cjs.work();
+",
+            ),
+            ("local.ts", "export function local() {}"),
+            (
+                "dual/common.cts",
+                "export interface Entry {} export function work() {}",
+            ),
+            (
+                "dual/module.mts",
+                "export interface Entry {} export function work() {}",
+            ),
+        ],
+        &[
+            (
+                "tsconfig.json",
+                r#"{"compilerOptions":{"module":"nodenext"}}"#,
+            ),
+            (
+                "dual/package.json",
+                r#"{"name":"dual","exports":{"import":"./module.mjs","require":"./common.cjs"}}"#,
+            ),
+        ],
+    );
+    assert_eq!(
+        graph
+            .edges("imports")
+            .map(|edge| (edge.from.0, edge.line, graph.files[edge.to.0].path.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (0, 1, "dual/common.cts"),
+            (0, 2, "dual/module.mts"),
+            (0, 6, "dual/module.mts"),
+            (1, 1, "app.cts"),
+            (1, 2, "dual/common.cts"),
+            (1, 3, "dual/common.cts"),
+        ]
+    );
+    assert_eq!(
+        graph.calls(1),
+        [
+            (4, "dual/common.cts", "work"),
+            (4, "dual/common.cts", "work")
+        ]
+    );
+    let [(file, import, reason)] = graph.resolution.unresolved_imports.as_slice() else {
+        panic!("expected one unresolved dynamic import");
+    };
+    assert_eq!(graph.files[*file].imports[*import].specifier, "./local");
+    assert_eq!(*reason, "explicit_extension_required");
+    assert_eq!(graph.reason(0, 6, "import"), None);
+}
+
+#[test]
+fn keeps_dynamic_call_observations_in_node10_and_bundler() {
+    for mode in ["node10", "bundler"] {
+        let config = format!(r#"{{"compilerOptions":{{"moduleResolution":"{mode}"}}}}"#);
+        let graph = Graph::configured(
+            &[
+                ("app.ts", "import('./local');"),
+                ("local.ts", "export function local() {}"),
+            ],
+            &[("tsconfig.json", &config)],
+        );
+        assert_eq!(graph.edges("imports").count(), 0);
+        assert!(graph.resolution.unresolved_imports.is_empty());
+        assert_eq!(graph.reason(0, 1, "import"), Some("complex_callee"));
+    }
+}
+
+#[test]
 fn binds_lexical_names_and_does_not_search_the_corpus_by_name() {
     let graph = Graph::new(&[
         ("other.ts", "export function lost() {}"),

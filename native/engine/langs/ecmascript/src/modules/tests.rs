@@ -656,6 +656,14 @@ fn distinguishes_node_esm_extension_requirements_from_node10_and_bundler() {
         );
     }
     assert_eq!(
+        view.resolve("app/common/main.ts", "./local", Syntax::ForceImport),
+        unresolved("explicit_extension_required")
+    );
+    assert_eq!(
+        view.resolve("app/common/main.ts", "./local.js", Syntax::ForceImport),
+        file("app/common/local.ts", "relative")
+    );
+    assert_eq!(
         view.resolve("bundle/main.ts", "./local", Syntax::Import),
         file("bundle/local.ts", "relative")
     );
@@ -740,6 +748,10 @@ fn uses_the_importer_format_for_node_package_conditions() {
     assert_eq!(
         view.resolve("module/src/main.ts", "dual", Syntax::Require),
         file("dual/require.cts", "workspace_package")
+    );
+    assert_eq!(
+        view.resolve("common/main.ts", "dual", Syntax::ForceImport),
+        file("dual/import.mts", "workspace_package")
     );
 }
 

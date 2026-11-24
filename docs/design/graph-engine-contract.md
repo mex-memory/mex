@@ -183,8 +183,9 @@ records, dependency rules and complete-resolution cases.
 
 The private `refresh_format` in `meta` versions the resolver inputs separately
 from schema v5 and JSONL. Prefix `9` applies the importing file's Node module
-format to ECMAScript module resolution. It keeps the path and lookup
-dictionaries and page-packed base projection frames.
+format to ECMAScript module resolution and tracks forced import and require
+lookups separately. It keeps the path and lookup dictionaries and page-packed
+base projection frames.
 A registry containing basic adapters appends a digest of their config and
 extraction identities to the private format value. The same identities key
 their file facts. An edit to a basic source rechecks the basic name index so

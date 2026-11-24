@@ -336,11 +336,11 @@ impl Recorder {
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             let import = &load(file as usize).imports[index as usize];
-                            let kind = match import.form {
-                                mex_graph_core::facts::ImportForm::CommonJs => {
-                                    LookupKind::TsRequire
-                                }
-                                _ => LookupKind::TsImport,
+                            let kind = match Syntax::from(import.form) {
+                                Syntax::Import => LookupKind::TsImport,
+                                Syntax::Require => LookupKind::TsRequire,
+                                Syntax::ForceImport => LookupKind::TsForcedImport,
+                                Syntax::ForceRequire => LookupKind::TsForcedRequire,
                             };
                             *entry.insert(
                                 writer
@@ -1144,6 +1144,8 @@ fn topology_readers(
     for (kind, syntax) in [
         (LookupKind::TsImport, Syntax::Import),
         (LookupKind::TsRequire, Syntax::Require),
+        (LookupKind::TsForcedImport, Syntax::ForceImport),
+        (LookupKind::TsForcedRequire, Syntax::ForceRequire),
     ] {
         for (id, path, specifier) in writer.module_reads(kind).map_err(JobError::write)? {
             if old.resolve(&path, &specifier, syntax) != new.resolve(&path, &specifier, syntax) {

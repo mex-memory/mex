@@ -27,6 +27,12 @@ impl<'a> Collector<'a, '_> {
         index
     }
 
+    pub(super) fn dynamic_import(&mut self, node: Node, scope: i32) -> Option<usize> {
+        let args = field(node, "arguments")?;
+        let specifier = self.string(first_named(args)?)?;
+        Some(self.add_import(ImportForm::Dynamic, specifier, node, scope))
+    }
+
     pub(super) fn import_statement(&mut self, node: Node<'a>, context: Context) {
         if let Some(clause) = named(node).find(|part| part.kind() == "import_require_clause") {
             if let Some(local) = first_named(clause)
@@ -40,11 +46,16 @@ impl<'a> Collector<'a, '_> {
         let Some(specifier) = field(node, "source").and_then(|n| self.string(n)) else {
             return;
         };
-        let import = self.add_import(ImportForm::Es, specifier, node, context.scope);
+        let type_only = token(node, "type").is_some();
+        let form = if type_only {
+            self.mode_attribute(node).unwrap_or(ImportForm::Es)
+        } else {
+            ImportForm::Es
+        };
+        let import = self.add_import(form, specifier, node, context.scope);
         let Some(clause) = named(node).find(|part| part.kind() == "import_clause") else {
             return;
         };
-        let type_only = token(node, "type").is_some();
         for part in named(clause) {
             match part.kind() {
                 "identifier" => self.import_name(import, "default".into(), part, type_only),
@@ -67,6 +78,22 @@ impl<'a> Collector<'a, '_> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn mode_attribute(&self, node: Node) -> Option<ImportForm> {
+        let attributes = named(node).find(|part| part.kind() == "import_attribute")?;
+        let mut entries = named(first_named(attributes)?);
+        let entry = entries.next()?;
+        if entries.next().is_some()
+            || self.string(field(entry, "key")?)?.as_str() != "resolution-mode"
+        {
+            return None;
+        }
+        match self.string(field(entry, "value")?)?.as_str() {
+            "import" => Some(ImportForm::TypeWithImportMode),
+            "require" => Some(ImportForm::TypeWithRequireMode),
+            _ => None,
         }
     }
 

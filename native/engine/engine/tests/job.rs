@@ -111,21 +111,21 @@ fn lists_only_the_shipped_adapters() {
     assert!(output.stderr.is_empty(), "{output:?}");
     let entries: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
     let expected = [
-        ("python", "0.21.0", &[".py"][..]),
-        ("rust", "0.20.4", &[".rs"][..]),
-        ("csharp", "0.23.5", &[".cs"][..]),
-        ("javascript", "0.25.0", &[".js", ".mjs", ".cjs"][..]),
-        ("jsx", "0.25.0", &[".jsx"][..]),
-        ("typescript", "0.23.2", &[".ts", ".mts", ".cts"][..]),
-        ("tsx", "0.23.2", &[".tsx"][..]),
+        ("python", "0.21.0", &[".py"][..], 1),
+        ("rust", "0.20.4", &[".rs"][..], 1),
+        ("csharp", "0.23.5", &[".cs"][..], 1),
+        ("javascript", "0.25.0", &[".js", ".mjs", ".cjs"][..], 2),
+        ("jsx", "0.25.0", &[".jsx"][..], 2),
+        ("typescript", "0.23.2", &[".ts", ".mts", ".cts"][..], 2),
+        ("tsx", "0.23.2", &[".tsx"][..], 2),
     ];
     assert_eq!(entries.len(), expected.len());
-    for (entry, (id, version, extensions)) in entries.iter().zip(expected) {
+    for (entry, (id, version, extensions, adapter)) in entries.iter().zip(expected) {
         assert_eq!(
             entry,
             &json!({
                 "id": id, "level": "full", "extensions": extensions,
-                "grammarVersion": version, "adapterVersion": 1,
+                "grammarVersion": version, "adapterVersion": adapter,
             })
         );
     }

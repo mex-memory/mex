@@ -15,6 +15,8 @@ pub enum LookupKind {
     TsDispatch = 7,
     TsHeritage = 8,
     FunctionName = 9,
+    TsForcedImport = 10,
+    TsForcedRequire = 11,
 }
 
 pub enum Access<'a> {

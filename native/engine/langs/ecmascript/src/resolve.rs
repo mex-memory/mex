@@ -59,6 +59,7 @@ pub struct Resolution {
     pub edges: Vec<Edge>,
     pub unresolved: Vec<(usize, Reason, u32)>,
     pub unresolved_calls: Vec<(usize, usize, Reason)>,
+    pub unresolved_imports: Vec<(usize, usize, Reason)>,
     pub call_candidates: HashMap<(usize, usize), DefRef>,
     pub unresolved_heritage: Vec<UnresolvedHeritage>,
 }
@@ -412,13 +413,30 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         let mut reasons = BTreeMap::new();
         let mut arguments = extra.arguments.iter().peekable();
         for (index, call) in facts.calls.iter().enumerate() {
+            let mut callback_arguments =
+                std::iter::from_fn(|| arguments.next_if(|arg| arg.call == index));
+            if let CallForm::DynamicImport { import } = call.form
+                && self.modules.uses_node_resolution(&facts.path)
+            {
+                match self.import(file, import) {
+                    Ok(Value::Module { file: target, .. }) => result.edges.push(edge(
+                        (file, 0),
+                        (target, 0),
+                        "imports",
+                        facts.imports[import].range,
+                        EdgeSite::Import(import),
+                    )),
+                    Err(reason) => result.unresolved_imports.push((file, import, reason)),
+                    Ok(_) => unreachable!("import resolution only produces modules"),
+                }
+                callback_arguments.for_each(drop);
+                continue;
+            }
             let mut interface = None;
             let resolved = self.resolve_call_with_dispatch(file, call, &mut interface);
             if let Some(interface) = interface {
                 interface_dispatches.push((file, index, interface));
             }
-            let mut callback_arguments =
-                std::iter::from_fn(|| arguments.next_if(|arg| arg.call == index));
             match resolved {
                 Ok(target) => {
                     let kind = if call.form == CallForm::New {
@@ -494,6 +512,9 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         call: &'a Call,
         interface: &mut Option<DefRef>,
     ) -> Result<DefRef, Reason> {
+        if matches!(call.form, CallForm::DynamicImport { .. }) {
+            return Err("complex_callee");
+        }
         let scope = call.scope;
         if call.form == CallForm::SuperConstructor {
             let (Value::Def(base) | Value::Instance(base)) = self.super_value(file, scope, 0)?
