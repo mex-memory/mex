@@ -60,3 +60,13 @@ it("recovers exact source characters and rejects a quote borrowed from another d
   expect(parsed.drafts[0]!.support.members[0]!.candidate.path).toBe("docs/guide.txt");
   expect(parsed.drops).toEqual({ "quote-not-found": 1 });
 });
+
+it("reads a single path named as a bare string as that path's list, and still refuses an empty scope", () => {
+  const quote = "Keep `queueTransport`, because retries must be serialized.";
+  const change = candidate(1, quote, { lines: [{ id: "a", at: fixtureAt, role: "maintainer", text: quote }] });
+  const units = prUnits([change]), byId = new Map([[change.id, change]]);
+  const reply = (scope: unknown) => JSON.stringify({ observations: [{ ...fields, item: "i1", quote, scope }] });
+  expect(parseTriage(reply(fixturePath), units, byId).observations).toMatchObject([{ scope: [fixturePath] }]);
+  expect(parseTriage(reply("repo"), units, byId).observations).toMatchObject([{ scope: "repo" }]);
+  expect(parseTriage(reply(""), units, byId).drops).toEqual({ format: 1 });
+});

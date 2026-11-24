@@ -9,7 +9,9 @@ import { sourceDigest } from "./source.js";
 export const NORM_KINDS = ["placement", "api-design", "compatibility", "scope", "tests", "docs-comments",
   "size-performance", "dependencies", "conventions", "process", "pitfall", "security"] as const;
 export const NormKind = z.enum(NORM_KINDS);
-export const NormScope = z.union([z.literal("repo"), z.array(z.string().trim().min(1).max(300)).min(1).max(12)]);
+// The prompt asks for "repo" or a list of paths. A model that names its one path as a bare string means that list.
+export const NormScope = z.preprocess(value => typeof value === "string" && value.trim() !== "repo" ? [value] : value,
+  z.union([z.literal("repo"), z.array(z.string().trim().min(1).max(300)).min(1).max(12)]));
 const sourceKinds = ["review-thread", "conversation", "review-summary", "pr-text", "closed-pr", "revert", "cause-commit", "adr", "doc", "issue"] as const;
 const Hash = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 const observationFields = {
