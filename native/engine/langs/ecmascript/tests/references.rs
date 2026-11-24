@@ -75,8 +75,6 @@ import type { Entry as Esm } from 'dual' with { 'resolution-mode': 'import' };
 export { work } from 'dual';
 type PlainQuery = import('dual').Entry;
 type ValueQuery = typeof import('dual').work;
-import('dual');
-import('./local');
 ",
             ),
             (
@@ -88,7 +86,6 @@ import cjs = require('dual');
 work(); cjs.work();
 ",
             ),
-            ("local.ts", "export function local() {}"),
             (
                 "dual/common.cts",
                 "export interface Entry {} export function work() {}",
@@ -117,7 +114,6 @@ work(); cjs.work();
         [
             (0, 1, "dual/common.cts"),
             (0, 2, "dual/module.mts"),
-            (0, 6, "dual/module.mts"),
             (1, 1, "app.cts"),
             (1, 2, "dual/common.cts"),
             (1, 3, "dual/common.cts"),
@@ -130,29 +126,6 @@ work(); cjs.work();
             (4, "dual/common.cts", "work")
         ]
     );
-    let [(file, import, reason)] = graph.resolution.unresolved_imports.as_slice() else {
-        panic!("expected one unresolved dynamic import");
-    };
-    assert_eq!(graph.files[*file].imports[*import].specifier, "./local");
-    assert_eq!(*reason, "explicit_extension_required");
-    assert_eq!(graph.reason(0, 6, "import"), None);
-}
-
-#[test]
-fn keeps_dynamic_call_observations_in_node10_and_bundler() {
-    for mode in ["node10", "bundler"] {
-        let config = format!(r#"{{"compilerOptions":{{"moduleResolution":"{mode}"}}}}"#);
-        let graph = Graph::configured(
-            &[
-                ("app.ts", "import('./local');"),
-                ("local.ts", "export function local() {}"),
-            ],
-            &[("tsconfig.json", &config)],
-        );
-        assert_eq!(graph.edges("imports").count(), 0);
-        assert!(graph.resolution.unresolved_imports.is_empty());
-        assert_eq!(graph.reason(0, 1, "import"), Some("complex_callee"));
-    }
 }
 
 #[test]

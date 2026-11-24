@@ -454,12 +454,6 @@ impl<'a> Collector<'a, '_> {
         let (form, name, name_node) = match target.kind() {
             "identifier" => (CallForm::Ident, self.name(target), callee),
             "super" => (CallForm::SuperConstructor, "super".into(), callee),
-            "import" if !new => {
-                let form = self
-                    .dynamic_import(node, context.scope)
-                    .map_or(CallForm::Other, |import| CallForm::DynamicImport { import });
-                (form, "import".into(), callee)
-            }
             _ => {
                 if let Some((object, property)) =
                     access(target).filter(|(_, property)| static_access(target, *property))

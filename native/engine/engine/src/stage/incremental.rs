@@ -341,7 +341,6 @@ impl Recorder {
                                 Syntax::Require => LookupKind::TsRequire,
                                 Syntax::ForceImport => LookupKind::TsForcedImport,
                                 Syntax::ForceRequire => LookupKind::TsForcedRequire,
-                                Syntax::DynamicImport => LookupKind::TsDynamicImport,
                             };
                             *entry.insert(
                                 writer
@@ -1147,14 +1146,9 @@ fn topology_readers(
         (LookupKind::TsRequire, Syntax::Require),
         (LookupKind::TsForcedImport, Syntax::ForceImport),
         (LookupKind::TsForcedRequire, Syntax::ForceRequire),
-        (LookupKind::TsDynamicImport, Syntax::DynamicImport),
     ] {
         for (id, path, specifier) in writer.module_reads(kind).map_err(JobError::write)? {
-            let resolve = |modules: &ModuleResolver| {
-                (syntax != Syntax::DynamicImport || modules.uses_node_resolution(&path))
-                    .then(|| modules.resolve(&path, &specifier, syntax))
-            };
-            if resolve(&old) != resolve(&new) {
+            if old.resolve(&path, &specifier, syntax) != new.resolve(&path, &specifier, syntax) {
                 frontier.extend(writer.readers_of(id).map_err(JobError::write)?);
                 changed = true;
             }

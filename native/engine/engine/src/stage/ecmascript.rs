@@ -25,7 +25,6 @@ pub(super) struct Stage<'a> {
     calls: Vec<Vec<(usize, &'static str, Option<DefRef>)>>,
     heritage: Vec<Vec<UnresolvedHeritage>>,
     imports: Vec<Vec<ImportResolution>>,
-    unresolved_imports: Vec<Vec<(usize, &'static str)>>,
     frameworks: Option<Enabled>,
     callback_owners: Vec<bool>,
 }
@@ -107,10 +106,6 @@ impl<'a> Stage<'a> {
         for base in resolution.unresolved_heritage {
             heritage[base.from.0].push(base);
         }
-        let mut unresolved_imports = vec![Vec::new(); facts.len()];
-        for (file, import, reason) in resolution.unresolved_imports {
-            unresolved_imports[file].push((import, reason));
-        }
         (
             Self {
                 facts,
@@ -121,7 +116,6 @@ impl<'a> Stage<'a> {
                 frameworks: frameworks.cloned(),
                 callback_owners,
                 imports,
-                unresolved_imports,
             },
             inheritance,
         )
@@ -153,17 +147,6 @@ impl<'a> Stage<'a> {
                 ));
             }
             file.imports.extend(binding);
-        }
-        for &(import, reason) in &self.unresolved_imports[index] {
-            let import = &facts.imports[import];
-            file.unresolved.extend(self.unresolved(
-                (index, 0),
-                "imports",
-                &import.specifier,
-                import.range,
-                None,
-                json!({ "reason": reason }),
-            ));
         }
         for base in &self.heritage[index] {
             let base_fact = &facts.defs[base.from.1].heritage[base.heritage];

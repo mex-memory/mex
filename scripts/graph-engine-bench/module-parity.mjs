@@ -109,9 +109,8 @@ function collectSites(source) {
     } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
       add(node.argument.literal, "import", node.attributes);
     } else if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        add(node.arguments[0], "dynamic_import");
-      } else if (ts.isIdentifier(node.expression) && node.expression.text === "require") {
+      // The engine doesn't record dynamic import() calls, so they aren't compared.
+      if (ts.isIdentifier(node.expression) && node.expression.text === "require") {
         add(node.arguments[0], "require");
       }
     }

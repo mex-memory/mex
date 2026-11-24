@@ -293,7 +293,6 @@ pub enum ImportForm {
     Python,
     RustUse,
     CSharpUsing,
-    Dynamic,
     TypeWithImportMode,
     TypeWithRequireMode,
 }
@@ -363,10 +362,6 @@ pub enum CallForm {
     New,
     SuperConstructor,
     Other,
-    /// A literal import call with a separate module lookup fact.
-    DynamicImport {
-        import: usize,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]

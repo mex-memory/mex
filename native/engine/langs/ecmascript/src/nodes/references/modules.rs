@@ -27,12 +27,6 @@ impl<'a> Collector<'a, '_> {
         index
     }
 
-    pub(super) fn dynamic_import(&mut self, node: Node, scope: i32) -> Option<usize> {
-        let args = field(node, "arguments")?;
-        let specifier = self.string(first_named(args)?)?;
-        Some(self.add_import(ImportForm::Dynamic, specifier, node, scope))
-    }
-
     pub(super) fn import_statement(&mut self, node: Node<'a>, context: Context) {
         if let Some(clause) = named(node).find(|part| part.kind() == "import_require_clause") {
             if let Some(local) = first_named(clause)
