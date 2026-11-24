@@ -52,7 +52,7 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	}
 	hints := hintGate(env.RecordDirectory, ev.ProjectID, ev.Agent, env.Now)
 	result, err := brief.Build(brief.Options{Checkout: ev.Checkout, MexHome: env.Home, ProjectID: ev.ProjectID, Agent: ev.Agent, Path: area, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd, Deadline: time.Now().Add(100 * time.Millisecond),
-		WorkingSet: ws, HintAllowed: func(id string) bool { return hints(&entries.Item{Entry: &entries.Entry{ID: id}}) }})
+		IncludeCodexFallback: true, WorkingSet: ws, HintAllowed: func(id string) bool { return hints(&entries.Item{Entry: &entries.Entry{ID: id}}) }})
 	if err != nil {
 		return "", nil
 	}
@@ -67,7 +67,7 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	req := baseRequest(ev, env, ev.ProjectID, ev.Checkout)
 	req.OnceEntry = startMarker
 	req.Candidates = []record.DeliveryCandidate{{EntryID: startMarker, Moment: "start-brief", Form: "one-line", Action: "given", Tokens: brief.TokenBound(brief.Priority) + 32, ContentHash: contentHash(brief.Priority)}}
-	for _, item := range result.LearnedNative {
+	for _, item := range result.NativeLoaded {
 		req.Candidates = append(req.Candidates, ruleFileReceipt(item.ID, "", item.Level))
 	}
 	candidate := func(item brief.Item, surface string) record.DeliveryCandidate {
@@ -145,6 +145,9 @@ func startBlock(h *record.Hooks, ev contract.Event, env Environment) (string, er
 	shown.Items, shown.Lane = sent, lane
 	text := shown.Render(ids)
 	_, body, _ := strings.Cut(text, "\n")
+	if result.CodexFallback != "" {
+		body += "\n\n" + strings.TrimSuffix(result.CodexFallback, "\n")
+	}
 	// A fixed line, outside the knowledge budget: how something the person
 	// wants kept reaches later sessions and the other agents.
 	return "[mex " + block + "]\n" + body + "\n" + brief.SaveLine, nil

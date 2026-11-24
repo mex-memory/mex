@@ -5,6 +5,8 @@ exports[`reads installed agents, cached verdicts and last hook call without writ
 
 Output levers off; turn on: mex config set levers.output on
 
+Agent defaults on. Change with mex config set agent.defaults off.
+
 Agents
   ✓ Claude Code: hooks installed (12 events) · last call 3 min ago
   ✓ Codex: hooks installed (9 events) · trust them once in Codex (/hooks, or Review hooks in the app)

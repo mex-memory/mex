@@ -247,6 +247,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   let rebuildRules = false;
   // What the free step read, for the setup questions.
   let ruleScan: RuleScan | undefined, recipesFile: Awaited<ReturnType<typeof readRecipes>>;
+  let ruleSources: readonly string[] | undefined;
   let writer: RecordWriter | undefined = openRecord();
   let projectId: string, checkout: CheckoutRow, hidden = false;
   const git = place.kind === "git";
@@ -346,6 +347,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       }
       showNew();
       const rules = await live("Reading rule files", () => readRules(checkout.path, listing));
+      ruleSources = await listing;
       if (rules && rules.files > 0) findings.push(...rules.findings);
       ruleScan = rules?.scan;
       showNew();
@@ -460,7 +462,13 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       const [{ rebuildNative }, { NATIVE_AGENTS }] = await Promise.all([import("../knowledge/native.js"), import("../knowledge/agents-in-use.js")]);
       // Agents without native rule files (OpenCode) get theirs from their adapters.
       const agents = hooks.agents?.filter((agent): agent is NativeAgent => (NATIVE_AGENTS as readonly string[]).includes(agent));
-      const rebuilt = rebuildNative({ projectPath: checkout.path, env }, { agents });
+      const rebuilt = rebuildNative({ projectPath: checkout.path, env }, {
+        agents, setupDefaults: { agents: hooks.agents, listed: ruleSources },
+      });
+      if (rebuilt.defaults) {
+        const { defaultsSummary } = await import("../knowledge/agent-defaults.js");
+        notes.push(defaultsSummary(rebuilt.defaults));
+      }
       if (rebuilt.deferred) {
         const { queueNativeRebuild } = await import("../knowledge/native-queue.js");
         if (!queueNativeRebuild(checkout.path)) throw new Error("rebuild was not queued");

@@ -89,6 +89,33 @@ function listFiles(root: string): string[] {
   }
 }
 
+/** Agent files can be loaded even when Git ignores them. */
+export function listRuleSources(root: string, listed: readonly string[] = listFiles(root)): string[] {
+  const files = new Set(listed);
+  for (const name of ["AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md",
+    "GEMINI.md", ".cursorrules", ".github/copilot-instructions.md"]) files.add(name);
+  let walked = 0;
+  function walk(folder: string, depth: number): void {
+    if (!depth || walked >= MAX_RULE_FILES) return;
+    try {
+      const directory = containedDirectory(root, folder.split("/"));
+      if (!directory) return;
+      for (const child of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (++walked > MAX_RULE_FILES) break;
+        const name = folder + "/" + child.name;
+        if (child.isDirectory()) walk(name, depth - 1);
+        else if (child.isFile()) files.add(name);
+      }
+    } catch { /* the rule scanner skips redirected or unreadable files */ }
+  }
+  for (const dir of [".claude/rules", ".github/instructions", ".cursor/rules", ".kiro/steering", ".agent/rules", ".agents/rules"]) walk(dir, 8);
+  return [...files];
+}
+
+export function ruleBody(text: string): string {
+  return frontmatter(text).body.replace(MANAGED_BLOCK, "");
+}
+
 function frontmatter(text: string): { data: Record<string, unknown>; body: string } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/u.exec(text);
   if (!match) return { data: {}, body: text };
@@ -156,7 +183,6 @@ function agentsFor(root: string, path: string, format: RuleFile["format"]): Agen
 export function discoverRuleFiles(root: string, listed?: readonly string[]): Array<RuleFile & { text: string; data: Record<string, unknown> }> {
   root = realPath(root);
   const all = listed ? [...listed] : listFiles(root);
-  const present = new Set(all);
   const out: Array<RuleFile & { text: string; data: Record<string, unknown> }> = [];
   for (const path of all.sort()) {
     const format = ruleFormat(path);

@@ -166,11 +166,18 @@ func readCoverage(root, home *os.Root, opts Options, cache ruleCache) Coverage {
 		file string
 	}{{root, ".mex/native.json"}, {home, "projects/" + opts.ProjectID + "/native-local.json"}} {
 		var manifest struct {
-			Version int               `json:"version"`
-			Files   map[string]string `json:"files"`
+			Version   int                          `json:"version"`
+			Files     map[string]string            `json:"files"`
+			Checkouts map[string]map[string]string `json:"checkouts"`
 		}
 		data, err := readFile(source.root, source.file, 128<<10)
-		if err != nil || json.Unmarshal(data, &manifest) != nil || manifest.Version != 1 || len(manifest.Files) > maxFiles {
+		if err != nil || json.Unmarshal(data, &manifest) != nil || manifest.Version != 1 {
+			continue
+		}
+		if files, ok := manifest.Checkouts[opts.Checkout]; source.root == home && ok {
+			manifest.Files = files
+		}
+		if len(manifest.Files) > maxFiles {
 			continue
 		}
 		for name, want := range manifest.Files {

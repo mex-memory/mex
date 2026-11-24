@@ -35,12 +35,13 @@ Set a trial with mex config set <setting> <on|off> --project.
 exports[`lists the project learning trials in config set help 1`] = `
 "Usage: mex config set [options] <key> <value>
 
-Set a config value (e.g. learning.statements on|off, telemetry on|off)
+Set a config value (e.g. agent.defaults on|off, telemetry on|off)
 
 Options:
-  --project   Set delivery.scorer, delivery.surface.<id>, learning.sharing or
-              learning.stopCheck, learning.procedures, learning.prDecisions,
-              learning.deep.issues for the registered project
+  --project   Set agent.defaults, delivery.scorer, delivery.surface.<id>,
+              learning.sharing or learning.stopCheck, learning.procedures,
+              learning.prDecisions, learning.deep.issues for the registered
+              project
   -h, --help  display help for command
 "
 `;

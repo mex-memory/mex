@@ -1376,12 +1376,12 @@ const configCmd = program
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a config value (e.g. learning.statements on|off, telemetry on|off)")
-  .option("--project", `Set delivery.scorer, delivery.surface.<id>, learning.sharing or ${learningTrials.join(", ")} for the registered project`)
+  .description("Set a config value (e.g. agent.defaults on|off, telemetry on|off)")
+  .option("--project", `Set agent.defaults, delivery.scorer, delivery.surface.<id>, learning.sharing or ${learningTrials.join(", ")} for the registered project`)
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (options.project && !isLearningTrial(key) && !["delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) {
-        throw new Error(`--project is supported for delivery.scorer, delivery.surface.<id>, learning.sharing and ${learningTrials.join(", ")}.`);
+      if (options.project && !isLearningTrial(key) && !["agent.defaults", "delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) {
+        throw new Error(`--project is supported for agent.defaults, delivery.scorer, delivery.surface.<id>, learning.sharing and ${learningTrials.join(", ")}.`);
       }
       if (isLearningTrial(key)) {
         if (!options.project) throw new Error(`Use --project to set ${key} for this repository.`);
@@ -1398,6 +1398,10 @@ configCmd
           }
           console.log(confirmation);
         } finally { writer.close(); }
+      } else if (key === "agent.defaults") {
+        const { configureAgentDefaults } = await import("./knowledge/native.js");
+        configureAgentDefaults(process.cwd(), value);
+        console.log(`Agent defaults ${value} for this project.`);
       } else if (key.startsWith("delivery.surface.")) {
         const { openRecord } = await import("./record/index.js");
         const { setDeliverySurface } = await import("./controls/index.js");
@@ -1471,7 +1475,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output, ${learningTrials.join(", ")}`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output, agent.defaults, ${learningTrials.join(", ")}`);
         process.exitCode = 1;
         return;
       }

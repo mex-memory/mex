@@ -3,22 +3,23 @@
  * generated and nobody edited since; local files are hidden through git's
  * exclude file. The coordinator defers background writes between sessions.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { containedDirectory, readBoundedTextFile } from "./files.js";
 import { KnowledgeError } from "./contract.js";
 import { realPath } from "../record/project.js";
 import type { NativePlan, Sharing } from "./native-plan.js";
 import { GENERATED_MARK } from "./rule-files.js";
+import { changeNativeFile, EXCLUDE_END, EXCLUDE_START, journalOwnsNativeFile, nativeExcludeBlock } from "./native-journal.js";
+import { readSnapshot, snapshotBytes } from "../install/files.js";
+import type { RecordReader, RecordWriter } from "../record/index.js";
 
 /** What MEX generated, with the hash it wrote, so a person's edit is never overwritten or deleted. */
-export interface NativeManifest { version: 1; files: Record<string, string>; }
+export interface NativeManifest { version: 1; files: Record<string, string>; checkouts?: Record<string, Record<string, string>>; }
 export const SHARED_MANIFEST = ".mex/native.json";
 export const LOCAL_MANIFEST = "native-local.json";
-const EXCLUDE_START = "# mex: local rule files (generated, personal)";
-const EXCLUDE_END = "# mex: end";
 
 export interface NativeWrite {
   written: string[]; unchanged: string[]; removed: string[];
@@ -29,15 +30,18 @@ export interface NativeWrite {
 
 const hash = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 
-function readManifest(path: string): NativeManifest {
-  const text = readText(path);
+function parseManifest(text: string | undefined): NativeManifest {
   if (text === undefined) return { version: 1, files: {} };
   try {
     const parsed = JSON.parse(text) as NativeManifest;
     if (parsed.version !== 1 || !parsed.files || typeof parsed.files !== "object" || Array.isArray(parsed.files)) throw new Error();
-    for (const [name, wrote] of Object.entries(parsed.files)) {
-      assertNativePath(name);
-      if (typeof wrote !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(wrote)) throw new Error();
+    if (parsed.checkouts && (typeof parsed.checkouts !== "object" || Array.isArray(parsed.checkouts) || Object.keys(parsed.checkouts).length > 256)) throw new Error();
+    for (const files of [parsed.files, ...Object.values(parsed.checkouts ?? {})]) {
+      if (!files || typeof files !== "object" || Array.isArray(files)) throw new Error();
+      for (const [name, wrote] of Object.entries(files)) {
+        assertNativePath(name);
+        if (typeof wrote !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(wrote)) throw new Error();
+      }
     }
     return parsed;
   } catch { throw new KnowledgeError("UNSAFE_NATIVE", "The generated-file manifest is invalid; its files were kept for review."); }
@@ -52,10 +56,13 @@ function assertNativePath(path: string): void {
   }
 }
 
-function writeAtomic(path: string, text: string): void {
-  const temporary = join(dirname(path), `.${posix.basename(path.replace(/\\/gu, "/"))}.${randomBytes(6).toString("hex")}.tmp`);
-  writeFileSync(temporary, text, { mode: 0o644 });
-  renameSync(temporary, path);
+function writeExact(writer: RecordWriter | undefined, path: string, before: string | undefined, after: string | undefined): void {
+  const current = readSnapshot(path, 1024 * 1024);
+  if (current.data !== (before === undefined ? null : Buffer.from(before).toString("base64"))) {
+    throw new KnowledgeError("UNSAFE_NATIVE", "A generated file changed while MEX was rebuilding it.");
+  }
+  changeNativeFile(writer, path, current, { data: after === undefined ? null : Buffer.from(after).toString("base64"),
+    mode: current.data === null ? 0o644 : current.mode });
 }
 
 /** Create the parent folders of a repo path, refusing links and junctions. */
@@ -89,18 +96,18 @@ export function excludeFile(root: string): string | undefined {
 }
 
 /** Keep MEX's block in the exclude file listing exactly these paths. */
-export function setExcluded(root: string, paths: string[]): boolean {
+export function setExcluded(root: string, paths: string[], writer?: RecordWriter): boolean {
   const file = excludeFile(root);
   if (!file) return false;
-  const current = readText(file) ?? "";
-  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const pattern = new RegExp(`\\n?${escape(EXCLUDE_START)}\\n[\\s\\S]*?${escape(EXCLUDE_END)}\\n?`, "u");
-  const without = current.replace(pattern, "\n").replace(/\n+$/u, "");
+  const before = readSnapshot(file, 1024 * 1024);
+  const current = snapshotBytes(before)?.toString("latin1") ?? "";
+  const found = nativeExcludeBlock(current);
   const block = paths.length ? `${EXCLUDE_START}\n${[...paths].sort().map(p => `/${p}`).join("\n")}\n${EXCLUDE_END}\n` : "";
-  const next = (without ? `${without}\n` : "") + (block ? `${without ? "\n" : ""}${block}` : "");
+  const next = found ? current.slice(0, found.index) + block + current.slice(found.index + found[0].length)
+    : current + (block && current && !current.endsWith("\n") ? "\n" : "") + block;
   if (next === current) return true;
   if (!existsSync(dirname(file))) return false;
-  writeAtomic(file, next);
+  changeNativeFile(writer, file, before, { data: Buffer.from(next, "latin1").toString("base64"), mode: before.mode }, "exclude");
   return true;
 }
 
@@ -110,6 +117,26 @@ export interface WriteOptions {
   projectDirectory?: string;
   /** Write and clean up only these files; the others' manifest is left alone. */
   only?: Sharing;
+  writer?: RecordWriter;
+  siblingCheckouts?: readonly string[];
+}
+
+// Linked worktrees share Git's exclude file. Keep the paths still owned by the
+// other checkout even when removing all local rules from this one.
+function siblingExclusions(root: string, manifest: NativeManifest, checkouts: readonly string[]): string[] {
+  const peers = checkouts.filter(checkout => Object.keys(manifest.checkouts?.[checkout] ?? {}).length);
+  const exclude = peers.length ? excludeFile(root) : undefined;
+  if (!exclude || !existsSync(exclude)) return [];
+  const path = realPath(exclude);
+  const others = new Set<string>();
+  for (const checkout of peers) {
+    try {
+      const file = excludeFile(checkout);
+      if (!file || realPath(file) !== path) continue;
+      for (const name of Object.keys(manifest.checkouts![checkout])) others.add(name);
+    } catch { /* the other checkout might have been removed */ }
+  }
+  return [...others];
 }
 
 /** Apply a plan. Shared files go to the working tree; local ones too, hidden from git. */
@@ -129,14 +156,18 @@ export function writeNative(plan: NativePlan, options: WriteOptions): NativeWrit
       if (files.length) result.notes.push("Local rule files need MEX set up on this machine; skipped.");
       continue;
     }
-    const before: NativeManifest = sharing === "shared" && !existingParent(root, SHARED_MANIFEST) ? { version: 1, files: {} } : readManifest(manifestFile);
+    const currentManifest = sharing === "shared" && !existingParent(root, SHARED_MANIFEST) ? undefined : readText(manifestFile);
+    const manifest = parseManifest(currentManifest);
+    const perCheckout = sharing === "local" && options.siblingCheckouts !== undefined;
+    const before = perCheckout ? { files: manifest.checkouts?.[root] ?? manifest.files } : manifest;
+    const elsewhere = perCheckout ? siblingExclusions(root, manifest, options.siblingCheckouts!) : [];
     // Preflight both planned output and old cleanup paths. A manifest never
     // authorizes following a link, traversing outside, or touching other files.
     for (const path of new Set([...Object.keys(before.files), ...files.map(f => f.path)])) {
       assertNativePath(path);
       if (existingParent(root, path)) readText(join(root, ...path.split("/")));
     }
-    if (sharing === "local" && !setExcluded(root, [...new Set([...Object.keys(before.files), ...files.map(f => f.path)])])) {
+    if (sharing === "local" && !setExcluded(root, [...new Set([...elsewhere, ...Object.keys(before.files), ...files.map(f => f.path)])], options.writer)) {
       if (files.length) result.notes.push("Couldn't hide local rule files; personal files were not written.");
       continue;
     }
@@ -151,13 +182,14 @@ export function writeNative(plan: NativePlan, options: WriteOptions): NativeWrit
       const full = join(parentOf(root, file.path), posix.basename(file.path));
       const current = readText(full);
       if (current !== undefined && !current.includes(GENERATED_MARK)) { result.notes.push(`${file.path} is yours; not written.`); continue; }
-      if (current !== undefined && current !== file.text && (!before.files[file.path] || hash(current) !== before.files[file.path])) {
+      if (current !== undefined && current !== file.text && hash(current) !== before.files[file.path]
+        && !journalOwnsNativeFile(options.writer, full, current)) {
         result.kept.push(file.path);
         if (before.files[file.path]) after.files[file.path] = before.files[file.path];
         continue;
       }
       if (current === file.text) result.unchanged.push(file.path);
-      else { writeAtomic(full, file.text); result.written.push(file.path); }
+      else { writeExact(options.writer, full, current, file.text); result.written.push(file.path); }
       after.files[file.path] = hash(file.text);
     }
     for (const [path, wrote] of Object.entries(before.files)) {
@@ -167,19 +199,86 @@ export function writeNative(plan: NativePlan, options: WriteOptions): NativeWrit
       const full = join(root, ...path.split("/"));
       const current = readText(full);
       if (current === undefined) continue;
-      if (hash(current) === wrote && current.includes(GENERATED_MARK)) { unlinkSync(full); result.removed.push(path); }
+      if (hash(current) === wrote && current.includes(GENERATED_MARK)) { writeExact(options.writer, full, current, undefined); result.removed.push(path); }
       else { result.kept.push(path); after.files[path] = wrote; }
     }
     const changed = JSON.stringify(before.files) !== JSON.stringify(after.files);
-    if (changed || (!existsSync(manifestFile) && Object.keys(after.files).length)) {
-      if (Object.keys(after.files).length || existsSync(manifestFile)) {
-        if (sharing === "shared") parentOf(root, SHARED_MANIFEST);
-        writeAtomic(manifestFile, `${JSON.stringify(after, null, 2)}\n`);
-      }
+    if (changed || currentManifest === undefined && Object.keys(after.files).length || perCheckout && !manifest.checkouts?.[root] && Object.keys(after.files).length) {
+      if (sharing === "shared") parentOf(root, SHARED_MANIFEST);
+      const next = perCheckout ? { ...manifest, checkouts: { ...manifest.checkouts, [root]: after.files } } : after;
+      const text = `${JSON.stringify(next, null, 2)}\n`;
+      if (Buffer.byteLength(text) > 128 * 1024) throw new KnowledgeError("STORE_LIMIT", "The generated-file manifest is full.");
+      writeExact(options.writer, manifestFile, currentManifest, text);
     }
-    if (sharing === "local" && !setExcluded(root, Object.keys(after.files))) {
+    if (sharing === "local" && !setExcluded(root, [...new Set([...elsewhere, ...Object.keys(after.files)])], options.writer)) {
       if (Object.keys(after.files).length) result.notes.push("Couldn't hide local rule files: no git exclude file here.");
     }
   }
   return result;
+}
+
+type LegacyCheckout = { path: string; project_id: string };
+const legacyCheckouts = "SELECT path,project_id FROM checkouts ORDER BY path";
+
+/** Before journaling existed, a manifest hash was the only proof of ownership. */
+function legacyNativeFiles(home: string, checkouts: LegacyCheckout[], apply: boolean): { restored: string[]; conflicts: string[] } {
+  const restored = new Set<string>(), conflicts = new Set<string>(), localManifests = new Map<string, boolean>();
+  for (const { path: root, project_id: project } of checkouts) {
+    if (!existsSync(root)) continue;
+    let local: string | undefined;
+    try {
+      const dir = containedDirectory(home, ["projects", project]);
+      if (dir) local = join(dir, LOCAL_MANIFEST);
+    } catch { /* redirected project data is never read */ }
+    for (const manifest of [join(root, SHARED_MANIFEST), local]) {
+      if (!manifest) continue;
+      try {
+        if (realPath(root) !== root || manifest !== local && !existingParent(root, SHARED_MANIFEST)) continue;
+        const content = readText(manifest);
+        if (content === undefined || manifest !== local && tracked(root, SHARED_MANIFEST)) continue;
+        const parsed = parseManifest(content);
+        const files = manifest === local ? parsed.checkouts?.[root] ?? parsed.files : parsed.files;
+        let kept = false;
+        for (const [name, wrote] of Object.entries(files)) {
+          if (!existingParent(root, name)) continue;
+          const full = join(root, name);
+          const current = readText(full);
+          if (current === undefined) continue;
+          if (tracked(root, name)) { kept = true; continue; }
+          if (hash(current) !== wrote || !current.includes(GENERATED_MARK)) {
+            kept = true; conflicts.add(full); continue;
+          }
+          if (apply) writeExact(undefined, full, current, undefined);
+          restored.add(full);
+        }
+        if (manifest === local) {
+          const exclude = excludeFile(root);
+          if (!kept && exclude && nativeExcludeBlock(snapshotBytes(readSnapshot(exclude, 1024 * 1024))?.toString("latin1") ?? "")
+            && (!apply || setExcluded(root, []))) restored.add(exclude);
+          localManifests.set(manifest, kept || !!localManifests.get(manifest));
+        } else if (!kept) {
+          if (apply) writeExact(undefined, manifest, content, undefined);
+          restored.add(manifest);
+        }
+      } catch { conflicts.add(manifest); }
+    }
+  }
+  for (const [path, kept] of localManifests) {
+    if (kept || conflicts.has(path)) continue;
+    try {
+      if (apply) writeExact(undefined, path, readText(path), undefined);
+      restored.add(path);
+    }
+    catch { conflicts.add(path); }
+  }
+  return { restored: [...restored], conflicts: [...conflicts] };
+}
+
+export function restoreLegacyNativeFiles(writer: RecordWriter): { restored: string[]; conflicts: string[] } {
+  return legacyNativeFiles(writer.location.home, writer.db.prepare(legacyCheckouts).all() as LegacyCheckout[], true);
+}
+
+export function previewLegacyNativeFiles(reader: RecordReader, home: string): string[] {
+  const result = legacyNativeFiles(home, reader.all<LegacyCheckout>(legacyCheckouts), false);
+  return [...new Set([...result.restored, ...result.conflicts])];
 }

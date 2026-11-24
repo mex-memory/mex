@@ -19,15 +19,24 @@
 import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import type { NativeAgent } from "./agents-in-use.js";
-import { renderNative, type NativeFormat } from "./native-render.js";
+import { byStrength, CODEX_FRAME_BYTES, nativeItem, PR_DECISIONS_LINE, renderNative, type NativeFormat, type Rendered } from "./native-render.js";
 import { areaOf, isLearned, type Candidate } from "./native-select.js";
 import { claudeReadsAgentsIn, GENERATED_MARK } from "./rule-files.js";
 import { containedDirectory, readBoundedTextFile } from "./files.js";
 import { realPath } from "../record/project.js";
+import { DEFAULTS_HEADING, type AgentDefaults } from "./agent-defaults.js";
 
 export type Sharing = "shared" | "local";
-export interface PlannedFile { path: string; format: NativeFormat; sharing: Sharing; area: string; agents: NativeAgent[]; text: string; ids: string[]; dropped: string[]; }
-export interface NativePlan { files: PlannedFile[]; notes: string[]; }
+export interface PlannedFile extends Rendered { path: string; format: NativeFormat; sharing: Sharing; area: string; agents: NativeAgent[]; }
+export const CODEX_FALLBACK = "native.codex-fallback.v1";
+export interface CodexFallback {
+  entries: { id: string; level: Candidate["level"]; areas: string[]; text: string; line: string }[];
+  frameBytes: number;
+  decisions: string;
+  defaultsHeading: string;
+  defaults: string[];
+}
+export interface NativePlan { files: PlannedFile[]; notes: string[]; fallback?: CodexFallback; }
 
 const FORBIDDEN = new Set(["CLAUDE.md", "CLAUDE.local.md"]);
 
@@ -39,6 +48,15 @@ export function ownedByPerson(root: string, path: string): boolean {
     if (parts.length > 1 && !containedDirectory(root, parts.slice(0, -1))) return false;
     const text = readBoundedTextFile(join(root, path), 8 * 1024);
     return text !== undefined && !text.includes(GENERATED_MARK);
+  } catch { return true; }
+}
+
+function codexOverride(root: string, folder: string): boolean {
+  try {
+    // Codex skips an empty override. An unreadable one is not ours to replace.
+    const parts = folder.split("/").filter(Boolean);
+    if (parts.length && !containedDirectory(root, parts)) return false;
+    return !!readBoundedTextFile(join(root, folder, "AGENTS.override.md"), 32 * 1024);
   } catch { return true; }
 }
 
@@ -65,61 +83,92 @@ function byArea(candidates: Candidate[]): Map<string, Candidate[]> {
   return new Map([...areas.entries()].sort(([a], [b]) => a.localeCompare(b)));
 }
 
-export function planNative(root: string, agents: readonly NativeAgent[], selected: Candidate[], prDecisions = false): NativePlan {
+export function planNative(root: string, agents: readonly NativeAgent[], selected: Candidate[], prDecisions = false,
+  defaults: AgentDefaults["rules"] = [], fallbackOn = false): NativePlan {
   const files: PlannedFile[] = [], notes: string[] = [];
   const taken = new Set<string>();
+  const haveDefaults = new Set<NativeAgent>();
   const add = (file: PlannedFile) => {
     if (FORBIDDEN.has(posix.basename(file.path))) throw new Error(`MEX never creates ${file.path}`);
-    if (!file.ids.length) return;
+    if (!file.ids.length && !file.defaultCount) return;
     files.push(file); taken.add(file.path);
     if (file.dropped.length) notes.push(`${file.path}: ${file.dropped.length} entries left out to stay under the size cap.`);
   };
   for (const sharing of ["shared", "local"] as const) {
     const decisions = prDecisions && sharing === "local";
     const mine = selected.filter(c => (c.level === "team") === (sharing === "shared"));
-    for (const [area, group] of byArea(mine)) {
+    const areas = byArea(mine);
+    if (sharing === "local" && defaults.length && !areas.has("")) areas.set("", []);
+    for (const [area, group] of areas) {
+      const pack = !area ? defaults : [];
       const folder = area ? `${area}/` : "";
       // Nested AGENTS.md follows the session working directory. Only Claude
       // and Copilot load these learned notes according to the file touched.
       const agentsGroup = area ? group.filter(c => !isLearned(c.entry)) : group;
       const learned = area ? group.filter(c => isLearned(c.entry)) : [];
       let codexCovers = false;
-      if (agents.includes("codex") && agentsGroup.length) {
+      if (agents.includes("codex") && (agentsGroup.length || sharing === "local" && pack.length && !haveDefaults.has("codex"))) {
         const path = `${folder}AGENTS.md`;
         const takenByTeam = taken.has(path);
-        if (takenByTeam || ownedByPerson(root, path)) {
-          const reason = takenByTeam ? "is already generated from team entries" : "is yours, so MEX doesn't write into it";
+        const overridden = codexOverride(root, folder);
+        if (takenByTeam || overridden || ownedByPerson(root, path)) {
+          const reason = takenByTeam ? "is already generated from team entries"
+            : overridden ? "is shadowed by AGENTS.override.md" : "is yours, so MEX doesn't write into it";
           const fallbacks = [
             agentsGroup.some(c => !isLearned(c.entry)) ? "Your other notes reach Codex at session start instead." : "",
-            agentsGroup.some(c => isLearned(c.entry)) ? "Use mex recall to read your learned rules in Codex." : "",
+            !fallbackOn && agentsGroup.some(c => isLearned(c.entry)) ? "Use mex recall to read your learned rules in Codex." : "",
           ];
           notes.push(`${path} ${reason}. ${fallbacks.filter(Boolean).join(" ")}`);
         } else {
-          const out = renderNative("codex-agents", area, agentsGroup, decisions);
+          const out = renderNative("codex-agents", area, agentsGroup, decisions, pack);
           add({ path, format: "codex-agents", sharing, area, agents: ["codex"], ...out });
-          codexCovers = out.ids.length > 0;
+          codexCovers = out.ids.length > 0 || out.defaultCount > 0;
         }
       }
       const generatedAgents = codexCovers ? files[files.length - 1] : undefined;
+      if (generatedAgents?.defaultCount) haveDefaults.add("codex");
       if (agents.includes("copilot")) {
         if (generatedAgents) generatedAgents.agents.push("copilot");
-        if (!generatedAgents || learned.length) {
+        if (generatedAgents?.defaultCount) haveDefaults.add("copilot");
+        const standalone = sharing === "local" && !haveDefaults.has("copilot") ? pack : [];
+        if (!generatedAgents || learned.length || standalone.length) {
           const path = copilotPath(area, sharing);
           if (ownedByPerson(root, path)) notes.push(`${path} is yours, so MEX doesn't write into it.`);
-          else add({ path, format: "copilot-instructions", sharing, area, agents: ["copilot"], ...renderNative("copilot-instructions", area, generatedAgents ? learned : group, decisions) });
+          else add({ path, format: "copilot-instructions", sharing, area, agents: ["copilot"], ...renderNative("copilot-instructions", area, generatedAgents ? learned : group, decisions, standalone) });
         }
       }
       if (agents.includes("claude-code")) {
         const claudeReadsAgents = codexCovers && claudeReadsAgentsIn(root, area);
         if (claudeReadsAgents) {
           generatedAgents!.agents.unshift("claude-code");
-          if (!learned.length) continue;
+          if (generatedAgents?.defaultCount) haveDefaults.add("claude-code");
         }
+        const standalone = sharing === "local" && !haveDefaults.has("claude-code") ? pack : [];
+        if (claudeReadsAgents && !learned.length && !standalone.length) continue;
         const path = claudePath(area, sharing);
         if (ownedByPerson(root, path)) { notes.push(`${path} is yours, so MEX doesn't write into it.`); continue; }
-        add({ path, format: "claude-rules", sharing, area, agents: ["claude-code"], ...renderNative("claude-rules", area, claudeReadsAgents ? learned : group, decisions) });
+        add({ path, format: "claude-rules", sharing, area, agents: ["claude-code"], ...renderNative("claude-rules", area, claudeReadsAgents ? learned : group, decisions, standalone) });
       }
     }
   }
-  return { files, notes };
+  const plan: NativePlan = { files, notes };
+  if (fallbackOn && agents.includes("codex")) {
+    const seen = new Set<string>();
+    const entries: CodexFallback["entries"] = [];
+    for (const candidate of [...selected].sort(byStrength)) {
+      const id = candidate.entry.mex.id;
+      const areas = [...new Set(candidate.entry.mex.scope.map(areaOf))].filter(area => !area || !isLearned(candidate.entry));
+      if (!areas.length || seen.has(id)) continue;
+      entries.push({ id, level: candidate.level, areas, text: candidate.entry.text, line: nativeItem(candidate) });
+      seen.add(id);
+    }
+    plan.fallback = {
+      entries,
+      frameBytes: CODEX_FRAME_BYTES,
+      decisions: prDecisions ? PR_DECISIONS_LINE + "\n" : "",
+      defaultsHeading: DEFAULTS_HEADING,
+      defaults: defaults.map(({ text }) => `- ${text}\n`),
+    };
+  }
+  return plan;
 }

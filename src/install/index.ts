@@ -15,6 +15,8 @@ import { agentSettings, AGENT_COMMANDS, CODEX_TRUST_NOTICE, FAILURE_BLOCKS, inst
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
 import { opencodePlugin } from "./opencode-plugin.js";
 import { journaledExcludeFiles, restoreExcludeBlocks } from "../repo-start/exclude.js";
+import { nativeUninstallPaths, restoreNativeFiles } from "../knowledge/native-journal.js";
+import { previewLegacyNativeFiles, restoreLegacyNativeFiles } from "../knowledge/native-write.js";
 import { journaledMarkers, restoreFolderMarkers } from "../repo-start/folder.js";
 import { compactSettingFiles, undoManagedCompaction } from "../compaction/control.js";
 
@@ -297,7 +299,8 @@ export function additionalUninstallPaths(options: LocationOptions = {}): string[
   if (!reader) return [];
   try {
     if (reader.diagnostic) throw new Error(reader.diagnostic);
-    return [...compactSettingFiles(reader), ...journaledExcludeFiles(reader), ...journaledMarkers(reader)];
+    return [...new Set([...compactSettingFiles(reader), ...nativeUninstallPaths(reader), ...journaledExcludeFiles(reader), ...journaledMarkers(reader),
+      ...previewLegacyNativeFiles(reader, recordLocation({ ...options, create: false }).home)])];
   } finally { reader.close(); }
 }
 
@@ -334,7 +337,7 @@ export async function uninstallAgents(options: LocationOptions & { purge?: boole
       result.restored.push(...compaction.restored);
       result.conflicts.push(...compaction.conflicts);
       // Repository exclude-file blocks don't depend on the hooks; undo them first.
-      for (const undone of [restoreExcludeBlocks(writer), restoreFolderMarkers(writer)]) {
+      for (const undone of [restoreNativeFiles(writer), restoreLegacyNativeFiles(writer), restoreExcludeBlocks(writer), restoreFolderMarkers(writer)]) {
         result.restored.push(...undone.restored);
         result.conflicts.push(...undone.conflicts);
       }
