@@ -46,7 +46,7 @@ import { dispositionKey, mergeDispositions, readDispositions, type CandidateDisp
 import { preserveWaiting } from "./review-policy.js";
 import { routeEntry } from "./route.js";
 import { parseTriage, triageCounts, triagePrompt, type TriageResult } from "./triage.js";
-import { packClusters, parseWriter, repairPrompt, writerPrompt, type WriterContext, type WriterEntry } from "./write.js";
+import { keepUntestedPattern, packClusters, parseWriter, repairPrompt, writerPrompt, type WriterContext, type WriterEntry } from "./write.js";
 import type { WriterModel } from "./entries.js";
 
 export const PIPELINE_LIMITS = {
@@ -812,7 +812,8 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
       // The writer's pair numbers are those of the whole cluster it was shown.
       repairPrompt(failing.map(proof => ({ cluster: byKey.get(proof.draft.cluster)!, entry: proof.draft, failures: proof.failures })), writerContext), "best", failing.length);
     add(counts, "tokens.repair", answer.tokens);
-    repair = { entries: parseWriter(answer.text, failing.map(proof => byKey.get(proof.draft.cluster)!)).entries, model: answer.model };
+    repair = { entries: parseWriter(answer.text, failing.map(proof => byKey.get(proof.draft.cluster)!)).entries
+      .map(entry => keepUntestedPattern(entry, failing.find(proof => proof.draft.cluster === entry.cluster))), model: answer.model };
     add(counts, "repaired", repair.entries.length);
   } catch (error) {
     if (error instanceof AgentActive || error instanceof ModelWaitError && error.reason !== "cap") throw error;

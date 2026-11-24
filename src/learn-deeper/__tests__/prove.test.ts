@@ -12,7 +12,7 @@ import { PIPELINE_LIMITS } from "../pipeline.js";
 import { addedOccurrences, proveEntry as proveWithJudgment, processConfirmed, quoteChecks, type ProofContext } from "../prove.js";
 import { keptQuote, routeEntry } from "../route.js";
 import { parseTriage } from "../triage.js";
-import { packClusters, parseWriter, type WriterEntry } from "../write.js";
+import { keepUntestedPattern, packClusters, parseWriter, type WriterEntry } from "../write.js";
 
 const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const region = (path: string, start: number, text: string, commit = "b".repeat(40)): Region =>
@@ -251,6 +251,24 @@ describe("proving a learned rule", () => {
     expect(reverted.failures.join(" ")).toMatch(/the fix needs a target in its reviewed file today/u);
   });
 
+  it("sends back a claim that states no action or is a pasted review comment", async () => {
+    const said = (text: string) => clusterOf([thread(7, "packages/api/src/users.ts", { text })]);
+    const prose = (cluster: Cluster, claim: string) => draft(cluster, { claim, why: "", when: [], fix: undefined, examples: undefined, route: "pitfall", kind: "pitfall",
+      clauses: [{ text: claim, quotes: [{ id: cluster.members[0]!.candidate.id, quote: claim }] }] });
+    const description = "The console logger skips our structured logs and loses the request id.";
+    const trap = said(description);
+    const described = await proveEntry(prose(trap, description), trap, context());
+    expect(described.dropped).toBe("the claim states no action");
+    expect(described.failures.join(" ")).toMatch(/say what an agent should do or avoid/u);
+    const comment = "Hmm, this should go through apiLogger so the request id survives.";
+    const pasted = said(comment);
+    const copied = await proveEntry(prose(pasted, comment), pasted, context());
+    expect(copied.dropped).toBe("the claim is a pasted review comment");
+    const stated = "Use apiLogger so the request id survives.";
+    const rule = said("Please " + stated.toLowerCase() + " " + stated);
+    expect((await proveEntry(prose(rule, stated), rule, context())).dropped).toBeUndefined();
+  });
+
   it("requires the flag example to demonstrate the pattern", async () => {
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
     const proof = await proveEntry(draft(cluster, { examples: { flag: "doWork()", ok: "apiLogger.info(user)" } }), cluster, context());
@@ -462,7 +480,7 @@ describe("proving a learned rule", () => {
       expect(script.failures).not.toContain(plain);
 
       const link = "https://github.com/acme/app/pull/3#discussion_r3";
-      const own = await prove(`The review is at ${link}.`, `The review is at ${link}.`);
+      const own = await prove(`Read the review at ${link}.`, `Read the review at ${link}.`);
       expect(own.dropped).toBeUndefined();
       expect(own.failures).not.toContain(plain);
 
@@ -498,6 +516,18 @@ describe("writer and triage replies", () => {
     expect(parseWriter(JSON.stringify({ entries: [rule] }), [cluster]).entries[0]!.when).toEqual([anti]);
     const pitfall = { ...good, route: "pitfall", kind: "pitfall", when: [anti] };
     expect(parseWriter(JSON.stringify({ entries: [pitfall] }), [cluster]).entries[0]!.when).toEqual([anti]);
+  });
+
+  it("keeps the first draft's pattern through a repair that only rewords it", () => {
+    const first = draft(cluster);
+    const reworded = { ...first, claim: "Log with apiLogger.", when: [], examples: undefined, fix: undefined };
+    const wording = ["the claim isn't supported by a verbatim quote"];
+    expect(keepUntestedPattern(reworded, { draft: first, failures: wording })).toMatchObject({ when: first.when, examples: first.examples, fix: first.fix });
+    // A pattern that failed its own check, or a different kind of entry, is not brought back.
+    expect(keepUntestedPattern(reworded, { draft: first, failures: ['anti "console.log(" failed contrast on pair 0.'] }).when).toEqual([]);
+    expect(keepUntestedPattern({ ...reworded, route: "pitfall", kind: "pitfall" }, { draft: first, failures: wording }).when).toEqual([]);
+    const own = { ...reworded, when: [{ type: "anti" as const, match: "literal" as const, pattern: "console.warn(" }] };
+    expect(keepUntestedPattern(own, { draft: first, failures: wording }).when).toEqual(own.when);
   });
 
   it("packs at most six clusters into one writer call", () => {

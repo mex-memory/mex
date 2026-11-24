@@ -24,7 +24,7 @@ import { backedBy, writerMembers, type Cluster, type Triaged } from "./cluster.j
 import { command, type PatternStage, type PinnedTree } from "./git.js";
 import { contrastive, safePath } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
-import { polarityMismatch, squash, unclippedQuote } from "./lesson-text.js";
+import { polarityMismatch, squash, unclippedQuote, readsAsComment, statesAction } from "./lesson-text.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
 
 export const PROOF_LIMITS = {
@@ -295,6 +295,16 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
   const ruledOut = draft.route === "ruled-out" || cited.every(candidate => candidate.kind === "issue" || candidate.kind === "closed-pr");
   if (ruledOut && !cited.some(candidate => candidate.reviewers.length > 0 && contrastive(`${candidate.text} ${candidate.prText ?? ""}`))) {
     return drop("a ruled-out lesson needs a maintainer's contrastive reason");
+  }
+
+  // An entry is an instruction. A described trap or a pasted comment gets one repair turn, then is dropped.
+  if (!statesAction(draft.claim, draft.kind)) {
+    failures.push("the claim states no action: say what an agent should do or avoid, in your own words");
+    return drop("the claim states no action");
+  }
+  if (readsAsComment(draft.claim)) {
+    failures.push("the claim is a pasted review comment: state the rule as an instruction and keep the comment as its quote");
+    return drop("the claim is a pasted review comment");
   }
 
   // Scope: today's files only. Process rules are repo-wide once their words confirm it.
