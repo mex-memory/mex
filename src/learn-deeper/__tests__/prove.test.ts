@@ -229,6 +229,28 @@ describe("proving a learned rule", () => {
     expect(gone.failures.join(" ")).toMatch(/the fix needs a target in its reviewed file today/u);
   });
 
+  it("pins only code the fix introduced, so a reverted fix leaves no target", async () => {
+    // OSS-92: Hono's c.json() fast path (PR #4707) was reverted in #4757. The fix put an existing
+    // expression on its own line, and that line survived the revert as a false fix target.
+    const path = "packages/api/src/users.ts";
+    const rewrap = thread(6, path, { code: {
+      before: region(path, 10, "export function list() {\n  const body = JSON.stringify(rows)\n  return send(body, {\n    type: 'json' })\n}"),
+      after: region(path, 10, "export function list() {\n  return fast\n    ? Response.json(rows)\n    : send(\n        JSON.stringify(rows),\n        'json')\n}"),
+      anchor: "  return send(body, {",
+    } });
+    const cluster = clusterOf([rewrap]);
+    const entry = draft(cluster, { when: [{ type: "anti", match: "literal", pattern: "send(body, {" }],
+      fix: { pair: 0, start: 12, end: 14 }, examples: { flag: "send(body, { type })", ok: "Response.json(rows)" } });
+    const kept = await proveEntry(entry, cluster, context({ tree: tree({ ...HEAD,
+      [path]: "export function list() {\n  return fast\n    ? Response.json(rows)\n    : send(\n        JSON.stringify(rows),\n        'json')\n}\n" }) }));
+    expect(kept.fixLiteral).toBe("? Response.json(rows)");
+    const reverted = await proveEntry(entry, cluster, context({ tree: tree({ ...HEAD,
+      [path]: "export function list() {\n  return send(\n    JSON.stringify(rows),\n    'json')\n}\n" }) }));
+    expect(reverted.fixLiteral).toBeUndefined();
+    expect(reverted.when).toEqual([]);
+    expect(reverted.failures.join(" ")).toMatch(/the fix needs a target in its reviewed file today/u);
+  });
+
   it("requires the flag example to demonstrate the pattern", async () => {
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
     const proof = await proveEntry(draft(cluster, { examples: { flag: "doWork()", ok: "apiLogger.info(user)" } }), cluster, context());

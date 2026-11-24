@@ -184,12 +184,16 @@ export function processConfirmed(entry: Pick<WriterEntry, "claim" | "why">): boo
 }
 
 function fixMarkers(snippet: string, before: string): string[] {
-  const old = new Set(before.split("\n").map(line => line.trim()));
   const lines = [...new Set(snippet.split("\n").map(line => line.trim()))]
     .filter(line => line.length >= 4 && line.length <= 512 && /[A-Za-z_$][\w$]{2}/u.test(line));
   // Keep enough of the fixed line to identify it even when another caller
   // of the same API remains. A deletion can use its surviving context.
-  const added = lines.filter(line => !old.has(line));
+  // A line counts as the fix's own only when its code was nowhere in the
+  // reviewed code: a rewrapped expression survives a revert of the fix.
+  const added = lines.filter(line => {
+    const code = line.replace(/^[?:]\s*/u, "").replace(/[\s,;{([]+$/u, "");
+    return code.length >= 4 && !before.includes(code);
+  });
   return added.length ? added : lines;
 }
 
