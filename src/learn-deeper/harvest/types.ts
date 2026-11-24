@@ -93,7 +93,7 @@ export interface HarvestPlan extends Omit<HarvestOptions, "mode" | "budget" | "r
     bands: Array<SourceWindow & { source: ForgeSource; count: number }>;
     local: Record<"revert" | "cause" | "adr" | "doc", HarvestPoint[]>;
     hotPaths: string[];
-    revertLinks: Record<string, { original?: string; reland?: string }>;
+    revertLinks: Record<string, { original?: string; reland?: string; pull?: number }>;
   };
   gaps: string[];
 }

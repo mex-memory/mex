@@ -12,6 +12,19 @@ const MAX_LOG = 16 << 20;
 const cause = /\b(?:regression\s+(?:from|in|since)|caused\s+by|broken\s+by)\b/iu;
 const revertSubject = /^Revert\s+"(.+)"(?:\s+\(#\d+\))?$/iu;
 const revertsCommit = /^\s*This reverts commit ([a-f\d]{7,64})(?:[.,\s]|$)/imu;
+// Conventional reverts name what they undo: "revert: <subject>", "revert(scope): <subject>",
+// or the PR itself, as in "fix(context): revert PR #4707 (#4757)".
+const conventionalRevert = /^revert(?:\([^)]*\))?!?:\s*(.+)$/iu;
+const revertsPull = /\brevert(?:s|ed|ing)?\b[:\s]+(?:the\s+)?(?:(?:PR|pull\s+request)\s*)?#([1-9]\d*)\b/iu;
+
+function revertedSubject(subject: string): string | undefined {
+  return revertSubject.exec(subject)?.[1] ?? conventionalRevert.exec(subject)?.[1];
+}
+
+/** Pull requests a revert in the window undid and nothing re-landed. Their review threads are not what the code holds. */
+export function revertedPulls(inventory: Pick<HarvestPlan["inventory"], "revertLinks">): Set<number> {
+  return new Set(Object.values(inventory.revertLinks ?? {}).flatMap(link => link.pull !== undefined && !link.reland ? [link.pull] : []));
+}
 const codeExtension = /\.(?:[cm]?[jt]sx?|pyi?|rs|go|rb|php|java|kt|kts|cs|fs|vb|swift|scala|c|cc|cpp|cxx|h|hh|hpp|m|mm|lua|exs?|erl|hrl|clj[cs]?|cljs|dart|vue|svelte|zig|sol|r|sh|bash|sql|css|scss|less|html|htm|pl|pm|ps1|ml|mli|hs|groovy)$/iu;
 
 interface Commit { id: string; at: string; parent?: string; subject: string; body: string; paths: string[]; }
@@ -73,16 +86,24 @@ Promise<Omit<HarvestPlan["inventory"], "bands">> {
   const local: Record<LocalSource, HarvestPoint[]> = { revert: [], cause: [], adr: [], doc: [] };
   const revertLinks: HarvestPlan["inventory"]["revertLinks"] = {};
   const bySubject = new Map<string, string>();
+  const byPull = new Map<number, string>();
   const subjectsById = new Map(commits.map(commit => [commit.id, commit.subject]));
+  const commitsById = new Map(commits.map(commit => [commit.id, commit]));
   const paths = new Map<string, { count: number; at: string }>();
   for (const commit of [...commits].reverse()) {
-    const subject = revertSubject.exec(commit.subject)?.[1];
+    const subject = revertedSubject(commit.subject);
+    const named = Number(revertsPull.exec(commit.subject)?.[1] ?? NaN);
     const target = await bodyRevertTarget(options.checkout, commit);
-    if (subject || target) {
+    if (subject || target || Number.isSafeInteger(named)) {
       local.revert.push({ id: commit.id, at: commit.at });
-      revertLinks[commit.id] = { original: target ?? (subject && bySubject.get(subjectKey(subject))) };
+      const original = target ?? (subject && bySubject.get(subjectKey(subject))) ?? (Number.isSafeInteger(named) ? byPull.get(named) : undefined);
+      const found = original ? commitsById.get(original) : undefined;
+      const pull = found ? pullNumber(found.subject, found.body) : Number.isSafeInteger(named) ? named : undefined;
+      revertLinks[commit.id] = { original: original || undefined, ...(pull !== undefined ? { pull } : {}) };
     } else {
       rememberSubject(commit, bySubject);
+      const pull = pullNumber(commit.subject, commit.body);
+      if (pull !== undefined) byPull.set(pull, commit.id);
       if (cause.test(commit.subject + "\n" + commit.body) && commit.paths.some(productionPath)) {
         local.cause.push({ id: commit.id, at: commit.at });
       }
@@ -93,7 +114,7 @@ Promise<Omit<HarvestPlan["inventory"], "bands">> {
     const link = revertLinks[commit.id];
     if (link) {
       const original = link.original;
-      const subject = revertSubject.exec(commit.subject)?.[1]
+      const subject = revertedSubject(commit.subject)
         ?? (original ? subjectsById.get(original) : undefined);
       const reland = subject && bySubject.get(subjectKey(subject));
       if (reland) link.reland = reland;
@@ -149,10 +170,10 @@ export interface RevertEvidence { record: Commit; original?: Commit; reland?: Co
 export async function readRevert(plan: HarvestPlan, point: HarvestPoint): Promise<RevertEvidence | undefined> {
   const record = await commitAt(plan.checkout, point.id);
   if (!record) return undefined;
-  const subject = revertSubject.exec(record.subject)?.[1];
+  const subject = revertedSubject(record.subject);
   const target = await bodyRevertTarget(plan.checkout, record);
-  if (!subject && !target) return undefined;
   const link = plan.inventory.revertLinks[point.id];
+  if (!subject && !target && !link?.original) return undefined;
   const mentioned = revertsCommit.exec(record.body)?.[1]?.toLowerCase();
   const originalId = target ?? (link?.original !== mentioned ? link?.original : undefined);
   const original = originalId ? await commitAt(plan.checkout, originalId) : undefined;

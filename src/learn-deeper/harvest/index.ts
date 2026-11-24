@@ -9,7 +9,7 @@ import { Gaps, rankCandidates, safeRaw } from "./evidence.js";
 import { templateLines } from "./description.js";
 import { Familiarity } from "./familiarity.js";
 import { changeCandidates, changes, discussions, observeAuthors, readyThreads, revertDiscussion, reviewedFiles, ReviewRead, search, type ForgeItem } from "./forge.js";
-import { localCandidates, localInventory, readRevert } from "./local.js";
+import { localCandidates, localInventory, readRevert, revertedPulls } from "./local.js";
 import { oid, RegionReader } from "./regions.js";
 import type { Candidate, ForgeSource, HarvestBatch, HarvestCursor, HarvestDeps, HarvestEvidenceSize, HarvestLane, HarvestOptions, HarvestPlan,
   HarvestPoint, HarvestScan, HarvestSource, SearchPage } from "./types.js";
@@ -280,6 +280,8 @@ function finished(cursor: HarvestCursor, source: HarvestSource, point: HarvestPo
 
 const itemKey = (item: HarvestScan["partial"][number]) => item.source + ":" + item.point.id;
 
+export const REVERTED_GAP = "Review threads on changes the team later reverted were left out.";
+
 export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | undefined, deps: HarvestDeps = {}): Promise<HarvestBatch> {
   const next: HarvestCursor = structuredClone(cursor ?? { sources: {} });
   // All search totals come from a single inventory request.
@@ -381,8 +383,15 @@ export async function harvestBatch(plan: HarvestPlan, cursor: HarvestCursor | un
     found.filter(candidate => !item.emitted.includes(candidate.id)).map(candidate => ({ item, candidate })))
     .sort((a, b) => rankCandidates(a.candidate, b.candidate));
   const skipped = new Set<Candidate>();
+  const reverted = revertedPulls(plan.inventory);
   for (const { item, candidate } of ranked) {
     if (item.emitted.includes(candidate.id)) continue;
+    // The team undid this change and never re-landed it: its review is not what the code holds.
+    if ((candidate.kind === "review-thread" || candidate.kind === "pr-text") && candidate.pull !== undefined && reverted.has(candidate.pull)) {
+      gaps.messages.add(REVERTED_GAP);
+      skipped.add(candidate);
+      continue;
+    }
     const projectedDocuments = documentSource(candidate.kind) ? addHarvestEvidence(documentEvidence, candidate) : undefined;
     if (projectedDocuments && !canFitDocument(projectedDocuments)) {
       gaps.messages.add(DOCUMENT_BUDGET_GAP);
