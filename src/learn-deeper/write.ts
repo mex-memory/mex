@@ -140,6 +140,16 @@ const ROUTE_KINDS: Record<Route, ReadonlySet<string>> = {
   procedure: new Set(["procedure", "recipe"]),
 };
 
+// A rule stops on an anti pattern and a decision on a rejected one; both name the
+// code form not to write. A writer that gives the other type means the same thing,
+// so it is read as the type its kind stops on rather than lost at proof.
+function stopsAsItsKind(entry: WriterEntry): WriterEntry {
+  const stop = entry.kind === "rule" && entry.route === "code-rule" ? "anti"
+    : entry.kind === "decision" && (entry.route === "decision" || entry.route === "ruled-out") ? "rejected" : undefined;
+  if (!stop || !entry.when?.length) return entry;
+  return { ...entry, when: entry.when.map(item => item.type === "anti" || item.type === "rejected" ? { ...item, type: stop } : item) };
+}
+
 export function parseWriter(text: string, clusters: readonly Cluster[]): WriterOutcome {
   const keys = new Set(clusters.map(cluster => cluster.key));
   const raw = replyJson(text);
@@ -155,7 +165,7 @@ export function parseWriter(text: string, clusters: readonly Cluster[]): WriterO
     if (seen.has(entry.cluster)) { rejected.push({ cluster: entry.cluster, reason: "duplicate-cluster" }); continue; }
     if (!ROUTE_KINDS[entry.route].has(entry.kind)) { rejected.push({ cluster: entry.cluster, reason: "kind-route" }); continue; }
     seen.add(entry.cluster);
-    entries.push(entry);
+    entries.push(stopsAsItsKind(entry));
   }
   return { entries, rejected, response: "valid" };
 }

@@ -465,6 +465,19 @@ describe("writer and triage replies", () => {
     expect(parseWriter("not json", [cluster]).response).toBe("invalid-json");
   });
 
+  it("reads a writer's stopping pattern as the one its kind stops on", () => {
+    // OSS-92: Hono decisions arrived with anti patterns and lost them at proof.
+    const good = draft(cluster);
+    const anti = { type: "anti", match: "literal", pattern: "usernameContextKey" };
+    const required = { type: "required", match: "literal", pattern: "onAuthSuccess(" };
+    const decision = { ...good, route: "decision", kind: "decision", when: [anti, required] };
+    expect(parseWriter(JSON.stringify({ entries: [decision] }), [cluster]).entries[0]!.when).toEqual([{ ...anti, type: "rejected" }, required]);
+    const rule = { ...good, when: [{ ...anti, type: "rejected" }] };
+    expect(parseWriter(JSON.stringify({ entries: [rule] }), [cluster]).entries[0]!.when).toEqual([anti]);
+    const pitfall = { ...good, route: "pitfall", kind: "pitfall", when: [anti] };
+    expect(parseWriter(JSON.stringify({ entries: [pitfall] }), [cluster]).entries[0]!.when).toEqual([anti]);
+  });
+
   it("packs at most six clusters into one writer call", () => {
     const many = Array.from({ length: 13 }, (_, i) => ({ ...cluster, key: `k${i}` }));
     expect(packClusters(many, { linters: [] }).map(batch => batch.length)).toEqual([6, 6, 1]);
