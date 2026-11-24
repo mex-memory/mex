@@ -10,6 +10,7 @@ impl<'a> Resolver<'a, '_> {
     pub(super) fn import(&self, file: usize, index: usize) -> Lookup {
         let facts = self.files.get(file);
         let import = &facts.imports[index];
+        // The authored form still controls the binding's CommonJS interop.
         let require = import.form == ImportForm::CommonJs;
         if require
             && import.bindings.is_empty()
@@ -17,11 +18,7 @@ impl<'a> Resolver<'a, '_> {
         {
             return Err("shadowed_require");
         }
-        let syntax = if require {
-            Syntax::Require
-        } else {
-            Syntax::Import
-        };
+        let syntax = Syntax::from(import.form);
         // The unresolved lookup is a dependency too: adding a previously
         // missing module can change this answer with no old graph edge.
         self.files.import(file, index);

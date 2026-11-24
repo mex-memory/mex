@@ -7,4 +7,4 @@ pub mod scanner;
 mod nodes;
 pub use nodes::{EcmaScript, language_for_path, linked_grammar};
 
-pub const ADAPTER_VERSION: u32 = 1;
+pub const ADAPTER_VERSION: u32 = 2;

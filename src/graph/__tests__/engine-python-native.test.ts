@@ -114,7 +114,7 @@ describe.skipIf(!graphEngineBinary())("Python from the Rust engine into today's 
 
 describe("the engine flag", () => {
   it("folds the engine's languages into the extractor version", () => {
-    expect(corpusExtractorVersion({})).toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-csharp-javascript-python-rust-typescript-v1`);
+    expect(corpusExtractorVersion({})).toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-csharp-javascript-python-rust-typescript-v2`);
     expect(corpusExtractorVersion({ [GRAPH_ENGINE_LANGUAGES_ENV]: "Python, cobol" }))
       .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-python-v1`);
   });
