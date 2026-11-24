@@ -26,15 +26,18 @@ export function observationCutoff(now: number, setting?: string | null): string 
 }
 
 /** The caller holds the publication or job writer transaction. A replay cannot restore a forgotten observation. */
-export function saveObservations(db: DatabaseSync, project: string, observations: readonly Observation[], cutoff: string): void {
+/** Returns the ids this call added, so a cancelled run can take them back out. */
+export function saveObservations(db: DatabaseSync, project: string, observations: readonly Observation[], cutoff: string): string[] {
   const insert = db.prepare(`INSERT INTO learning_observations(project_id,id,at,payload)
     VALUES(?,?,?,?) ON CONFLICT(project_id,id) DO NOTHING`);
+  const added: string[] = [];
   for (const observation of observations) if (observation.at >= cutoff) {
-    insert.run(project, observation.id, observation.at, JSON.stringify(observation));
+    if (insert.run(project, observation.id, observation.at, JSON.stringify(observation)).changes) added.push(observation.id);
   }
   db.prepare(`DELETE FROM learning_observations WHERE project_id=? AND (at<? OR id IN (
     SELECT id FROM learning_observations WHERE project_id=? ORDER BY at DESC,id LIMIT -1 OFFSET ?
   ))`).run(project, cutoff, project, MAX_ROWS);
+  return added;
 }
 
 export function supportObservations(db: DatabaseSync, project: string, normId: string, ids: readonly string[]): void {

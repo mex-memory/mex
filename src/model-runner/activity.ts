@@ -41,7 +41,7 @@ interface PopulationActivityDecoder {
 }
 
 /** Agents whose JSON event format is not documented: only record counts are used. */
-const GENERIC_EVENT_TOOLS: ReadonlySet<BackgroundAgentTool> = new Set(["copilot", "opencode"]);
+const GENERIC_EVENT_TOOLS: ReadonlySet<string> = new Set(["copilot", "opencode", "gemini"]);
 
 /** Final provider error text that means the account's usage limit, not a fault of the work. */
 export const USAGE_LIMIT_PATTERN = /\busage limit\b|\bhit your (?:usage )?limit\b|\bcredit balance is too low\b|\brate_limit(?:_error)?\b|\brate limit(?:ed| reached| exceeded)\b|\bquota (?:exceeded|reached)\b|\bexceeded your (?:current )?quota\b/iu;
@@ -104,7 +104,7 @@ function errorTextOf(event: Record<string, unknown>): string {
  * one record; nothing else is read from their records.
  */
 export function createPopulationActivityDecoder(
-  tool: BackgroundAgentTool,
+  tool: BackgroundAgentTool | "gemini",
   onSignal: (signal: PopulationActivitySignal) => void,
   maxLineBytes = MAX_LINE_BYTES,
 ): PopulationActivityDecoder {

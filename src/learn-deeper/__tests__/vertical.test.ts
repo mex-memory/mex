@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import * as cliTools from "../../cli-tools.js";
 import { literalPattern } from "../../file-index/classify.js";
 import { buildIndex } from "../../file-index/build.js";
 import { openIndex } from "../../file-index/read.js";
@@ -18,6 +17,7 @@ import { snapshotNotes } from "../../knowledge/personal-store.js";
 import { prepareShare } from "../../knowledge/share-plan.js";
 import { claimHash } from "../../knowledge/state.js";
 import { runModel } from "../../model-runner/index.js";
+import * as agents from "../../model-runner/agents.js";
 import { CEILING_WAIT, recordedModelSpend } from "../../model-runner/consent.js";
 import { claimModelBatch, enqueueModelBatch, recoverModelBatches, withModelJob } from "../../model-runner/budget-queue.js";
 import { ModelRunError, ModelWaitError } from "../../model-runner/index.js";
@@ -42,6 +42,7 @@ const sourceId = "doc:CONTRIBUTING.md#development";
 const quote = "Run npm run verify before cutting a release.";
 const claim = quote;
 const paraphrase = "Before cutting a release, run npm run verify.";
+const detectAgents = agents.detectAgents;
 const doc = (body = quote) => `# Development\n\n${body}\n`;
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 function commit(message: string) {
@@ -69,7 +70,7 @@ beforeEach(() => {
   commit("Add the contributor guide");
   for (const [key, value] of Object.entries({ MEX_HOME: fixture, MEX_BACKGROUND: "0", MEX_OFFLINE: "1", MEX_HOOK_BINARY: binary,
     CLAUDE_CONFIG_DIR: join(fixture, "claude"), CODEX_HOME: join(fixture, "codex"), GH_TOKEN: "forge-fixture-token" })) vi.stubEnv(key, value);
-  vi.spyOn(cliTools, "isCliAvailable").mockImplementation(name => name === "codex");
+  fakeCli("codex");
   vi.stubGlobal("fetch", mockGithub());
 });
 afterEach(() => {
@@ -80,6 +81,13 @@ afterEach(() => {
   registerJobKind(createLearnKind({}, true));
   rmSync(fixture, { recursive: true, force: true, maxRetries: 4 });
 });
+
+function fakeCli(...names: string[]) {
+  const bin = join(fixture, "bin");
+  mkdirSync(bin, { recursive: true });
+  for (const name of names) writeFileSync(join(bin, name + (process.platform === "win32" ? ".cmd" : "")), "", { mode: 0o755 });
+  vi.spyOn(agents, "detectAgents").mockImplementation(options => detectAgents({ ...options, userHome: fixture, env: { PATH: bin } }));
+}
 
 function mockGithub(options: { head?: () => string; at?: string; fetches?: string[] } = {}) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -164,8 +172,8 @@ it("quotes the ceiling before any model call, accounts for doc writing and evide
     });`, docReply(request, sourceId, paraphrase).text], options);
   } } }));
   registerJobKind(createLearnKind({ model }));
-  const confirm = vi.fn(async (lines: readonly string[]) => {
-    expect(lines.join("\n")).toMatch(/ceiling .*tokens/u);
+  const confirm = vi.fn(async (lines: readonly string[], details: readonly string[] = []) => {
+    expect(details.join("\n")).toMatch(/Usage: about [\d,]+ tokens.*pauses and asks at [\d,]+/u);
     expect(lines.join("\n")).toContain("private repo");
     expect(model).not.toHaveBeenCalled();
     return true;
@@ -210,7 +218,7 @@ it("prints the terminal command for a script without fetching or queuing model w
 
 it("joins the unfinished job and keeps its pinned docs across a branch switch", async () => {
   const { ask } = await accept();
-  expect((await accept(ask)).lines.join("\n")).toContain("Learn deeper");
+  expect((await accept(ask)).lines.join("\n")).toContain("Deep analysis");
   expect(ask).toHaveBeenCalledTimes(1);
   git("switch", "-qc", "other");
   writeFileSync(join(repo, path), doc("This is the other branch."));
@@ -330,8 +338,8 @@ it("names the model with the most usage, or unknown, never the requested alias",
   expect(writerModel({ selectedModel: "best", usage: { ...usage, model: "unknown" } })).toEqual({ id: "best", version: "unknown" });
 });
 
-it("picks the runner from the last 7 days, this project first", () => {
-  vi.spyOn(cliTools, "isCliAvailable").mockImplementation(() => true);
+it("picks the runner by use on this computer in the last 7 days", () => {
+  fakeCli("claude");
   const writer = openRecord({ projectPath: repo });
   const project = writer.checkout(repo)!.project_id;
   const hooks = new DatabaseSync(join(writer.location.directory, "hooks.db"));

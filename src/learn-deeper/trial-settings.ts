@@ -3,9 +3,9 @@ import type { RecordWriter } from "../record/index.js";
 
 const trials = {
   "learning.stopCheck": ["MEX checks changed code against scoped prose rules in the background, within the 3% automatic allowance.", "MEX skips prose rule checks after Stop and spends no tokens on them."],
-  "learning.procedures": ["Learn deeper can name procedures from co-changes, with up to five cheap calls within the 3% automatic allowance.", "Learn deeper skips procedure naming and spends no tokens on it."],
+  "learning.procedures": ["Deep analysis can name procedures from co-changes, with up to five cheap calls within the 3% automatic allowance.", "Deep analysis skips procedure naming and spends no tokens on it."],
   "learning.prDecisions": ["MEX rule files ask for a Decisions section in PR descriptions. This adds no model call.", "MEX rule files omit the PR Decisions instruction. This costs no tokens."],
-  "learning.deep.issues": ["Learn deeper can read qualifying closed issues within its estimated budget.", "Learn deeper skips closed issues and spends no tokens on them."],
+  "learning.deep.issues": ["Deep analysis can read qualifying closed issues within its estimated budget.", "Deep analysis skips closed issues and spends no tokens on them."],
 } as const;
 
 export type LearningTrial = keyof typeof trials;

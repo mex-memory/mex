@@ -75,7 +75,7 @@ describe("bare mex in a repository", () => {
     expect(result.status, result.stderr).toBe(0);
     const lines = result.stdout.trimEnd().split("\n");
     // The time is on the closing line only, once everything is done.
-    expect(lines[0]).toBe("MEX - repo - $0 - nothing added to git");
+    expect(lines[0]).toBe("MEX - repo");
     expect(lines).toContain("ok No test or build commands found in config");
     // `mex` waits for the file index and git history, then says what they found.
     expect(lines).toContainEqual(expect.stringMatching(/^ok Indexed \d+ files?$/u));
@@ -99,7 +99,7 @@ describe("bare mex in a repository", () => {
     // `mex setup` is an alias; a second run journals nothing new.
     const again = f.run(["setup"], { env: { CLAUDECODE: "1" } });
     expect(again.status, again.stderr).toBe(0);
-    expect(again.stdout.split("\n")[0]).toMatch(/^MEX - repo - /u);
+    expect(again.stdout.split("\n")[0]).toBe("MEX - repo");
 
     // Uninstall gives the exclude file back byte for byte.
     const uninstall = f.run(["uninstall"]);
@@ -142,7 +142,7 @@ describe("bare mex in a repository", () => {
     expect(first.status).toBe(0);
     expect(first.stdout).toContain(".. Git history and the file index: in the background (`mex jobs`)");
     // Not waiting, the header keeps the time to the first screen.
-    expect(first.stdout).toMatch(/^MEX - repo - \d+\.\d s - \$0 - nothing added to git$/mu);
+    expect(first.stdout).toMatch(/^MEX - repo$/mu);
     expect(first.stdout).not.toContain("Done in");
     const projects = join(f.home, "projects");
     const facts = () => join(projects, readdirSync(projects)[0]!, "code-facts.json");
@@ -265,7 +265,7 @@ describe("bare mex in a repository", () => {
     const on = f.run(["--folder"], { cwd: plain });
     expect(on.status, on.stderr).toBe(0);
     const lines = on.stdout.trimEnd().split("\n");
-    expect(lines[0]).toBe("MEX - notes - $0");
+    expect(lines[0]).toBe("MEX - notes");
     // Saved for the agents only where the native evaluator is installed.
     expect(lines).toContainEqual(expect.stringMatching(/^ok Test and build commands for this folder( · your agents get these from now on)?$/u));
     expect(lines).toContainEqual(expect.stringMatching(/^ok Indexed \d+ files?$/u));
@@ -276,7 +276,7 @@ describe("bare mex in a repository", () => {
     expect(facts).toMatchObject({ skipped: "no git" });
     // Once on, no question and no flag are needed.
     const again = f.run([], { cwd: plain });
-    expect(again.stdout.split("\n")[0]).toMatch(/^MEX - notes - /u);
+    expect(again.stdout.split("\n")[0]).toBe("MEX - notes");
     // A subfolder is not covered yet: it gets its own question.
     mkdirSync(join(plain, "sub"));
     expect(f.run([], { cwd: join(plain, "sub") }).stdout).toContain("run: mex --folder");
@@ -322,7 +322,7 @@ describe("bare mex in a repository", () => {
     expect(after.equals(before) || after.toString("utf8").includes("# mex: repo-start end\n")).toBe(true);
     const next = f.run();
     expect(next.status, next.stderr).toBe(0);
-    expect(next.stdout).toMatch(/^MEX - repo - .* - nothing added to git\n/u);
+    expect(next.stdout).toMatch(/^MEX - repo\r?\n/u);
     // The work a killed wait left behind is picked up and finished.
     expect(next.stdout).toMatch(/^Done in /mu);
     localState(f.root);

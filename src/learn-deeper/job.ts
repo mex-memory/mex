@@ -13,11 +13,13 @@ import { nativeBinary } from "../knowledge/check.js";
 import { ForgeClient, hostToken, SourceError } from "./forge.js";
 import { clearLearningChecks, origin, PinnedTree } from "./git.js";
 import { hosts } from "./hosts.js";
-import { LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
+import { DEEP_ANALYSIS, LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
 import { AgentActive, CURSOR_KEY, harvestClient, initialState, PipelineState, publishedBatch, reviewRows, runPipelineBatch, savedCursor } from "./pipeline.js";
 import type { HarvestPlan } from "./harvest/types.js";
 import { planWeekly, queuePatternRecount, RefreshDeferred, sweepExpiredTrials, sweepWeeklyRetirements, weeklySources } from "./weekly.js";
 import { DAY_MS, nextWeeklyAt, publishWeeklyWake, SCHEDULE, scheduleFromPlan, sessionsActive, WEEKLY_KIND, WeeklySchedule, weeklySchedule } from "./weekly-schedule.js";
+import { cancelLearning, clearRunEffects } from "./cancel.js";
+import { sourcesRead, type DeepOutcome } from "./activity.js";
 import type { WriterModel } from "./entries.js";
 
 const modelName = z.string().regex(/^[A-Za-z\d][A-Za-z\d./_:@+-]{0,127}$/u);
@@ -29,7 +31,7 @@ const checkpointSchema = z.object({
   weeklyPlan: Plan.optional(), v2: z.unknown().optional(),
   finish: z.boolean().optional(), home: z.string().optional(), weeklyDue: z.number().optional(), rawPurged: z.literal(true).optional(),
 }).passthrough();
-type Checkpoint = z.infer<typeof checkpointSchema>;
+type Checkpoint = z.infer<typeof checkpointSchema> & { outcome?: DeepOutcome };
 type Context = BatchContext<unknown, Checkpoint>;
 
 interface Dependencies {
@@ -110,14 +112,16 @@ export function writerModel(response: Pick<ModelResult, "selectedModel" | "usage
 export function createLearnKind(dependencies: Partial<Dependencies> = {}, weeklyMode = false) {
   const deps = { ...defaults, ...dependencies };
   const kind: JobKind<unknown, Checkpoint> = {
-    name: weeklyMode ? WEEKLY_KIND : LEARN_KIND, label: weeklyMode ? "Weekly learning" : "Learn deeper",
+    name: weeklyMode ? WEEKLY_KIND : LEARN_KIND, label: weeklyMode ? "Weekly learning" : DEEP_ANALYSIS,
     scope: "project", machineExclusive: true, sideEffects: "idempotent",
+    ...(!weeklyMode ? { cancel: cancelLearning } : {}),
     ended(job, db) {
       const project = job.project_id;
       if (!project) return;
       clearLearningRows(db, project, job.id);
-      const state = checkpoint(job);
       if (!["done", "done with gaps"].includes(job.state)) return;
+      if (!weeklyMode) clearRunEffects(db, job);
+      const state = checkpoint(job);
       const due = state.weeklyDue;
       if (!state.finish && due === undefined) return;
       const plan = state.finish ? (weeklyMode ? state.weeklyPlan! : Plan.parse(JSON.parse(job.params))) : undefined;
@@ -133,9 +137,18 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         if (state.home) publishWeeklyWake({ db, location: { home: state.home } });
       }
     },
+    details(job, reader) {
+      return reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1", job.id)[0]?.summary;
+    },
     display(job, reader) {
-      const summary = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1", job.id)[0]?.summary;
-      return { used: recordedModelSpend(reader, job.id), ceiling: weeklyMode ? undefined : Plan.parse(JSON.parse(job.params)).ceiling, summary };
+      const { outcome, gaps } = checkpoint(job);
+      const finalReason = !outcome && job.state === "done with gaps" ? kind.details?.(job, reader) : undefined;
+      const action = [job.reason, ...gaps, finalReason].find(gap => gap && /sign in|private repo|approved ceiling|run mex learn/iu.test(gap));
+      const summary = outcome ? [`read ${outcome.sources} sources`, `${outcome.learned} ${outcome.learned === 1 ? "rule" : "rules"} learned`,
+        ...(outcome.toConfirm ? [`${outcome.toConfirm} to confirm`] : []), ...(action ? [action] : [])].join(" \u00b7 ")
+        : action ?? undefined;
+      const plan = weeklyMode ? undefined : Plan.safeParse(JSON.parse(job.params));
+      return { used: Math.max(job.tokens_used, recordedModelSpend(reader, job.id)), ceiling: plan?.data?.ceiling, summary };
     },
     interrupted(job, writer, backgroundStartup) {
       const project = job.project_id!;
@@ -166,8 +179,17 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       const state = checkpoint(job, quoted?.gaps);
       const params = weekly ?? quoted!;
       const spent = () => Math.max(0, recordedModelSpend(writer, job.id) - job.tokens_used);
+      const outcomeFor = (v2: PipelineState): DeepOutcome => {
+        const rows = reviewRows(writer, project, job.id);
+        return { sources: sourcesRead(v2), learned: rows.length,
+          keptAutomatically: rows.filter(row => row.status === "active").length,
+          toConfirm: rows.filter(row => row.status === "proposed").length,
+          dropped: Object.entries(v2.counts).filter(([name]) => name.startsWith("gate.drop-")).reduce((sum, [, n]) => sum + n, 0),
+          tokens: recordedModelSpend(writer, job.id), minutes: Math.max(0, (deps.now() - Date.parse(job.created_at)) / 60_000) };
+      };
       const finishGap = (why: string, retry = now + DAY_MS): BatchResult<Checkpoint> => ({
-        checkpoint: { ...state, home: writer.location.home, weeklyDue: weekly ? retry : undefined },
+        checkpoint: { ...state, home: writer.location.home, weeklyDue: weekly ? retry : undefined,
+          outcome: PipelineState.safeParse(state.v2).success ? outcomeFor(PipelineState.parse(state.v2)) : undefined },
         done: true, gaps: true, summary: why, tokens: spent(),
       });
       if (!state.rawPurged) {
@@ -235,6 +257,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         }
         const next: Checkpoint = { ...state, retryAt: undefined, v2: out.state, gaps: [...gaps].slice(0, 24), finish: out.done,
           home: out.done ? writer.location.home : undefined };
+        if (out.done) next.outcome = outcomeFor(out.state);
         return { checkpoint: next, results: out.results, tokens: spent(), done: out.done,
           gaps: out.done && next.gaps.length > 0, summary: pipelineSummary(out.state, next.gaps), progress: out.progress };
       } catch (error) {

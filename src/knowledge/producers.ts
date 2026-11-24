@@ -24,7 +24,7 @@ const definitions: Readonly<Record<ProducerId, Omit<Producer, "id">>> = {
   "setup-question": { name: "Setup questions", active: true, personAuthored: true, namespace: { prefix: "mx_answer", hexCharacters: 32 }, evidence: "person", requiresAnchor: true },
   "code-facts": { name: "Code facts", active: true, personAuthored: false, namespace: { prefix: "mx_fact", hexCharacters: 32 }, evidence: "mined", requiresAnchor: true },
   "fail-pass": { name: "Fail-to-pass capture", active: true, personAuthored: false, namespace: { prefix: "mx_fix", hexCharacters: 32 }, evidence: "observed", requiresAnchor: true },
-  "learn-deeper": { name: "Learn deeper", active: true, personAuthored: false, namespace: { prefix: "mx_deep", hexCharacters: 32 }, evidence: "review", requiresAnchor: true, variesEvidence: true,
+  "learn-deeper": { name: "Deep analysis", active: true, personAuthored: false, namespace: { prefix: "mx_deep", hexCharacters: 32 }, evidence: "review", requiresAnchor: true, variesEvidence: true,
     // A rule taken from a teammate's doc or review is delivered like a person's note: in the start brief and recall.
     repoWide: { kinds: ["rule", "decision", "procedure"], evidence: ["docs", "review"] } },
   judge: { name: "Judge", active: true, personAuthored: false, namespace: { prefix: "mx_judge", hexCharacters: 32 }, evidence: "observed", requiresAnchor: true, variesEvidence: true },

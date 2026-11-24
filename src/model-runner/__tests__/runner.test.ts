@@ -72,6 +72,52 @@ describe("model selection", () => {
 });
 
 describe("one-shot model runner with fake agents", () => {
+  it.each([
+    { agent: "gemini", output: JSON.stringify({ response: "answer", stats: { models: {
+      "gemini-pro": { tokens: { prompt: 18, cached: 4, candidates: 3, total: 23 } },
+      "gemini-flash": { tokens: { prompt: 10, candidates: 2, total: 12 } },
+    } } }, null, 2), usage: { input: 24, cache_read: 4, output: 7, estimated: false } },
+    { agent: "copilot", output: [
+      { type: "assistant.message", data: { content: "answer" } },
+      { type: "assistant.usage", id: "turn", data: { inputTokens: 18, cacheReadTokens: 4, outputTokens: 3 } },
+    ].map(row => JSON.stringify(row)).join("\n"), usage: { input: 14, cache_read: 4, output: 3, estimated: false } },
+    { agent: "copilot", output: JSON.stringify({ type: "assistant.message", data: { content: "answer" } }),
+      usage: { estimated: true } },
+  ] as const)("records a bounded $agent reply and its usage", async ({ agent, output, usage }) => {
+    const root = fixture();
+    const prompt = "private evidence ".repeat(4000);
+    const spawn = transport(`const fs = require("node:fs");
+      const agent = ${JSON.stringify(agent)}, args = process.argv.slice(1);
+      const verify = (task) => {
+        if (task.length !== ${prompt.length} || args.join(" ").includes("private evidence")) process.exit(10);
+        process.stdout.write(${JSON.stringify(output)});
+      };
+      if (agent === "gemini") {
+        const c = JSON.parse(fs.readFileSync(process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, "utf8"));
+        if (c.hooksConfig.enabled || c.admin.mcp.enabled || c.tools.core.join() !== "read_file" ||
+          args[args.indexOf("--approval-mode") + 1] !== "plan") process.exit(11);
+        let input = "";
+        process.stdin.on("data", chunk => input += chunk);
+        process.stdin.on("end", () => verify(input));
+      } else {
+        const c = JSON.parse(fs.readFileSync(process.env.COPILOT_HOME + "/config.json", "utf8"));
+        if (!c.disableAllHooks || !args.includes("--available-tools=view")) process.exit(12);
+        verify(fs.readFileSync("task.txt", "utf8"));
+      }`);
+    const result = await runModel({ agent, prompt, projectRoot: root, purpose: "deep.test", __internal: { spawn } });
+    expect(result.text).toBe("answer");
+    expect(result.usage).toMatchObject(usage);
+    expect(saved()).toEqual([expect.objectContaining({ agent, estimated: +usage.estimated })]);
+  });
+
+  it.each(["gemini", "copilot"] as const)("rejects malformed %s output", async agent => {
+    const root = fixture();
+    const spawn = transport('process.stdin.resume(); process.stdout.write("{bad-json");');
+    await expect(runModel({ agent, prompt: "task", projectRoot: root, purpose: "deep.test", __internal: { spawn } }))
+      .rejects.toMatchObject({ category: "protocol" });
+    expect(saved()).toEqual([expect.objectContaining({ agent, estimated: 1 })]);
+  });
+
   it.each(["claude","codex"] as const)("pipes the complete %s prompt, drains the terminal record and accounts once", async agent => {
     const root=fixture(), events=done(agent);
     const spawn=transport(`const fs=require('node:fs');let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{fs.writeFileSync('observed.json',JSON.stringify({input,args:process.argv.slice(1),background:process.env.MEX_BACKGROUND}));for(const e of ${JSON.stringify(events)}){process.stdout.write(JSON.stringify(e));process.stdout.write(String.fromCharCode(10));}});`);

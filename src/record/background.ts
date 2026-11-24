@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION } from "../version.js";
-import { openRecord, type RecordWriter } from "./index.js";
+import { openRecord, type RecordReader, type RecordWriter } from "./index.js";
 import { recordLocation, type LocationOptions } from "./location.js";
 import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
 import { checkpointLearningRows } from "./learning-rows.js";
@@ -51,10 +51,11 @@ function envNumber(name: string): number | undefined {
   const value = Number(process.env[name]);
   return process.env[name] !== undefined && Number.isFinite(value) && value > 0 ? value : undefined;
 }
-function setting(writer: RecordWriter, key: string): string | undefined { return writer.setting("background", key); }
+type SettingsReader = Pick<RecordReader, "setting">;
+function setting(reader: SettingsReader, key: string): string | undefined { return reader.setting("background", key); }
 
 /** Settings live in record.db (scope `background`); MEX_BACKGROUND_* variables override them for tests. */
-export function backgroundSettings(writer?: RecordWriter): BackgroundSettings {
+export function backgroundSettings(writer?: SettingsReader): BackgroundSettings {
   const minutes = writer ? Number(setting(writer, "idle_minutes")) : NaN;
   const memory = writer ? Number(setting(writer, "memory_mb")) : NaN;
   return {
@@ -68,15 +69,16 @@ export function backgroundSettings(writer?: RecordWriter): BackgroundSettings {
 }
 
 /** Global/terminal off and the separate background setting all hold automatic work. */
-export function backgroundEnabled(writer?: RecordWriter): boolean {
+export function backgroundEnabled(writer?: SettingsReader): boolean {
   if (process.env.MEX_OFF === "1" || process.env.MEX_BACKGROUND === "0") return false;
   return !writer || (setting(writer, "enabled") !== "false" && writer.setting("global", "enabled") !== "false");
 }
 /** True inside MEX's own background process (and the agent runs it starts): never trigger MEX from there. */
 export function insideBackground(): boolean { return process.env.MEX_BACKGROUND === "1"; }
 
+const LEASE_QUERY = "SELECT owner,pid,version,started_at,heartbeat_at,request,hub_until FROM background WHERE id=1";
 function lease(writer: RecordWriter): LeaseRow {
-  return writer.db.prepare("SELECT owner,pid,version,started_at,heartbeat_at,request,hub_until FROM background WHERE id=1").get() as unknown as LeaseRow;
+  return writer.db.prepare(LEASE_QUERY).get() as unknown as LeaseRow;
 }
 export function leaseLive(row: LeaseRow, settings: Pick<BackgroundSettings, "leaseMs">, at = Date.now(), alive = processAlive): boolean {
   if (!row.owner || !row.heartbeat_at) return false;
@@ -85,10 +87,11 @@ export function leaseLive(row: LeaseRow, settings: Pick<BackgroundSettings, "lea
 }
 
 export interface BackgroundStatus { running: boolean; pid?: number; version?: string; startedAt?: string; enabled: boolean; }
-export function backgroundStatus(writer: RecordWriter): BackgroundStatus {
-  const row = lease(writer);
-  const running = leaseLive(row, backgroundSettings(writer));
-  return { running, enabled: backgroundEnabled(writer), ...(running ? { pid: row.pid ?? undefined, version: row.version ?? undefined, startedAt: row.started_at ?? undefined } : {}) };
+export function backgroundStatus(reader: RecordWriter | Pick<RecordReader, "get" | "setting">): BackgroundStatus {
+  const row = "get" in reader ? reader.get<LeaseRow>(LEASE_QUERY) : lease(reader);
+  const enabled = backgroundEnabled(reader);
+  if (!row || !leaseLive(row, backgroundSettings(reader))) return { running: false, enabled };
+  return { running: true, enabled, pid: row.pid ?? undefined, version: row.version ?? undefined, startedAt: row.started_at ?? undefined };
 }
 
 // ── The marker the CLI checks cheaply ──

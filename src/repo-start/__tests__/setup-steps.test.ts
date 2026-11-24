@@ -58,7 +58,7 @@ describe("setup job rows", () => {
     // Queued only: learn deeper never runs without a model here.
     const learn = enqueueJob(writer, { kind: "learn-deeper", projectId, params: { checkout }, tokensEstimate: 48_000 }).job;
     const queued = readSetupSteps(reader(), projectId);
-    expect(queued.map(step => [step.kind, step.state, step.label])).toEqual([["graph-build", "queued", "Code map"], ["learn-deeper", "queued", "Learn deeper"]]);
+    expect(queued.map(step => [step.kind, step.state, step.label])).toEqual([["graph-build", "queued", "Code map"], ["learn-deeper", "queued", "Deep analysis"]]);
     const fields = (step: object) => Object.keys(step).filter(key => !["estimate", "progress", "summary", "error"].includes(key)).sort();
     expect(fields(queued[0]!)).toEqual(fields(queued[1]!));
     expect(queued[1]!.estimate).toEqual({ tokens: 48_000, seconds: 240 });

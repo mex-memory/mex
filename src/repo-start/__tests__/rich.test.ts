@@ -11,7 +11,7 @@ describe("the rich first screen", () => {
     expect(labelled("1 rule file read (CLAUDE.md); they agree")).toEqual({ label: "Rule files", text: "1 read · CLAUDE.md" });
     expect(labelled("Indexed 507 files")).toEqual({ label: "Your code", text: "507 files indexed" });
     expect(labelled("Git history (52 commits): no files change together often enough yet, 8 layer rules")).toEqual({ label: "Git history", text: "52 commits read" });
-    expect(labelled("Hooks: Claude Code and Codex, in your user settings.")).toEqual({ label: "Hooks", text: "Claude Code and Codex" });
+    expect(labelled("Agents: Claude Code and Codex · hooks installed in your user settings")).toEqual({ label: "Agents", text: "Claude Code and Codex · hooks installed in your user settings" });
     expect(labelled("No test or build commands found in config")).toEqual({ label: "Commands", text: "none found in package files" });
     expect(labelled("Git history and the file index: in the background (`mex jobs`)").label).toBe("Your code");
     expect(labelled("MEX is off everywhere, so nothing was read or queued. `mex on --all` turns it back on.").label).toBe("MEX");
@@ -36,14 +36,14 @@ describe("the rich first screen", () => {
     const rich = new Rich({}, 100);
     const end = plain(rich.end(rich.summary({ name: "shop", ms: 6400, commandsSaved: true, findings: [{ state: "attention", text: "5 lines in your rule files are out of date" }] })));
     const text = end.join("\n");
-    expect(text).toContain("Read shop in 6.4 s, for $0.");
+    expect(text).toContain("Read shop in 6.4 s.");
     expect(text).toContain("Your agents now get its test and build commands.");
-    expect(text).toContain("5 lines in your rule files are out of date.");
-    expect(text).toContain("undo mex off this repo · mex uninstall everything");
+    expect(text).toContain("One thing left: 5 lines in your rule files are out of date");
+    expect(text).toContain("To undo: mex off turns MEX off in this repo · mex uninstall removes MEX from this computer.");
     expect(rich.mascot()).toHaveLength(6);
     expect(plain(rich.mascot()).every(line => line.length <= 16)).toBe(true);
     const calm = plain(rich.end(rich.summary({ name: "shop", ms: 900, commandsSaved: false, findings: [] }))).join("\n");
-    expect(calm).toContain("Nothing needs a look. You're set.");
+    expect(calm).toContain("Nothing needs your attention. You're set.");
     const off = plain(rich.end(rich.summary({ name: "shop", ms: 900, commandsSaved: false, findings: [{ state: "attention", text: "MEX is off everywhere, so nothing was read or queued." }] }))).join("\n");
     expect(off).toContain("MEX is off everywhere, so I read nothing.");
     expect(off).not.toContain("Read shop");
@@ -64,32 +64,34 @@ describe("setup v2 on the rich screen", () => {
     expect(labelled("The code map was already current")).toEqual({ label: "Code map", text: "already current" });
     expect(labelled("Code map: building in the background (`mex jobs`)")).toEqual({ label: "Code map", text: "building in the background · mex jobs" });
     expect(labelled("The code map didn't finish: out of memory (`mex jobs`)").label).toBe("Code map");
-    expect(labelled("Learn deeper queued. See `mex jobs` for progress.")).toEqual({ label: "Learn deeper", text: "queued. See `mex jobs` for progress." });
-    expect(labelled("Learn deeper: no reviews to learn from (no GitHub or GitLab remote) · $0, nothing started").label).toBe("Learn deeper");
+    expect(labelled("Deep analysis queued. See `mex jobs` for progress.")).toEqual({ label: "Deep analysis", text: "queued. See `mex jobs` for progress." });
+    expect(labelled("Deep analysis: nothing to analyse in this repo yet").label).toBe("Deep analysis");
   });
 
-  it("shows a question with its choices and keys, and names the agents in use", () => {
-    expect(plain(rich.question({ index: 0, total: 2, text: "`packages/db` imports `@acme/ui` in 1 place. Is that allowed?",
-      choices: [{ key: "1", label: "no, keep it one-way" }, { key: "2", label: "yes, it's allowed" }], suggested: "1" }))).toEqual([
-      "   1/2 `packages/db` imports `@acme/ui` in 1 place. Is that allowed?",
-      "   [1] no, keep it one-way  [2] yes, it's allowed  · Enter 1 · s skip · S skip all",
-    ]);
-    expect(plain(rich.question({ index: 1, total: 2, text: "Which?", choices: [{ key: "1", label: "a" }] }))[1]).toContain("Enter skips");
+  it("names the agents in use and shows saved answers and learned rules", () => {
     expect(plain(rich.next({ agents: ["Claude Code", "Codex", "Gemini CLI"] })).join("\n"))
       .toContain("Notes you save reach every new Claude Code, Codex and Gemini CLI session.");
-    const summary = plain(rich.summary({ name: "repo", ms: 1200, commandsSaved: true, findings: [], answers: 2, learning: "running" }));
+    const summary = plain(rich.summary({ name: "repo", ms: 1200, commandsSaved: true, findings: [], answers: 2, learned: 3 }));
     expect(summary).toContain('Your 2 answers reach them as "you said".');
-    expect(summary).toContain("Learn deeper is running in the background · mex jobs");
+    expect(summary).toContain("Read repo and learned 3 team rules.");
   });
 
   it("never promises delivery when the hooks are the Node fallback, which delivers nothing", () => {
     const next = plain(rich.next({ agents: ["Claude Code"], hooksOff: true })).join("\n");
-    expect(next).toContain("Nothing reaches your agents yet: MEX's native hook is missing. Reinstall MEX, then run mex install.");
+    expect(next).toContain("Nothing reaches your agents yet: MEX's native hook is missing. Reinstall MEX, then run mex\n   install.");
     expect(next).not.toContain("Notes you save reach");
     const summary = plain(rich.summary({ name: "repo", ms: 1200, commandsSaved: true, findings: [], answers: 2, hooksOff: true }));
     expect(summary).toContain("Your agents get nothing yet: MEX's native hook is missing.");
     expect(summary.join("\n")).not.toMatch(/get its test and build commands|you said/u);
-    expect(labelled("Hooks: Claude Code and Codex, in your user settings, but MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX."))
-      .toEqual({ label: "Hooks", text: "Claude Code and Codex · MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX." });
+    expect(labelled("Agents: Claude Code and Codex · MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX."))
+      .toEqual({ label: "Agents", text: "Claude Code and Codex · MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX." });
+  });
+
+  it("tints code, calls and paths and falls back to plain link labels", () => {
+    const text = rich.codeTint("Use `pnpm test` in src/worker.ts and call `load()`.");
+    expect(text).toContain(rich.fg("code") + "pnpm test");
+    expect(text).toContain(rich.fg("path") + "src/worker.ts");
+    expect(text).toContain(rich.fg("fn") + "load()");
+    expect(rich.link("PR #5", "https://example.invalid/pull/5")).toBe("PR #5");
   });
 });

@@ -85,6 +85,8 @@ export interface JobKind<P = unknown, C = unknown> {
   /** At most one running job of this kind on the machine (learning jobs). */
   machineExclusive?: boolean;
   sideEffects: "none" | "idempotent";
+  /** Reconcile side effects before the job can report cancellation. Called outside the job transaction. */
+  cancel?(job: JobRow, writer: RecordWriter): number;
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
   ready?(job: JobRow, writer: RecordWriter): boolean;
@@ -96,6 +98,7 @@ export interface JobKind<P = unknown, C = unknown> {
    */
   ended?(job: JobRow, db: DatabaseSync): void;
   display?(job: JobRow, reader: Pick<RecordReader, "all">): { used?: number; ceiling?: number; summary?: string };
+  details?(job: JobRow, reader: Pick<RecordReader, "all">): string | undefined;
   /**
    * Whether this unfinished job already serves a new request, so no second
    * one is queued. Default: any unfinished job of the kind serves it.
@@ -173,10 +176,11 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
 
 /** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
 export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params"> & Partial<Pick<JobRow, "reason">>, approvedParams?: string): JobRow {
-  return inTransaction(writer.db, () => {
+  const requested = inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
     if (expected && (job.state !== expected.state || job.params !== expected.params || "reason" in expected && job.reason !== expected.reason)) return job;
+    if (job.request === "cancel" && kinds.get(job.kind)?.cancel) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.
@@ -193,9 +197,15 @@ export function requestJob(writer: RecordWriter, id: string, action: "pause" | "
     // A failed job can still be cancelled (or resumed); the others are final.
     if (job.state === "done" || job.state === "done with gaps" || job.state === "cancelled") throw new Error(`The job is already ${job.state}.`);
     if (job.state === "running") return setState(writer.db, job, "running", { request: action });
+    if (action === "cancel" && kinds.get(job.kind)?.cancel) {
+      return setState(writer.db, job, "queued", { request: "cancel", reason: null, finished_at: null });
+    }
     if (action === "pause") return setState(writer.db, job, "paused");
     return setState(writer.db, job, "cancelled", { reason: null });
   });
+  if (action !== "cancel" || requested.state !== "queued" || requested.request !== "cancel") return requested;
+  const owned = claim(writer, ownerId("foreground"), new Set([id]));
+  return owned ? finishCancellation(writer, owned, kinds.get(owned.kind)!) : getJob(writer.db, id) ?? requested;
 }
 
 /** Process ids in owner strings let recovery tell a dead runner from a live one. */
@@ -223,7 +233,9 @@ export function recoverInterruptedJobs(writer: RecordWriter, self: string, alive
       if (job.owner === self) continue;
       const pid = job.owner ? ownerPid(job.owner) : undefined;
       if (pid !== undefined && pid !== process.pid && alive(pid)) continue;
-      if (job.request === "cancel") setState(writer.db, job, "cancelled", { reason: null });
+      if (job.request === "cancel") {
+        setState(writer.db, job, kinds.get(job.kind)?.cancel ? "queued" : "cancelled", { reason: null });
+      }
       else {
         const interrupted = kinds.get(job.kind)?.interrupted;
         const fields = job.request !== "pause" || backgroundStartup ? interrupted?.(job, writer, backgroundStartup) : undefined;
@@ -244,7 +256,9 @@ export function requeueReadyJobs(writer: RecordWriter): number {
   for (const job of waiting) {
     const kind = kinds.get(job.kind);
     let ready = false;
-    try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job, writer) : true) : false; } catch { ready = false; }
+    if (job.request === "cancel" && kind?.cancel) {
+      ready = Date.now() - Date.parse(job.updated_at) >= 5_000;
+    } else try { ready = kind ? modelJobReady(writer, job.id, job.batch, job.reason, job.project_id) && (kind.ready ? kind.ready(job, writer) : true) : false; } catch { ready = false; }
     if (!ready) continue;
     inTransaction(writer.db, () => {
       const current = getJob(writer.db, job.id);
@@ -265,7 +279,7 @@ function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): 
       if (only && !only.has(job.id)) continue;
       const kind = kinds.get(job.kind);
       if (!kind) continue; // A kind from a newer MEX: leave it for that version.
-      if (self.startsWith("background:") && !automaticWorkEnabled(writer, job.project_id)) continue;
+      if (self.startsWith("background:") && !(job.request === "cancel" && kind.cancel) && !automaticWorkEnabled(writer, job.project_id)) continue;
       if (job.project_id) {
         const busy = writer.db.prepare("SELECT 1 FROM jobs WHERE state='running' AND project_id=? AND id!=?").get(job.project_id, job.id);
         if (busy) continue;
@@ -316,6 +330,20 @@ export function releaseJobs(writer: RecordWriter, self: string): number {
   });
 }
 
+function finishCancellation(writer: RecordWriter, job: JobRow, kind: JobKind): JobRow {
+  let tokens = job.tokens_used;
+  let reason: string | undefined;
+  try { tokens = Math.max(tokens, kind.cancel!(job, writer)); }
+  catch { reason = "Waiting to remove the rules saved by this run"; }
+  return inTransaction(writer.db, () => {
+    const current = getJob(writer.db, job.id)!;
+    if (current.state !== "running" || current.owner !== job.owner || current.request !== "cancel") return current;
+    return reason
+      ? setState(writer.db, current, "waiting", { reason })
+      : setState(writer.db, current, "cancelled", { tokens_used: tokens, results: 0, reason: null, progress: null });
+  });
+}
+
 /**
  * Run one batch of one job. Returns "idle" when nothing could run. Never throws for a
  * job's own failure; storage errors propagate to the runner, which stops safely.
@@ -324,6 +352,10 @@ export async function runOneBatch(writer: RecordWriter, self: string, options: R
   const job = claim(writer, self, options.only);
   if (!job) return "idle";
   const kind = kinds.get(job.kind)!;
+  if (job.request === "cancel" && kind.cancel) {
+    finishCancellation(writer, job, kind);
+    return "ran";
+  }
   let written = -Infinity;
   const progress = (text: string) => {
     options.onProgress?.(job, text);
@@ -346,10 +378,11 @@ export async function runOneBatch(writer: RecordWriter, self: string, options: R
     if (error instanceof ModelWaitError) modelHold = error;
     else failure = plainCause(error);
   }
-  inTransaction(writer.db, () => {
+  const cleanup = inTransaction(writer.db, () => {
     const current = getJob(writer.db, job.id);
     // Taken over while this batch ran (this runner was presumed dead): discard the batch.
     if (!current || current.owner !== self || current.state !== "running") return;
+    if (current.request === "cancel" && kind.cancel) return current;
     if (modelHold) {
       if (current.request === "cancel") setState(writer.db, current, "cancelled", { reason: null });
       else if (current.request === "pause") setState(writer.db, current, "paused", { request: null });
@@ -391,6 +424,7 @@ export async function runOneBatch(writer: RecordWriter, self: string, options: R
     else if (current.request === "pause") setState(writer.db, current, "paused", { ...fields, request: null });
     else setState(writer.db, current, "queued", fields);
   });
+  if (cleanup) finishCancellation(writer, cleanup, kind);
   if (usage && job.kind !== "telemetry") recordCounterIn(writer, usage);
   return "ran";
 }
@@ -422,6 +456,7 @@ export interface JobListItem {
   batches: number; results: number;
   tokens: { used: number; estimate: number | null; ceiling?: number };
   summary?: string;
+  details?: readonly string[];
   createdAt: string; updatedAt: string; finishedAt: string | null;
   /** Pause or cancel asked and not yet applied (the job stops after its current batch). */
   pending: "pause" | "cancel" | null;
@@ -438,34 +473,66 @@ function runnerGone(owner: string | null): boolean {
   return pid === undefined || (pid !== process.pid && !processAlive(pid));
 }
 
-export function listJobs(reader: Pick<RecordReader, "all">, limit = 50): Array<JobListItem & { id: string }> {
-  const rows = reader.all<JobRow & { root_path: string | null }>(`SELECT jobs.*,projects.root_path FROM jobs
-    LEFT JOIN projects ON projects.id=jobs.project_id ORDER BY jobs.created_at DESC, jobs.id DESC LIMIT ?`, limit);
-  return rows.map((row, index) => {
+export function listJobs(reader: Pick<RecordReader, "all">, limit = 50, options: {
+  latest?: boolean; details?: boolean; live?: boolean; position?: number; projectId?: string; terminal?: boolean;
+} = {}): Array<JobListItem & { id: string }> {
+  const rows = reader.all<JobRow & { root_path: string | null; position: number }>(`WITH numbered AS (
+    SELECT jobs.*, row_number() OVER (ORDER BY created_at DESC,id DESC) AS position,
+      row_number() OVER (PARTITION BY project_id,kind ORDER BY created_at DESC,id DESC) AS latest FROM jobs
+  )
+    SELECT numbered.*,projects.root_path FROM numbered LEFT JOIN projects ON projects.id=numbered.project_id
+    WHERE (?=0 OR latest=1) AND (?=0 OR state IN ('queued','running','waiting'))
+      AND (? IS NULL OR position=?) AND (? IS NULL OR project_id=?)
+    ORDER BY position LIMIT ?`, Number(!!options.latest), Number(!!options.live), options.position ?? null, options.position ?? null,
+      options.projectId ?? null, options.projectId ?? null, limit);
+  return rows.map(row => {
     const kind = kinds.get(row.kind);
     const active = !TERMINAL_STATES.includes(row.state);
     let detail: ReturnType<NonNullable<JobKind["display"]>> | undefined;
     try { detail = kind?.display?.(row, reader); } catch { /* the base state remains readable */ }
+    let notes: readonly string[] | undefined;
+    if (options.details) {
+      try { notes = kind?.details?.(row, reader)?.split(/\r?\n/u).filter(Boolean); } catch { /* old jobs may have no details */ }
+    }
+    let summary = detail?.summary;
+    if (options.terminal && !summary && (row.state === "done" || row.state === "done with gaps")) {
+      if (row.kind === "file-index") summary = `${count(row.results)} ${row.results === 1 ? "file" : "files"}`;
+      if (row.kind === "code-facts") summary = `${count(row.results)} ${row.results === 1 ? "fact" : "facts"} from git history`;
+      if (row.kind === "graph-build") {
+        const result = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1", row.id)[0]?.summary;
+        summary = result?.split(";")[0]?.replace(/^(?:Code map (?:built|refreshed): |The code map was )/u, "");
+      }
+    }
     return {
       id: row.id,
-      position: index + 1,
+      position: row.position,
       kind: row.kind,
-      label: kind?.label ?? "Unknown job (needs a newer MEX)",
+      label: row.kind === "learn-deeper" ? "Deep analysis" : kind?.label ?? "Unknown job (needs a newer MEX)",
       state: row.state,
       project: row.project_id ? { name: projectName(row.root_path ? displayPath(row.root_path) : null), path: row.root_path ? displayPath(row.root_path) : "" } : null,
       reason: row.reason,
       doing: !active ? null : row.state === "running" && runnerGone(row.owner)
-        ? "interrupted; resumes from its last batch when the background process starts again" : row.progress,
+        ? "interrupted; resumes from its last batch when the background process starts again"
+        : row.progress ?? (options.terminal && row.state === "queued" ? blockedReason(reader, row) ?? null : null),
       batches: row.batch, results: row.results,
       tokens: { used: detail?.used ?? row.tokens_used, estimate: row.tokens_estimate, ...(detail?.ceiling === undefined ? {} : { ceiling: detail.ceiling }) },
-      ...(detail?.summary ? { summary: detail.summary } : {}),
+      ...(summary ? { summary } : {}),
+      ...(notes?.length ? { details: notes } : {}),
       createdAt: row.created_at, updatedAt: row.updated_at, finishedAt: row.finished_at,
-      pending: row.state === "running" ? row.request : null,
+      pending: row.state === "running" || row.state === "queued" && row.request === "cancel" ? row.request : null,
     };
   });
 }
 
 function count(n: number): string { return n.toLocaleString("en-US"); }
+export function jobTokenDetails(item: JobListItem): string[] {
+  const parts: string[] = [];
+  if (item.tokens.estimate) parts.push(`${count(item.tokens.used)} of about ${count(item.tokens.estimate)} tokens`);
+  else if (item.tokens.used) parts.push(`${count(item.tokens.used)} tokens`);
+  if (item.tokens.ceiling !== undefined) parts.push(`${count(item.tokens.ceiling)} token ceiling`);
+  return [...parts, ...(item.details ?? [])];
+}
+
 export function describeJob(item: JobListItem): string {
   const where = item.project ? `${item.project.name} (${item.project.path})` : "this machine";
   const parts: string[] = [item.state];
@@ -477,9 +544,6 @@ export function describeJob(item: JobListItem): string {
   else if (item.doing) parts.push(item.doing);
   const finished = TERMINAL_STATES.includes(item.state);
   parts.push(`${count(item.results)} result${item.results === 1 ? "" : "s"}${finished ? "" : " so far"}`);
-  if (item.tokens.estimate) parts.push(`${count(item.tokens.used)} of about ${count(item.tokens.estimate)} tokens`);
-  else if (item.tokens.used) parts.push(`${count(item.tokens.used)} tokens`);
-  if (item.tokens.ceiling !== undefined) parts.push(`${count(item.tokens.ceiling)} token ceiling`);
   if (item.summary) parts.push(item.summary);
   return `${String(item.position).padStart(2)}  ${item.label} · ${where}\n    ${parts.join(" · ")}`;
 }

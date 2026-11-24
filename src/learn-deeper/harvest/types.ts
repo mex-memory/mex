@@ -1,3 +1,4 @@
+import type { LearningPlan } from "../plan.js";
 import type { ForgeClient } from "../forge.js";
 import type { PinnedTree } from "../git.js";
 import type { Repository, SourceWindow } from "../source.js";
@@ -90,7 +91,7 @@ export interface HarvestOptions extends SourceWindow {
   checkout: string;
   head: string;
   source: Repository;
-  agent: "claude" | "codex";
+  agent: LearningPlan["agent"];
   mode?: "backfill" | "weekly";
   budget?: number;
   requestBudget?: number;

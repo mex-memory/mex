@@ -23,6 +23,29 @@ export function reportedTokens(value: unknown, agent: string): Tokens | undefine
     output: Number(u.output_tokens),
   };
 }
+function geminiUsage(stats: unknown): Tokens | undefined {
+  const models = Object.values(object(object(stats)?.models) ?? {});
+  if (!models.length) return;
+  const totals = { ...ZERO };
+  for (const model of models) {
+    const usage = object(object(model)?.tokens);
+    const input = count(usage?.prompt), output = count(usage?.candidates);
+    const cached = count(usage?.cached) ?? 0;
+    if (input === undefined || output === undefined || cached > input) return;
+    totals.input += input - cached;
+    totals.cache_read += cached;
+    totals.output += Math.max(output, (count(usage?.total) ?? 0) - input);
+  }
+  return TOKEN_CLASSES.every(key => Number.isSafeInteger(totals[key])) ? totals : undefined;
+}
+function copilotUsage(value: unknown): Tokens | undefined {
+  const usage = object(value);
+  return reportedTokens({
+    input_tokens: usage?.inputTokens ?? usage?.input_tokens,
+    output_tokens: usage?.outputTokens ?? usage?.output_tokens,
+    cached_input_tokens: usage?.cacheReadTokens ?? usage?.cachedInputTokens ?? usage?.cached_input_tokens,
+  }, "codex");
+}
 export function utcDay(timestamp: string): string {
   const date = new Date(timestamp);
   if (!Number.isFinite(date.getTime())) throw new Error("Invalid usage timestamp");
@@ -134,6 +157,7 @@ export function jsonLines(consume: (event: Record<string, unknown>) => void, inv
 
 /** One headless invocation, including every reported turn; Claude's terminal total wins. */
 export function createCallUsage(agent: string, sent: string, maxLineBytes = 1024 * 1024, onEvent?: (event: Record<string, unknown>) => void) {
+  let replyBytes: number | undefined;
   let outputBytes = 0, model = "unknown", terminal: Tokens | undefined, sessionId: string | undefined;
   let byModel: Array<Tokens & { model: string; estimated: boolean }> | undefined;
   let incomplete = false;
@@ -189,6 +213,24 @@ export function createCallUsage(agent: string, sent: string, maxLineBytes = 1024
         else incomplete = true;
       }
     } else {
+      if (agent === "gemini") {
+        terminal = geminiUsage(e.stats) ?? terminal;
+        const labels = Object.keys(object(object(e.stats)?.models) ?? {});
+        for (const label of labels) if (/^[a-zA-Z0-9_.:/-]{1,128}$/.test(label)) models.add(label);
+        if (models.size === 1) model = [...models][0]!;
+      }
+      if (agent === "copilot" && e.type === "assistant.message") {
+        const content = object(e.data)?.content;
+        if (typeof content === "string") replyBytes = (replyBytes ?? 0) + Buffer.byteLength(content);
+      }
+      if (agent === "copilot" && e.type === "assistant.usage") {
+        const usage = copilotUsage(e.data);
+        const reply = object(e.data);
+        const name = reply?.model;
+        if (typeof name === "string" && /^[a-zA-Z0-9_.:/-]{1,128}$/.test(name)) { model = name; models.add(name); }
+        if (usage) add(typeof e.id === "string" ? e.id : String(++turn), usage);
+        else incomplete = true;
+      }
       // Documented generic terminal usage, when present; otherwise estimate honestly.
       if (e.type === "result") terminal = reportedTokens(e.usage, agent) ?? terminal;
       if (agent === "opencode" && e.type === "step_finish") {
@@ -205,7 +247,7 @@ export function createCallUsage(agent: string, sent: string, maxLineBytes = 1024
     finish() {
       decoder.end();
       const tokens = terminal ?? summed;
-      return { ...(tokens ?? { ...ZERO, input: Math.ceil(Buffer.byteLength(sent) / 4), output: Math.ceil(outputBytes / 4) }),
+      return { ...(tokens ?? { ...ZERO, input: Math.ceil(Buffer.byteLength(sent) / 4), output: Math.ceil((replyBytes ?? outputBytes) / 4) }),
         model: models.size > 1 ? "mixed" : model, estimated: tokens === undefined || (!terminal && incomplete),
         ...(sessionId ? { sessionId } : {}), ...(byModel ? { byModel } : {}) };
     },

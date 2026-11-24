@@ -75,16 +75,17 @@ it("lists learned rules, shows what would have stopped the person's own commits,
     interactive: true, env: process.env, home, keys: async () => keys.shift()! });
   expect(result).toEqual({ kept: 2, waiting: 0, dropped: 0 });
   const text = lines.join("\n");
-  expect(text).toContain("[x] 1. Log through apiLogger");
-  expect(text).toContain("[ ] 2. Read config");
-  expect(text).toMatch(/Rule 1 would have stopped an edit at [0-9a-f]{7} src\/api\.ts:2/u);
-  expect(text).toContain("Hypothetical replay");
+  expect(text).toContain("1. [x] Log through apiLogger");
+  expect(text).toContain("2. [ ] Read config");
+  expect(text).toMatch(/Would have stopped an edit at [0-9a-f]{7} src\/api\.ts:2/u);
+  expect(text).toContain(a.entryId);
+  expect(text).toContain("mex rules --learned");
   expect(parseEntry(readFileSync(notePath(b.entryId), "utf8")).mex.status).toBe("active");
   // Reviewed once: the next `mex` doesn't ask again.
   expect(await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "enter" })).toBeUndefined();
 });
 
-it("drops the unticked rules, and asks nothing without a terminal", async () => {
+it("leaves unticked rules waiting, and asks nothing without a terminal", async () => {
   const [a] = await propose([learned("c", "Use the pooled client in src.", "new Client(", "proposed")], options());
   if (a?.status !== "accepted") throw new Error(JSON.stringify(a));
   await finishedRun([{ id: a.entryId, claim: "Use the pooled client in src.", status: "proposed" }]);
@@ -92,11 +93,11 @@ it("drops the unticked rules, and asks nothing without a terminal", async () => 
   expect(await reviewLearned({ root, projectId: project, write: line => quiet.push(line), mode: { color: false, ascii: true } as never, interactive: false, env: process.env, home })).toBeUndefined();
   expect(quiet.join("\n")).toContain("1 learned rule waits for your review");
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
-  const result = await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "d" });
-  expect(result).toEqual({ kept: 0, waiting: 0, dropped: 1 });
-  // Retired with a tombstone: hidden everywhere, and never proposed again.
-  expect(writer.setting(project, `knowledge.retired.${a.entryId}`)).toBeTruthy();
-  expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("retired");
+  const result = await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "enter" });
+  // Enter alone never retires a rule: an unticked one keeps waiting, and `mex rules --learned` still lists it.
+  expect(result).toEqual({ kept: 0, waiting: 1, dropped: 0 });
+  expect(writer.setting(project, `knowledge.retired.${a.entryId}`)).toBeUndefined();
+  expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
 });
 
 it("lists a review row from a weekly run that failed", async () => {
@@ -154,7 +155,7 @@ it("requires a verify answer to cite a file and lines shown in the evidence", ()
   expect(parseVerify("not json", files)).toBeUndefined();
 });
 
-it("pages through every rule and saves all choices only on the last page", async () => {
+it("keeps all older review rows accessible and applies the choices only on Enter", async () => {
   const proposals = Array.from({ length: 12 }, (_, i) =>
     learned(`page-${i}`, `Use adapter ${i + 1} when serving its endpoint.`, `specificAdapter${i + 1}(`, "active"));
   const rows = (await propose(proposals, options())).map((result, i) => {
@@ -167,19 +168,18 @@ it("pages through every rule and saves all choices only on the last page", async
     mode: { plain: true, color: false, ascii: true, width: 80 }, interactive: true, env: process.env, home,
     keys: async () => keys.shift() ?? "quit" });
 
-  expect(await review(["1", "d", "enter", "1", "q"])).toBeUndefined();
+  expect(await review(["1", "12", "q"])).toBeUndefined();
   expect(writer.setting(project, learnedReviewedKey(job))).toBeUndefined();
   expect(writer.setting(project, learnedRefusalKey(rows[0]!.id))).toBeUndefined();
   expect(rows.every(({ id }) => parseEntry(readFileSync(notePath(id), "utf8")).mex.status === "active")).toBe(true);
 
-  expect(await review(["1", "enter", "enter", "2", "enter"])).toEqual({ kept: 10, waiting: 2, dropped: 0 });
-  expect(lines).toContain("Learn deeper learned 12 rules from your team.");
-  expect(lines).toContain("Page 3 of 3");
-  expect(lines.join("\n")).toContain("[ ] 2. Use adapter 12 when serving its endpoint. (rule 12)");
+  expect(await review(["1", "12", "enter"])).toEqual({ kept: 10, waiting: 2, dropped: 0 });
+  expect(lines.join("\n")).toContain("12 learned - 12 to confirm");
+  expect(lines.join("\n")).toContain("12. [ ] Use adapter 12 when serving its endpoint.");
   expect(writer.setting(project, learnedReviewedKey(job))).toBeTruthy();
   for (const row of [rows[0]!, rows[11]!]) {
     expect(parseEntry(readFileSync(notePath(row.id), "utf8")).mex.status).toBe("proposed");
-    expect(writer.setting(project, learnedRefusalKey(row.id))).toBeTruthy();
+    expect(writer.setting(project, `knowledge.retired.${row.id}`)).toBeUndefined();
   }
 });
 
@@ -195,10 +195,10 @@ it("renders the entry rationale, short fix and source safely at 80 columns", asy
   const lines: string[] = [];
   await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { plain: true, color: false, ascii: true, width: 80 },
     interactive: true, env: process.env, home, keys: async () => "q" });
-  expect(lines).toContain("[ ] 1. Use the checked decoder.");
+  expect(lines).toContain("1. [ ] Use the checked decoder.");
   expect(lines.join(" ")).toContain("Why: It handles cafe records and recovers safely.");
-  expect(lines).toContain("    Fix: return checkedDecode(record);");
-  expect(lines).toContain("    Source: https://github.com/acme/app/pull/1");
+  expect(lines).toContain("   Fix: return checkedDecode(record);");
+  expect(lines.join(" ")).toContain("Source: PR #1 - https://github.com/acme/app/pull/1");
   expect(lines.every(line => line.length <= 80 && /^[ -~]*$/u.test(line))).toBe(true);
   expect(lines.join(" ")).not.toContain("Old receipt claim");
 });

@@ -4,7 +4,7 @@ import { execSync } from "node:child_process";
 export const PUBLIC_COMMAND_ORDER = [
   "install", "uninstall", "doctor", "off", "on", "capture", "compact", "setup",
   "note", "recall", "expand", "edit", "wrong", "forget", "check", "review",
-  "share", "rules", "handoff", "upgrade", "what", "brief", "learn", "jobs",
+  "share", "rules", "handoff", "upgrade", "what", "brief", "learn", "jobs", "cancel",
   "config", "telemetry", "feedback", "sync", "hints", "report", "alias", "ask", "entries", "decisions", "hub", "out", "run",
 ] as const;
 

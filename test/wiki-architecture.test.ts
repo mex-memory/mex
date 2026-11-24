@@ -786,6 +786,7 @@ describe("no unscoped scaffold writes", () => {
     const FD_WRITE_CALLS = /\b(writeSync|ftruncateSync)\s*\(/g;
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-prompt.ts": "writes and removes one private prompt file for an oversized agent brief (interactive setup, sync)",
+      "src/model-runner/index.ts": "writes and removes one private temp folder per model call holding a child-only agent settings file and its prompt (Gemini CLI, Copilot CLI)",
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
       "src/compaction/notices.ts": "consumes offer requests and publishes bounded notice markers inside the machine record directory",
       "src/ledger/background.ts": "claims and removes bounded session-ledger requests inside the contained machine record directory",

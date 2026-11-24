@@ -7,6 +7,8 @@ Learn rules from past reviews, fixes and contributor docs after you approve an
 estimate
 
 Options:
+  --agent <id>           Choose claude-code, codex, copilot, gemini, cursor,
+                         antigravity, opencode, kiro or devin
   --model-setup <setup>  Choose mixed or best-only
   --raise-ceiling        Review a higher token ceiling for a waiting learning
                          job
@@ -39,9 +41,9 @@ Set a config value (e.g. agent.defaults on|off, telemetry on|off)
 
 Options:
   --project   Set agent.defaults, delivery.scorer, delivery.surface.<id>,
-              learning.sharing or learning.stopCheck, learning.procedures,
-              learning.prDecisions, learning.deep.issues for the registered
-              project
+              learning.agent, learning.sharing or learning.stopCheck,
+              learning.procedures, learning.prDecisions, learning.deep.issues
+              for the registered project
   -h, --help  display help for command
 "
 `;
@@ -101,6 +103,7 @@ Commands:
                                         estimate
   jobs [options]                        List MEX's background jobs on this
                                         machine; pause, resume or cancel one
+  cancel [options]                      Stop live jobs in this repository
   config                                Change MEX settings
   telemetry                             Inspect anonymous usage counts or turn
                                         them off

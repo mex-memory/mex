@@ -12,12 +12,15 @@ import { readNotes, snapshotNotes } from "../knowledge/personal-store.js";
 import { producerEntryId } from "../knowledge/producers.js";
 import { claimHash, retiredClaimHashes, tombstone } from "../knowledge/state.js";
 import { ModelWaitError, type runModel } from "../model-runner/index.js";
+import { modelAgent } from "../model-runner/agents.js";
 import { recoverModelBatches, withModelJob } from "../model-runner/budget-queue.js";
 import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/consent.js";
 import type { RecordWriter } from "../record/index.js";
 import type { BatchContext } from "../record/jobs.js";
 import { learningRunPrefix } from "../record/learning-rows.js";
 import { shortHash } from "../record/project.js";
+import { activityFor, sourceSubject, stageOfCall, type DeepActivity, type Subject } from "./activity.js";
+import { rememberNote, rememberObservationLinks, rememberObservations, rememberSetting } from "./cancel.js";
 import { coverageKey, learningProof, makeNoteProof, noteKey, readTeamCoverage, saveSourceReads, sourceRead, type SourceRef } from "./coverage.js";
 import { dispositionKey, mergeDispositions, readDispositions, type CandidateDisposition } from "./dispositions.js";
 import type { WriterModel } from "./entries.js";
@@ -37,6 +40,7 @@ import { gitHistory, proveEntry, stoppingType, type ProofContext, type ProofResu
 import { routeEntry, type Routed } from "./route.js";
 import { sourceDigest, type Repository } from "./source.js";
 import { parseTriage, triagePrompt, type Observation } from "./triage.js";
+import { replyJson } from "./reply.js";
 import { sessionsActive } from "./weekly-schedule.js";
 import { evidencePairs, parsePatterns, patternPrompt, type PatternInput, type WriterEntry } from "./write.js";
 
@@ -87,6 +91,9 @@ export interface PipelineInput {
   deps: PipelineDeps;
   weekly: boolean;
   gaps: Set<string>;
+  /** The live view's state for this batch, and what the next model call reads. Observing never holds up the job. */
+  activityState?: PipelineState;
+  subject?: Subject;
 }
 
 const key = (job: { id: string }, name: string) => learningRunPrefix(job.id) + name;
@@ -147,6 +154,34 @@ function saveReviewRows(set: ReturnType<RecordWriter["db"]["prepare"]>, project:
   if (rows.length > 200) set.run(project, key + ".overflow", JSON.stringify(rows.slice(0, -200)));
 }
 
+function updateActivity(input: PipelineInput, item?: Subject, result?: string, stage?: number): void {
+  const { context, plan, deps, activityState } = input;
+  if (!activityState) return;
+  try {
+    const old = load<DeepActivity>(context, "activity");
+    const recent = item && result ? [{ ...item, result }, ...(old?.recent ?? [])].slice(0, 5) : old?.recent;
+    const activity = activityFor(activityState, plan.agent, old?.startedAt ?? new Date(deps.now()).toISOString(),
+      recordedModelSpend(context.writer, context.job.id), recent, stage);
+    if (item && !result) activity.current = { ...item, startedAt: new Date(deps.now()).toISOString() };
+    save(context, "activity", activity);
+  } catch { /* Observing a job cannot hold up the job. */ }
+}
+
+/** What the live view says a finished call returned, from the reply's own shape. */
+function replySummary(text: string): string {
+  const parsed = replyJson(text);
+  const list = (name: string) => {
+    const value = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>)[name] : undefined;
+    return Array.isArray(value) ? value.length : undefined;
+  };
+  const observations = list("observations"), norms = list("norms"), rules = list("rules"), patterns = list("patterns"), verdicts = list("verdicts");
+  if (observations !== undefined) return `${observations} observations kept`;
+  if (norms !== undefined || rules !== undefined) return `${(norms ?? 0) + (rules ?? 0)} rules drafted`;
+  if (patterns !== undefined) return `${patterns} patterns proposed`;
+  if (verdicts !== undefined) return `${verdicts} rules checked`;
+  return "Reply received";
+}
+
 /** One model call under the run's consent: the approved ceiling, or weekly's automatic allowance. */
 interface Reply { text: string; model: WriterModel; tokens: number; lost?: true; promptHash?: string }
 async function call(input: PipelineInput, name: string, prompt: string, role: "cheap" | "best", rules: number): Promise<Reply> {
@@ -189,10 +224,13 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   if (weekly && sessionsActive(writer, deps.now())) throw new AgentActive();
   const lastBatch = started?.lastBatch ?? Number(writer.db.prepare("SELECT max(id) id FROM model_batches WHERE job_id=?").get(job.id)?.id ?? 0);
   save(context, stage, started ?? { lastBatch });
+  const step = stageOfCall(name);
+  const subject = input.subject ?? { subject: "Rules and evidence" };
+  updateActivity(input, subject, undefined, step);
   const reply = await deps.tree.withCheckFiles(writer.location.home, job.id, [], async executionDirectory => {
     const output = await withModelJob({ jobId: job.id, batch: job.batch, projectId: job.project_id,
       recordHome: writer.location.home, stage }, () => deps.model({
-      agent: plan.agent, setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
+      agent: modelAgent(plan.agent), setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
       purpose: procedure ? "learn-deeper-procedure" : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
       ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
     }));
@@ -200,8 +238,12 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
     const reply: Reply = { text: output.text, model: writerModel(output), tokens: Math.max(0, recordedModelSpend(writer, job.id) - spent), promptHash };
     save(context, `reply.${name}`, reply);
     return reply;
+  }).catch(error => {
+    updateActivity(input, subject, "Paused or interrupted", step);
+    throw error;
   });
   if (!reply) throw new Error("The model could not start in its private workspace.");
+  updateActivity(input, subject, replySummary(reply.text), step);
   return reply;
 }
 
@@ -334,7 +376,10 @@ async function writeProcedure(input: PipelineInput, project: string, index: numb
           reviewers: 0, proven: false, status: "proposed", route: "procedure", signal: "weak", link: proposal.source.ref });
         saveReviewRows(set, project, context.job.id, rows);
         set.run(project, key(context.job, `trial.${item.entryId}`), JSON.stringify({ id: item.entryId, procedure: true }));
-        set.run(project, noteKey(item.entryId), makeNoteProof(plan, serializeEntry(item.entry), []));
+        const raw = serializeEntry(item.entry), proof = makeNoteProof(plan, raw, []);
+        rememberNote(gate, context.job, item.entryId, undefined, raw);
+        rememberSetting(gate, context.job, noteKey(item.entryId), proof);
+        set.run(project, noteKey(item.entryId), proof);
       }
       set.run(project, key(context.job, `${name}.done`), JSON.stringify(count));
     },
@@ -362,7 +407,7 @@ function saveChecked(input: PipelineInput, items: readonly Observation[]): void 
   db.exec("BEGIN IMMEDIATE");
   try {
     ensureOwner(input);
-    saveObservations(db, project, items, cutoff(input));
+    rememberObservations(input.context.writer, input.context.job, saveObservations(db, project, items, cutoff(input)));
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -569,10 +614,18 @@ async function publishDrafts(input: PipelineInput, name: string, drafts: DraftTo
       commits: [...new Set([...(previous?.support?.commits ?? []), ...support.commits])].slice(-256),
       reviewers: [...new Set([...(previous?.support?.reviewers ?? []), ...support.reviewerKeys])].slice(-256),
     };
-    const set = gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
+    const upsert = gate.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
+    // Every durable write outside the run's own rows is journaled, so a cancelled run leaves nothing behind.
+    const set = { run: (scope: string, name: string, value: string) => {
+      if (!name.startsWith(learningRunPrefix(context.job.id))) rememberSetting(gate, context.job, name, value);
+      return upsert.run(scope, name, value);
+    } };
+    if (!prior) rememberNote(gate, context.job, id, undefined, raw);
     set.run(project, noteKey(id), makeNoteProof(plan, raw, refs, day || undefined, combined));
-    saveSourceReads(gate, project, plan, sources);
-    supportObservations(gate.db, project, id, support.observations.map(observation => observation.id));
+    saveSourceReads(gate, project, plan, sources, (name, value) => rememberSetting(gate, context.job, name, value));
+    const linked = support.observations.map(observation => observation.id);
+    rememberObservationLinks(gate, context.job, id, linked);
+    supportObservations(gate.db, project, id, linked);
     if (!prior) {
       const groups = networkGroups(entry, item.routed.sources);
       set.run(project, networkProofKey(id), JSON.stringify(groups));
@@ -586,7 +639,7 @@ async function publishDrafts(input: PipelineInput, name: string, drafts: DraftTo
       rows.set(id, { entryId: id, claim: entry.mex.one_line, label: entry.mex.source.label ?? "", support: combined.pulls.length,
         reviewers: combined.reviewers.length, proven, status: entry.mex.status,
         route: item.routed.route, signal: combined.pulls.length >= 2 || proven ? "strong" : "weak", link: entry.mex.source.ref });
-      saveReviewRows(set, project, context.job.id, [...rows.values()]);
+      saveReviewRows(upsert, project, context.job.id, [...rows.values()]);
       add(counts, proven ? "proven" : "prose");
       if (item.routed.route === "code-rule" && support.source !== "docs") {
         add(counts, "code-norms");
@@ -694,6 +747,15 @@ async function writeWindow(input: PipelineInput, state: PipelineState, name: str
   return number;
 }
 
+/** The live view names the first pull request of a triage batch. */
+function unitSubject(units: readonly PRUnit[], candidates: ReadonlyMap<string, Candidate>): Subject {
+  for (const unit of units) for (const line of unit.lines) {
+    const candidate = line.candidate === undefined ? undefined : candidates.get(line.candidate);
+    if (candidate) return sourceSubject(candidate, "Pull requests");
+  }
+  return { subject: "Pull requests" };
+}
+
 function pendingUnits(context: Context, candidates: Candidate[]): PRUnit[] {
   const sent = new Set(load<string[]>(context, "early.lines") ?? []);
   return prUnits(candidates).map(unit => ({ ...unit, lines: unit.lines.filter(item => !sent.has(lineKey(item))) }));
@@ -702,7 +764,12 @@ function pendingUnits(context: Context, candidates: Candidate[]): PRUnit[] {
 /** One checkpointed unit. A paid reply has a name tied to the unit and can be reused after a wait. */
 export async function runPipelineBatch(input: PipelineInput): Promise<{ state: PipelineState; done: boolean; progress: string; results: number }> {
   const { context, plan, deps } = input, state = structuredClone(input.state), project = context.job.project_id!;
-  const result = (progress: string, results = 0, done = false) => ({ state, done, progress, results });
+  input.activityState = state;
+  updateActivity(input);
+  const result = (progress: string, results = 0, done = false) => {
+    updateActivity(input);
+    return { state, done, progress, results };
+  };
   switch (state.phase) {
     case "harvest": {
       const batch = await harvestBatch(plan.harvest, state.cursor as HarvestCursor | undefined, deps);
@@ -741,6 +808,7 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       if (!units) throw new Error("The run's sources were cleared. Start a new quote.");
       const candidates = allCandidates(context, state);
       const map = new Map(candidates.map(candidate => [candidate.id, candidate]));
+      input.subject = unitSubject(units, map);
       const observations = await triage(input, state, units, map, "triage." + state.triaged);
       saveChecked(input, observations);
       save(context, "observations." + state.triaged, observations.map(item => item.id));

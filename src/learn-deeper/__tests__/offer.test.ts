@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import * as cliTools from "../../cli-tools.js";
+import * as agents from "../../model-runner/agents.js";
 import { setCheckoutEnabled } from "../../controls/index.js";
 import * as launcher from "../../hooks/shim/launcher.js";
 import * as background from "../../record/background.js";
@@ -25,7 +25,11 @@ beforeEach(() => {
   vi.stubEnv("GH_TOKEN", "forge-fixture");
   vi.stubEnv("GITLAB_TOKEN", "forge-fixture");
   vi.stubEnv("MEX_HOOK_BINARY", process.execPath);
-  vi.spyOn(cliTools, "isCliAvailable").mockImplementation(name => name === "codex");
+  const detect = agents.detectAgents;
+  const bin = join(base, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, process.platform === "win32" ? "codex.cmd" : "codex"), "", { mode: 0o755 });
+  vi.spyOn(agents, "detectAgents").mockImplementation(options => detect({ ...options, userHome: base, env: { PATH: bin } }));
   vi.spyOn(launcher, "writeLauncher").mockReturnValue(false);
   vi.spyOn(background, "ensureBackground");
   vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Unexpected forge request"); }));
@@ -85,17 +89,16 @@ it("prints the normal estimate and measured source counts through the non-intera
   const confirm = vi.fn(async (_quote: readonly string[], _details: readonly string[]) => false);
   const offer = vi.fn();
   await offerLearning({ root, projectId, write: offer, interactive: true, explicit: true, confirm });
-  expect(offer.mock.calls.flat()).toEqual([]);
+  expect(offer.mock.calls.flat()).toEqual(["Deep analysis not started · `mex learn` starts it any time"]);
   expect(confirm).toHaveBeenCalledTimes(1);
   const [quote, details] = confirm.mock.calls[0]!;
-  const quoteText = quote.find(line => line.startsWith("Estimate "))!;
-  const amounts = [...quoteText.matchAll(/[\d,]+/gu)].map(match => Number(match[0].replaceAll(",", "")));
+  expect(quote[0]).toContain("5 pull requests with their reviews and discussions");
+  const usage = details.find(line => line.startsWith("Usage: "))!;
+  const amounts = [...usage.matchAll(/\d[\d,]+/gu)].map(match => Number(match[0].replaceAll(",", "")));
   expect(amounts[0]).toBeGreaterThan(0);
   expect(amounts[1]).toBe(Math.floor(1.5 * amounts[0]!));
-  expect(quote).toContain("Most of the rule language we counted was in contributor docs.");
-  expect(details).toContain("MEX checks supporting quotes and asks the writer to group repeated team policies.");
-  expect(details).toContain("Counted 5 merged or closed pull requests, 0 reverts and past fixes, and 1 doc or decision record.");
-  expect(details).toContain("Counted 10 closed issues for the issues trial.");
+  expect(details).toContain("What it found: Most of the rule language we counted was in contributor docs.");
+  expect(details).toContain("What it reads: 5 pull requests (reviews, discussions, descriptions), 1 contributor doc, 10 closed issues · last 18 months");
 
   const log = vi.spyOn(console, "log").mockImplementation(() => {});
   const { program } = await import("../../cli.js");
@@ -105,9 +108,11 @@ it("prints the normal estimate and measured source counts through the non-intera
     await program.parseAsync(["learn", "--dry-run"], { from: "user" });
   } finally { process.chdir(original); }
   expect(log.mock.calls.flat()).toEqual([
-    "Learn deeper dry run. Read review history and local Git history. Spent no tokens.",
-    ...quote.filter(line => line.startsWith("Most of") || line.startsWith("Estimate ")),
-    ...details.filter(line => line.startsWith("Counted ")),
+    "Deep analysis dry run. Read review history and local Git history. Spent no tokens.",
+    "Most of the rule language we counted was in contributor docs.",
+    `Estimate ${amounts[0]!.toLocaleString("en-US")} tokens · ceiling ${amounts[1]!.toLocaleString("en-US")} tokens.`,
+    "Counted 5 merged or closed pull requests, 0 reverts and past fixes, and 1 doc or decision record.",
+    "Counted 10 closed issues for the issues trial.",
   ]);
   expect(fetch.mock.calls.length).toBeGreaterThan(4);
   expect(launcher.writeLauncher).not.toHaveBeenCalled();
@@ -123,21 +128,22 @@ it("reports the same source gap in the offer and preview, even without a local r
   const confirm = vi.fn(async (_quote: readonly string[], _details: readonly string[]) => false);
   const offer = vi.fn();
   await offerLearning({ root, projectId, write: offer, interactive: true, explicit: true, confirm });
-  expect(offer.mock.calls.flat()).toEqual([]);
+  expect(offer.mock.calls.flat()).toEqual(["Deep analysis not started · `mex learn` starts it any time"]);
   expect(confirm).toHaveBeenCalledTimes(1);
   const gap = "Source gap: Review history requires an authenticated GitHub source.";
   expect(confirm.mock.calls[0]?.[1]).toContain(gap);
 
-  vi.mocked(cliTools.isCliAvailable).mockReturnValue(false);
+  vi.mocked(agents.detectAgents).mockReturnValue([]);
   vi.stubEnv("MEX_HOOK_BINARY", join(base, "absent"));
   const write = vi.fn();
   await offerLearning({ root, projectId, write, interactive: false, dryRun: true, explicit: true, confirm });
   expect(confirm).toHaveBeenCalledTimes(1);
   expect(write.mock.calls.flat()).toEqual([
-    "Learn deeper dry run. Read local Git history. Spent no tokens.",
+    "Deep analysis dry run. Read local Git history. Spent no tokens.",
     "The estimate assumes Codex because no supported model runner is installed.",
-    ...confirm.mock.calls[0]![0].filter(line => line.startsWith("We found") || line.startsWith("Most of") || line.startsWith("Estimate ")),
-    confirm.mock.calls[0]?.[1].find(line => line.startsWith("Counted ")),
+    expect.stringMatching(/^(We found|Most of)/u),
+    expect.stringMatching(/^Estimate [\d,]+ tokens · ceiling [\d,]+ tokens\.$/u),
+    "Counted 0 merged or closed pull requests, 0 reverts and past fixes, and 1 doc or decision record.",
     gap,
   ]);
   assertNoLearningSaved();

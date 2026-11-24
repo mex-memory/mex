@@ -12,10 +12,13 @@ export const MAX_PROCESS_TIMEOUT_MS = 15 * 60_000;
 const TERMINATE_GRACE_MS = 500;
 const DIAGNOSTIC_BYTES = 8 * 1024;
 const DISCOVERY_TIMEOUT_MS = 5_000;
+export type ProcessAgent = BackgroundAgentTool | "gemini";
+
 export interface ModelProcessOptions {
   prompt: string;
   purpose: string;
   input?: string;
+  jsonObjectOutput?: boolean;
   signal?: AbortSignal;
   timeoutMs?: number;
   totalTimeoutMs?: number;
@@ -34,7 +37,7 @@ export interface ModelProcessOptions {
 export interface ModelProcessResult { usage: ReturnType<ReturnType<typeof createCallUsage>["finish"]>; }
 
 export async function runModelProcess(
-  tool: BackgroundAgentTool,
+  tool: ProcessAgent,
   invocation: AgentCommand,
   cwd: string,
   options: ModelProcessOptions,
@@ -48,7 +51,7 @@ export async function runModelProcess(
 }
 
 function runOwnedProcess(
-  tool: BackgroundAgentTool,
+  tool: ProcessAgent,
   invocation: AgentCommand,
   cwd: string,
   options: ModelProcessOptions,
@@ -81,18 +84,20 @@ function runOwnedProcess(
     let failure: ModelRunError | undefined;
     let treeCleanup: Promise<void> | undefined;
     let closing = false;
+    const jsonObject: Buffer[] = [];
+    let jsonBytes = 0;
     const emitActivity = (activity: PopulationActivitySignal) => {
       if (closing || failure || options.signal?.aborted) return;
       // An observer must not leave an otherwise healthy child unowned.
-      try { options.onActivity?.({ tool, ...activity }); } catch { /* observation only */ }
+      try { if (tool !== "gemini") options.onActivity?.({ tool, ...activity }); } catch { /* observation only */ }
     };
     const decoder = createPopulationActivityDecoder(tool, emitActivity, options.maxLineBytes);
     const accounting = createCallUsage(tool, options.prompt, options.maxLineBytes, event => admission?.observe(event));
-    const transcript = options.onTranscript ? createPopulationTranscriptDecoder(tool, (entry) => {
+    const transcript = options.onTranscript && tool !== "gemini" ? createPopulationTranscriptDecoder(tool, (entry) => {
       if (closing || failure || options.signal?.aborted) return;
       try { options.onTranscript?.({ tool, ...entry }); } catch { /* observation only */ }
     }) : undefined;
-    child.stdout?.on("data", (chunk: Buffer) => {
+    const consumeOutput = (chunk: Buffer) => {
       accounting.write(chunk);
       try { options.onStdoutChunk?.(chunk); } catch { /* observation only */ }
       stdout.append(chunk);
@@ -102,6 +107,17 @@ function runOwnedProcess(
         decoder.write(chunk);
         transcript?.write(chunk);
       }
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (!options.jsonObjectOutput) { consumeOutput(chunk); return; }
+      if (failure || options.signal?.aborted) return;
+      jsonBytes += chunk.length;
+      if (jsonBytes > (options.maxLineBytes ?? 1024 * 1024)) {
+        stop(new ModelRunError("output", tool));
+        return;
+      }
+      jsonObject.push(chunk);
+      timer.refresh();
     });
     let stderrLimit = false;
     let stderrReset: string | undefined;
@@ -138,6 +154,12 @@ function runOwnedProcess(
     child.once("close", async (code, signal) => {
       // `close` follows the pipe drains, so a final JSON record without a newline
       // is decoded before observers are detached and the launch promise settles.
+      if (options.jsonObjectOutput && !failure && jsonBytes) {
+        try {
+          const event: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(jsonObject)));
+          consumeOutput(Buffer.from(JSON.stringify(event)));
+        } catch { /* Missing or malformed output cannot complete this call. */ }
+      }
       decoder.end();
       transcript?.end();
       closing = true;

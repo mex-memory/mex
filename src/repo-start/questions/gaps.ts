@@ -25,7 +25,7 @@ export const MAX_QUESTIONS = 5;
 const ORDER: readonly GapType[] = ["rule-conflict", "test-command", "layer-exception", "hand-edited"];
 
 export interface Choice { key: string; label: string; }
-export interface Resolution { proposals: Proposal[]; subject: string; }
+export interface Resolution { proposals: Proposal[]; subject: string; summary?: string; }
 export interface Gap {
   /** Stable while the evidence is: a hash of the type, the subject and what setup saw. */
   id: string;
@@ -33,6 +33,7 @@ export interface Gap {
   subject: string;
   /** One line, in plain words. */
   question: string;
+  title?: string;
   /** The evidence, a line or two. */
   details: string[];
   choices: Choice[];
@@ -96,6 +97,12 @@ function ruleConflicts(input: GapInput): Gap[] {
     if (!checkA || !checkB) continue;
     const timeA = lastChanged(input.root, a.path), timeB = lastChanged(input.root, b.path);
     const question = `${code(a.path)} says ${code(onlyA[0]!)}, ${code(b.path)} says ${code(onlyB[0]!)} (under "${item.heading}"). Which is right?`;
+    const isTest = /^test/iu.test(item.heading ?? "");
+    const ciRuns = (name: string) => input.recipes?.recipes.some(recipe =>
+      recipe.command === name && recipe.origin.some(origin => origin.file.startsWith(".github/workflows/"))) ?? false;
+    const ciA = ciRuns(onlyA[0]!), ciB = ciRuns(onlyB[0]!);
+    const suggested = ciA !== ciB ? ciA ? "1" : "2" : timeA !== timeB ? timeA > timeB ? "1" : "2" : undefined;
+    const answer = (name: string, path: string) => isTest ? `the test command is ${code(name)}` : `follow ${path} under "${item.heading}"`;
     const side = (winner: typeof a, lose: string[], win: string[], loser: typeof b, checks: ProposedCheck[], date: string, answer: string): Proposal => proposal({
       key: `conflict\n${item.heading}\n${winner.path}\n${loser.path}`, kind: "decision",
       text: `Under "${item.heading}", follow ${winner.path}: ${win.slice(0, 3).map(code).join(", ")}. ${loser.path} says ${lose.slice(0, 3).map(code).join(", ")}, which is out of date.`,
@@ -106,13 +113,15 @@ function ruleConflicts(input: GapInput): Gap[] {
     });
     out.push({
       id: id("rule-conflict", item.heading, a.path, b.path, onlyA.join("\n"), onlyB.join("\n")), type: "rule-conflict", subject: `${a.path}\n${b.path}\n${item.heading}`,
-      question, details: [],
-      choices: [{ key: "1", label: `${a.path} is right` }, { key: "2", label: `${b.path} is right` }],
-      ...(timeA !== timeB ? { suggested: timeA > timeB ? "1" : "2" } : {}),
+      title: isTest ? "Your rule files disagree on the test command" : "Your rule files disagree",
+      question: "Which is right?",
+      details: [`${a.path} says ${code(onlyA[0]!)}.${ciA ? " CI runs it." : ""}`, `${b.path} says ${code(onlyB[0]!)} (under "${item.heading}").${ciB ? " CI runs it." : ""}`],
+      choices: [{ key: "1", label: `${code(onlyA[0]!)} — ${a.path} is right` }, { key: "2", label: `${code(onlyB[0]!)} — ${b.path} is right` }],
+      ...(suggested ? { suggested } : {}),
       resolve: (choice, date) => {
         const subject = `${a.path}\n${b.path}\n${item.heading}`;
-        if (choice === "1") return { subject, proposals: [side(a, onlyB, onlyA, b, [checkA, checkB], date, `${a.path} is right.`)] };
-        if (choice === "2") return { subject, proposals: [side(b, onlyA, onlyB, a, [checkB, checkA], date, `${b.path} is right.`)] };
+        if (choice === "1") return { subject, summary: answer(onlyA[0]!, a.path), proposals: [side(a, onlyB, onlyA, b, [checkA, checkB], date, `${a.path} is right.`)] };
+        if (choice === "2") return { subject, summary: answer(onlyB[0]!, b.path), proposals: [side(b, onlyA, onlyB, a, [checkB, checkA], date, `${b.path} is right.`)] };
         return { subject, proposals: [] };
       },
     });
@@ -141,11 +150,15 @@ function testCommands(input: GapInput): Gap[] {
     });
     const ci = [one, two].filter(inCi);
     out.push({
-      id: id("test-command", pkg, one.command, two.command), type: "test-command", subject: pkg, question, details: [],
-      choices: [{ key: "1", label: code(one.command) }, { key: "2", label: code(two.command) }, { key: "3", label: "both" }],
+      id: id("test-command", pkg, one.command, two.command), type: "test-command", subject: pkg,
+      title: pkg ? `${code(pkg)} has two test commands` : "This repo has two test commands",
+      question: "Which should your agents run?",
+      details: [one, two].map(command => `${where(command)} defines ${code(command.command)}.${inCi(command) ? " CI runs it." : ""}`),
+      choices: [{ key: "1", label: code(one.command) }, { key: "2", label: code(two.command) }, { key: "3", label: "Both" }],
       ...(ci.length === 1 ? { suggested: ci[0] === one ? "1" : "2" } : {}),
       resolve: (choice, date) => ({
         subject: pkg,
+        summary: choice === "3" ? `the test commands are ${code(one.command)} and ${code(two.command)}` : `the test command is ${code(choice === "2" ? two.command : one.command)}`,
         proposals: choice === "1" ? [recipe(one, date, one.command)] : choice === "2" ? [recipe(two, date, two.command)]
           : choice === "3" ? [recipe(one, date, "Both."), recipe(two, date, "Both.", true)] : [],
       }),
@@ -167,11 +180,15 @@ function layerExceptions(input: GapInput): Gap[] {
     const where = rule.files.length ? ` (${rule.files.slice(0, 2).map(code).join(", ")})` : "";
     const question = `${code(rule.from)} imports ${code(name)} in ${plural(rule.back, "place")}${where}, while ${plural(rule.imports, "import")} go the other way. Is that allowed?`;
     out.push({
-      id: id("layer-exception", rule.from, rule.to, String(rule.back)), type: "layer-exception", subject: `${rule.from}\n${rule.to}`, question, details: [],
-      choices: [{ key: "1", label: "no, keep it one-way" }, { key: "2", label: "yes, it's allowed" }],
+      id: id("layer-exception", rule.from, rule.to, String(rule.back)), type: "layer-exception", subject: `${rule.from}\n${rule.to}`,
+      title: rule.back === 1 ? "One import breaks a layer rule" : "A few imports break a layer rule",
+      question: "Is that allowed?",
+      details: [question.replace(/ Is that allowed\?$/u, "")],
+      choices: [{ key: "1", label: `No — keep ${rule.from} away from ${rule.to}` }, { key: "2", label: rule.back === 1 ? "Yes — that import is fine" : "Yes — those imports are fine" }],
       suggested: "1",
       resolve: (choice, date) => ({
         subject: `${rule.from}\n${rule.to}`,
+        summary: `${code(rule.from)} must not import ${code(rule.to)}`,
         proposals: choice !== "1" ? [] : [proposal({
           key: `layer\n${rule.from}\n${rule.to}`, kind: "rule",
           text: `${code(rule.from)} must not import ${code(name)} (${code(rule.to)}): keep the dependency one-way. ${plural(rule.back, "import")} still ${rule.back === 1 ? "does" : "do"} today; don't add more.`,
@@ -194,8 +211,11 @@ function handEdited(input: GapInput): Gap[] {
   return facts.hand_edited.filter(item => markers.has(item.path)).map(item => {
     const question = `${code(item.path)} has a generated header, but ${plural(item.commits, "commit")} changed only that file. Should changes go through its generator?`;
     return {
-      id: id("hand-edited", item.path), type: "hand-edited" as const, subject: item.path, question, details: [],
-      choices: [{ key: "1", label: "yes, change the generator" }, { key: HAND_EDITS_FINE, label: "no, hand edits are fine" }],
+      id: id("hand-edited", item.path), type: "hand-edited" as const, subject: item.path,
+      title: "A generated file was edited by hand",
+      question: "Should changes go through its generator?",
+      details: [question.replace(/ Should changes go through its generator\?$/u, "")],
+      choices: [{ key: "1", label: "Yes — change the generator" }, { key: HAND_EDITS_FINE, label: "No — hand edits are fine" }],
       suggested: "1",
       // A yes confirms the pitfall code facts already keeps for the header; a no makes code facts drop it.
       resolve: () => ({ subject: item.path, proposals: [] }),

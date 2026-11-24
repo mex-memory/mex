@@ -36,6 +36,16 @@ export function buildModelCommand(agent: ModelAgent, instruction: string, option
       "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
     env: { MEX_BACKGROUND: "1" },
   };
+  if (agent === "gemini") return {
+    command: agent,
+    args: ["--prompt", MODEL_SYSTEM_PROMPT, "--output-format", "json", "--approval-mode", "plan", "--model", model],
+  };
+  if (agent === "copilot") return {
+    command: agent,
+    args: ["--prompt", instruction, "--output-format=json", "--available-tools=view", "--allow-tool=read",
+      "--no-ask-user", "--no-custom-instructions", "--no-auto-update", "--no-bash-env", "--disallow-temp-dir", "--disable-builtin-mcps",
+      "--disable-mcp-server=computer-use", ...(model === "default" ? [] : ["--model", model])],
+  };
   return {
     command: agent,
     args: ["exec", "--json", "--ephemeral", "--disable", "hooks",

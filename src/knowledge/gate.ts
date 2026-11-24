@@ -128,7 +128,7 @@ const backticked = (text: string) => [...text.matchAll(/`([^`\n]+)`/gu)].map(mat
 
 /** Producers other than learn deeper always write active entries; learn deeper may wait for a tick, never demote. */
 function proposedStatus(p: Proposal, old: KnowledgeEntry["mex"]["status"] | undefined): KnowledgeEntry["mex"]["status"] {
-  if (p.status !== undefined && p.producer !== "learn-deeper") invalid("Only learn deeper proposes entries that wait for a tick.");
+  if (p.status !== undefined && p.producer !== "learn-deeper") invalid("Only deep analysis proposes entries that wait for a tick.");
   if (old === "active" || old === "retired") return old;
   return p.producer === "learn-deeper" && p.status ? p.status : old ?? "active";
 }

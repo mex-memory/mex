@@ -9,15 +9,20 @@
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { stripVTControlCharacters } from "node:util";
+import { relativeTime } from "../shared/relative-time.js";
 import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { detectCaller, type Caller } from "./caller.js";
 import { classifyPlace, displayPath, type Place } from "./place.js";
 import { renderDone, renderFindings, renderHeader, renderNotes, screenMode, type Finding } from "./screen.js";
 import { renderNext } from "./screen.js";
 import { Rich, RichStep, RICH_MIN_COLUMNS } from "./rich.js";
+import type { DeeperContext } from "./deeper-steps.js";
+import { readActivity, readOutcome } from "../learn-deeper/activity.js";
 import { readBoundedTextFile } from "../knowledge/files.js";
 import type { RuleScan } from "../knowledge/rule-files.js";
 import type { NativeAgent } from "../knowledge/agents-in-use.js";
+import { detectAgents } from "../model-runner/agents.js";
 import type { PluginAgent } from "../install/index.js";
 import type { Agent } from "../install/settings.js";
 import type { FinishJob } from "./finish.js";
@@ -90,27 +95,33 @@ function message(error: unknown): string {
 }
 
 interface HookSummary {
-  note?: string; notices: string[]; agents?: Array<Agent | PluginAgent>; names?: string[];
+  note?: string; notices: string[]; details?: string[]; agents?: Array<Agent | PluginAgent>; names?: string[];
   /** The hooks are the Node fallback, which only fails open: nothing reaches an agent. */
   off?: boolean;
 }
-async function installHooks(): Promise<HookSummary> {
+async function installHooks(env: NodeJS.ProcessEnv): Promise<HookSummary> {
   try {
     const { installAgents, AGENT_NAMES } = await import("../install/index.js");
     const result = await installAgents();
-    if (!result.agents.length) return { note: "No supported agent found. Install Claude Code or Codex (the app, an editor extension or the CLI), Copilot CLI or OpenCode, open it once, then run `mex install`.", notices: [] };
+    const details = detectAgents({ env, includeSessions: false })
+      .filter(status => status.installed && (!status.runner.ok || !result.agents.some(agent => agent === status.id)))
+      .map(status => {
+        if (!status.runner.ok) return `${status.name} · ${status.runner.reason}`;
+        return `${status.name} · deep analysis only${status.hooks === "none" ? " · MEX hooks don't support it yet" : " · run mex install to add hooks"}`;
+      });
+    if (!result.agents.length) return { note: "Agents: no hooks installed. Run `mex install` after opening a supported agent.", notices: [], details };
     const where = result.agents.map(agent => AGENT_NAMES[agent]);
     const off = result.runner === "node";
     return {
-      agents: result.agents, names: where, off,
+      agents: result.agents, names: where, off, details,
       // Said on every run while it lasts: the person can't see it any other way.
-      note: off ? `Hooks: ${list(where)}, in your user settings, but MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX.`
-        : `Hooks: ${list(where)}, in your user settings.`,
+      note: off ? `Agents: ${list(where)} · MEX's native hook is missing, so nothing reaches them yet. Reinstall MEX.`
+        : `Agents: ${list(where)} · hooks installed in your user settings`,
       // The trust and timing notices matter when hooks first change; repeat runs stay quiet.
       notices: result.changes.length ? result.notices.filter(notice => !/native hook isn't installed/u.test(notice)) : [],
     };
   } catch (error) {
-    return { note: `Hooks weren't installed: ${message(error)} (\`mex install\` shows the details).`, notices: [] };
+    return { note: `Agents: hooks weren't installed · ${message(error)} (\`mex install\` shows the details).`, notices: [] };
   }
 }
 
@@ -127,8 +138,9 @@ export async function readAgentMemory(root: string): Promise<NotesFound | undefi
 }
 
 /** Read the repo's rule files (knowledge-05) and save their scan; the line names `mex rules` when some need review. */
-export function ruleFindings(cache: RuleScan, root: string): Finding[] {
-  const review = cache.review.filter(item => item.kind === "conflict" || item.kind === "stale");
+export function ruleFindings(cache: RuleScan, root: string, resolved: readonly string[] = []): Finding[] {
+  const review = cache.review.filter(item =>
+    item.kind === "stale" || item.kind === "conflict" && !resolved.includes([...item.paths, item.heading].join("\n")));
   const stale = review.filter(item => item.kind === "stale").length;
   const details = review.slice(0, 3).map(item => {
     const locations = item.paths.map(path => {
@@ -189,6 +201,22 @@ export async function askYesNo(lines: readonly string[], write: (line: string) =
   } finally { rl.close(); }
 }
 
+function hookAttention(hooks: HookSummary): Finding[] {
+  return [
+    ...(hooks.off && hooks.note ? [hooks.note] : []),
+    ...hooks.notices.filter(notice => /\/hooks/u.test(notice)),
+  ].map(text => ({ state: "attention", text: /codex.*\/hooks/iu.test(text) ? "in Codex, trust MEX's hooks once (/hooks)." : text }));
+}
+
+async function reviewAfterAnalysis(context: DeeperContext, jobId?: string): Promise<number | undefined> {
+  try {
+    const { reviewLearned } = await import("./review-list.js");
+    const review = await reviewLearned(context);
+    if (review) return review.kept;
+    if (jobId) return readOutcome(context.location, jobId)?.keptAutomatically;
+  } catch { /* the list waits for the next mex in a terminal */ }
+}
+
 export async function runRepoStart(options: RepoStartOptions = {}): Promise<RepoStartResult> {
   const env = options.env ?? process.env;
   const write = options.write ?? ((line: string) => process.stdout.write(`${line}\n`));
@@ -205,7 +233,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   const live = <T>(label: string, work: () => Promise<T> | T): Promise<T> => step ? step.run(label, work) : Promise.resolve().then(work);
   const install = options.install ?? (env.MEX_INSTALL_AUTO !== "0" && env.MEX_BACKGROUND !== "1");
 
-  const hooks: HookSummary = install ? await installHooks() : { notices: [] };
+  const hooks: HookSummary = install ? await installHooks(env) : { notices: [] };
   killAt("installed", env);
 
   const place = classifyPlace(options.cwd ?? process.cwd());
@@ -285,6 +313,38 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     killAt("hidden", env);
 
     const { automaticWorkEnabled } = await import("../controls/index.js");
+    if (git && interactive && process.stdin.isTTY && automaticWorkEnabled(writer, projectId)) {
+      const [{ learnDeeperStep, watchLearnDeeper, isAnalysisActive }, { recordLocation }, { readFactFile }] = await Promise.all([
+        import("./deeper-steps.js"), import("../record/location.js"), import("./facts.js"),
+      ]);
+      const location = recordLocation();
+      const job = await learnDeeperStep(projectId, location);
+      if (job && isAnalysisActive(job)) {
+        writer.close();
+        writer = undefined;
+        const name = basename(displayPath(checkout.path));
+        const setup = readFactFile<{ version: number; last_run: string; found?: { recipes?: number } }>(location, projectId, "setup.json");
+        const age = setup ? relativeTime(setup.last_run) : undefined;
+        const status = { state: "ok" as const, text: `Set up ${age ?? "earlier"}` };
+        for (const line of rich ? [...rich.header(name), ...rich.rows([status])] : [...renderHeader({ name }, mode), ...renderFindings([status], mode)]) write(line);
+        const activity = readActivity(location, job.jobId);
+        if (job.state === "running" && activity) {
+          const resume = { state: "background" as const, text: `Deep analysis: running with ${activity.agent} · picking up the live view` };
+          for (const line of rich ? rich.rows([resume]) : renderFindings([resume], mode)) write(line);
+        }
+        const context = { root: checkout.path, projectId, location, write, rich, mode, interactive, env };
+        const watched = await watchLearnDeeper(context, job.jobId);
+        if (!watched || isAnalysisActive(watched)) return { exitCode: 0, place: place.kind, projectId, turnedOn: true };
+        const learned = await reviewAfterAnalysis(context, watched.jobId);
+        const summary = (rich ?? new Rich()).summary({ name, ms: elapsed(), commandsSaved: !!setup?.found?.recipes, findings: hookAttention(hooks), learned, hooksOff: hooks.off });
+        if (rich) {
+          for (const line of [...rich.next({ learning, agents: hooks.names, hooksOff: hooks.off }), ...rich.end(summary)]) write(line);
+        } else {
+          for (const line of renderNext({ short: false, learning, agents: hooks.names, hooksOff: hooks.off, summary: summary.map(stripVTControlCharacters) }, mode)) write(line);
+        }
+        return { exitCode: 0, place: place.kind, projectId, turnedOn: true };
+      }
+    }
     if (!automaticWorkEnabled(writer, projectId)) {
       findings.push({ state: "attention", text: "MEX is off everywhere, so nothing was read or queued. `mex on --all` turns it back on." });
     } else {
@@ -312,9 +372,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       killAt("queued", env);
       writer.close(); writer = undefined;
       if (rich) {
-        for (const line of rich.header(basename(displayPath(checkout.path)), hidden)) write(line);
-        // The hooks went in first, so they lead the list.
-        if (hooks.note) for (const line of rich.rows([{ state: hooks.agents?.length && !hooks.off ? "ok" : "attention", text: hooks.note }])) write(line);
+        for (const line of rich.header(basename(displayPath(checkout.path)))) write(line);
         showNew();
       }
 
@@ -393,17 +451,14 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
   } finally { writer?.close(); }
 
   if (git && existsSync(join(checkout.path, ".mex", "ROUTER.md"))) notes.push("This repo has MEX 0.8 files. Run mex upgrade to bring them into 0.9 (preview first, nothing changes until you apply).");
-  if (hooks.note && !rich) notes.push(hooks.note);
   notes.push(...hooks.notices);
   const name = basename(displayPath(checkout.path));
-  // Waiting, the time goes on the closing "Done in" line; a header time would only be the first part.
-  const finishing = waiting && finishJobs.length > 0;
   if (rich) {
     // The header and hooks row went out before the free step; print anything a turned-off checkout found.
-    if (!shown && !rebuildRules) for (const line of rich.header(name, hidden)) write(line);
+    if (!shown && !rebuildRules) for (const line of rich.header(name)) write(line);
     showNew();
   } else {
-    for (const line of renderHeader({ name, ...(finishing ? {} : { ms: elapsed() }), costUsd: 0, hidden }, mode)) write(line);
+    for (const line of renderHeader({ name }, mode)) write(line);
     if (mode.color) write("");
     if (caller === "person" && process.stdout.isTTY) for (const line of renderNotes(["Found"], mode)) write(line);
     for (const line of renderFindings(findings, mode)) write(line);
@@ -434,13 +489,20 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       finishWriter.close();
     }
   }
-  // After the free results: learn deeper (one paid offer, a person only), then the questions
-  // while it runs. A test offer in the offer registry takes learn deeper's place.
+  if (hooks.note && rebuildRules) {
+    const agents = [{
+      state: hooks.agents?.length && !hooks.off ? "ok" : "attention", text: hooks.note,
+      details: hooks.details?.map(line => rich?.dim(line) ?? line),
+    }] satisfies Finding[];
+    for (const line of rich ? rich.rows(agents) : renderFindings(agents, mode)) write(line);
+  }
+
+  // A test offer in the registry takes the place of deep analysis.
   const { dueOffer } = await import("./offers.js");
   const context = { projectId, root: checkout.path };
   const offer = exitCode ? undefined : dueOffer(context);
   const proceed = !exitCode && !exitNow && git && rebuildRules;
-  let learnJob: SetupStep | undefined, answers = 0;
+  let learnJob: SetupStep | undefined, answers = 0, resolvedConflicts: string[] = [];
   if (proceed) {
     const [{ offerLearnDeeper, questionsStep }, { recordLocation }, { readFactFile }] = await Promise.all([
       import("./deeper-steps.js"), import("../record/location.js"), import("./facts.js")]);
@@ -454,6 +516,7 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       const facts = readFactFile<CodeFactsFile>(location, projectId, "code-facts.json");
       const asked = await questionsStep({ ...deeper, scan: ruleScan, recipes: recipesFile, facts, ask: options.answer, learning: !!learnJob });
       answers = asked.saved;
+      resolvedConflicts = asked.resolvedConflicts ?? [];
       if (asked.waiting) notes.push(`${asked.waiting === 1 ? "1 setup question waits" : `${asked.waiting} setup questions wait`} for you: run \`mex\` in a terminal to answer.`);
     } catch { /* questions never stop the screen */ }
   }
@@ -478,33 +541,33 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       notes.push(`Rule files could not be rebuilt: ${message(error).replace(/\.$/u, "")}. Run mex again to retry.`);
     }
   }
+  let learned: number | undefined;
+  if (!exitNow) {
+    const { recordLocation } = await import("../record/location.js");
+    const deeper = { root: checkout.path, projectId, location: recordLocation(), write, rich, mode, interactive, env };
+    if (learnJob && interactive && process.stdin.isTTY) {
+      const { watchLearnDeeper, isAnalysisActive } = await import("./deeper-steps.js");
+      const watched = await watchLearnDeeper(deeper, learnJob.jobId);
+      if (!watched || isAnalysisActive(watched)) return { exitCode, place: place.kind, projectId, turnedOn: true };
+    }
+    learned = await reviewAfterAnalysis(deeper, learnJob?.jobId);
+  }
   for (const line of rich ? rich.notes(notes) : renderNotes(notes, mode)) write(line);
+  const short = caller !== "person" || !process.stdout.isTTY;
+  const outstanding = ruleScan && resolvedConflicts.length
+    ? [...findings.filter(finding => !/^\d+ lines? in your rule files/u.test(finding.text)), ...ruleFindings(ruleScan, checkout.path, resolvedConflicts)]
+    : findings;
+  const closing = !exitNow && (rich || !short) ? (rich ?? new Rich()).summary({
+    name, ms: elapsed(), commandsSaved, findings: [...outstanding, ...later, ...hookAttention(hooks)], answers, learned, hooksOff: hooks.off,
+  }) : undefined;
   if (rich) {
     for (const line of rich.next({ learning, agents: hooks.names, hooksOff: hooks.off })) write(line);
-    // The mascot closes the run with what it found.
-    if (!exitNow) {
-      const deep = learnJob && ["queued", "running", "waiting"].includes(learnJob.state) ? (learnJob.state === "running" ? "running" : "queued") : undefined;
-      for (const line of rich.end(rich.summary({ name, ms: elapsed(), commandsSaved, findings: [...findings, ...later], answers, hooksOff: hooks.off, ...(deep ? { learning: deep } : {}) }))) write(line);
-    }
+    if (closing) for (const line of rich.end(closing)) write(line);
   } else {
-    for (const line of renderNext({ short: caller !== "person" || !process.stdout.isTTY, learning, agents: hooks.names, hooksOff: hooks.off }, mode)) write(line);
-    if (waiting && finishJobs.length && !exitNow) for (const line of renderDone(elapsed(), mode)) write(line);
+    for (const line of renderNext({ short, learning, agents: hooks.names, hooksOff: hooks.off, summary: closing?.map(stripVTControlCharacters) }, mode)) write(line);
+    if (!closing && waiting && finishJobs.length && !exitNow && !learnJob) for (const line of renderDone(elapsed(), mode)) write(line);
   }
   const ended = exitNow ? { exitNow: true as const } : {};
-  // A person at a rich terminal watches learn deeper until it ends or a key leaves it running.
-  if (rich && learnJob && !exitNow) {
-    const [{ watchLearnDeeper }, { recordLocation }] = await Promise.all([import("./deeper-steps.js"), import("../record/location.js")]);
-    try { await watchLearnDeeper({ root: checkout.path, projectId, location: recordLocation(), write, rich, mode, interactive, env }, learnJob.jobId); }
-    catch { /* the job runs on in the background either way */ }
-  }
-  // A finished learning run's rules wait for the person's ticks: now, or at the next `mex` in a terminal.
-  if (!exitNow) {
-    try {
-      const { reviewLearned } = await import("./review-list.js");
-      await reviewLearned({ root: checkout.path, projectId, write, rich, mode, interactive, env });
-    } catch { /* the list waits for the next mex in a terminal */ }
-  }
-
   if (!offer) return { exitCode, place: place.kind, projectId, turnedOn: true, ...ended };
   const summary = { question: offer.question, estimate: offer.estimate, command: offer.command };
   if (!interactive) {

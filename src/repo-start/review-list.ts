@@ -1,8 +1,7 @@
 /**
- * The learn-deeper review list (ticket part H): at the end of a run, the person sees what was learned
- * and keeps or drops each rule. Active trials are pre-ticked and become permanent when saved.
- * Proposed rules wait for a tick before delivery.
- * The replay shows rules that would have stopped an edit or appeared on a file touch.
+ * Review the rules a deep analysis run learned. Rules the evidence gate kept are already live as trials; they aren't
+ * asked, and saving the review keeps them for good. At most five rules that wait for a person are asked: a tick keeps
+ * one, and an unticked one keeps waiting. The replay shows rules that would have stopped an edit or appeared on a file touch.
  *
  * Only a person at a terminal is asked. Anyone else gets one line, and the next `mex` in a terminal asks.
  */
@@ -12,6 +11,12 @@ import { tombstone } from "../knowledge/state.js";
 import { openRecord, type RecordWriter } from "../record/index.js";
 import { readKey } from "./keys.js";
 import type { Rich } from "./rich.js";
+import { multiSelect } from "./select.js";
+import { readOutcome, type DeepOutcome } from "../learn-deeper/activity.js";
+import type { ReviewRow } from "../learn-deeper/pipeline.js";
+import { ASK_LIMIT } from "../learn-deeper/plan.js";
+import { VERIFY_ESTIMATE } from "../learn-deeper/verify.js";
+import { agentName } from "../model-runner/agents.js";
 import type { ScreenMode } from "./screen.js";
 import { renderNotes } from "./screen.js";
 
@@ -30,16 +35,32 @@ export interface ReviewListContext {
   keys?: () => Promise<string>;
   /** Tests: the model runner the verify pass uses. */
   model?: typeof import("../model-runner/index.js").runModel;
+  outcome?: (jobId: string) => DeepOutcome | null;
 }
 
 type ReviewItem = {
-  row: import("../learn-deeper/pipeline.js").ReviewRow;
+  row: ReviewRow;
   entry: KnowledgeEntry;
   raw: string;
 };
 interface Pending { jobId: string; items: ReviewItem[] }
 type Decision = "keep" | "wait" | "drop";
-const PAGE_SIZE = 5;
+
+export async function listLearnedRules(projectPath: string, json = false): Promise<void> {
+  const [{ knowledgeProject }, { readNotes }, { isLearnedEntry, parseEntry }] = await Promise.all([
+    import("../knowledge/context.js"), import("../knowledge/personal-store.js"), import("../knowledge/entry.js"),
+  ]);
+  const project = knowledgeProject({ projectPath });
+  const rules = [...readNotes(project.location.home, project.projectId).files.values()].flatMap(raw => {
+    try {
+      const { mex } = parseEntry(raw);
+      return isLearnedEntry(mex) ? [{ id: mex.id, status: mex.status, rule: clean(mex.one_line, false) }] : [];
+    } catch { return []; }
+  }).sort((a, b) => a.id.localeCompare(b.id));
+  if (json) console.log(JSON.stringify({ ok: true, rules }));
+  else if (!rules.length) console.log("No learned rules in this repo yet.");
+  else for (const { id, status, rule } of rules) console.log(`${id}  ${status}  ${rule}`);
+}
 
 async function pending(writer: RecordWriter, projectId: string): Promise<Pending | undefined> {
   const [{ reviewRows, reviewRowsKey }, { snapshotNotes }, { parseEntry, isLearnedEntry }, { learnedRefused, learnedReviewedKey }] = await Promise.all([
@@ -82,19 +103,21 @@ function wrap(line: string, width: number): string[] {
   return lines;
 }
 
-function rowLines({ entry, row }: ReviewItem, slot: number, index: number, decision: Decision, ascii: boolean): string[] {
-  const mark = decision === "keep" ? "[x]" : decision === "drop" ? "[-]" : "[ ]";
+function reviewDetails({ entry, row }: ReviewItem, ascii: boolean, rich?: Rich): string[] {
   const claim = clean(entry.mex.one_line, ascii);
   const body = clean(entry.text, ascii);
   const reason = body === claim ? "" : body.startsWith(claim + " ") ? body.slice(claim.length + 1) : body;
-  const why = clean(entry.mex.source.label ?? "", ascii)
+  const why = reason || clean(entry.mex.source.label ?? "", ascii)
     || (row.proven ? "Proven on the code." : row.support >= 2 ? "Seen on several PRs." : "Seen on one PR.");
   const fix = clean(entry.mex.fix?.snippet ?? "", ascii);
+  const ref = clean(row.link || entry.mex.source.ref, ascii);
+  const pr = /\/(?:pull|merge_requests)\/(\d+)(?:[/?#]|$)/u.exec(ref);
+  const source = clean(row.label, ascii);
   return [
-    `${mark} ${slot}. ${claim}${index === slot ? "" : ` (rule ${index})`}`,
-    `    Why: ${reason || why}`,
-    ...(fix ? [`    Fix: ${fix.length > 120 ? fix.slice(0, 117) + "..." : fix}`] : []),
-    `    Source: ${clean(entry.mex.source.ref, ascii)}`,
+    rich ? rich.dim(`Why: ${rich.codeTint(why)}`) : `Why: ${why}`,
+    ...(fix ? [`Fix: ${fix.length > 120 ? fix.slice(0, 117) + "..." : fix}`] : []),
+    rich ? `${pr ? rich.link(`PR #${pr[1]}`, ref) : rich.codeTint(ref)}${rich.dim(` · ${source}`)}`
+      : `Source: ${pr ? `PR #${pr[1]} · ` : ""}${ref}${source ? ` · ${source}` : ""}`.replace(/·/gu, "-"),
   ];
 }
 
@@ -114,72 +137,68 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
     for (const line of renderNotes([`${count === 1 ? "1 learned rule waits" : `${count} learned rules wait`} for your review: run \`mex\` in a terminal.`], context.mode)) context.write(line);
     return undefined;
   }
-  const items = [...list.items].sort((a, b) => Number(a.row.route === "process-rule") - Number(b.row.route === "process-rule"));
-  const decisions: Decision[] = items.map(({ entry }) => entry.mex.status === "active" ? "keep" : "wait");
-  const rewrites = new Map<string, string>();
-  const waiting = decisions.filter(decision => decision === "wait").length;
-  out([`Learn deeper learned ${items.length} ${items.length === 1 ? "rule" : "rules"} from your team.`,
-    ...(waiting ? [`${waiting} ${waiting === 1 ? "waits" : "wait"} for your tick.`] : [])]);
+  const outcome = context.outcome ? context.outcome(list.jobId) : readOutcome({ home: context.home }, list.jobId);
+  const automatic = outcome ? list.items.filter(({ entry, row }) => row.status === "active" && entry.mex.status === "active") : [];
+  // Rules the gate kept are live as trials. Only rules that wait for a person are asked: the best supported ones,
+  // shown in the run's own order.
+  const waiting = list.items.filter(item => !automatic.includes(item));
+  const asked = new Set(!outcome ? waiting : [...waiting].sort((a, b) => b.row.support - a.row.support
+    || Number(b.row.proven) - Number(a.row.proven) || a.row.entryId.localeCompare(b.row.entryId)).slice(0, ASK_LIMIT));
+  const items = waiting.filter(item => asked.has(item));
+  const later = waiting.length - items.length;
+  const rich = context.rich;
+  const counts = outcome
+    ? `${outcome.learned} learned · ${automatic.length} passed the checks · ${items.length} to confirm`
+    : `${list.items.length} learned · ${items.length} to confirm`;
+  const title = rich ? rich.section("YOUR TEAM'S RULES", counts) : [`Your team's rules · ${counts}`.replace(/·/gu, "-"), ""];
+  const replay = new Map<string, string[]>();
   try {
     const { pastEdits, wouldFire } = await import("../learn-deeper/would-fire.js");
     const fired = wouldFire(items.map(item => item.raw), await pastEdits(context.root), context.env);
     for (const item of fired) {
-      const index = items.findIndex(({ row }) => row.entryId === item.entryId);
-      if (index < 0) continue;
       const where = clean(`${item.commit.slice(0, 7)} ${item.path}${item.line ? `:${item.line}` : ""}`, context.mode.ascii);
-      out([`Rule ${index + 1} would have ${item.kind === "show" ? "been shown" : "stopped an edit"} at ${where}. Hypothetical replay of past commits, not an observed stop.`]);
+      const lines = replay.get(item.entryId) ?? [];
+      lines.push(`Would have ${item.kind === "show" ? "been shown" : "stopped an edit"} at ${where}.`);
+      replay.set(item.entryId, lines);
     }
   } catch { /* A replay can be unavailable when git or the hook is missing. */ }
 
   const next = context.keys ?? (() => readKey());
-  const quit = (key: string) => key === "quit" || key === "q";
-  const pages = Math.ceil(items.length / PAGE_SIZE);
-  let page = 0, drop = false;
-  const renderRow = (index: number) => out(rowLines(items[index]!, index % PAGE_SIZE + 1, index + 1, decisions[index]!, context.mode.ascii));
-  const renderPage = () => {
-    const start = page * PAGE_SIZE;
-    out([`Page ${page + 1} of ${pages}`]);
-    for (let index = start; index < Math.min(start + PAGE_SIZE, items.length); index++) {
-      if (items[index]!.row.route === "process-rule" && (index === start || items[index - 1]?.row.route !== "process-rule")) out(["Process rules"]);
-      renderRow(index);
-    }
-    out([
-      `1-${Math.min(PAGE_SIZE, items.length - start)} toggles a rule. q leaves without saving.`,
-      ...(waiting ? ["v then a number checks a waiting rule."] : []),
-      ...(page ? ["p goes back a page."] : []),
-      page + 1 < pages ? "Enter goes to the next page." : "Enter saves all decisions. d drops all unticked rules and saves.",
-    ]);
-  };
-  renderPage();
-  for (;;) {
-    const key = await next();
-    if (quit(key)) return undefined;
-    if (key === "p" && page > 0) { page--; renderPage(); continue; }
-    if (key === "enter" && page + 1 < pages) { page++; renderPage(); continue; }
-    if (page + 1 === pages && (key === "enter" || key === "d")) { drop = key === "d"; break; }
-    if (key !== "v" && !/^[1-5]$/u.test(key)) continue;
-    const pick = key === "v" ? await next() : key;
-    if (quit(pick)) return undefined;
-    if (!/^[1-5]$/u.test(pick)) continue;
-    const index = page * PAGE_SIZE + Number(pick) - 1;
-    const item = items[index];
-    if (!item) continue;
-    if (key === "v") {
-      if (item.entry.mex.status !== "proposed") continue;
+  const rewrites = new Map<string, string>(), drops = new Set<string>();
+  const canCheck = items.some(item => item.entry.mex.status === "proposed");
+  const checkHint = `v check this rule against the code (about ${VERIFY_ESTIMATE / 1000}k tokens)`;
+  const summary = outcome ? "Rules that passed the checks are live now, and saving keeps them. Tick the ones below your agents should also get."
+    : "Tick the rules your agents should get.";
+  const selected = !items.length ? [] : await multiSelect(items.map(item => {
+    const claim = clean(item.entry.mex.one_line, context.mode.ascii);
+    const details = [...reviewDetails(item, context.mode.ascii, rich), ...(replay.get(item.row.entryId) ?? []).slice(0, 1)];
+    return { value: item, label: rich?.codeTint(claim) ?? claim, details, checked: item.entry.mex.status === "active" };
+  }), {
+    rich: rich ?? null,
+    title: [...title, ...(rich ? rich.text([summary]) : [summary]), ""],
+    hint: `↑↓ move · Space keep or leave waiting${canCheck ? ` · ${checkHint}` : ""} · Enter save`,
+    plainHint: `Enter saves. Type a number to keep a rule or leave it waiting.${canCheck ? " v then a number checks a rule." : ""}`,
+    ...(context.keys ? { read: next } : {}),
+    ...(rich ? {} : { write: text => out(text.trimEnd().split("\n")) }),
+    onCheck: canCheck ? async ({ value: item }) => {
+      if (item.entry.mex.status !== "proposed") return undefined;
       const result = await verifyOne(context, item.entry, next, out, rewrites);
-      if (result === "quit") return undefined;
-      if (!result) continue;
-      decisions[index] = result;
-    } else decisions[index] = decisions[index] === "keep" ? "wait" : "keep";
-    renderRow(index);
-  }
+      if (result === "quit") return null;
+      if (result === undefined) return undefined;
+      if (result === "drop") drops.add(item.row.entryId);
+      else drops.delete(item.row.entryId);
+      return result === "keep";
+    } : undefined,
+  });
+  if (!selected) return undefined;
 
   const [{ finishLearnedReview }, { queueNativeRebuild }] = await Promise.all([
     import("../knowledge/mutations.js"), import("../knowledge/native-queue.js")]);
   const options = { projectPath: context.root, ...(context.home ? { home: context.home } : {}) };
-  const reviewed = items.map(({ row, raw }, i) => ({ id: row.entryId, raw, support: row.support,
-    decision: drop && decisions[i] === "wait" ? "drop" as const : decisions[i]!,
-    ...(rewrites.get(row.entryId) ? { rewrite: rewrites.get(row.entryId) } : {}) }));
+  const reviewed = [...automatic.map(item => ({ id: item.row.entryId, raw: item.raw, support: item.row.support, decision: "keep" as const })),
+    ...items.map(item => ({ id: item.row.entryId, raw: item.raw, support: item.row.support,
+    decision: selected.includes(item) ? "keep" as const : drops.has(item.row.entryId) ? "drop" as const : "wait" as const,
+    ...(rewrites.get(item.row.entryId) ? { rewrite: rewrites.get(item.row.entryId) } : {}) }))];
   let result;
   try { result = finishLearnedReview(list.jobId, context.projectId, reviewed, options); }
   catch {
@@ -188,7 +207,18 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   }
   queueNativeRebuild(context.root, { local: true });
   const { kept, waiting: waits, dropped } = result;
-  out([`Kept ${kept}${waits ? `, ${waits} waiting` : ""}${dropped ? `, dropped ${dropped}` : ""}. Use \`mex recall <id>\` to see a kept rule.`]);
+  const still = waits + later;
+  const saved = `${kept} ${kept === 1 ? "rule" : "rules"} kept`;
+  const delivery = [still ? `${still} waiting` : "", dropped ? `${dropped} dropped` : "",
+    kept ? "your agents get them from the next session" : ""].filter(Boolean).map(part => " · " + part).join("");
+  const help = "`mex rules --learned` lists them all · `mex expand <id>` shows one with its evidence";
+  const ids = [...automatic, ...selected].map(({ entry }) => {
+    const claim = clean(entry.mex.one_line, context.mode.ascii);
+    return rich ? `  ${rich.dim(entry.mex.id)}  ${rich.codeTint(claim)}` : `  ${entry.mex.id}  ${claim}`;
+  });
+  if (rich) {
+    for (const line of rich.text([`${rich.paint("ok", "✓")} ${rich.bold(saved)}${rich.dim(delivery)}`, ...ids, rich.commands(help)])) context.write(line);
+  } else out([saved + delivery.replace(/·/gu, "-"), ...ids, help.replace(/·/gu, "-")]);
   if (waits || dropped) {
     try {
       const [{ expandTeam }, { sessionsActive }, { reviewBoundaryNotes }, { openRecord }] = await Promise.all([
@@ -211,9 +241,9 @@ async function verifyOne(context: ReviewListContext, entry: KnowledgeEntry, next
   const [{ chooseAgent }, { verifyRule, VERIFY_ESTIMATE, VERIFY_CEILING, VERIFY_TIMEOUT_MS }, { runModel, ModelRunError, ModelToolLimitError }, { gateEntry }, { references }] = await Promise.all([
     import("../learn-deeper/offer.js"), import("../learn-deeper/verify.js"), import("../model-runner/index.js"), import("../knowledge/gates.js"), import("../knowledge/references.js")]);
   const agent = chooseAgent(context.projectId);
-  if (!agent) { out(["Checking a rule needs Claude Code or Codex on PATH."]); return undefined; }
+  if (!agent) { out(["Checking a rule needs an agent's command-line tool, such as Claude Code or Codex."]); return undefined; }
   const claim = clean(entry.mex.one_line, context.mode.ascii);
-  out([`Ask ${agent === "claude" ? "Claude Code" : "Codex"} to check "${claim}"?`,
+  out([`Ask ${agentName(agent)} to check "${claim}"?`,
     `One read-only call with evidence from the checkout, up to ${VERIFY_TIMEOUT_MS / 60_000} minutes. About ${VERIFY_ESTIMATE.toLocaleString("en-US")} tokens, estimated. The ceiling is ${VERIFY_CEILING.toLocaleString("en-US")} tokens; an answer over it is discarded.`,
     "Enter checks it. q leaves the review. Any other key cancels the check."]);
   const consent = await next();

@@ -5,11 +5,13 @@
  * until the person saves their decisions. A stopped run supplies no answer.
  */
 import { z } from "zod";
-import type { ModelAgent, runModel } from "../model-runner/index.js";
+import type { runModel } from "../model-runner/index.js";
+import { modelAgent } from "../model-runner/agents.js";
 import { collectGateEvidence, evidenceFiles, repositoryEvidence, type EvidenceFile, type GateEvidence } from "./gate-evidence.js";
 import { PinnedTree, repoPath, revision } from "./git.js";
 import { excerpt, safeRaw } from "./harvest/evidence.js";
 import type { GateRule } from "./norm-gate.js";
+import type { LearningPlan } from "./plan.js";
 import { replyJson } from "./reply.js";
 
 /** Compatibility with the review screen's estimate line until its copy is updated. */
@@ -74,7 +76,7 @@ export function parseVerify(text: string, files: readonly EvidenceFile[]): Verif
   return { ...parsed.data, evidence };
 }
 
-export async function verifyRule(rule: { claim: string; scope: readonly string[]; why?: string }, root: string, agent: ModelAgent,
+export async function verifyRule(rule: { claim: string; scope: readonly string[]; why?: string }, root: string, agent: LearningPlan["agent"],
   model: typeof runModel): Promise<VerifyAnswer | undefined> {
   const head = await revision(root);
   const tree = head ? await PinnedTree.open(root, head) : undefined;
@@ -86,7 +88,7 @@ export async function verifyRule(rule: { claim: string; scope: readonly string[]
   const evidence = await collectGateEvidence(tree, [target]);
   const files = evidenceFiles(evidence, target.id);
   if (!files.some(file => file.lines.length)) return undefined;
-  const result = await model({ agent, setup: "best-only", role: "best", projectRoot: root, isolatedText: true,
+  const result = await model({ agent: modelAgent(agent), setup: "best-only", role: "best", projectRoot: root, isolatedText: true,
     purpose: "learn-deeper-verify", prompt: verifyPrompt(target, evidence), timeoutMs: VERIFY_TIMEOUT_MS });
   if (verifySpend(result.usage) > VERIFY_CEILING) return undefined;
   return parseVerify(result.text, files);

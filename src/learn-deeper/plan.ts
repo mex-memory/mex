@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LEARNING_AGENTS } from "../model-runner/agents.js";
 import { tokenCount } from "../model-runner/consent.js";
 import { ZERO, type Tokens } from "../record/usage.js";
 import type { Pull } from "./forge.js";
@@ -8,6 +9,9 @@ import { repository } from "./source.js";
 
 export const LEARN_KIND = "learn-deeper";
 export const LEARN_COMMAND = "mex learn";
+export const DEEP_ANALYSIS = "Deep analysis";
+/** The review list asks a person about at most this many waiting rules per run; the rest stay listed. */
+export const ASK_LIMIT = 5;
 export const PULLS_PER_BATCH = 4;
 export const BACKFILL_PULLS_PER_BATCH = 8;
 export const DOCS_PER_BATCH = 6;
@@ -31,7 +35,7 @@ const slug = z.object({ host: z.enum(["github.com", "gitlab.com"]), slug: z.stri
 export const Plan = z.object({
   checkout: z.string().min(1).max(4096), head: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u),
   origin: slug, source: slug, visibility: z.enum(["public", "private"]),
-  agent: z.enum(["claude", "codex"]), setup: z.enum(["mixed", "best-only"]), since: iso, until: iso,
+  agent: z.enum(LEARNING_AGENTS), setup: z.enum(["mixed", "best-only"]), since: iso, until: iso,
   preferred: z.array(z.string().refine(repoPath)).max(12),
   pulls: z.array(z.object({ number: z.number().int().positive(), at: iso }).strict()).max(MAX_PULLS),
   // Old approved jobs and weekly plans keep their original batch boundaries.
@@ -92,3 +96,5 @@ export function quoteTokens(pulls: number, docs: number, agent: LearningPlan["ag
 }
 
 export function quoteCeiling(estimate: number): number { return Math.floor(estimate * 1.5); }
+
+export function estimateMinutes(tokens: number): number { return Math.max(1, Math.ceil(tokens / 12_000)); }

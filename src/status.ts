@@ -21,6 +21,7 @@ import { KNOWLEDGE_LIMITS, parseEntry } from "./knowledge/entry.js";
 import { containedDirectory, readEntryFile } from "./knowledge/files.js";
 import { hintStatus } from "./knowledge/hints.js";
 import { DEFAULTS_REPORT, DEFAULTS_SETTING, defaultsScope, defaultsSummary, parseDefaultsReport, type DefaultsReport } from "./knowledge/agent-defaults.js";
+import { relativeTime } from "./shared/relative-time.js";
 
 type Switch = "on" | "off" | "unknown";
 export interface AgentStatus { agent: Agent; installed: boolean | null; events: number | null; lastCall?: string; }
@@ -189,8 +190,7 @@ export function statusProblems(view: StatusView): string[] {
 }
 
 function ago(at: string, now: number): string {
-  const minutes = Math.max(0, Math.floor((now - Date.parse(at)) / 60_000));
-  return minutes < 1 ? "less than 1 min ago" : minutes < 60 ? `${minutes} min ago` : minutes < 1440 ? `${Math.floor(minutes / 60)} h ago` : `${Math.floor(minutes / 1440)} d ago`;
+  return relativeTime(at, now) ?? "earlier";
 }
 export function formatStatus(view: StatusView, options: { doctor?: boolean; now?: number; ascii?: boolean } = {}): string {
   const now = options.now ?? Date.now(), lines: string[] = [];

@@ -105,10 +105,12 @@ export function sourceRead(store: Pick<RecordReader, "setting">, project: string
   return store.setting(project, localKey(plan, source)) === recordedSource(source);
 }
 
-export function saveSourceReads(writer: RecordWriter, project: string, plan: LearningPlan, sources: SourceRef[]): void {
+export function saveSourceReads(writer: RecordWriter, project: string, plan: LearningPlan, sources: SourceRef[], remember?: (key: string, value: string) => void): void {
   const set = writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
   for (const source of sources) if (source.id.startsWith("doc:") || source.id.startsWith("gh:") || source.id.startsWith("github:") || source.id.startsWith("gitlab:")) {
-    set.run(project, localKey(plan, source), recordedSource(source));
+    const key = localKey(plan, source), value = recordedSource(source);
+    remember?.(key, value);
+    set.run(project, key, value);
   }
 }
 

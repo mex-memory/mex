@@ -213,9 +213,10 @@ describe("the jobs list", () => {
       expect(text).not.toMatch(/job-\d|[0-9a-f]{8}-[0-9a-f]{4}/);
       expect(text).not.toContain("387 / 387");
       expect(text).toContain(" 1  Unknown job (needs a newer MEX) · this machine");
-      expect(text).toContain("    running · batch 3 of 10 · 1 result so far · 100 of about 5,000 tokens");
-      expect(text).toContain("    waiting: Waiting for your 5-hour limit to reset at 3:10 pm · batch 2 of 4 · 3 results so far · 300 tokens");
-      expect(text).toContain("    failed: Claude Code is logged out · 6 results · 600 tokens");
+      expect(text).toContain("    running · batch 3 of 10 · 1 result so far");
+      expect(text).toContain("    waiting: Waiting for your 5-hour limit to reset at 3:10 pm · batch 2 of 4 · 3 results so far");
+      expect(text).toContain("    failed: Claude Code is logged out · 6 results");
+      expect(text).not.toContain(" tokens");
       expect(text).toContain(`Test batches · repo-a (${join(home, "repo-a")})`);
       const json = JSON.parse(JSON.stringify(items.map(({ id: _id, ...item }) => item)));
       expect(json[7]).toMatchObject({ position: 8, state: "running", doing: "batch 3 of 10", tokens: { used: 100, estimate: 5000 } });

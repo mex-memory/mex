@@ -1,17 +1,18 @@
 import { clearObservations } from "../learn-deeper/observations.js";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mexHomeDir } from "../global-config.js";
+import { detectAgents } from "../model-runner/agents.js";
 import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { recordLocation, type LocationOptions } from "../record/location.js";
 import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { binaryFileName, findNativeBinary, selfTestBinary, type SelfTestResult } from "../hooks/shim/binary.js";
 import { cliEntryPath, launcherFile } from "../hooks/shim/launcher.js";
 import { assertUntracked, equalSnapshot, installPath, MAX_RUNTIME_BYTES, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
-import { agentSettings, AGENT_COMMANDS, CODEX_TRUST_NOTICE, FAILURE_BLOCKS, installSettings, withoutSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
+import { agentSettings, CODEX_TRUST_NOTICE, FAILURE_BLOCKS, installSettings, withoutSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
 import { opencodePlugin } from "./opencode-plugin.js";
 import { journaledExcludeFiles, restoreExcludeBlocks } from "../repo-start/exclude.js";
@@ -97,36 +98,6 @@ export function opencodePluginPath(user: string, env: NodeJS.ProcessEnv): string
   return join(xdg || join(user, ".config"), "opencode", "plugin", "mex.js");
 }
 
-/**
- * Whether the agent's command is on PATH. Read from the PATH directories
- * directly: a `where.exe` child under a 1.5 s timeout missed Claude Code on
- * a busy Windows machine, so its hooks were silently not installed.
- */
-function available(agent: Agent | PluginAgent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
-  const name = agent === "opencode" ? "opencode" : AGENT_COMMANDS[agent];
-  const key = Object.keys(env).find(k => k.toUpperCase() === "PATH");
-  const dirs = (key ? env[key] ?? "" : "").split(platform === "win32" ? ";" : ":").map(d => d.trim().replace(/^"(.*)"$/u, "$1")).filter(Boolean);
-  const extKey = Object.keys(env).find(k => k.toUpperCase() === "PATHEXT");
-  const exts = platform === "win32" ? ["", ...((extKey ? env[extKey] : undefined) ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      try {
-        const stat = statSync(join(dir, name + ext));
-        if (stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0)) return true;
-      } catch { /* not in this folder */ }
-    }
-  }
-  return false;
-}
-
-/** Agents with desktop apps and editor extensions that run the same hooks without a command on PATH. */
-const APP_AGENTS: ReadonlySet<Agent> = new Set(["claude-code", "codex"]);
-
-/** Whether the agent's user settings folder (~/.claude, ~/.codex or its override) exists. */
-function configured(settingsFile: string): boolean {
-  try { return statSync(dirname(settingsFile)).isDirectory(); } catch { return false; }
-}
-
 /** npx runs a package from npm's temporary cache; hooks pointing there break when npm clears it. */
 export function fromNpxCache(entry: string | undefined): boolean {
   return !!entry && /[\\/]_npx[\\/]/u.test(entry);
@@ -172,11 +143,11 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
   const location = recordLocation({ home: options.home ?? mexHomeDir(), create: false });
   const platform = options.platform ?? process.platform;
   const paths = agentSettings(user, env);
-  // The desktop apps and editor extensions run the same hooks from the same
-  // user settings without putting a command on PATH; their settings folder
-  // is the sign they are in use.
-  const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? (available(agent, platform, env) || (APP_AGENTS.has(agent) && configured(paths[agent]))));
-  const opencode = options.available?.("opencode") ?? available("opencode", platform, env);
+  const detected = options.available ? [] : detectAgents({ env, platform, userHome: user, includeSessions: false });
+  const available = (id: Agent | PluginAgent) => options.available?.(id)
+    ?? detected.some(agent => agent.id === id && agent.installed && agent.hooks === "supported");
+  const agents = (Object.keys(paths) as Agent[]).filter(available);
+  const opencode = available("opencode");
   const pluginPath = opencode ? installPath(opencodePluginPath(user, env)) : null;
   const result: InstallResult = { agents: [...agents, ...(opencode ? ["opencode" as const] : [])], changes: [], notices: [], legacyTracked: [] };
   if (!result.agents.length) return result;

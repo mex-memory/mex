@@ -1024,7 +1024,31 @@ program
   });
 
 // ── Knowledge entries ──
-for (const command of buildKnowledgeCommands()) program.addCommand(command);
+for (const command of buildKnowledgeCommands()) {
+  if (command.name() !== "rules") {
+    program.addCommand(command);
+    continue;
+  }
+  // The original command still owns rule-file scanning and its write and JSON options.
+  const learning = new Command(command.name()).description(command.description())
+    .option("--learned", "List learned rules with their ids and status");
+  for (const option of command.options) learning.addOption(option);
+  learning.action(async (options: { learned?: boolean; json?: boolean; now?: boolean; write?: boolean }) => {
+    if (!options.learned) {
+      await command.parseAsync([...(options.json ? ["--json"] : []), ...(options.now ? ["--now"] : []), ...(options.write ? ["--write"] : [])], { from: "user" });
+      return;
+    }
+    try {
+      if (options.write || options.now) throw new Error("Use --learned separately from --write and --now.");
+      const { listLearnedRules } = await import("./repo-start/review-list.js");
+      await listLearnedRules(process.cwd(), options.json);
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exitCode = 1;
+    }
+  });
+  program.addCommand(learning);
+}
 program.addCommand(buildUpgradeCommand({ afterUpgrade: showFirstRunNotice }));
 
 // ── File index ──
@@ -1101,6 +1125,7 @@ program
 program
   .command("learn")
   .description("Learn rules from past reviews, fixes and contributor docs after you approve an estimate")
+  .option("--agent <id>", "Choose claude-code, codex, copilot, gemini, cursor, antigravity, opencode, kiro or devin")
   .option("--model-setup <setup>", "Choose mixed or best-only")
   .option("--raise-ceiling", "Review a higher token ceiling for a waiting learning job")
   .option("--dry-run", "Read the source inventory and show the estimate without starting a job")
@@ -1123,7 +1148,7 @@ program
     "",
     "Set a trial with mex config set <setting> <on|off> --project.",
   ].join("\n"))
-  .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }) => {
+  .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean; agent?: string }) => {
     try {
       const { runLearnCommand } = await import("./learn-deeper/offer.js");
       await runLearnCommand(options);
@@ -1139,12 +1164,27 @@ const jobsCommand = program
   .description("List MEX's background jobs on this machine; pause, resume or cancel one")
   .option("--json", "Print the jobs as JSON")
   .option("--all", "Include older jobs")
-  .action(async (options: { json?: boolean; all?: boolean }) => {
+  .option("--details", "Show job notes and token counts")
+  .action(async (options: { json?: boolean; all?: boolean; details?: boolean }) => {
     try {
       const { runJobsList } = await import("./record/jobs-command.js");
-      runJobsList(options);
+      await runJobsList(options);
     } catch (err) {
       console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+program
+  .command("cancel")
+  .description("Stop live jobs in this repository")
+  .option("--all", "Stop live jobs on this computer")
+  .option("--yes", "Confirm without a prompt")
+  .action(async (options: { all?: boolean; yes?: boolean }) => {
+    try {
+      const { runCancel } = await import("./record/jobs-command.js");
+      process.exitCode = await runCancel(options);
+    } catch (error) {
+      console.error((error as Error).message);
       process.exitCode = 1;
     }
   });
@@ -1377,11 +1417,11 @@ const configCmd = program
 configCmd
   .command("set <key> <value>")
   .description("Set a config value (e.g. agent.defaults on|off, telemetry on|off)")
-  .option("--project", `Set agent.defaults, delivery.scorer, delivery.surface.<id>, learning.sharing or ${learningTrials.join(", ")} for the registered project`)
+  .option("--project", `Set agent.defaults, delivery.scorer, delivery.surface.<id>, learning.agent, learning.sharing or ${learningTrials.join(", ")} for the registered project`)
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (options.project && !isLearningTrial(key) && !["agent.defaults", "delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) {
-        throw new Error(`--project is supported for agent.defaults, delivery.scorer, delivery.surface.<id>, learning.sharing and ${learningTrials.join(", ")}.`);
+      if (options.project && !isLearningTrial(key) && !["agent.defaults", "delivery.scorer", "learning.agent", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) {
+        throw new Error(`--project is supported for agent.defaults, delivery.scorer, delivery.surface.<id>, learning.agent, learning.sharing and ${learningTrials.join(", ")}.`);
       }
       if (isLearningTrial(key)) {
         if (!options.project) throw new Error(`Use --project to set ${key} for this repository.`);
@@ -1416,6 +1456,10 @@ configCmd
         const writer = openRecord();
         try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
         console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "learning.agent") {
+        const { setAnalysisAgent } = await import("./learn-deeper/offer.js");
+        const name = setAnalysisAgent(value, options.project ? process.cwd() : undefined);
+        console.log(`Deep analysis agent set to ${name} ${options.project ? "for this repo" : "for this computer"}.`);
       } else if (key === "learning.statements") {
         if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
         const { openRecord } = await import("./record/index.js");
@@ -1475,7 +1519,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output, agent.defaults, ${learningTrials.join(", ")}`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.agent, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output, agent.defaults, ${learningTrials.join(", ")}`);
         process.exitCode = 1;
         return;
       }
