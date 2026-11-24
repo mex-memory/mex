@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"test-id"}}
+{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":7}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":null}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":7}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":75,"cached_input_tokens":55,"output_tokens":14,"reasoning_output_tokens":8}}}}

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "dry",
+  "subjectRepo": "fixture/subject",
+  "setupBase": "HEAD~2",
+  "tasks": [
+    {
+      "id": "first",
+      "type": "change",
+      "base": "HEAD~2",
+      "prompt": "Update first so it returns 1.",
+      "testNames": ["first"],
+      "reviewerNotes": "Reviewer notes\nKeep the change limited to first.",
+      "hiddenTests": {
+        "fromDirectory": "hidden",
+        "files": ["check.mjs"],
+        "command": ["node", "check.mjs", "first", "1"]
+      }
+    },
+    {
+      "id": "second",
+      "type": "change",
+      "base": "HEAD~1",
+      "prompt": "Update second so it returns 2.",
+      "testNames": ["second"],
+      "reviewerNotes": "Reviewer notes\nKeep the change limited to second.",
+      "hiddenTests": {
+        "fromCommit": "HEAD",
+        "files": ["check.mjs"],
+        "command": ["node", "check.mjs", "second", "2"]
+      }
+    }
+  ]
+}

@@ -43,7 +43,10 @@ func DefinitionName(pattern string) string {
 
 func searchEvent(ev contract.Event) bool {
 	if ev.Kind != contract.PostTool && ev.Kind != contract.PostToolBatch {
-		return false
+		// Codex maps grep's normal no-match status to PostToolFailure.
+		if ev.Kind != contract.PostToolFailure || ev.Tool == nil || !codexSearchNoMatch(ev.Agent, *ev.Tool) {
+			return false
+		}
 	}
 	tools := ev.Batch
 	if ev.Tool != nil {
@@ -58,7 +61,7 @@ func searchEvent(ev contract.Event) bool {
 }
 
 func spanPattern(ev contract.Event, tool contract.Tool) (string, string, bool) {
-	if tool.Output == nil || !tool.Output.OK {
+	if tool.Output == nil || (!tool.Output.OK && !codexSearchNoMatch(ev.Agent, tool)) {
 		return "", "", false
 	}
 	pattern, scope := tool.Input.Pattern, tool.Input.Path
@@ -75,7 +78,7 @@ func spanPattern(ev contract.Event, tool contract.Tool) (string, string, bool) {
 		if tool.Output.ExitCode != nil && *tool.Output.ExitCode != 0 && *tool.Output.ExitCode != 1 {
 			return "", "", false
 		}
-		if ev.Agent == "codex" && tool.Output.ExitCode == nil {
+		if ev.Agent == "codex" && tool.Output.ExitCode == nil && !codexSearchHasResults(tool.Input.Command, tool.Output) {
 			return "", "", false
 		}
 		pattern = shellparse.SearchPattern(tool.Input.Command)
@@ -92,6 +95,53 @@ func spanPattern(ev contract.Event, tool contract.Tool) (string, string, bool) {
 		scope = filepath.Join(ev.Cwd, scope)
 	}
 	return DefinitionName(pattern), scope, true
+}
+
+func codexSearchNoMatch(agent string, tool contract.Tool) bool {
+	out := tool.Output
+	return agent == "codex" && tool.Name == contract.ToolShell && out != nil &&
+		!out.Interrupted && !out.Background && out.ExitCode != nil && *out.ExitCode == 1 &&
+		strings.TrimSpace(out.Text) == ""
+}
+
+var searchResultPath = lazy(`^(?:[A-Za-z]:)?[^:\s\p{Cc}<>"|?*]*[./\\][^:\s\p{Cc}<>"|?*]+`)
+var searchListFlag = lazy(`^(?:--files-with-matches|-[a-zA-Z]*l[a-zA-Z]*)$`)
+var searchDiagnostic = lazy(`(?i)^(?:(?:rg|grep|egrep|fgrep|ag|ack)(?:\.exe)?\s*:|usage\s*:|(?:error|fatal)\s*:)|is not recognized|command not found|no such file or directory`)
+
+// codexSearchHasResults admits headerless output only when every nonblank
+// line looks like a path-labelled hit or a path from a file list. Shell
+// diagnostics, plain text and silence cannot establish that a search ran.
+func codexSearchHasResults(command string, out *contract.ToolOutput) bool {
+	if !out.OK || out.Interrupted || out.Background || len(out.Text) > 64<<10 {
+		return false
+	}
+	filesOnly := false
+	for _, word := range shellparse.Words(shellparse.SearchSegment(command)) {
+		if word == "--" {
+			break
+		}
+		if searchListFlag().MatchString(word) {
+			filesOnly = true
+			break
+		}
+	}
+	found := false
+	for line := range strings.Lines(out.Text) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		path := searchResultPath().FindString(line)
+		if path == "" || searchDiagnostic().MatchString(line) {
+			return false
+		}
+		suffix := line[len(path):]
+		if !strings.HasPrefix(suffix, ":") && !(filesOnly && suffix == "") {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // StudySpans uses exactly the live eligibility and source reader. It never

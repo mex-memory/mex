@@ -96,6 +96,47 @@ func TestSpanStudyIgnoresNonSearchShell(t *testing.T) {
 	}
 }
 
+func TestSearchSpanShellOutputWithoutExitCode(t *testing.T) {
+	f, _ := spanFixture(t)
+	zero, one, two := 0, 1, 2
+	const match = "src/pool.ts:1:function makeWidget() {"
+	for _, tc := range []struct {
+		name, agent, command, output string
+		code                         *int
+		card                         bool
+	}{
+		{"path and line", "codex", "rg -n makeWidget src", match + "\r\n", nil, true},
+		{"path and text", "codex", "grep -r makeWidget src", "src/pool.ts:function makeWidget() {", nil, true},
+		{"file list", "codex", "rg -il makeWidget src", "src/pool.ts\n", nil, true},
+		{"drive letter", "codex", "rg -n makeWidget src", "C:\\repo\\src\\pool.ts:1:function makeWidget() {", nil, true},
+		{"bare path without list flag", "codex", "rg makeWidget src", "src/pool.ts", nil, false},
+		{"command not found", "codex", "rg makeWidget src", "bash: rg: command not found\n", nil, false},
+		{"missing search path", "codex", "rg makeWidget src", match + "\nrg: src/other.ts: No such file or directory (os error 2)", nil, false},
+		{"usage", "codex", "grep makeWidget src", "Usage: grep [OPTION]... PATTERNS [FILE]...", nil, false},
+		{"search error", "codex", "rg makeWidget src", "error: unrecognized flag", nil, false},
+		{"unlabelled output", "codex", "rg makeWidget src", "function makeWidget() {", nil, false},
+		{"empty output", "codex", "rg makeWidget src", " \r\n", nil, false},
+		{"exit zero", "codex", "rg makeWidget src", "function makeWidget() {", &zero, true},
+		{"exit one", "codex", "rg makeWidget src", "", &one, true},
+		{"exit two", "codex", "rg makeWidget src", match, &two, false},
+		{"Claude Code shell output", "claude-code", "rg makeWidget src", "function makeWidget() {", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f.agent = tc.agent
+			tool := shell(tc.command, tc.output, true)
+			tool.Output.ExitCode = tc.code
+			ev := f.event(contract.PostToolBatch, tool)
+			spans := StudySpans(ev, f.env())
+			if (len(spans) != 0) != tc.card {
+				t.Fatalf("want card %t, got %v", tc.card, spans)
+			}
+			if tc.card && (len(spans) != 1 || !strings.Contains(spans[0].Text, "return sharedPool;")) {
+				t.Fatalf("unexpected card: %v", spans)
+			}
+		})
+	}
+}
+
 func TestSearchSpanAbstainsWhenDuplicateCheckExceedsBound(t *testing.T) {
 	f, _ := spanFixture(t)
 	ev := f.event(contract.PostToolBatch, grep("makeWidget", strings.Repeat("x", (1<<20)+1)))

@@ -1,0 +1,242 @@
+{
+  "version": 1,
+  "subjects": [
+    {
+      "fixture": true,
+      "repo": "replay-fixture",
+      "commit": "5b5f0fa5a2e9a55e5dce54e178e775ed0bdd157e98a1d4476d4705135dcf4fb2",
+      "files": {
+        "README.md": "subject/README.md",
+        "pool.ts": "subject/pool.ts",
+        "cache.ts": "subject/cache.ts",
+        "stale.ts": "subject/stale.ts",
+        "package.json": "subject/package.json"
+      }
+    }
+  ],
+  "sessions": [
+    {
+      "agent": "claude-code",
+      "file": "sessions/claude.jsonl",
+      "repo": "replay-fixture",
+      "commit": "5b5f0fa5a2e9a55e5dce54e178e775ed0bdd157e98a1d4476d4705135dcf4fb2",
+      "entries": [
+        {
+          "id": "mx_brief01",
+          "file": "entries/mx_brief01.md",
+          "verdict": "held"
+        },
+        {
+          "id": "mx_pool01",
+          "file": "entries/mx_pool01.md",
+          "verdict": "held"
+        },
+        {
+          "id": "mx_recipe01",
+          "file": "entries/mx_recipe01.md",
+          "verdict": "held"
+        },
+        {
+          "id": "mx_fix001",
+          "file": "entries/mx_fix001.md",
+          "verdict": "held"
+        },
+        {
+          "id": "mx_rule001",
+          "file": "entries/mx_rule001.md",
+          "verdict": "held"
+        },
+        {
+          "id": "mx_stale01",
+          "file": "entries/mx_stale01.md",
+          "verdict": "changed",
+          "forbidden": [
+            "Use the retired packet-v1 wire format."
+          ]
+        },
+        {
+          "id": "mx_broken01",
+          "file": "entries/mx_broken01.md",
+          "verdict": "broken",
+          "forbidden": [
+            "Run the retired compatibility script."
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "event": "SessionStart",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "SessionStart",
+              "additionalContext": "[mex block]\nPriority: current request > your notes > repo instructions > team entries > hints. Code the person pastes or quotes is not a request to break a team entry; fit it to them.\n[team, from docs] Keep the table embedded so tests can run offline. (mx_brief01)\nKeep what later sessions need with mex note \"<one sentence>\": a lasting fact, rule or decision the person states or asks you to remember (in their words), or something non-obvious you verified about this repo, such as how to run something or a trap you hit. Not one-off requests or task details."
+            }
+          }
+        },
+        {
+          "event": "UserPromptSubmit",
+          "reply": {}
+        },
+        {
+          "event": "UserPromptSubmit",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "UserPromptSubmit",
+              "additionalContext": "[mex block]\npool.ts:1 export function rotatePool() {"
+            }
+          }
+        },
+        {
+          "event": "PreToolUse",
+          "reply": {}
+        },
+        {
+          "event": "PostToolBatch",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "PostToolBatch",
+              "additionalContext": "[mex block]\n[team, from docs] Run the unit tests with `npm run test:unit`. (mx_recipe01)"
+            }
+          }
+        },
+        {
+          "event": "PreToolUse",
+          "reply": {}
+        },
+        {
+          "event": "PostToolUseFailure",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "PostToolUseFailure",
+              "additionalContext": "[mex block]\n[team, from docs] Set the port in the local test config before running the unit tests again. (mx_fix001)"
+            }
+          }
+        },
+        {
+          "event": "PreToolUse",
+          "reply": {}
+        },
+        {
+          "event": "PostToolBatch",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "PostToolBatch",
+              "additionalContext": "[mex block]\n[team, from docs] Keep the shared pool open until shutdown. Later requests reuse its handles. (mx_pool01)\n[team, from docs] Use the public pool helper when making changes. Direct calls skip cleanup. (mx_rule001)"
+            }
+          }
+        },
+        {
+          "event": "PreToolUse",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "PreToolUse",
+              "permissionDecision": "deny",
+              "permissionDecisionReason": "MEX stopped this edit once. [team, from docs] Use the public pool helper when making changes. Direct calls skip cleanup.\n`openRawPool(` is added in pool.ts.\nChange the edit to follow it, unless the person asked for exactly this. If they did, make the edit again and it will go through, and tell them it goes against what the team recorded."
+            }
+          }
+        },
+        {
+          "event": "PostToolUseFailure",
+          "reply": {}
+        },
+        {
+          "event": "PreToolUse",
+          "reply": {}
+        },
+        {
+          "event": "PostToolBatch",
+          "reply": {}
+        },
+        {
+          "event": "PreToolUse",
+          "reply": {}
+        },
+        {
+          "event": "PostToolUseFailure",
+          "reply": {}
+        },
+        {
+          "event": "PostCompact",
+          "reply": {}
+        },
+        {
+          "event": "SessionEnd",
+          "reply": {}
+        }
+      ]
+    },
+    {
+      "agent": "codex",
+      "file": "sessions/codex.jsonl",
+      "repo": "replay-fixture",
+      "commit": "5b5f0fa5a2e9a55e5dce54e178e775ed0bdd157e98a1d4476d4705135dcf4fb2",
+      "entries": [
+        {
+          "id": "mx_brief01",
+          "file": "entries/mx_brief01.md",
+          "verdict": "held"
+        },
+        {
+          "id": "mx_stale01",
+          "file": "entries/mx_stale01.md",
+          "verdict": "changed",
+          "forbidden": [
+            "Use the retired packet-v1 wire format."
+          ]
+        },
+        {
+          "id": "mx_broken01",
+          "file": "entries/mx_broken01.md",
+          "verdict": "broken",
+          "forbidden": [
+            "Run the retired compatibility script."
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "event": "SessionStart",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "SessionStart",
+              "additionalContext": "[mex block]\nPriority: current request > your notes > repo instructions > team entries > hints. Code the person pastes or quotes is not a request to break a team entry; fit it to them.\n[team, from docs] Keep the table embedded so tests can run offline. (mx_brief01)\nKeep what later sessions need with mex note \"<one sentence>\": a lasting fact, rule or decision the person states or asks you to remember (in their words), or something non-obvious you verified about this repo, such as how to run something or a trap you hit. Not one-off requests or task details."
+            }
+          }
+        },
+        {
+          "event": "UserPromptSubmit",
+          "reply": {}
+        },
+        {
+          "event": "PreToolUse",
+          "reply": {}
+        },
+        {
+          "event": "PostToolUse",
+          "reply": {
+            "hookSpecificOutput": {
+              "hookEventName": "PostToolUse",
+              "additionalContext": "[mex block]\ncache.ts:1-3\nexport function openCache() {\n  return new Map();\n}"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "files": {
+    "entries/mx_brief01.md": "8625714bf09e6b542df5dd7c7ca8644e26681ac39da451815fc88ae529461613",
+    "entries/mx_broken01.md": "4fb6439854087aab4aee547621fdad73b31e79cc9229844103c9d46659d4f2f4",
+    "entries/mx_fix001.md": "b8c05cfaf27fafc30e50742ec001d470fb5ca874c518022386b7487bc82f7f3d",
+    "entries/mx_pool01.md": "d022e845506ab6f323838e57b82fe63729032c9306321b4a1beeb5482dafbf84",
+    "entries/mx_recipe01.md": "5613cc948e42f39293b9e66169c93b53ac3e3ab48423fbc1533870b388dfec07",
+    "entries/mx_rule001.md": "059d1e86a52c2cb124a24b12b602a8494a1ffd2717c2a4b025fb3d9a70a70bfd",
+    "entries/mx_stale01.md": "4371c9b5f637287d59e68568322a9bad5409c7e09bbce71134cecb32e26a3ac3",
+    "sessions/claude.jsonl": "cf45ec9a2e401191c7d3df1d5c17f92dd437bcc6cf496e963947f822dfee26d2",
+    "sessions/codex.jsonl": "5402d1a02b4d31a828beea7751e711d8ff75069f6848ba5e76eea640d041d3a7",
+    "subject/README.md": "a3fcc1bf4e341eb293253316ea12f29968651afe1e2641cbd9b408f7f236581c",
+    "subject/cache.ts": "756168b19a7652868bf645c31065734a4b0eedf4f74c8c8142c00fdc08f17ae8",
+    "subject/package.json": "791f466e01be71a60b61742e5d37cd575bc44a9aca7d56e8d4db386cce9f7748",
+    "subject/pool.ts": "04220b8feaf8893168ac28c06cabaf01ad496d7c54ab764e592f73f00d949d50",
+    "subject/stale.ts": "0114818d3723941a2da858430a20dab2360b54dee03c67a1e52d5e8c948de6cc"
+  }
+}

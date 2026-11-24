@@ -84,7 +84,7 @@ func findRescue(ev contract.Event, env Environment) *rescue {
 		}
 		if r == nil {
 			// searchResult checks success itself: a Claude Code search must have
-			// succeeded, a Codex search must have exited 0 or 1.
+			// succeeded, a Codex search must have an exit status or clear hits.
 			r = searchRescue(ev, env, tool)
 		}
 		if r != nil {
@@ -376,7 +376,7 @@ func searchResult(ev contract.Event, tool contract.Tool) (pattern, scope string,
 		pattern, scope = tool.Input.Pattern, tool.Input.Path
 		zero = text == "" || text == "No matches found" || text == "No files found" || strings.HasPrefix(text, "Found 0 ")
 	case contract.ToolShell:
-		if ev.Agent != "codex" || shellparse.SearchSegment(tool.Input.Command) == "" || tool.Output.ExitCode == nil {
+		if ev.Agent != "codex" || shellparse.SearchSegment(tool.Input.Command) == "" {
 			return
 		}
 		pattern = shellparse.SearchPattern(tool.Input.Command)
@@ -385,14 +385,17 @@ func searchResult(ev contract.Event, tool contract.Tool) (pattern, scope string,
 		if scope, filtered = shellSearchScope(tool.Input.Command, pattern, cwd); filtered {
 			return
 		}
-		switch *tool.Output.ExitCode {
-		case 1:
+		switch code := tool.Output.ExitCode; {
+		case code == nil:
+			if !codexSearchHasResults(tool.Input.Command, tool.Output) {
+				return
+			}
+		case *code == 1:
 			zero = text == ""
 			if !zero {
 				return
 			}
-		case 0:
-		default:
+		case *code != 0:
 			return
 		}
 	default:

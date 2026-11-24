@@ -65,6 +65,8 @@ jobs:
           go-version-file: native/go.mod
           cache-dependency-path: native/go.sum
       - run: npm ci
+      - run: go mod download
+        working-directory: native
       - run: npm run gates:test
       # Pinned public commits for the upgrade gate; the key changes with the corpus.
       - name: Restore upgrade subjects

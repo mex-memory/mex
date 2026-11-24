@@ -1,0 +1,6 @@
+{"timestamp":"2026-11-15T12:00:00.000Z","type":"session_meta","payload":{"id":"01a01001-1000-7000-8000-010001000001","timestamp":"2026-11-15T12:00:00.000Z","cwd":"/replay/fixture","originator":"codex_cli_rs","cli_version":"0.165.0","source":"cli","model_provider":"openai"}}
+{"timestamp":"2026-11-15T12:00:00.000Z","type":"turn_context","payload":{"cwd":"/replay/fixture","model":"gpt-6.1-sol"}}
+{"timestamp":"2026-11-15T12:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Find the cache constructor."}]}}
+{"timestamp":"2026-11-15T12:00:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"rg -n openCache .\",\"workdir\":\"/replay/fixture\",\"max_output_tokens\":1000}","call_id":"call_find"}}
+{"timestamp":"2026-11-15T12:00:00.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_find","output":"Exit code: 0\nWall time: 0.01 seconds\nOutput:\ncache.ts:1:export function openCache() {"}}
+{"timestamp":"2026-11-15T12:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":96,"output_tokens":52,"reasoning_output_tokens":20,"total_tokens":212}}}}

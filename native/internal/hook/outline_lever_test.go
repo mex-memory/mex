@@ -52,7 +52,10 @@ func fakeIndex(t *testing.T, recordDirectory, project, root, rel string, content
 		if err != nil {
 			t.Fatal(err)
 		}
-		stmts := []string{"CREATE TABLE records(hash TEXT NOT NULL, lang TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(hash, lang)) WITHOUT ROWID"}
+		stmts := []string{
+			"CREATE TABLE records(hash TEXT NOT NULL, lang TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(hash, lang)) WITHOUT ROWID",
+			"CREATE TABLE symbols(name TEXT NOT NULL, hash TEXT NOT NULL, lang TEXT NOT NULL, ord INTEGER NOT NULL, kind TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, PRIMARY KEY(name, hash, lang, ord)) WITHOUT ROWID",
+		}
 		if name == "c-1.db" {
 			stmts = append(stmts,
 				"CREATE TABLE paths(path TEXT PRIMARY KEY, hash TEXT, lang TEXT, is_test INTEGER NOT NULL, size INTEGER NOT NULL, mtime_ns TEXT NOT NULL, reason TEXT, name TEXT NOT NULL) WITHOUT ROWID")
@@ -69,6 +72,11 @@ func fakeIndex(t *testing.T, recordDirectory, project, root, rel string, content
 			}
 			if _, err := db.Exec("INSERT INTO paths VALUES(?,?,?,0,?,?,NULL,?)", rel, hash, lang, len(content), mtime, filepath.Base(rel)); err != nil {
 				t.Fatal(err)
+			}
+			for i, symbol := range symbols {
+				if _, err := db.Exec("INSERT INTO symbols VALUES(?,?,?,?,?,?,?)", symbol.Name, hash, lang, i, symbol.Kind, symbol.Start, symbol.End); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		db.Close()
