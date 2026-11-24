@@ -205,4 +205,35 @@ export async function preflightMex(profile, cli, id, { requireNative = false } =
   return { settings, bytes, runtime: executable === native ? "native" : "node" };
 }
 
+// Learned entries for the learned-rules contrast. Both arms run MEX; only the
+// "mex" arm gets these files in its personal notes, so a difference between the
+// arms is the learned rules and nothing else MEX does.
+const NOTE = /^mx_[a-z0-9]{6,64}\.md$/u;
+
+export function readLearned(directory) {
+  const files = readdirSync(directory).filter(name => NOTE.test(name)).sort();
+  if (!files.length) throw new Error("The learned directory holds no entry files");
+  if (readdirSync(directory).some(name => !NOTE.test(name))) throw new Error("The learned directory holds a file that is not an entry");
+  return files.map(name => ({ name, bytes: readFileSync(join(directory, name)) }));
+}
+
+function notesDirectories(profile) {
+  const projects = join(profile.env.MEX_HOME, ".mex", "projects");
+  return existsSync(projects) ? readdirSync(projects).map(project => join(projects, project, "notes")) : [];
+}
+
+export function seedLearned(profile, learned) {
+  const [notes, ...others] = notesDirectories(profile);
+  if (!notes || others.length) throw new Error("The MEX arm has no single project to hold the learned entries");
+  mkdirSync(notes, { recursive: true, mode: 0o700 });
+  for (const { name, bytes } of learned) writeFileSync(join(notes, name), bytes, { mode: 0o600, flag: "wx" });
+}
+
+export function checkNoLearned(profile, learned) {
+  const names = new Set(learned.map(entry => entry.name));
+  for (const notes of notesDirectories(profile)) {
+    if (existsSync(notes) && readdirSync(notes).some(name => names.has(name))) throw new Error("The arm without learned rules holds a learned entry");
+  }
+}
+
 export const platformPin = () => ({ node: process.version, os: platform(), osRelease: release(), arch: arch() });

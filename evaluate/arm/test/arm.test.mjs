@@ -9,7 +9,7 @@ import { clearCredentials, useOAuthToken } from "../lib/arms.mjs";
 import { buildReport, renderReport } from "../lib/report.mjs";
 import { loadSuite } from "../lib/suite.mjs";
 import { records, sessionUsage } from "../lib/usage.mjs";
-import { built, fixtureOptions, fixtureRoot } from "./demo.mjs";
+import { built, fixtureOptions, fixtureRoot, learnedFixture } from "./demo.mjs";
 
 const fixture = name => fileURLToPath(new URL("./fixtures/" + name, import.meta.url));
 
@@ -194,6 +194,27 @@ describe.skipIf(process.env.MEX_ARM_RUN_DRY !== "1")("release harness dry chain"
       if (statSync(file).size < 64 << 20) expect(readFileSync(file, "latin1").includes(token), file).toBe(false);
     }
   }, 45_000);
+
+  it.each(["claude", "codex"])("runs MEX in both %s arms and seeds the learned entries into one", async agent => {
+    const root = fixtureRoot();
+    const options = fixtureOptions(root, agent);
+    const learnedDir = learnedFixture(root, options.subjectRoot);
+    const [entry] = readdirSync(learnedDir);
+    const { manifest, report, reportText, replay } = await runChain({ ...options, learnedDir });
+    expect(manifest).toMatchObject({ contrast: "learned-rules", learned: [{ name: entry, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }] });
+    expect(reportText).toContain("Both arms run MEX. Only mex holds the 1 learned entries listed in the manifest.");
+    expect(report.tasks).toHaveLength(4);
+    const notes = home => {
+      const projects = join(home, ".mex", "projects");
+      return readdirSync(projects).flatMap(project => existsSync(join(projects, project, "notes")) ? readdirSync(join(projects, project, "notes")) : []);
+    };
+    for (const row of replay.sessions) {
+      const [event] = records(join(options.output, "replay", row.file)).filter(e => e.type === "fixture_observation");
+      expect(event.installed).toBe(true);
+      expect(notes(event.homes.MEX_HOME).includes(entry)).toBe(row.arm === "mex");
+    }
+    checkCredentialCleanup(options);
+  }, 60_000);
 
   it.each(["claude", "codex"])("unlinks the %s copies in both homes when a resumed turn fails", async agent => {
     const options = fixtureOptions(fixtureRoot(), agent, "fail");

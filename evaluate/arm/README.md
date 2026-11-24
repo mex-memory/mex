@@ -74,6 +74,17 @@ logs it, the graders don't get it, and the manifest records only that a token
 was used. The offline
 fixture needs no login.
 
+## Learned-rules contrast
+
+`--learned <directory>` compares MEX with and without a set of learned entries,
+instead of no MEX against MEX. The directory holds only entry files
+(`mx_*.md`), for example the notes a learn deeper run saved. Both arms install
+MEX and run the same repository setup at T0. Only the `mex` arm then gets the
+entries in its personal notes, followed by `mex check` so they carry current
+verdicts. Before each task the `baseline` arm is checked to hold none of them.
+The manifest records `contrast: "learned-rules"` and each entry's name and
+SHA-256, and both arms' MEX model calls are counted.
+
 ## Suite format
 
 `test/fixtures/dry.json` is the full small example. Keep real suites and test
