@@ -424,7 +424,7 @@ function allCandidates(context: Context, state: PipelineState): Candidate[] {
 const lineKey = (item: PRUnit["lines"][number]) => JSON.stringify([item.candidate, item.line.id]);
 
 async function triage(input: PipelineInput, state: PipelineState, units: readonly PRUnit[],
-  candidates: ReadonlyMap<string, Candidate>, name: string, splitting = false): Promise<Observation[]> {
+  candidates: ReadonlyMap<string, Candidate>, name: string, half = false): Promise<Observation[]> {
   const prompt = triagePrompt(units);
   const read = async (suffix: string, optional: boolean) => {
     const result = await (optional ? retry : call)(input, name + suffix, prompt, "cheap", 0);
@@ -434,11 +434,13 @@ async function triage(input: PipelineInput, state: PipelineState, units: readonl
     return { parsed: parseTriage(result.text, units, candidates), lost: result.lost };
   };
   const first = await read("", false);
-  const large = units.length > 1 && (splitting || renderUnits(units).text.length >= 24_000);
   const invalid = (result: typeof first) => result?.parsed.response !== "valid";
   const empty = (result: typeof first) => !result?.parsed.observations.length;
+  // An empty answer on a large batch can mean the model skimmed it, so the batch is split once. The halves' answers
+  // stand: stretches of PRs with no team expectation are common, and every call has a fixed cost of thousands of tokens.
+  const large = !half && units.length > 1 && renderUnits(units).text.length >= 24_000;
   let result = first;
-  if (!first?.lost && (invalid(first) || large && empty(first))) result = await read(".retry", true) ?? first;
+  if (!first?.lost && invalid(first)) result = await read(".retry", true) ?? first;
   if (large && !result?.lost && (invalid(result) || empty(result))) {
     add(state.counts, "triage-splits");
     const half = Math.floor(units.length / 2);
