@@ -3,9 +3,9 @@ import { MEANING_BATCH_ITEMS, MEANING_PROMPT_BYTES } from "../meaning.js";
 import { codexCacheRead, inputOverhead, promptEstimate } from "../plan.js";
 import type { Candidate, CandidateCounts, CandidateKind, HarvestEvidenceSize, HarvestOptions } from "./types.js";
 
-// This starting allowance covers a full review sample on the two calibration
-// shapes, including the Codex cache reads, with room for new evidence sources.
-export const DEFAULT_HARVEST_BUDGET = 320_000;
+// The quote shown before consent. Calibrated on a live Hono run (24 Nov 2026,
+// Codex, 104 sources): 551,731 tokens, which the forecast below puts within 5%.
+export const DEFAULT_HARVEST_BUDGET = 480_000;
 
 // Triage reads prose only. 240 input tokens represents a few hundred bytes of
 // text plus IDs and routes. 64 output tokens cover the short structured result.
@@ -15,15 +15,18 @@ export const TRIAGE_BATCH = 48;
 // The first run is a forecast: roughly a quarter survive triage, with about
 // two observations per cluster. Round up so a sparse run can still write one.
 const CANDIDATES_PER_CLUSTER = 8;
-// Design R1 packs up to six clusters in each writer call.
-const WRITER_BATCH = 6;
-// About 3.3 KiB of excerpts, source metadata and regions at three bytes/token,
-// plus a structured entry with quotes, scope, patterns and proof locations.
-const WRITER_PER_CLUSTER = 1100 + 550;
-// Forecast one repair for one in five drafts, packed under the writer limit.
-// The repair prompt includes the failed evidence and failure reason.
-const REPAIR_SHARE = 5;
-const REPAIR_PER_ENTRY = 850 + 550;
+// The writer packs up to six clusters, but the early call, review clusters and
+// doc clusters are packed apart. The live Hono run wrote 15 clusters in 8 calls.
+const CLUSTERS_PER_WRITER_CALL = 2;
+// A structured entry with quotes, scope, patterns and proof locations. Measured
+// at about 1.8K output tokens per entry, reasoning included.
+const ENTRY_REPLY = 1_800;
+// About 3.3 KiB of excerpts, source metadata and regions at three bytes/token.
+const WRITER_PER_CLUSTER = 1100 + ENTRY_REPLY;
+// Each writer batch with a failing draft gets its own repair call; 12 of 15
+// written drafts needed one. The repair prompt has the failed evidence and reason.
+const REPAIR_RATE = 0.8;
+const REPAIR_PER_ENTRY = 850 + ENTRY_REPLY;
 
 function callOverhead(agent: HarvestOptions["agent"]): number {
   return inputOverhead + (agent === "codex" ? codexCacheRead : 0);
@@ -31,7 +34,11 @@ function callOverhead(agent: HarvestOptions["agent"]): number {
 
 function writerCalls(clusters: number): number {
   // One early writer call can leave room unused before cross-window clustering.
-  return clusters < 2 ? clusters : 1 + Math.ceil((clusters - 1) / WRITER_BATCH);
+  return clusters < 2 ? clusters : 1 + Math.ceil((clusters - 1) / CLUSTERS_PER_WRITER_CALL);
+}
+
+function repairCalls(writes: number, repairs: number): number {
+  return Math.min(writes, repairs);
 }
 
 function estimateMeaning(candidates: number, clusters: number, repairs: number, writes: number, agent: HarvestOptions["agent"]) {
@@ -42,9 +49,9 @@ function estimateMeaning(candidates: number, clusters: number, repairs: number, 
   const pairCalls = Math.max(Math.ceil(pairs / MEANING_BATCH_ITEMS), Math.ceil(pairs * 105 / (MEANING_PROMPT_BYTES / BYTES_PER_TOKEN)));
   // A lesson's text is included once per call, with each pair referring to two indices.
   const pairTokens = pairs ? kept * 60 + pairs * 18 : 0;
-  // Exact evidence is checked locally. Reserve a meaning call for half the
-  // writer batches with material paraphrases or prior claims, plus repairs.
-  const quoteCalls = Math.ceil(writes / 2) + Math.ceil(repairs / WRITER_BATCH);
+  // Exact evidence is checked locally. Quote checks share one round for the
+  // writer batches and one for their repairs.
+  const quoteCalls = (writes ? 1 : 0) + (repairs ? 1 : 0);
   const allowance = tokenCount(promptEstimate("", agent, 0));
   const comparisons = pairCalls * (allowance + 240) + pairTokens;
   const grounding = quoteCalls * (allowance + 240) + (clusters + repairs) * 180;
@@ -55,12 +62,12 @@ export function estimateHarvest(counts: CandidateCounts, agent: HarvestOptions["
 { triage: number; writer: number; repair: number; comparisons: number; grounding: number; total: number } {
   const candidates = Object.values(counts).reduce((sum, count) => sum + count, 0);
   const clusters = Math.ceil(candidates / CANDIDATES_PER_CLUSTER);
-  const repairs = Math.ceil(clusters / REPAIR_SHARE);
+  const repairs = Math.ceil(clusters * REPAIR_RATE);
   const overhead = callOverhead(agent);
   const triage = Math.ceil(candidates / TRIAGE_BATCH) * overhead + candidates * TRIAGE_PER_CANDIDATE;
   const writes = writerCalls(clusters);
   const writer = writes * overhead + clusters * WRITER_PER_CLUSTER;
-  const repair = Math.ceil(repairs / WRITER_BATCH) * overhead + repairs * REPAIR_PER_ENTRY;
+  const repair = repairCalls(writes, repairs) * overhead + repairs * REPAIR_PER_ENTRY;
   const { comparisons, grounding } = estimateMeaning(candidates, clusters, repairs, writes, agent);
   return { triage, writer, repair, comparisons, grounding, total: triage + writer + repair + comparisons + grounding };
 }
@@ -90,12 +97,11 @@ export const BYTES_PER_TOKEN = 3;
 const WRITTEN_SHARE = 4;
 const WRITER_METADATA = 120;
 const WRITER_INPUT_LIMIT = 20_000;
-const ENTRY_REPLY = 550;
 const REPAIR_METADATA = 200;
 
 export function projectHarvestSpend(size: HarvestEvidenceSize, agent: HarvestOptions["agent"]): number {
   const clusters = Math.ceil(size.candidates / CANDIDATES_PER_CLUSTER);
-  const repairs = Math.ceil(clusters / REPAIR_SHARE);
+  const repairs = Math.ceil(clusters * REPAIR_RATE);
   const overhead = callOverhead(agent);
   const triageInput = size.triageTokens + size.candidates * TRIAGE_METADATA;
   const triage = Math.max(Math.ceil(size.candidates / TRIAGE_BATCH), Math.ceil(triageInput / TRIAGE_INPUT_LIMIT)) * overhead
@@ -104,7 +110,8 @@ export function projectHarvestSpend(size: HarvestEvidenceSize, agent: HarvestOpt
   const writerInput = writtenEvidence + clusters * WRITER_METADATA;
   const writes = Math.max(writerCalls(clusters), Math.ceil(writerInput / WRITER_INPUT_LIMIT));
   const writer = writes * overhead + writerInput + clusters * ENTRY_REPLY;
-  const repair = Math.ceil(repairs / WRITER_BATCH) * overhead + Math.ceil(writtenEvidence / REPAIR_SHARE)
+  // A repair resends the failed drafts' evidence.
+  const repair = repairCalls(writes, repairs) * overhead + Math.ceil(writtenEvidence * REPAIR_RATE)
     + repairs * (REPAIR_METADATA + ENTRY_REPLY);
   const { comparisons, grounding } = estimateMeaning(size.candidates, clusters, repairs, writes, agent);
   return triage + writer + repair + comparisons + grounding;

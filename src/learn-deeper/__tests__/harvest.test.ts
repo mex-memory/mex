@@ -398,7 +398,7 @@ describe("harvest", () => {
 
   it("stops at the run allowance, resumes without duplicate IDs, and reads weekly points strictly newer", async () => {
     const deps = forge({ textOnly: true });
-    const budget = 48_854;
+    const budget = 51_130;
     const bounds = { since: "2026-11-12T00:00:00Z" };
     const first = await drain(options({ ...bounds, budget }), deps);
     expect(first.candidates).toHaveLength(4);
@@ -416,7 +416,7 @@ describe("harvest", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it("stops earlier on long doc passages than on short comments at the same token budget", async () => {
-    const budget = 51_884;
+    const budget = 54_441;
     const docs = await drain(options({ budget, until: "2026-11-02T00:00:00Z" }), forge());
     const reviews = await drain(options({ ...reviewWindow, budget }), forge({ textOnly: true }));
     expect(docs.candidates).toHaveLength(1);
@@ -550,11 +550,21 @@ it("caps reviewed-file requests per batch and caches missing files", async () =>
 it("includes the comparison and quote checks in both calibration shapes", () => {
   const hono = estimateHarvest(forecastCounts({ merged: 48, doc: 17 }), "claude");
   const novu = estimateHarvest(forecastCounts({ merged: 45, doc: 36 }), "codex");
-  expect([hono.total, novu.total]).toEqual([206_484, 441_192]);
-  expect([hono.comparisons + hono.grounding, novu.comparisons + novu.grounding]).toEqual([64_000, 149_760]);
-  expect(hono.total).toBeLessThan(392_384);
-  expect(novu.triage + novu.writer + novu.repair).toBeLessThan(DEFAULT_HARVEST_BUDGET);
+  expect([hono.total, novu.total]).toEqual([377_162, 786_592]);
+  expect([hono.comparisons + hono.grounding, novu.comparisons + novu.grounding]).toEqual([55_148, 105_680]);
+  expect(hono.total).toBeLessThan(DEFAULT_HARVEST_BUDGET);
   expect(novu.total).toBeGreaterThan(DEFAULT_HARVEST_BUDGET);
+});
+
+it("forecasts a measured live run's spend from the evidence it read", () => {
+  // OSS-92 receipt: Hono at 9075031e, 104 sources, Codex, 22 calls (4 triage, 8 writer,
+  // 7 repair, 3 meaning) recorded 551,731 tokens. The old forecast said 307,061.
+  const hono = { candidates: 104, triageTokens: 26_657, writerTokens: 54_571, largestWriterTokens: 2_258 };
+  const projected = projectHarvestSpend(hono, "codex");
+  expect(projected).toBeGreaterThan(551_731 * 0.9);
+  expect(projected).toBeLessThan(551_731 * 1.1);
+  // The shown estimate stops the harvest, so a run that reads to it spends at most the ceiling.
+  expect(projected * 1.1).toBeLessThan(Math.floor(DEFAULT_HARVEST_BUDGET * 1.5));
 });
 
 describe("PR descriptions", () => {
