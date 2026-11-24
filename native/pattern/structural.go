@@ -276,7 +276,7 @@ func tokenize(s string) []string {
 func tokenizeAt(s string) ([]string, []int) {
 	var out []string
 	var offs []int
-	for i := 0; i < len(s); {
+	for i := commentTail(s); i < len(s); {
 		at, n := i, len(out)
 		c := s[i]
 		switch {
@@ -337,6 +337,32 @@ func tokenizeAt(s string) ([]string, []int) {
 		}
 	}
 	return out, offs
+}
+
+// commentTail is where code starts when s opens inside a block comment. A
+// reviewed window cut from a file can begin in a doc comment's body, whose
+// lines may hold backticks or quotes that would otherwise open a string. It is
+// 0 unless every line before the first `*/` is blank or starts with `*`.
+func commentTail(s string) int {
+	for at := 0; at < len(s); {
+		end := strings.IndexByte(s[at:], '\n')
+		line := s[at:]
+		if end >= 0 {
+			line = s[at : at+end]
+		}
+		t := strings.TrimSpace(line)
+		if t != "" && t[0] != '*' {
+			return 0
+		}
+		if k := strings.Index(line, "*/"); k >= 0 {
+			return at + k + 2
+		}
+		if end < 0 {
+			return 0
+		}
+		at += end + 1
+	}
+	return 0
 }
 
 func isWord(c byte) bool {

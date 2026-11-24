@@ -193,3 +193,34 @@ func TestSelfCheckPlainWord(t *testing.T) {
 		t.Errorf("declared middle dropped: %s", v.Reason)
 	}
 }
+
+// A reviewed window can start inside a doc comment whose opening `/**` is above
+// it. Backticks in that comment must not turn the code below into a string.
+// From Hono's c.json() review (OSS-92): the writer's pattern was dropped.
+func TestSelfCheckWindowOpensInsideComment(t *testing.T) {
+	objected := "   *   return c.json({ message: 'Hello!' })\n   * })\n   * ```\n   */\n" +
+		"  json: JSONRespond = (object: T): JSONRespondReturn<T, U> => {\n" +
+		"    const jsonString = JSON.stringify(object)\n" +
+		"    return !this.finalized\n      ? new Response(jsonString, {\n          headers: { 'Content-Type': 'application/json' },\n        })\n" +
+		"      : this.#newResponse(jsonString)\n  }\n"
+	fixed := "  json: JSONRespond = (object: T): JSONRespondReturn<T, U> => {\n" +
+		"    return this.#useFastPath()\n      ? Response.json(object)\n      : this.#newResponse(JSON.stringify(object))\n  }\n"
+	keep := func(pattern, match, anchor string) Verdict {
+		return SelfCheck(Candidate{Type: "anti", Match: match, Pattern: pattern, Objected: objected, Fixed: fixed, Anchor: anchor}, Area{})
+	}
+	if v := keep("new Response(jsonString, {", "literal", "      ? new Response(jsonString, {"); !v.Keep {
+		t.Errorf("literal on the commented line: %s", v.Reason)
+	}
+	if v := keep("new Response($A, $B)", "structural", "      ? new Response(jsonString, {"); !v.Keep {
+		t.Errorf("structural on the commented line: %s", v.Reason)
+	}
+	// Text that is only in the comment's tail is still not evidence.
+	if v := keep("c.json({ message", "literal", ""); v.Keep {
+		t.Error("a match inside the leading comment counted as reviewed code")
+	}
+	// A code line that holds `*/` inside a string is not a comment's end.
+	glob := "const files = glob('src/**/*.ts')\nconst s = `x`\nnew Response(files)\n"
+	if n := len(codeLiteralSpans("new Response(files)", glob)); n != 1 {
+		t.Errorf("a glob string before the code changed what is code: %d matches", n)
+	}
+}
