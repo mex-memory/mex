@@ -75,4 +75,23 @@ describe("lesson comparison candidates", () => {
     expect(plan.questions).toHaveLength(1);
     expect(plan.resolve(["different"])).toHaveLength(2);
   });
+  it("compares new wording only if the merge can add support or change a decision", () => {
+    const [a, b] = same[0]!;
+    const first = said(a), second = said(b);
+    const sameReview = { ...second, candidate: { ...second.candidate, pull: first.candidate.pull, reviewers: first.candidate.reviewers } };
+    expect(planClusters([first, sameReview]).questions).toEqual([]);
+    const distinctReviews = planClusters([first, second]);
+    expect(distinctReviews.questions).toHaveLength(1);
+    expect(distinctReviews.resolve(["same"])).toMatchObject([{ decision: "write", support: 2, reviewers: 2 }]);
+  });
+  it("defers new comparisons for an early proposal and still checks refusals", () => {
+    const [a, b] = same[0]!;
+    const prior = { id: "prior", text: a, scope: ["src/app.ts"], patterns: [], refused: true };
+    const plan = planClusters([said(a), said(b)], { compareNew: false, earlier: [prior] });
+    expect(plan.questions).toEqual([
+      { lesson: { left: { lesson: a }, right: { lesson: a } } },
+      { lesson: { left: { lesson: b }, right: { lesson: a } } },
+    ]);
+    expect(plan.resolve(["same", "related"])).toMatchObject([{ earlier: prior.id }, { relatedRefusals: [prior.id] }]);
+  });
 });

@@ -38,9 +38,10 @@ import { BYTES_PER_TOKEN, TRIAGE_BATCH, TRIAGE_INPUT_LIMIT, TRIAGE_METADATA } fr
 import { harvestBatch } from "./harvest/index.js";
 import { networkGroups, networkProofKey, networkRowKey, readNetworkGroups } from "./network-proof.js";
 import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harvest/types.js";
-import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
-import { gitHistory, proveEntry, quoteChecks, type ProofContext, type ProofJudgment, type ProofResult } from "./prove.js";
-import { LESSON_PAIR_BATCH, MEANING_PURPOSE, meaningPrompt, meaningVerdicts, type MeaningQuestion, type MeaningVerdict } from "./meaning.js";
+import { LEARN_KIND, meaningEstimate, promptEstimate, type LearningPlan } from "./plan.js";
+import { gitHistory, proveEntry, type ProofContext, type ProofJudgment, type ProofResult } from "./prove.js";
+import { draftEvidence } from "./draft-evidence.js";
+import { MEANING_PURPOSE, meaningBatches, meaningPrompt, meaningVerdicts, type MeaningQuestion, type MeaningVerdict } from "./meaning.js";
 import { dispositionKey, mergeDispositions, readDispositions, type CandidateDisposition } from "./dispositions.js";
 import { preserveWaiting } from "./review-policy.js";
 import { routeEntry } from "./route.js";
@@ -102,6 +103,22 @@ export const Phase = z.enum(["harvest", "triage", "cluster", "write", "finish"])
 export const trialReceiptKey = (jobId: string) => `learning.deep.trials.${jobId}`;
 type TrialEntry = { id: string; issues?: number; linter?: true; alternatives?: number; procedure?: true };
 const Counts = z.record(z.string().max(64), z.number().int().nonnegative());
+const DocumentUnit = z.object({
+  document: z.number().int().nonnegative(),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).strict().refine(unit => unit.end > unit.start);
+const WriterUnit = z.union([z.literal("early"), z.number().int().nonnegative(), DocumentUnit]);
+type WriterUnit = z.infer<typeof WriterUnit>;
+const QuoteBatch = z.object({
+  round: z.number().int().nonnegative(),
+  units: z.array(WriterUnit),
+  next: z.number().int().nonnegative(),
+  waiting: z.array(WriterUnit),
+  nextDocument: z.number().int().nonnegative(),
+  documentOffset: z.number().int().nonnegative().optional(),
+  readyDocuments: z.array(DocumentUnit).optional(),
+}).strict();
 export const PipelineState = z.object({
   phase: Phase,
   cursor: z.unknown().optional(),
@@ -111,6 +128,7 @@ export const PipelineState = z.object({
   early: z.boolean(),
   batches: z.number().int().nonnegative(),
   written: z.number().int().nonnegative(),
+  quoteBatch: QuoteBatch.optional(),
   counts: Counts,
   procedures: z.number().int().nonnegative().max(5).optional(),
 }).strict();
@@ -124,8 +142,9 @@ export function savedCursor(reader: { setting(scope: string, key: string): strin
   } catch { /* An unreadable cursor starts a new scan. */ }
 }
 
-export const initialState = (cursor?: HarvestCursor): PipelineState =>
-  ({ phase: "harvest", cursor, chunks: 0, triaged: 0, early: false, batches: 0, written: 0, counts: {} });
+export const initialState = (cursor?: HarvestCursor, batchQuotes = false): PipelineState =>
+  ({ phase: "harvest", cursor, chunks: 0, triaged: 0, early: false, batches: 0, written: 0, counts: {},
+    ...(batchQuotes ? { quoteBatch: { round: 0, units: [], next: 0, waiting: [], nextDocument: 0 } } : {}) });
 
 export class AgentActive extends Error {}
 
@@ -135,6 +154,19 @@ export function harvestClient(client: NonNullable<HarvestDeps["client"]>, source
 }
 
 type Context = BatchContext<unknown, unknown>;
+type QuoteAnswer = MeaningVerdict | null;
+interface QuoteCollection {
+  answers: ReadonlyMap<string, QuoteAnswer>;
+  requests: Map<string, MeaningQuestion>;
+}
+class QuoteChecksPending extends Error {}
+class DocumentReady extends Error {}
+function writerUnitName(unit: WriterUnit): string {
+  if (unit === "early") return unit;
+  if (typeof unit === "number") return `batch.${unit}`;
+  return `batch.${unit.document}.docs.${unit.start}`;
+}
+
 export interface PipelineDeps {
   model: typeof runModel;
   now: () => number;
@@ -151,13 +183,17 @@ export interface PipelineInput {
   deps: PipelineDeps;
   weekly: boolean;
   gaps: Set<string>;
+  collectingQuotes?: QuoteCollection;
 }
 
 const key = (job: { id: string }, name: string) => learningRunPrefix(job.id) + name;
 export function publishedBatch(reader: { setting(scope: string, key: string): string | undefined | null }, job: Context["job"]): boolean {
   if (!job.checkpoint || !job.project_id) return false;
   const state = JSON.parse(job.checkpoint).v2 as PipelineState | undefined;
-  const name = state?.phase === "write" ? `batch.${state.written}` : state?.phase === "triage" && !state.early ? "early" : undefined;
+  const unit = state?.quoteBatch?.units[state.quoteBatch.next];
+  const name = state?.phase === "write"
+    ? state.quoteBatch ? unit === undefined ? undefined : writerUnitName(unit) : `batch.${state.written}`
+    : state?.phase === "triage" && !state.early ? "early" : undefined;
   return !!name && !!reader.setting(job.project_id, key(job, `${name}.done`));
 }
 const add = (counts: PipelineState["counts"], name: string, n = 1) => { if (n) counts[name] = (counts[name] ?? 0) + n; };
@@ -258,7 +294,7 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   }
   if (prior?.state === "running") throw new ModelWaitError("queue");
   const spent = recordedModelSpend(writer, job.id);
-  const estimate = promptEstimate(prompt, plan.agent, role === "cheap" ? 0 : rules);
+  const estimate = bindPrompt ? meaningEstimate(prompt, plan.agent) : promptEstimate(prompt, plan.agent, role === "cheap" ? 0 : rules);
   // Procedure naming is a trial on the automatic allowance, not part of the consented quote.
   const procedure = name.startsWith("procedure.");
   if (!weekly && !procedure && tokenCount(estimate) > plan.ceiling - spent) throw new ModelWaitError("cap", CEILING_WAIT);
@@ -270,6 +306,7 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
       recordHome: writer.location.home, stage }, () => deps.model({
       agent: plan.agent, setup: procedure || bindPrompt ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
       purpose: procedure ? "learn-deeper-procedure" : bindPrompt ? MEANING_PURPOSE : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
+      ...(bindPrompt && plan.agent === "codex" ? { isolatedText: true } : {}),
       ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
     }));
     const { writerModel } = await import("./job.js");
@@ -290,23 +327,32 @@ async function retry(...[input, name, prompt, role, rules]: Parameters<typeof ca
   }
 }
 
+const judgmentGap = (metric: "pairs" | "quotes") => `A lesson ${metric === "pairs" ? "comparison" : "evidence"} batch could not be judged.`;
+
 async function judgeMeaning(input: PipelineInput, counts: PipelineState["counts"], name: string, metric: "pairs" | "quotes",
-  questions: readonly MeaningQuestion[]): Promise<MeaningVerdict[] | undefined> {
+  questions: readonly MeaningQuestion[], pauseOnCap: boolean): Promise<Array<MeaningVerdict | undefined> | undefined> {
   if (!questions.length) return [];
   const { context } = input;
   const { writer, job } = context;
   const spent = recordedModelSpend(writer, job.id);
-  const gap = `A lesson ${metric === "pairs" ? "comparison" : "evidence"} batch could not be judged.`;
+  const gap = judgmentGap(metric);
   const skipped = `unavailable.${name}`;
   try {
     const unavailable = load<{ tokens: number }>(context, skipped);
     if (unavailable) { add(counts, `tokens.${metric}`, unavailable.tokens); input.gaps.add(gap); return; }
-    const reply = await call(input, name, meaningPrompt(questions), "cheap", 0, true);
+    let prompt = meaningPrompt(questions);
+    const saved = load<Reply>(context, `reply.${name}`);
+    if (saved?.promptHash && saved.promptHash !== sourceDigest(prompt)) {
+      const legacy = meaningPrompt(questions, false);
+      if (saved.promptHash === sourceDigest(legacy)) prompt = legacy;
+    }
+    const reply = await call(input, name, prompt, "cheap", 0, true);
     add(counts, `tokens.${metric}`, reply.tokens);
     const verdicts = meaningVerdicts(reply.text, questions);
     if (!verdicts) input.gaps.add(gap);
     return verdicts;
-  } catch {
+  } catch (error) {
+    if (pauseOnCap && error instanceof ModelWaitError && error.reason === "cap") throw error;
     const tokens = Math.max(0, recordedModelSpend(writer, job.id) - spent);
     save(context, skipped, { tokens });
     add(counts, `tokens.${metric}`, tokens);
@@ -314,16 +360,27 @@ async function judgeMeaning(input: PipelineInput, counts: PipelineState["counts"
   }
 }
 
-async function groupLessons(input: PipelineInput, counts: PipelineState["counts"], name: string, items: readonly Triaged[],
-  earlier?: readonly EarlierLearned[]): Promise<Cluster[]> {
-  const plan = planClusters(items, { earlier });
+async function judgeQuestions(input: PipelineInput, counts: PipelineState["counts"], name: string, metric: "pairs" | "quotes",
+  questions: readonly MeaningQuestion[], pauseOnCap = false): Promise<Array<MeaningVerdict | undefined>> {
   const verdicts: Array<MeaningVerdict | undefined> = [];
-  for (let start = 0; start < plan.questions.length; start += LESSON_PAIR_BATCH) {
-    const questions = plan.questions.slice(start, start + LESSON_PAIR_BATCH);
-    const answers = await judgeMeaning(input, counts, `${name}.pairs.${start / LESSON_PAIR_BATCH}`, "pairs", questions);
-    if (answers) answers.forEach((answer, i) => { verdicts[start + i] = answer; });
+  for (const [i, batch] of meaningBatches(questions).entries()) {
+    const stage = metric === "quotes" && i === 0 ? name : `${name}.${i}`;
+    const answers = await judgeMeaning(input, counts, stage, metric, batch, pauseOnCap);
+    if (answers?.some(answer => answer === undefined)) {
+      const missing = batch.flatMap((question, index) => answers[index] === undefined ? [{ question, index }] : []);
+      const retried = await judgeMeaning(input, counts, `${stage}.missing`, metric, missing.map(item => item.question), pauseOnCap);
+      missing.forEach(({ index }, i) => { answers[index] = retried?.[i]; });
+      if (answers.some(answer => answer === undefined)) input.gaps.add(judgmentGap(metric));
+    }
+    verdicts.push(...(answers ?? batch.map(() => undefined)));
   }
-  return plan.resolve(verdicts);
+  return verdicts;
+}
+
+async function groupLessons(input: PipelineInput, counts: PipelineState["counts"], name: string, items: readonly Triaged[],
+  options: ClusterOptions = {}): Promise<Cluster[]> {
+  const plan = planClusters(items, options);
+  return plan.resolve(await judgeQuestions(input, counts, `${name}.pairs`, "pairs", plan.questions));
 }
 
 type PriorLesson = EarlierLearned & { refused: boolean; waiting: boolean };
@@ -420,36 +477,53 @@ function proofDropReason(reason: string): string {
 }
 
 async function judgeDrafts(input: PipelineInput, counts: PipelineState["counts"], name: string, drafts: readonly WriterEntry[],
-  clusters: ReadonlyMap<string, Cluster>, current: ReturnType<typeof reviewRefusals>) {
-  const questions: MeaningQuestion[] = [];
+  clusters: ReadonlyMap<string, Cluster>, current: ReturnType<typeof reviewRefusals>, priorAnswers?: ReadonlyMap<string, MeaningVerdict>) {
+  const answers = new Map(priorAnswers);
+  const requests = new Map<string, MeaningQuestion>();
+  let unavailable = false;
+  const ask = (question: MeaningQuestion) => {
+    const key = JSON.stringify(question);
+    const shared = input.collectingQuotes?.answers.get(key);
+    if (shared === null) unavailable = true;
+    else if (shared !== undefined) answers.set(key, shared);
+    else if (!answers.has(key)) requests.set(key, question);
+    return key;
+  };
   const checks = drafts.map(draft => {
     const cluster = clusters.get(draft.cluster)!;
-    const citations = quoteChecks(draft, cluster).flatMap(({ citations }) => citations.flatMap(({ citation, question }) => {
-      if (!question) return [];
-      return [{ citation, index: questions.push(question) - 1 }];
-    }));
+    const evidence = draftEvidence(draft, cluster);
+    const citations = evidence.asked.map(({ citation, question }) => ({ citation, key: ask(question) }));
     const prior = current.earlier.find(entry => entry.id === cluster.earlier && !entry.refused && earlierClaim(entry) === cluster.earlierClaim);
     const nominated = earlierCandidates(cluster, draft.claim, current.refused);
     const lesson = cluster.members[0]!.triage.lesson;
-    const compare = (entry: EarlierLearned) => questions.push({ lesson: earlierPair(lesson, entry, draft.claim) }) - 1;
-    return { draft, citations, prior: prior && compare(prior), refused: nominated.map(compare) };
+    const compare = (entry: EarlierLearned) => ask({ lesson: earlierPair(lesson, entry, draft.claim) });
+    return { draft, evidence, citations, prior: prior && compare(prior), refused: nominated.map(compare) };
   });
-  const verdicts = await judgeMeaning(input, counts, name, "quotes", questions);
-  const judgments = new Map<WriterEntry, ProofJudgment>();
-  const refused = new Set<WriterEntry>(), related = new Set<WriterEntry>();
-  for (const check of checks) {
-    judgments.set(check.draft, {
-      supportingQuotes: new Set(check.citations.filter(({ index }) => verdicts?.[index] === "supports").map(({ citation }) => citation)),
-      sameEarlier: check.prior !== undefined && verdicts?.[check.prior] === "same",
-    });
-    if (check.refused.some(index => verdicts?.[index] === "same")) refused.add(check.draft);
-    if (check.refused.some(index => verdicts?.[index] === "related")) related.add(check.draft);
+  if (input.collectingQuotes && requests.size) {
+    for (const [key, question] of requests) input.collectingQuotes.requests.set(key, question);
+    throw new QuoteChecksPending();
   }
-  return { judgments, refused, related, unavailable: verdicts === undefined };
+  const verdicts = await judgeQuestions(input, counts, name, "quotes", [...requests.values()]);
+  [...requests.keys()].forEach((key, i) => { if (verdicts[i] !== undefined) answers.set(key, verdicts[i]!); });
+  const judgments = new Map<WriterEntry, ProofJudgment>();
+  const refused = new Set<WriterEntry>(), related = new Set<WriterEntry>(), uncheckedRefusals = new Set<WriterEntry>();
+  for (const check of checks) {
+    for (const { citation, key } of check.citations) if (answers.get(key) === "supports") check.evidence.supportingQuotes.add(citation);
+    judgments.set(check.draft, {
+      supportingQuotes: check.evidence.supportingQuotes, skippedQuotes: check.evidence.skippedQuotes,
+      sameEarlier: check.prior !== undefined && answers.get(check.prior) === "same",
+    });
+    if (check.refused.some(key => answers.get(key) === "same")) refused.add(check.draft);
+    if (check.refused.some(key => answers.get(key) === "related")) related.add(check.draft);
+    if (check.refused.some(key => !answers.has(key))) uncheckedRefusals.add(check.draft);
+  }
+  return { judgments, refused, related, uncheckedRefusals, answers, unavailable: unavailable || verdicts.some(answer => answer === undefined) };
 }
 
+type DocumentPublication = { prepare: true; limit?: never } | { prepare?: never; limit: number };
+
 /** Write, prove, repair once, route and publish one batch of clusters. */
-async function writeUnit(input: PipelineInput, state: PipelineState, name: string, clusters: Cluster[]): Promise<number> {
+async function writeUnit(input: PipelineInput, state: PipelineState, name: string, clusters: Cluster[], documents?: DocumentPublication): Promise<number> {
   const { context, plan, deps } = input;
   const counts: Record<string, number> = {};
   const project = context.job.project_id!;
@@ -500,18 +574,25 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     const proofs: ProofResult[] = [];
     for (const entry of parsed.entries) proofs.push(await prove(entry, checkedDrafts));
     const refusedDraft = (draft: WriterEntry) => checkedDrafts.refused.has(draft) || repair?.judged.refused.has(draft);
-    const failing = proofs.filter(proof => proof.failures.length && !refusedDraft(proof.draft));
+    const uncheckedDraft = (draft: WriterEntry) => checkedDrafts.uncheckedRefusals.has(draft) || repair?.judged.uncheckedRefusals.has(draft);
+    const withheld = (draft: WriterEntry) => refusedDraft(draft) || uncheckedDraft(draft);
+    const failing = proofs.filter(proof => proof.failures.length && !withheld(proof.draft));
     if (failing.length && !repair && !checkedDrafts.unavailable) return { failing };
+    if (documents?.prepare) throw new DocumentReady();
     if (repair) for (const entry of repair.entries) {
       const again = await prove(entry, repair.judged);
       const index = proofs.findIndex(proof => proof.draft.cluster === entry.cluster);
       // Keep the repair only when it proves at least as much as the first answer.
-      if (!refusedDraft(entry) && index >= 0 && !again.dropped
+      if (!withheld(entry) && index >= 0 && !again.dropped
         && (proofs[index]!.dropped || again.when.length >= proofs[index]!.when.length)) proofs[index] = again;
     }
     const model = repair?.model ?? first.model;
-    const unbacked = proofs.filter(proof => !proof.dropped && !refusedDraft(proof.draft)).flatMap(proof => proof.unbacked);
+    const unbacked = proofs.filter(proof => !proof.dropped && !withheld(proof.draft)).flatMap(proof => proof.unbacked);
     if (unbacked.length) save(context, `${name}.unbacked`, unbacked);
+    if (documents?.limit !== undefined) {
+      const rank = new Map(clusters.map((cluster, index) => [cluster.key, index]));
+      proofs.sort((a, b) => rank.get(a.draft.cluster)! - rank.get(b.draft.cluster)!);
+    }
     const routed = proofs.map(proof => ({ proof, routed: routeEntry(proof, plan.origin, model) }));
     const team = input.weekly ? await readTeamCoverage(plan.checkout, plan.head, plan.since) : undefined;
     const duplicate = await existingKnowledge(deps.tree);
@@ -522,6 +603,14 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     const routedOf = new Map<Proposal, { proof: ProofResult; proven: boolean }>();
     for (const { proof, routed: item } of routed) {
       if (refusedDraft(proof.draft)) { add(counts, "cluster.forgotten"); continue; }
+      if (uncheckedDraft(proof.draft)) {
+        add(counts, "dropped");
+        add(counts, "proof-dropped.unjudged-refusal");
+        noteDispositions(context, proof.cluster.members.map(member => ({
+          id: member.candidate.id, disposition: "proof-downgrade", detail: "unjudged-refusal",
+        })));
+        continue;
+      }
       if ("dropped" in item) {
         add(counts, "dropped");
         const detail = proofDropReason(item.dropped);
@@ -574,6 +663,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     const held = new Set<Proposal>();
     const publish = () => propose(proposals, {
       projectPath: plan.checkout, home: context.writer.location.home, ...checked,
+      maxAccepted: documents?.limit,
       validate(gate) {
         const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(context.job.id);
         const checkout = gate.checkout(plan.checkout);
@@ -613,6 +703,15 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
           proposalOf.set(entryId, item.proposal);
           return [{ entryId, entry: item.entry }];
         });
+        if (documents?.limit !== undefined) {
+          const quota = gated.flatMap((result, index) => result.status === "dropped" && result.reason === "quota"
+            ? [routedOf.get(proposals[index]!)!.proof.cluster] : []);
+          for (const item of retained.splice(documents.limit - accepted.length)) {
+            quota.push(routedOf.get(proposalOf.get(item.entryId)!)!.proof.cluster);
+          }
+          add(counts, "doc-quota", quota.length);
+          noteQuotaExclusions({ ...context, writer: gate }, quota);
+        }
         const savedEntries = [...accepted, ...retained];
         acceptedCount = savedEntries.length;
         add(counts, "saved", acceptedCount);
@@ -677,7 +776,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
             route: routed.proof.draft.route, signal: cluster.strong ? "strong" : "weak", link: proposal.source.ref });
         }
         saveReviewRows(set, project, context.job.id, [...rows.values()]);
-        for (const result of gated) if (result.status === "dropped") add(counts, `gate-dropped.${result.reason}`);
+        for (const result of gated) if (result.status === "dropped" && result.reason !== "quota") add(counts, `gate-dropped.${result.reason}`);
         const unchecked = gated.filter(result => result.status === "dropped" && result.reason === "checks-unavailable").length;
         if (unchecked) input.gaps.add(`${unchecked} ${unchecked === 1 ? "lesson" : "lessons"} could not be checked, so nothing was saved from ${unchecked === 1 ? "it" : "them"}.`);
         set.run(project, key(context.job, `${name}.done`), JSON.stringify({ accepted: acceptedCount, counts, gaps: [...input.gaps] }));
@@ -720,7 +819,7 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
     input.gaps.add(error instanceof ModelWaitError ? "The allowance could not cover a repair. Only the proven parts were kept."
       : "The repair turn could not run. Only the proven parts were kept.");
   }
-  const judged = await judgeDrafts(input, counts, `${name}.repair.quotes`, repair.entries, byKey, checkedRefusals);
+  const judged = await judgeDrafts(input, counts, `${name}.repair.quotes`, repair.entries, byKey, checkedRefusals, checkedDrafts.answers);
   const checked = await verify({ ...repair, judged });
   return (checked.acceptedCount ?? 0) + await writeUnbacked(input, state, name);
 }
@@ -728,8 +827,9 @@ async function writeUnit(input: PipelineInput, state: PipelineState, name: strin
 /** Members a written rule didn't rest on: grouped with what they don't say, they may hold a lesson of their own. One round only. */
 async function writeUnbacked(input: PipelineInput, state: PipelineState, name: string): Promise<number> {
   if (name.endsWith(".own")) return 0;
-  // A member already written early backs the rule it was written for: it isn't left over.
-  const early = new Set(load<string[]>(input.context, "early.members") ?? []);
+  // The early unit can still have its own leftovers after its quotes are checked.
+  // Later units leave those members to the early unit.
+  const early = new Set(name === "early" ? [] : load<string[]>(input.context, "early.members") ?? []);
   const items = (load<Triaged[]>(input.context, `${name}.unbacked`) ?? []).filter(item => !early.has(item.candidate.id));
   if (!items.length) return 0;
   // No earlier entry is matched, and the key is its own: these were grouped with a rule they didn't back, so they must
@@ -738,6 +838,171 @@ async function writeUnbacked(input: PipelineInput, state: PipelineState, name: s
     .map(cluster => ({ ...cluster, key: sourceDigest(`own:${cluster.key}`).slice(7, 31) }));
   if (!load(input.context, `${name}.own.done`)) add(state.counts, "cluster.unbacked", items.length);
   return writeUnit(input, state, `${name}.own`, clusters);
+}
+
+interface QuoteResults {
+  answers: Array<[string, QuoteAnswer]>;
+  tokens: number;
+  gaps: string[];
+}
+
+const quoteResultsKey = (round: number) => `quote-results.${round}`;
+const quoteRequestsKey = (round: number, unit: WriterUnit) => `quote-requests.${round}.${writerUnitName(unit)}`;
+function savedQuoteAnswers(context: Context, round: number): Map<string, QuoteAnswer> {
+  return new Map(load<QuoteResults>(context, quoteResultsKey(round - 1))?.answers);
+}
+
+/** Run a unit up to its first unanswered quote. Its paid writer and repair replies are already saved. */
+async function collectQuoteUnit(input: PipelineInput, state: PipelineState, unit: WriterUnit, clusters: Cluster[], documents?: DocumentPublication) {
+  const round = state.quoteBatch!.round;
+  const requests = new Map<string, MeaningQuestion>();
+  const collectingQuotes = { answers: savedQuoteAnswers(input.context, round), requests };
+  const working = { ...state, counts: { ...state.counts } };
+  try {
+    const results = await writeUnit({ ...input, collectingQuotes }, working, writerUnitName(unit), clusters, documents);
+    state.counts = working.counts;
+    return { status: "complete", results } as const;
+  } catch (error) {
+    if (error instanceof DocumentReady) return { status: "ready" } as const;
+    if (!(error instanceof QuoteChecksPending)) throw error;
+    save(input.context, quoteRequestsKey(round, unit), [...requests.values()]);
+    return { status: "waiting" } as const;
+  }
+}
+
+async function finishQuoteRound(input: PipelineInput, state: PipelineState) {
+  const { context } = input;
+  const batch = state.quoteBatch!;
+  let result = load<QuoteResults>(context, quoteResultsKey(batch.round));
+  if (!result) {
+    const requests = new Map<string, MeaningQuestion>();
+    for (const unit of batch.waiting) {
+      const questions = load<MeaningQuestion[]>(context, quoteRequestsKey(batch.round, unit));
+      if (!questions) throw new Error("The run's pending evidence checks were cleared. Start a new quote to learn again.");
+      for (const question of questions) requests.set(JSON.stringify(question), question);
+    }
+    const answers = savedQuoteAnswers(context, batch.round);
+    const counts: PipelineState["counts"] = {};
+    context.progress?.(`Checking ${requests.size} quotes across ${batch.waiting.length} writer batches`);
+    // Keep the paid drafts and their pending questions together when consent runs out.
+    const verdicts = await judgeQuestions(input, counts, `shared.${batch.round}.quotes`, "quotes", [...requests.values()], !input.weekly);
+    [...requests.keys()].forEach((key, i) => answers.set(key, verdicts[i] ?? null));
+    result = { answers: [...answers], tokens: counts["tokens.quotes"] ?? 0, gaps: [...input.gaps] };
+    save(context, quoteResultsKey(batch.round), result);
+  }
+  add(state.counts, "tokens.quotes", result.tokens);
+  for (const gap of result.gaps) input.gaps.add(gap);
+  batch.units = [...batch.waiting, ...batch.units.slice(batch.next)];
+  batch.waiting = [];
+  batch.next = 0;
+  batch.round++;
+  return { state, done: false, progress: "Evidence judgments recorded", results: 0 };
+}
+
+function writerClusters(input: PipelineInput, index: number): Cluster[] {
+  const clusters = load<Cluster[]>(input.context, `clusters.${index}`);
+  if (!clusters) throw new Error("The run's sources were cleared. Start a new quote to learn again.");
+  return clusters;
+}
+
+function documentQuota(state: PipelineState): number {
+  return Math.max(0, Math.floor((state.counts["saved-other"] ?? 0) / 3) - (state.counts["saved-docs"] ?? 0));
+}
+
+function noteQuotaExclusions(context: Context, clusters: readonly Cluster[]) {
+  noteDispositions(context, clusters.flatMap(cluster =>
+    cluster.members.map(member => ({ id: member.candidate.id, disposition: "quota" as const }))));
+}
+
+function selectWriterClusters(input: PipelineInput, state: PipelineState, index: number) {
+  const clusters = writerClusters(input, index);
+  const selected = hasReviewHistory(input.plan, state) && clusters[0]?.source === "docs" ? clusters.slice(0, documentQuota(state)) : clusters;
+  noteQuotaExclusions(input.context, clusters.slice(selected.length));
+  return { selected, excluded: clusters.length - selected.length };
+}
+
+/** Finish checkpoints that scheduled document slices against earned slots. */
+function scheduleDocuments(input: PipelineInput, state: PipelineState): string | undefined {
+  const batch = state.quoteBatch!;
+  if (batch.nextDocument >= state.batches) return;
+  const reserved = batch.waiting.reduce<number>((sum, unit) => typeof unit === "object" ? sum + unit.end - unit.start : sum, 0);
+  const available = documentQuota(state) - reserved;
+  if (available <= 0 && batch.waiting.length) return;
+
+  const document = batch.nextDocument, start = batch.documentOffset ?? 0;
+  const clusters = writerClusters(input, document);
+  if (available <= 0) {
+    const skipped = clusters.slice(start);
+    noteQuotaExclusions(input.context, skipped);
+    add(state.counts, "doc-quota", skipped.length);
+    batch.nextDocument++;
+    batch.documentOffset = 0;
+    state.written++;
+    return "Document quota reached";
+  }
+
+  const end = Math.min(clusters.length, start + available);
+  // Store the selected slice in the checkpoint so a later gain in quota does
+  // not change the evidence behind an already paid writer reply.
+  batch.units = [{ document, start, end }];
+  batch.next = 0;
+  if (end === clusters.length) {
+    batch.nextDocument++;
+    batch.documentOffset = 0;
+  } else batch.documentOffset = end;
+  return `Writing ${end - start} document lessons within the earned quota`;
+}
+
+async function writeWithQuoteBatches(input: PipelineInput, state: PipelineState) {
+  const batch = state.quoteBatch!;
+  const unit = batch.units[batch.next];
+  if (unit === undefined) {
+    // Get the eligible document questions into the same round as pending
+    // review repairs. Publication still determines any additional quota.
+    const progress = scheduleDocuments(input, state);
+    if (progress) return { state, done: false, progress, results: 0 };
+    if (batch.waiting.length) return finishQuoteRound(input, state);
+    if (batch.readyDocuments?.length) {
+      batch.units = batch.readyDocuments.sort((a, b) => a.document - b.document);
+      batch.next = 0;
+      delete batch.readyDocuments;
+      return { state, done: false, progress: "Applying the earned quota to checked document lessons", results: 0 };
+    }
+    state.phase = "finish";
+    return { state, done: false, progress: "Writer batches checked", results: 0 };
+  }
+
+  let selected: Cluster[], excluded = 0, completesBatch = false;
+  if (unit === "early") selected = load<{ clusters: Cluster[] }>(input.context, "early.grouped")!.clusters;
+  else if (typeof unit === "number") {
+    ({ selected, excluded } = selectWriterClusters(input, state, unit));
+    completesBatch = true;
+  } else {
+    const clusters = writerClusters(input, unit.document);
+    selected = clusters.slice(unit.start, unit.end);
+    completesBatch = unit.end === clusters.length;
+  }
+  input.context.progress?.(`Writing and checking ${selected.length} lessons`);
+  const documentUnit = typeof unit === "object" ? unit : undefined;
+  const documents: DocumentPublication | undefined = documentUnit
+    ? batch.readyDocuments ? { prepare: true } : { limit: documentQuota(state) }
+    : undefined;
+  let collected: Awaited<ReturnType<typeof collectQuoteUnit>>;
+  try { collected = await collectQuoteUnit(input, state, unit, selected, documents); }
+  catch (error) {
+    // A blocked writer must not strand already paid drafts behind it.
+    if (error instanceof ModelWaitError && error.reason === "cap" && batch.waiting.length) return finishQuoteRound(input, state);
+    throw error;
+  }
+  batch.next++;
+  if (collected.status === "waiting") batch.waiting.push(unit);
+  else if (collected.status === "ready") batch.readyDocuments!.push(documentUnit!);
+  else {
+    if (completesBatch) state.written++;
+    add(state.counts, "doc-quota", excluded);
+  }
+  return { state, done: false, progress: `${state.written} of ${state.batches} writer batches checked`,
+    results: collected.status === "complete" ? collected.results : 0 };
 }
 
 /** Stage the pinned files the proof and the gate read, with a file index that counts learned literals. */
@@ -941,7 +1206,7 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
         if (!grouped) {
           const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
           const counts: PipelineState["counts"] = {};
-          const clusters = markEarlyWaiting(await groupLessons(input, counts, "early", picked.items, refusals.earlier), picked.waiting)
+          const clusters = markEarlyWaiting(await groupLessons(input, counts, "early", picked.items, { earlier: refusals.earlier, compareNew: false }), picked.waiting)
             .filter(cluster => !refusals.cluster(cluster));
           grouped = { clusters, counts, gaps: [...input.gaps] };
           save(context, "early.grouped", grouped);
@@ -951,7 +1216,11 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
         for (const gap of gaps) input.gaps.add(gap);
         if (clusters.length) {
           progress(picked.waiting ? `Writing the first ${clusters.length} rules, waiting for a tick` : `Writing the first ${clusters.length} rules`);
-          results = await writeUnit(input, state, "early", clusters);
+          if (state.quoteBatch) {
+            const collected = await collectQuoteUnit(input, state, "early", clusters);
+            if (collected.status === "waiting") state.quoteBatch.waiting.push("early");
+            else if (collected.status === "complete") results = collected.results;
+          } else results = await writeUnit(input, state, "early", clusters);
           save(context, "early.members", clusters.flatMap(cluster => cluster.members.map(member => member.candidate.id)));
         }
         state.early = true;
@@ -973,13 +1242,14 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
       const early = new Set(load<string[]>(context, "early.members") ?? []);
       const refusals = reviewRefusals(context.writer, context.job.project_id!, plan);
       const waiting = new Set(refusals.earlier.filter(entry => entry.waiting).map(entry => entry.id));
-      const clusters = await groupLessons(input, state.counts, "cluster", items, refusals.earlier);
+      const clusters = await groupLessons(input, state.counts, "cluster", items, { earlier: refusals.earlier });
       for (const cluster of clusters) add(state.counts, `cluster.${cluster.decision}`);
       const eligible = clusters.filter(cluster => !refusals.cluster(cluster));
       add(state.counts, "cluster.forgotten", clusters.length - eligible.length);
       noteDispositions(context, clusters.filter(cluster => !eligible.includes(cluster)).flatMap(cluster =>
         cluster.members.map(member => ({ id: member.candidate.id, disposition: "dropped" as const, detail: "refused" }))));
-      const held = applyDocQuota(eligible, 0.25, hasReviewHistory(plan, state)).map(cluster => preserveWaiting(cluster, waiting));
+      const reviewHistory = hasReviewHistory(plan, state);
+      const held = applyDocQuota(eligible, 0.25, reviewHistory).map(cluster => preserveWaiting(cluster, waiting));
       noteDispositions(context, [
         ...held.filter(cluster => alreadyWrittenEarly(cluster, early)).flatMap(cluster =>
           cluster.members.map(member => ({ id: member.candidate.id, disposition: "earlier-suppressed" as const }))),
@@ -990,23 +1260,28 @@ export async function runPipelineBatch(input: PipelineInput): Promise<{ state: P
         && !(cluster.earlier && waiting.has(cluster.earlier) && cluster.pulls.length < 2)
         // Written early already, kept or not: the same evidence would be paid for twice.
         && !alreadyWrittenEarly(cluster, early));
-      // Count accepted review and history entries before spending on docs.
       const writerContext = { linters: linters(deps.tree) };
-      const batches = [write.filter(cluster => cluster.source !== "docs"), write.filter(cluster => cluster.source === "docs")]
-        .flatMap(group => packClusters(group, writerContext));
+      const reviews = packClusters(write.filter(cluster => cluster.source !== "docs"), writerContext);
+      const docs = packClusters(write.filter(cluster => cluster.source === "docs"), writerContext);
+      const batches = [...reviews, ...docs];
       batches.forEach((batch, i) => save(context, `clusters.${i}`, batch));
       state.batches = batches.length;
-      state.phase = batches.length ? "write" : "finish";
+      const quoteBatch = state.quoteBatch;
+      if (quoteBatch) {
+        if (reviewHistory && docs.length) quoteBatch.readyDocuments = [];
+        // Gather questions from the bounded document plan in the same rounds
+        // as reviews. The saved review count limits publication afterwards.
+        quoteBatch.units = batches.map((batch, index) => reviewHistory && index >= reviews.length
+          ? { document: index, start: 0, end: batch.length } : index);
+        quoteBatch.nextDocument = batches.length;
+      }
+      state.phase = batches.length || state.quoteBatch?.waiting.length ? "write" : "finish";
       return { state, done: false, progress: `${write.length} lessons to write`, results: 0 };
     }
     case "write": {
-      const clusters = load<Cluster[]>(context, `clusters.${state.written}`);
-      if (!clusters) throw new Error("The run's sources were cleared. Start a new quote to learn again.");
-      const quota = Math.max(0, Math.floor((state.counts["saved-other"] ?? 0) / 3) - (state.counts["saved-docs"] ?? 0));
-      const selected = hasReviewHistory(plan, state) && clusters[0]?.source === "docs" ? clusters.slice(0, quota) : clusters;
-      noteDispositions(context, clusters.slice(selected.length).flatMap(cluster =>
-        cluster.members.map(member => ({ id: member.candidate.id, disposition: "quota" as const }))));
-      add(state.counts, "doc-quota", clusters.length - selected.length);
+      if (state.quoteBatch) return writeWithQuoteBatches(input, state);
+      const { selected, excluded } = selectWriterClusters(input, state, state.written);
+      add(state.counts, "doc-quota", excluded);
       progress(`Writing and checking ${selected.length} lessons`);
       const results = await writeUnit(input, state, `batch.${state.written}`, selected);
       state.written++;

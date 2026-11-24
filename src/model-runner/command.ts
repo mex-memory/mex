@@ -6,6 +6,8 @@ export interface ModelCommandOptions extends ModelSelection {
   /** text: no tools (the default for MEX's own work); read: look, never change; workspace: edits allowed. */
   access?: "text" | "read" | "workspace";
   allowNonGit?: boolean;
+  /** Use only the supplied evidence for a Codex text judgment. Login credentials still apply. */
+  isolatedText?: boolean;
   allowedTools?: readonly string[];
   /** Read access only: the most agent turns one call may take. */
   maxTurns?: number;
@@ -22,6 +24,7 @@ export function readOnlyLimit(maxTurns = READ_ONLY_TURNS): number {
 export function buildModelCommand(agent: ModelAgent, instruction: string, options: ModelCommandOptions = {}): AgentCommand {
   const model = selectModel(agent, options);
   const workspace = options.access === "workspace";
+  const isolatedText = options.isolatedText && !workspace && options.access !== "read";
   if (agent === "claude") return {
     command: agent,
     args: ["-p", ...(instruction ? [instruction] : []), "--safe-mode", "--no-session-persistence", "--model", model,
@@ -39,7 +42,9 @@ export function buildModelCommand(agent: ModelAgent, instruction: string, option
       "-c", "project_doc_max_bytes=0",
       "-c", "memories.generate_memories=false", "-c", "memories.use_memories=false",
       "--sandbox", workspace ? "workspace-write" : "read-only", "--model", model,
-      ...(options.access === "read" ? ["--ignore-user-config", "-c", 'approval_policy="never"', "-c", 'web_search="disabled"', "-c", "mcp_servers={}"] : []),
+      ...(options.access === "read" || isolatedText ? ["--ignore-user-config", "-c", 'approval_policy="never"', "-c", 'web_search="disabled"', "-c", "mcp_servers={}"] : []),
+      ...(isolatedText ? ["--ignore-rules", "--disable", "shell_tool", "--disable", "apps", "--disable", "plugins",
+        "--disable", "multi_agent", "--disable", "multi_agent_v2", "--disable", "memories"] : []),
       ...(options.allowNonGit ? ["--skip-git-repo-check"] : []), instruction],
     env: { MEX_BACKGROUND: "1" },
   };

@@ -22,7 +22,9 @@ const pattern = z.object({
   type: z.enum(["anti", "required", "rejected"]), match: z.enum(["literal", "structural"]),
   pattern: z.string().min(1).max(512).regex(/^[^\x00-\x1f\x7f]+$/u),
 }).strict();
-const quote = z.object({ id: z.string().min(1).max(360), quote: z.string().min(4).max(400) }).strict();
+const MIN_QUOTE_LENGTH = 4;
+const MAX_QUOTE_LENGTH = 400;
+const quote = z.object({ id: z.string().min(1).max(360), quote: z.string().min(MIN_QUOTE_LENGTH).max(MAX_QUOTE_LENGTH) }).strict();
 const clause = z.object({ text: z.string().trim().min(1).max(600), quotes: z.array(quote).min(1).max(4) }).strict();
 const line = z.number().int().positive().max(10_000_000);
 export const WriterEntry = z.object({
@@ -99,7 +101,7 @@ For each entry:
 - route: code-rule (code an agent could write wrongly), process-rule (git, branches, commit or PR text, changelogs, releases, "run X before pushing"), decision (an approach the team chose), ruled-out (an approach the team tried or proposed and rejected), pitfall (a trap with a known cause), procedure (steps that go together).
 - kind: rule, decision, pitfall, procedure or recipe.
 - claim: the rule in one plain line. why: the reason, one or two sentences, only what the evidence says. Plain sentences: no links and no code blocks, and a command only as this repo's own scripts run it. An entry naming anything else is dropped.
-- clauses: split the claim and the why into clauses. The claim's clauses come first, and each one's text is copied exactly from the claim, so together they make up the whole claim; then the why's clauses. Each clause cites 1–4 exact quotes, one from every member that says it (a member must support every claim clause to count as support), copied character for character from a member's text, prText, or a code line (without its "N| " prefix), with that member's id. The quote must say the same thing, including its direction and conditions. A clause the evidence doesn't say must not be written.
+- clauses: split the claim and the why into clauses. The claim's clauses come first, and their text is copied exactly from the claim, so together they make up the whole claim. Each clause cites 1–4 exact excerpts with their member IDs. Select the strongest single excerpt from each member that supports the whole clause. A member counts as support only if its excerpts cover every claim clause. Each quote must be ${MIN_QUOTE_LENGTH}–${MAX_QUOTE_LENGTH} characters, copied character for character from text, prText, or a code line (without its "N| " prefix). The quote must say the same thing, including direction and conditions. Split a compound claim if different excerpts support different parts. Use the source's own wording when it states the rule clearly on its own. Leave unsupported clauses out.
 - scope: the narrowest repository paths or globs the rule governs (files, else their folder with /**). For a process-rule use ["**"]. Leave [] when unsure.
 - when: a rule can stop an edit on an anti pattern and a decision on a rejected pattern. Use required for a fixed form alongside a stopping pattern. Other entries stay scoped prose. Prefer match literal: an exact snippet that names a real identifier, import or call from the "before" code (anti) or the "after" code (required), at least 4 characters, not a whole line of punctuation. Use match structural only when it names an identifier. Give no pattern rather than a guess: "no code anchor" is a correct and common answer.
 - symbol: a function, class or constant the rule is about, as {file, name}, only if it appears in the code shown.

@@ -207,7 +207,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         if (!plan?.harvest) return finishGap("This run needs a new quote. Run mex learn to use the current pipeline.");
         const tree = await PinnedTree.open(plan.checkout, plan.head);
         if (!tree) return finishGap("The approved Git revision is no longer readable in this checkout.");
-        const v2 = state.v2 ?? initialState(savedCursor(writer, project));
+        const v2 = state.v2 ?? initialState(savedCursor(writer, project), !weekly && plan.agent === "codex");
         let active = plan;
         if (v2.phase === "harvest") {
           client = await deps.client(active);

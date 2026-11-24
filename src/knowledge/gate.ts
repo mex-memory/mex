@@ -610,6 +610,7 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
 
     const results = firstPass.map((p): GateResult => {
       if ("status" in p) return p;
+      if (context.maxAccepted !== undefined && accepted.length >= context.maxAccepted) return drop("quota");
       const failure = beforeChecks(p);
       if (failure) return failure;
       const offset = offsets.get(p);

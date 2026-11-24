@@ -401,7 +401,7 @@ describe("harvest", () => {
     const budget = 48_854;
     const bounds = { since: "2026-11-12T00:00:00Z" };
     const first = await drain(options({ ...bounds, budget }), deps);
-    expect(first.candidates).toHaveLength(3);
+    expect(first.candidates).toHaveLength(4);
     expect(first.spent).toBeLessThanOrEqual(budget);
     expect(first.spent).toBe(projectHarvestSpend(first.cursor.run!.evidence, "claude"));
     expect(first.gaps).toContain("Learning reached its estimated token budget.");
@@ -550,8 +550,8 @@ it("caps reviewed-file requests per batch and caches missing files", async () =>
 it("includes the comparison and quote checks in both calibration shapes", () => {
   const hono = estimateHarvest(forecastCounts({ merged: 48, doc: 17 }), "claude");
   const novu = estimateHarvest(forecastCounts({ merged: 45, doc: 36 }), "codex");
-  expect([hono.total, novu.total]).toEqual([269_942, 556_472]);
-  expect([hono.comparisons + hono.grounding, novu.comparisons + novu.grounding]).toEqual([127_458, 265_040]);
+  expect([hono.total, novu.total]).toEqual([206_484, 441_192]);
+  expect([hono.comparisons + hono.grounding, novu.comparisons + novu.grounding]).toEqual([64_000, 149_760]);
   expect(hono.total).toBeLessThan(392_384);
   expect(novu.triage + novu.writer + novu.repair).toBeLessThan(DEFAULT_HARVEST_BUDGET);
   expect(novu.total).toBeGreaterThan(DEFAULT_HARVEST_BUDGET);

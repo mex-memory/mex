@@ -51,6 +51,19 @@ describe("producer validation", () => {
     expect(listProducers().filter(p => !p.active).map(p => p.id)).toEqual(["session-import", "session-ongoing"]);
   });
 
+  it("spends a publication slot only after checks hold", async () => {
+    const proposals = [
+      fact({ key: "unchecked", text: "Load lint configuration from the package.", checks: [check] }),
+      fact({ key: "allowed", text: "Run migrations before starting the worker." }),
+      fact({ key: "over-quota", text: "Rebuild the command index before packaging." }),
+    ];
+    const results = await propose(proposals, { ...context, maxAccepted: 1, observeChecks: () => [{ reason: "No matching symbol." }] });
+    expect(results.map(result => result.status === "dropped" ? result.reason : result.status))
+      .toEqual(["check-fails", "accepted", "quota"]);
+    expect(expandPersonal(producerEntryId("code-facts", "allowed"), context).entry.text)
+      .toBe("Run migrations before starting the worker.");
+  });
+
   it("lets only a learned doc or review rule, decision or procedure go repo-wide without an anchor", async () => {
     const body = "Bug fixes need a regression test in the same pull request.";
     const learned = (over: Partial<Proposal>): Proposal => ({

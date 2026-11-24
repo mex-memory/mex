@@ -42,6 +42,7 @@ const path = "CONTRIBUTING.md";
 const sourceId = "doc:CONTRIBUTING.md#development";
 const quote = "Run npm run verify before cutting a release.";
 const claim = quote;
+const paraphrase = "Before cutting a release, run npm run verify.";
 const doc = (body = quote) => `# Development\n\n${body}\n`;
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 function commit(message: string) {
@@ -165,7 +166,7 @@ it("quotes the ceiling before any model call, accounts for sorting, writing and 
       console.log(JSON.stringify({type: "thread.started", thread_id: "fixture"}));
       console.log(JSON.stringify({type: "item.completed", item: {type: "agent_message", text: process.argv[1]}}));
       console.log(JSON.stringify({type: "turn.completed", usage: {input_tokens: 1000, cached_input_tokens: 100, output_tokens: 200}}));
-    });`, docReply(request).text], options);
+    });`, docReply(request, sourceId, paraphrase).text], options);
   } } }));
   registerJobKind(createLearnKind({ model }));
   const confirm = vi.fn(async (lines: readonly string[]) => {
@@ -228,7 +229,7 @@ it("joins the unfinished job and keeps its pinned docs across a branch switch", 
   const writer = openRecord();
   try {
     expect(await advance(writer, jobRow(writer))).toMatchObject({ state: "done", results: 1 });
-    expect(model).toHaveBeenCalledTimes(3);
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND]);
     expect(git("status", "--porcelain")).toBe("");
   } finally { writer.close(); }
 }, 60_000);
@@ -258,7 +259,7 @@ it.each(["offline", "expired login"] as const)("waits and resumes the same harve
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1 });
     expect(state(done).v2.counts).toMatchObject({ "harvested.doc": 1, saved: 1 });
-    expect(model).toHaveBeenCalledTimes(3);
+    expect(model).toHaveBeenCalledTimes(2);
   } finally { writer.close(); }
 }, 60_000);
 
@@ -285,7 +286,7 @@ it("reuses completed triage when a provider limit stops the writer and the app r
     limited = false;
     expect(requeueReadyJobs(writer)).toBe(1);
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["cheap", "best", "best", "cheap"]);
+    expect(model.mock.calls.map(([request]) => request.role)).toEqual(["cheap", "best", "best"]);
     expect(rawRows(writer, job)).toEqual([]);
   } finally { writer.close(); }
 }, 60_000);
@@ -388,7 +389,7 @@ it("two due machines converge on one rule id and offer one team publication", as
       return [...snapshotNotes(writer, project).files][0]!;
     }));
     expect(fetches.filter(value => value.endsWith("/branches/main"))).toHaveLength(2);
-    expect(model).toHaveBeenCalledTimes(6);
+    expect(model).toHaveBeenCalledTimes(4);
     expect(learned[0]![0]).toBe(learned[1]![0]);
     const [id, raw] = learned[0]!;
     const coverage = approvedCoverage(parseEntry(raw), raw, machines[0]!.setting(project, noteKey(id)), original);
@@ -522,7 +523,7 @@ it("finishes a published writer batch after its runner dies without another mode
     expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
     expect(jobRow(writer).progress).toBe("Finishing the saved batch after interruption");
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
-    expect(model).toHaveBeenCalledTimes(3);
+    expect(model).toHaveBeenCalledTimes(2);
     expect(reviewRows(writer, job.project_id!, job.id)).toHaveLength(1);
     expect(notes(writer, job)).toHaveLength(1);
     expect(rawRows(writer, job)).toEqual([]);
@@ -545,7 +546,7 @@ it.each(["harvest", "triage", "cluster", "write", "finish"])("resumes after the 
     expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1 });
-    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND, MEANING_PURPOSE]);
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND]);
     expect(state(done).v2.counts).toMatchObject({ "harvested.doc": 1, "triage-kept": 1, saved: 1 });
     expect(rawRows(writer, job)).toEqual([]);
   } finally { writer.close(); }
@@ -600,7 +601,7 @@ it.each([false, true])("proves a repair only when the ceiling allows it (cap=%s)
     const model = vi.fn<typeof runModel>(async request => {
       if (request.prompt.includes("failed verification")) {
         expect(request.prompt).toContain("quote(s) not found in the cited evidence");
-        return docReply(request);
+        return docReply(request, sourceId, paraphrase);
       }
       if (request.purpose === LEARN_KIND) {
         if (capped) {
@@ -647,13 +648,13 @@ it.each(["prove", "repair"] as const)("reuses paid replies if interrupted during
   const gate = vi.spyOn(gateEngine, "propose");
   const model = vi.fn<typeof runModel>(async request => request.purpose === LEARN_KIND && phase === "repair" && !request.prompt.includes("failed verification")
     ? docReply(request, sourceId, claim, "A sentence the guide never says.")
-    : docReply(request));
+    : docReply(request, sourceId, paraphrase));
   const kind = createLearnKind({ model });
   registerJobKind(kind);
   const writer = openRecord();
   try {
     const job = jobRow(writer);
-    const at = await advance(writer, job, row => row.state !== "queued" || state(row).v2?.phase === "write");
+    const at = await advance(writer, job, row => row.state !== "queued" || state(row).v2?.quoteBatch?.round === 1);
     expect(at.state).toBe("queued");
     if (phase === "prove") proves.mockRejectedValueOnce(new Error("Fixture interruption after the writer reply"));
     else gate.mockRejectedValueOnce(new Error("Fixture interruption after the repair reply"));
@@ -665,6 +666,24 @@ it.each(["prove", "repair"] as const)("reuses paid replies if interrupted during
     expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
     expect(model).toHaveBeenCalledTimes(phase === "prove" ? 3 : 4);
     expect(rawRows(writer, job)).toEqual([]);
+  } finally { writer.close(); }
+}, 60_000);
+
+it("reuses a quote judgment when repair only removes an unsupported reason", async () => {
+  await accept();
+  const model = vi.fn<typeof runModel>(async request => {
+    const result = docReply(request, sourceId, paraphrase);
+    if (request.purpose !== LEARN_KIND || request.prompt.includes("failed verification")) return result;
+    const { entries } = JSON.parse(result.text);
+    entries[0].clauses.push({ text: "This releases a lock.", quotes: [{ id: sourceId, quote: "The guide doesn't contain this." }] });
+    return reply({ entries });
+  });
+  registerJobKind(createLearnKind({ model }));
+  const writer = openRecord();
+  try {
+    const done = await advance(writer, jobRow(writer));
+    expect(done).toMatchObject({ state: "done", results: 1 });
+    expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["learn-deeper-filter", LEARN_KIND, MEANING_PURPOSE, LEARN_KIND]);
   } finally { writer.close(); }
 }, 60_000);
 
@@ -691,7 +710,7 @@ it("withholds private and historical docs and applies pinned duplicate checks", 
   try {
     const job = jobRow(writer), done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done with gaps", results: 0 });
-    expect(model).toHaveBeenCalledTimes(3);
+    expect(model).toHaveBeenCalledTimes(2);
     expect(state(done).v2.counts).toMatchObject({ "historical-docs": 1, "gate-dropped.duplicate-rule-line": 1 });
     expect(state(done).gaps).toContain("Some rule files could not be read for duplicate checks.");
     expect(rawRows(writer, job)).toEqual([]);
@@ -723,11 +742,11 @@ it("keeps weekly repair inside automatic admission and preserves the schedule wh
   } finally { writer.close(); }
 }, 60_000);
 
-it.each(["allowance", "unreadable"] as const)("keeps a verbatim quote unbacked when the weekly judgment is %s", async failure => {
+it.each(["allowance", "unreadable"] as const)("withholds a paraphrased claim when the weekly judgment is %s", async failure => {
   const now = Date.now() + 2_000, head = git("rev-parse", "HEAD");
   const fetch = mockGithub({ head: () => head });
   const model = vi.fn<typeof runModel>(async request => {
-    if (request.purpose !== MEANING_PURPOSE) return docReply(request);
+    if (request.purpose !== MEANING_PURPOSE) return docReply(request, sourceId, paraphrase);
     expect(request).toMatchObject({ setup: "mixed", role: "cheap", automatic: { measuredUsageOnly: true } });
     expect(request.consented).toBeUndefined();
     if (failure === "allowance") throw new ModelWaitError("cap");

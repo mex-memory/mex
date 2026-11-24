@@ -109,6 +109,11 @@ export function learnedStatus(waiting: boolean | undefined, corroborated: boolea
   return backed && !notAlwaysFollowed ? "active" : "proposed";
 }
 
+export function corroboratedLesson(cluster: Cluster): boolean {
+  return cluster.decision === "write" && (cluster.source !== "review" || cluster.reviewers >= 2 ||
+    cluster.members.some(({ candidate }) => candidate.kind === "doc" || candidate.kind === "adr"));
+}
+
 export interface Routed { proposal: Proposal; sources: Candidate[]; status: "active" | "proposed"; proven: boolean }
 
 /** Build the gate proposal for one proven lesson, or say why there is none. */
@@ -186,8 +191,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const fixKinds = new Set(["rule", "pitfall", "decision"]);
   // R19: repeated support from one reviewer is that person's habit until the code proves it, a doc agrees, or a
   // person ticks it, so it waits for the tick rather than reaching sessions on support alone.
-  const corroborated = cluster.decision === "write" && (cluster.source !== "review" || cluster.reviewers >= 2 || docs.length > 0);
-  const status = learnedStatus(cluster.waiting, corroborated, proven, proof.notAlwaysFollowed, cluster.support);
+  const status = learnedStatus(cluster.waiting, corroboratedLesson(cluster), proven, proof.notAlwaysFollowed, cluster.support);
   const key = JSON.stringify([plan.host, plan.slug.toLowerCase(), "lesson", cluster.key]);
   const proposal: Proposal = {
     producer: "learn-deeper", ...(cluster.earlier ? { id: cluster.earlier } : { key }),

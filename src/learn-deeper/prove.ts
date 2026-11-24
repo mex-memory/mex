@@ -90,28 +90,46 @@ function sources(candidate: Candidate): string[] {
   const code = candidate.code;
   const reland = candidate.related?.reland;
   return [candidate.text, candidate.prText, code?.before?.text, code?.after?.text, code?.head?.text, reland?.before.text, reland?.after.text]
-    .filter((text): text is string => !!text).map(squash);
+    .filter((text): text is string => !!text);
 }
 
 type Citation = WriterEntry["clauses"][number]["quotes"][number];
 
 export interface ProofJudgment {
   supportingQuotes: ReadonlySet<Citation>;
+  /** Eligible citations we did not need to ask about. They do not add support. */
+  skippedQuotes?: ReadonlySet<Citation>;
   sameEarlier: boolean;
 }
 
 /** Only a verbatim, complete quote with compatible explicit polarity can be judged. */
 export function quoteChecks(draft: WriterEntry, cluster: Cluster) {
-  const byId = new Map(cluster.members.map(({ candidate }) => [candidate.id, sources(candidate)]));
+  const byId = new Map(cluster.members.map(({ candidate }) =>
+    [candidate.id, sources(candidate).map(raw => ({ raw, text: squash(raw) }))]));
   return draft.clauses.map(clause => ({
     clause,
     citations: clause.quotes.map(citation => {
-      const quote = squash(citation.quote);
-      const cited = quote.length >= 4 ? (byId.get(citation.id) ?? []).filter(text => text.includes(quote)) : [];
-      const eligible = !polarityMismatch(clause.text, quote) && cited.some(text => unclippedQuote(quote, text));
-      return { citation, found: cited.length > 0, question: eligible ? { clause: clause.text, quote } : undefined };
+      const rawQuote = citation.quote.trim();
+      const quote = squash(rawQuote);
+      const cited = quote.length >= 4 ? (byId.get(citation.id) ?? []).filter(({ text }) => text.includes(quote)) : [];
+      const eligible = !polarityMismatch(clause.text, quote) && cited.some(({ text }) => unclippedQuote(quote, text));
+      // Exact proof uses the original text so whitespace inside a code operand cannot change meaning.
+      const exact = eligible && clause.text.trim() === rawQuote && cited.some(({ raw }) => unclippedQuote(rawQuote, raw));
+      return { citation, found: cited.length > 0, exact, question: eligible ? { clause: clause.text, quote: rawQuote } : undefined };
     }),
   }));
+}
+
+/** The leading clauses must account for the whole claim, in order. The rest are optional reasons. */
+export function claimClauseCount(draft: Pick<WriterEntry, "claim" | "clauses">): number {
+  let remaining = draft.claim.trim();
+  for (const [index, clause] of draft.clauses.entries()) {
+    const text = clause.text.trim().replace(/[.!?,;:]$/u, "");
+    if (!text || !remaining.startsWith(text) || !/^[\s.!?,;:]?$/u.test(remaining[text.length] ?? "")) return 0;
+    remaining = remaining.slice(text.length).replace(/^[\s.!?,;:]+/u, "");
+    if (!remaining) return index + 1;
+  }
+  return 0;
 }
 
 const words = (text: string) => new Set(text.toLowerCase().split(/[^a-z0-9]+/u).filter(word => word.length > 2));
@@ -239,23 +257,15 @@ export async function proveEntry(draft: WriterEntry, cluster: Cluster, context: 
     const missing = citations.filter(({ found }) => !found).length;
     const label = `clause "${clause.text.slice(0, 80)}"`;
     if (missing) failures.push(`${label}: ${missing} quote(s) not found in the cited evidence`);
-    const unsupported = citations.length - quotes.length - missing;
+    const unsupported = citations.filter(({ citation, found, question }) =>
+      found && (!question || (!judgment?.supportingQuotes.has(citation) && !judgment?.skippedQuotes?.has(citation)))).length;
     if (unsupported) failures.push(`${label}: ${unsupported} quote(s) don't support it`);
     return { clause, quotes };
   });
-  let unquoted = squash(draft.claim);
-  const claimClauses: typeof supported = [];
-  for (const item of supported) {
-    if (!unquoted) break;
-    const { clause } = item;
-    const text = squash(clause.text).replace(/[.!?,;:]$/u, "");
-    if (!text || !unquoted.startsWith(text) || !/^[\s.!?,;:]?$/u.test(unquoted[text.length] ?? "")) break;
-    claimClauses.push(item);
-    unquoted = unquoted.slice(text.length).replace(/^[\s.!?,;:]+/u, "");
-  }
+  const claimClauses = supported.slice(0, claimClauseCount(draft));
   // A PR must independently support the whole instruction before it adds support.
   const backing = new Set([...members.keys()].filter(id => claimClauses.every(item => item.quotes.some(quote => quote.id === id))));
-  if (!claimClauses.length || unquoted || !backing.size) {
+  if (!claimClauses.length || !backing.size) {
     failures.push("the claim isn't supported by a verbatim quote");
     return drop("the claim isn't supported by a verbatim quote");
   }

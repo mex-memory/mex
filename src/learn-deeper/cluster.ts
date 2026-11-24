@@ -215,7 +215,22 @@ export function earlierPair(lesson: string, entry: EarlierLearned, claim?: strin
   return { left: { lesson, ...(claim ? { claim } : {}) }, right: { lesson: earlierClaim(entry) } };
 }
 
-export interface ClusterOptions { packageOf?: typeof defaultPackageOf; earlier?: readonly EarlierLearned[] }
+export interface ClusterOptions {
+  packageOf?: typeof defaultPackageOf;
+  earlier?: readonly EarlierLearned[];
+  /** Early proposals can use exact matches and leave new semantic grouping to the full window. */
+  compareNew?: boolean;
+}
+
+function exactLesson(profile: Profile): string {
+  return JSON.stringify([profile.item.triage.category, profile.item.triage.lesson]);
+}
+
+function evidenceSignature(profiles: readonly Profile[]): string {
+  const cluster = total(profiles);
+  const docs = profiles.some(({ item }) => SOURCE_OF[item.candidate.kind] === "docs");
+  return JSON.stringify([cluster.decision, cluster.strong, cluster.source, docs, cluster.pulls, cluster.commits, cluster.reviewerKeys]);
+}
 
 /** Plan comparisons before choosing leaders so every nominated pair can share a bounded model call. */
 export function planClusters(items: readonly Triaged[], options: ClusterOptions = {}) {
@@ -224,6 +239,14 @@ export function planClusters(items: readonly Triaged[], options: ClusterOptions 
   const commonIds = commonTerms(profiles, "identifiers");
   const commonWords = commonTerms(profiles, "words");
   const earlier = (options.earlier ?? []).map(entry => ({ entry, profile: profileEarlier(entry) }));
+  const groups = new Map<string, Profile[]>();
+  const exact = profiles.map(exactLesson);
+  for (const [i, profile] of profiles.entries()) {
+    const key = exact[i]!;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(profile);
+  }
+  const signatures = new Map([...groups].map(([key, members]) => [key, evidenceSignature(members)]));
   const questions: MeaningQuestion[] = [];
   const questionIndex = new Map<string, number>();
   const ask = (pair: LessonPair): number => {
@@ -243,7 +266,8 @@ export function planClusters(items: readonly Triaged[], options: ClusterOptions 
       if (profile.item.triage.category !== other.item.triage.category) continue;
       const previous = other.item.triage.lesson;
       if (lesson === previous) own.set(other, "same");
-      else if (nominate(profile, other, commonIds, commonWords)) {
+      else if (options.compareNew !== false && signatures.get(exact[i]!) !== signatures.get(exact[j]!)
+        && nominate(profile, other, commonIds, commonWords)) {
         own.set(other, ask({ left: { lesson: previous }, right: { lesson } }));
       }
     }

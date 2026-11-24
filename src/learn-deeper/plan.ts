@@ -72,6 +72,13 @@ export function promptEstimate(prompt: string, agent: LearningPlan["agent"], anc
   return estimateCall(Math.ceil(Buffer.byteLength(prompt) / 3), agent, anchorRules);
 }
 
+export function meaningEstimate(prompt: string, agent: LearningPlan["agent"]): Tokens {
+  if (agent === "claude") return promptEstimate(prompt, agent, 0);
+  // The isolated Codex replay reported about 11k input tokens. Give its
+  // prefix room and reserve it as uncached because a cache hit isn't assured.
+  return { ...ZERO, input: 12_288 + Math.ceil(Buffer.byteLength(prompt) / 3), output: baseOutputAllowance };
+}
+
 export function quoteTokens(pulls: number, docs: number, agent: LearningPlan["agent"], setup: LearningPlan["setup"], sessions: ImportFile[] = [],
   pullsPerBatch = PULLS_PER_BATCH): number {
   const batches = Math.max(pulls || docs || !sessions.length ? 1 : 0, Math.ceil(pulls / pullsPerBatch), Math.ceil(docs / DOCS_PER_BATCH));

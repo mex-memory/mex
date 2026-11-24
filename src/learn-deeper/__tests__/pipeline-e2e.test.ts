@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, afterEach, expect, it, vi } from "vitest";
 import { MEANING_PURPOSE } from "../meaning.js";
-import { recordedMeaning } from "./fixtures/meaning.js";
+import { meaningQuestions, recordedMeaning } from "./fixtures/meaning.js";
 import { runCheck } from "../../knowledge/check.js";
 import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
 import { snapshotNotes } from "../../knowledge/personal-store.js";
@@ -225,7 +225,7 @@ it.each([
     const done = row();
     expect(done.state, String(done.reason)).toMatch(/^done/u);
     expect(recounts().filter(row => row.state === "queued")).toHaveLength(1);
-    expect(model).toHaveBeenCalledTimes(gap !== "none" ? 9 : 7);
+    expect(model).toHaveBeenCalledTimes(gap !== "none" ? 7 : 6);
     expect(model.mock.calls.filter(([request]) => request.prompt.includes("Your earlier entries for these clusters failed verification"))).toHaveLength(gap !== "none" ? 1 : 0);
     expect(JSON.parse(done.checkpoint!).v2.counts).toMatchObject({ "harvested.review-thread": 2, "triage-kept": 2, saved: 2 });
     const learned = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.id.startsWith("mx_deep"));
@@ -339,7 +339,8 @@ it.each(["plain", "fenced and incomplete", "unreadable twice"])("writes a review
   } finally { writer.close(); }
 }, 120_000);
 
-it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", "leave waiting, then the claim changes", "forget, then a different lesson", "forget, then the same trigger"] as const)("honors %s when a different PR teaches something", async decision => {
+it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", "leave waiting, then the claim changes",
+  "forget, then a different lesson", "forget, then the same trigger", "forget, then an unavailable comparison"] as const)("honors %s when a different PR teaches something", async decision => {
   await runRepoStart({ cwd: repo, write: () => {}, caller: "script", install: false, wait: false });
   const writer = openRecord();
   try {
@@ -353,21 +354,27 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", 
       const window = { since: `${start}T00:00:00.000Z`, until: `${end}T23:59:59.000Z` };
       const pr = second ? 40 : 31;
       const id = second ? repeatedId : candidateId;
+      const unavailable = second && decision === "forget, then an unavailable comparison";
       const wording = !second ? claim
-        : decision === "forget, then a different lesson" ? "Validate the label before changedEntry builds the response."
+        : decision === "forget, then a different lesson" || unavailable ? "Validate the label before changedEntry builds the response."
         : decision === "forget, then the same trigger" ? "Keep the transport name out of changedEntry labels."
         : "Use the stable adapter for changedEntry rather than calling fallback.";
       const changedClaim = second && decision === "leave waiting, then the claim changes";
       const writtenClaim = changedClaim ? "Validate the label before changedEntry builds the response." : wording;
       const forge = recordedForge([pr], "2026-11-14T10:00:00Z", second ? writtenClaim : "");
-      const pattern = !second ? "fallback(" : decision === "forget, then a different lesson" ? "return fallback"
+      const pattern = !second ? "fallback(" : decision === "forget, then a different lesson" || unavailable ? "return fallback"
         : decision === "forget, then the same trigger" ? "fallback(label)" : "fallback(";
       const proven = second || !decision.startsWith("leave waiting");
       const model = vi.fn<typeof runModel>(async request => {
-        if (request.purpose === MEANING_PURPOSE) return reply(recordedMeaning(request.prompt, question => {
-          if (!("lesson" in question)) return "supports";
-          return decision.startsWith("forget, then") || (changedClaim && question.lesson.left.claim === writtenClaim) ? "related" : "same";
-        }));
+        if (request.purpose === MEANING_PURPOSE) {
+          if (unavailable && meaningQuestions(request.prompt).some(question => "lesson" in question && question.lesson.left.claim)) {
+            return reply({ results: [] });
+          }
+          return reply(recordedMeaning(request.prompt, question => {
+            if (!("lesson" in question)) return "supports";
+            return decision.startsWith("forget, then") || (changedClaim && question.lesson.left.claim === writtenClaim) ? "related" : "same";
+          }));
+        }
         if (request.purpose === "learn-deeper-filter") {
           const items = JSON.parse(request.prompt.split("\nItems:\n")[1]!) as Array<{ id: string }>;
           return reply({ results: items.map(item => ({ id: item.id, keep: item.id === id, category: "api-use", lesson: wording })) });
@@ -443,6 +450,13 @@ it.each(["forget", "legacy forget", "untick", "legacy untick", "leave waiting", 
       expect(later.counts).toMatchObject({ "cluster.near-refused": 1, saved: 1, proposed: 1 });
       expect(later.rows).toMatchObject([{ claim: later.wording, proven: true, status: "proposed" }]);
       expect(later.rows[0]!.entryId).not.toBe(id);
+      expect(edited()).not.toContain("deny");
+    } else if (decision === "forget, then an unavailable comparison") {
+      expect(written).toHaveLength(1);
+      expect(later.counts).toMatchObject({ "proof-dropped.unjudged-refusal": 1 });
+      expect(later.result).toMatchObject({ state: "done with gaps", results: 0 });
+      expect(later.rows).toEqual([]);
+      expect(after).toEqual(before);
       expect(edited()).not.toContain("deny");
     } else if (decision === "forget, then the same trigger") {
       expect(written).toHaveLength(1);

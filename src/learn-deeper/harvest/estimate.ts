@@ -1,5 +1,5 @@
 import { tokenCount } from "../../model-runner/consent.js";
-import { LESSON_PAIR_BATCH } from "../meaning.js";
+import { MEANING_BATCH_ITEMS, MEANING_PROMPT_BYTES } from "../meaning.js";
 import { codexCacheRead, inputOverhead, promptEstimate } from "../plan.js";
 import type { Candidate, CandidateCounts, CandidateKind, HarvestEvidenceSize, HarvestOptions } from "./types.js";
 
@@ -39,12 +39,15 @@ function estimateMeaning(candidates: number, clusters: number, repairs: number, 
   // earlier notes vary by repo, so the call-level budget still decides.
   const kept = Math.ceil(candidates / WRITTEN_SHARE);
   const pairs = kept <= 1 ? 0 : kept * 6;
-  const pairCalls = pairs ? 1 + Math.ceil(pairs / LESSON_PAIR_BATCH) : 0;
-  const quoteCalls = writes + Math.ceil(repairs / WRITER_BATCH);
+  const pairCalls = Math.max(Math.ceil(pairs / MEANING_BATCH_ITEMS), Math.ceil(pairs * 105 / (MEANING_PROMPT_BYTES / BYTES_PER_TOKEN)));
+  // A lesson's text is included once per call, with each pair referring to two indices.
+  const pairTokens = pairs ? kept * 60 + pairs * 18 : 0;
+  // Exact evidence is checked locally. Reserve a meaning call for half the
+  // writer batches with material paraphrases or prior claims, plus repairs.
+  const quoteCalls = Math.ceil(writes / 2) + Math.ceil(repairs / WRITER_BATCH);
   const allowance = tokenCount(promptEstimate("", agent, 0));
-  const comparisons = pairCalls * (allowance + 240) + pairs * 105;
-  // Four clause/quote pairs per written or repaired entry, plus room for prior claims.
-  const grounding = quoteCalls * (allowance + 240) + (clusters + repairs) * 360;
+  const comparisons = pairCalls * (allowance + 240) + pairTokens;
+  const grounding = quoteCalls * (allowance + 240) + (clusters + repairs) * 180;
   return { comparisons, grounding };
 }
 

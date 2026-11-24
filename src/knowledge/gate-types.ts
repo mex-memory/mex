@@ -38,7 +38,7 @@ export interface Proposal {
 }
 
 export type DropReason = "invalid" | "inactive-producer" | "secret" | "undefined-command" | "no-anchor"
-  | "quote-not-found" | "forgotten" | "duplicate-entry" | "duplicate-rule-line" | "check-fails" | "checks-unavailable";
+  | "quote-not-found" | "forgotten" | "duplicate-entry" | "duplicate-rule-line" | "check-fails" | "checks-unavailable" | "quota";
 export type Dropped = { status: "dropped"; reason: DropReason; detail?: string };
 export type Accepted = { status: "accepted"; entryId: string; change: "new" | "updated" | "unchanged";
   sanitized?: Array<"text" | "oneLine" | "checks" | "quote"> };
@@ -61,6 +61,8 @@ export interface GateContext extends KnowledgeOptions {
   checkTree?: string;
   /** Temporary file index for a pinned check tree, separate from the live project's index. */
   checkIndex?: { projectId: string; recordDirectory: string };
+  /** Maximum entries accepted by this batch. A rejected proposal leaves the slot available. */
+  maxAccepted?: number;
   sweep?: Sweep;
   validate?: (writer: RecordWriter) => void;
   onAccepted?: (writer: RecordWriter, accepted: AcceptedEntry[], results: readonly GateResult[]) => void;

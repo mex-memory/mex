@@ -61,6 +61,14 @@ describe("model selection", () => {
     // The default stays tool-less.
     expect(buildModelCommand("claude","",{role:"cheap"}).args[buildModelCommand("claude","",{role:"cheap"}).args.indexOf("--tools")+1]).toBe("");
   });
+  it("isolates Codex evidence judgments from user context and tools", () => {
+    const { args } = buildModelCommand("codex", "-", { role: "cheap", isolatedText: true, allowNonGit: true });
+    expect(args).toEqual(expect.arrayContaining(["--ignore-user-config", "--ignore-rules", "mcp_servers={}",
+      'web_search="disabled"', 'approval_policy="never"', "--skip-git-repo-check"]));
+    expect(args.filter((_, i) => args[i - 1] === "--disable")).toEqual(expect.arrayContaining(["shell_tool", "apps", "plugins", "multi_agent_v2"]));
+    expect(args[args.indexOf("--sandbox") + 1]).toBe("read-only");
+    expect(args[args.indexOf("--model") + 1]).toBe(DEFAULT_MODELS.codex.cheap);
+  });
 });
 
 describe("one-shot model runner with fake agents", () => {

@@ -29,6 +29,8 @@ export interface ModelRequest extends ModelSelection {
   /** Total wall-clock budget, in addition to the shared inactivity deadline. */
   timeoutMs?: number;
   allowNonGit?: boolean;
+  /** Codex evidence judgments run without user instructions or tools. */
+  isolatedText?: boolean;
   /**
    * Opt-in: let the agent read the checkout (Claude Code: Read, Grep, Glob only; Codex: its read-only sandbox),
    * with a turn cap. Every other MEX call runs with no tools in a private empty directory.

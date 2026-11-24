@@ -33,8 +33,19 @@ export function unclippedQuote(quote: string, source: string): boolean {
     if (word.test(quote[0]!) && word.test(source[at - 1] ?? "") ||
         word.test(quote.at(-1)!) && word.test(source[end] ?? "")) continue;
     const prefix = source.slice(0, at).split(/[.!?;:]\s+/u).at(-1)!;
-    const suffix = source.slice(end).split(/[.!?;:](?=\s|$)/u, 1)[0]!;
-    if (!restriction.test(prefix) && !restriction.test(suffix.split(/\b(?:because|so that|such as)\b/iu, 1)[0]!)) return true;
+    if (restriction.test(prefix)) continue;
+    const rest = source.slice(end);
+    const suffix = rest.split(/[.!?;:](?=\s|$)/u, 1)[0]!.split(/\b(?:because|so that|such as)\b/iu, 1)[0]!;
+    if (!restriction.test(suffix)) return true;
+
+    // A complete sentence doesn't inherit an unrelated restriction from the next one.
+    // Keep explicit follow-on qualifiers, pronoun references, and shared subjects in context.
+    if (!/[.!?]$/u.test(quote) || !/^\s/u.test(rest)) continue;
+    const next = suffix.trimStart();
+    if (next.search(restriction) === 0 || /^(?:and|but|however|otherwise|this|that|it|the rule)\b/iu.test(next)) continue;
+    const words = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}_$]{4,}/gu) ?? [];
+    const cited = new Set(words(quote));
+    if (!words(next).some(word => cited.has(word))) return true;
   }
   return false;
 }
