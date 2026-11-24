@@ -1,5 +1,7 @@
 {
   "profile": "saved-session-reference-2026-11-16",
+  "date": "2026-11-16",
+  "source": "MEX saved-session reference rates from the delivery replay table. Codex uses the budget reference dated 2026-11-14.",
   "referenceInputUSDPerMillion": 1,
   "units": "dollars per million tokens; offline reference, not a bill",
   "models": {
@@ -7,5 +9,13 @@
     "claude-opus-5-5": { "input": 4, "write5m": 5, "write1h": 8, "read": 0.2, "output": 20 },
     "claude-haiku-5-5": { "input": 0.1, "write5m": 0.125, "write1h": 0.2, "read": 0.01, "output": 0.5 }
   },
-  "unknown": { "input": 1, "write5m": 1.25, "write1h": 2, "read": 0.1, "output": 5 }
+  "unknown": { "input": 1, "write5m": 1.25, "write1h": 2, "read": 0.1, "output": 5 },
+  "codex": {
+    "source": "the reference-2026-11-14 weights in src/model-runner/budget-prices.ts",
+    "longAbove": 272000,
+    "models": {
+      "gpt-6.1-sol": { "short": { "input": 2, "write": 5, "read": 0.1, "output": 10 }, "long": { "input": 4, "write": 10, "read": 0.2, "output": 15 } },
+      "gpt-6-luna": { "short": { "input": 0.1, "write": 0.25, "read": 0.01, "output": 0.5 }, "long": { "input": 0.2, "write": 0.5, "read": 0.02, "output": 0.75 } }
+    }
+  }
 }

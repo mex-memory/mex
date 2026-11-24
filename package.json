@@ -62,6 +62,7 @@
     "test": "vitest run",
     "gates": "node scripts/gates/cli.mjs",
     "gates:test": "node --test scripts/gates/test/*.test.mjs",
+    "test:joined": "vite-node scripts/joined-fixture/run.ts",
     "test:hub:web": "npm run test --workspace @mex/hub-web",
     "test:hub:e2e": "npm run build && playwright test",
     "test:hub:package": "node scripts/hub-pack-smoke.mjs",

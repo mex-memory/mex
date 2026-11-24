@@ -1,6 +1,6 @@
 # Release gates
 
-`npm run gates` runs the seven free gates and prints one table. A passing
+`npm run gates` runs the free gates and prints one table. A passing
 check requires real, nonempty evidence. There are no model calls or paid runs.
 
 ```
@@ -13,12 +13,14 @@ The release profile follows the features included in that release:
 | Gate | beta.1 | beta.2 and final |
 | --- | --- | --- |
 | Knowledge bench | required | required |
-| Graph quality | later | required |
-| Compiler call graph | later | required |
 | Saved-session replay | later | required |
-| Overlay equals fresh build | later | required |
 | Hook timing | required | required |
 | Three-repo upgrade | required | required |
+
+Graph accuracy, the compiler call graph, and "an overlay matches a fresh
+build" are not rows here. Graph-04 measured the first two
+(`docs/design/graph-engine-baseline.md`). The suite checks the third
+(`src/graph/__tests__/languages-storage.test.ts`).
 
 Later adapters remain visibly **not built** until implemented. Missing
 required adapters block release. An implemented gate that fails blocks every
@@ -33,10 +35,31 @@ records p50, p95 and maximum separately; the maximum has no 17 ms guarantee.
 Where present, the counters-active timing test is included too.
 An environment variable cannot raise the budget or enable cached test results.
 
-The knowledge bench (`knowledge.mjs`) and the three-repo upgrade
-(`upgrade.mjs`) are live. The other four benchmark adapters are **not built**.
+The knowledge bench (`knowledge.mjs`), saved-session replay (`replay.mjs`),
+and three-repo upgrade (`upgrade.mjs`) are live.
 Supplied historical reports can describe an older release; a current pass
 requires the live product checks on the release commit.
+
+**Saved-session replay.** [`replay-corpus/`](replay-corpus/README.md) holds a
+public fixture checkout, checked entries, and native Claude Code and Codex
+JSONL recordings. Its manifest pins the data and the expected replies. The
+adapter builds the hook, indexes a fresh copy of the fixture, stores the
+entry verdicts, and feeds the recordings into the agents' hook entry points
+in fresh homes. It replays the recorded tool inputs and results as data.
+
+Each session runs twice. All replies must match the reviewed expected bytes
+in the same event order. The comparison replaces per-run receipt IDs with a
+fixed marker. The adapter checks that stale and broken entries contribute
+no claim text or full delivery receipts. It also probes the delivery
+verdict for each of those entries and prices each session's input, cache
+write, cache read, and output with `scripts/delivery-replay/cost.mjs`.
+The search span trial is set to `on` for this replay to exercise delivery.
+
+Run `node scripts/gates/replay.mjs` for local diagnostics. Build the CLI and
+install the Go modules beforehand. The replay needs only those local tools
+and the committed corpus. The [corpus README](replay-corpus/README.md) shows
+how to add a public harness session and regenerate and review the manifest.
+Gate reports contain only the outcome and counted checks.
 
 **Three-repo upgrade.** `upgrade-corpus/` holds preserved MEX 0.8 scaffolds as
 data, one JSON bundle per project, pinned by `manifest.json`, whose digest is

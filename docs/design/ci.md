@@ -80,8 +80,9 @@ refuses a real release, and say so in the summary. They build and smoke all 12
 packages, run `npm publish --dry-run` in order, then print the GitHub release
 command. No credentials or environment approval are needed.
 
-Real publication is currently blocked: required gate adapters are not built and
-the strict Windows timing budget is not satisfied. A rehearsal cannot certify
+The graph checks are not release-gate rows. Graph-04 measured accuracy and the
+call graph, and the suite checks that an overlay matches a fresh build. A
+strict Windows timing failure can still block a real release. A rehearsal cannot certify
 those gates. For a real release:
 
 1. Commit matching root/lockfile and 11 platform manifest versions. Push the

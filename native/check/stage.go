@@ -324,6 +324,53 @@ func targetFiles(c Check) []string {
 	return files
 }
 
+// ReadTouchesEntries reports whether any entry is one of these
+// checkout-relative files, or names one in its checks. A read that touches
+// no entry has nothing to re-check, so the hook skips the stage for it. It
+// reads only the entry cache; on any doubt it answers true.
+func ReadTouchesEntries(opts StageOptions) bool {
+	home, project := opts.MexHome, opts.ProjectID
+	if opts.TeamOnly {
+		home, project = "", ""
+	}
+	var cache *entryCache
+	if opts.RecordDirectory != "" {
+		cache = openEntryCache(EntryCachePath(opts.RecordDirectory, opts.Checkout))
+	}
+	loaded, err := loadAll(opts.Checkout, home, project, cache)
+	if err != nil {
+		return true
+	}
+	defer cache.save(time.Now())
+	wanted := map[string]bool{}
+	for _, p := range opts.Paths {
+		wanted[p] = true
+	}
+	for _, l := range loaded {
+		if l.Err != nil {
+			continue
+		}
+		if rel, err := filepath.Rel(opts.Checkout, l.Path); err == nil && wanted[filepath.ToSlash(rel)] {
+			return true
+		}
+		for _, c := range l.Entry.Checks {
+			for _, f := range targetFiles(c) {
+				if wanted[f] {
+					return true
+				}
+			}
+			if c.Kind == "pattern" {
+				for p := range wanted {
+					if matchScope(str(c.Target, "scope"), p) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // touches says whether an entry reads one of the changed paths, or is one.
 func touches(l Loaded, checkout string, changed map[string]bool) bool {
 	if rel, err := filepath.Rel(checkout, l.Path); err == nil && changed[filepath.ToSlash(rel)] {

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { GATES, REASONS, RELEASES, required } from './catalog.mjs';
 import { hookTiming } from './hook-timing.mjs';
 import { knowledgeBench } from './knowledge.mjs';
+import { replayGate } from './replay.mjs';
 import { upgradeGate } from './upgrade.mjs';
 
 export const PLATFORMS = ['linux', 'darwin', 'win32'];
@@ -44,7 +45,7 @@ function validGateEvidence(id, evidence) {
     : evidence.timings === undefined);
 }
 
-export async function runGates({ root, release = 'beta.1', platform = process.platform, source = sourceState, adapters = { 'hook-timing': hookTiming, knowledge: knowledgeBench, upgrade: upgradeGate } }) {
+export async function runGates({ root, release = 'beta.1', platform = process.platform, source = sourceState, adapters = { 'hook-timing': hookTiming, knowledge: knowledgeBench, replay: replayGate, upgrade: upgradeGate } }) {
   if (!RELEASES.includes(release) || !PLATFORMS.includes(platform)) throw new Error('Unsupported release or platform');
   const before = source(root);
   const gates = [];

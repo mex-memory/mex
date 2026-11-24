@@ -78,6 +78,7 @@ test('performance failures create one tracking issue then comment on it', () => 
 
 test('the aggregate covers every gating job and advisory performance has no PR trigger', () => {
   const workflow = parse(readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  assert.deepEqual(workflow.on.push.branches, ['main', 'next', 'next2']);
   const jobs = workflow.jobs;
   for (const name of Object.keys(jobs)) {
     if (name === 'ci-passed') continue;

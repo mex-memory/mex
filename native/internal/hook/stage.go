@@ -29,30 +29,66 @@ var (
 // gitMoves are git commands after which many files can differ.
 var gitMoves = map[string]bool{"pull": true, "checkout": true, "switch": true, "merge": true, "rebase": true, "reset": true, "cherry-pick": true, "revert": true, "am": true, "stash": true, "restore": true}
 
+// maxStageReads bounds the files one shell command's reads re-check.
+const maxStageReads = 8
+
 // stageTrigger says whether this event should run the free stage: every
-// entry (paths nil) or only those reading the edited files.
-func stageTrigger(ev contract.Event) (run bool, paths []string, budget time.Duration) {
+// entry (paths nil) or only those reading the edited or read files.
+//
+// A read re-checks the entries on that file because the file can change
+// outside any edit tool: a shell command, a formatter, the person's editor.
+// The stage runs before delivery, so the read's own moment sees the new
+// verdict. Unchanged inputs reuse the cached verdict. readsOnly says the
+// paths come from reads alone, which the caller filters cheaply first.
+func stageTrigger(ev contract.Event) (run bool, paths []string, budget time.Duration, readsOnly bool) {
 	switch ev.Kind {
 	case contract.SessionStart:
-		return true, nil, stageBudgetStart
-	case contract.PostTool:
-		if ev.Tool == nil || ev.Tool.Output == nil || !ev.Tool.Output.OK {
-			return false, nil, 0
+		return true, nil, stageBudgetStart, false
+	case contract.PostTool, contract.PostToolBatch:
+		tools := ev.Batch
+		if ev.Tool != nil {
+			tools = []contract.Tool{*ev.Tool}
 		}
-		if ev.Tool.Name == contract.ToolShell {
-			if movesGit(ev.Tool.Input.Command) {
-				return true, nil, stageBudgetGit
+		readsOnly = true
+		seen := map[string]bool{}
+		add := func(p string) {
+			if p == "" {
+				return
 			}
-			return false, nil, 0
-		}
-		for _, edit := range editsOf(*ev.Tool) {
-			if rel, ok := place.RelativeToCheckout(ev.Checkout, edit.path); ok {
-				paths = append(paths, filepath.ToSlash(rel))
+			if rel, ok := place.RelativeToCheckout(ev.Checkout, p); ok {
+				if rel = filepath.ToSlash(rel); !seen[rel] {
+					seen[rel] = true
+					paths = append(paths, rel)
+				}
 			}
 		}
-		return len(paths) > 0, paths, stageBudgetEdit
+		for _, tool := range tools {
+			if tool.Output == nil || !tool.Output.OK {
+				continue
+			}
+			switch tool.Name {
+			case contract.ToolShell:
+				if movesGit(tool.Input.Command) {
+					return true, nil, stageBudgetGit, false
+				}
+				for i, r := range shellparse.Reads(tool.Input.Command, ev.Cwd, ev.Agent == "codex") {
+					if i >= maxStageReads {
+						break
+					}
+					add(r.Path)
+				}
+			case contract.ToolRead:
+				add(tool.Input.Path)
+			default:
+				for _, edit := range editsOf(tool) {
+					readsOnly = false
+					add(edit.path)
+				}
+			}
+		}
+		return len(paths) > 0, paths, stageBudgetEdit, readsOnly
 	}
-	return false, nil, 0
+	return false, nil, 0, false
 }
 
 // movesGit reports a git command that can change many files at once.
@@ -95,13 +131,24 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 	if recordDirectory == "" || ev.ProjectID == "" || ev.Checkout == "" {
 		return
 	}
-	run, paths, budget := stageTrigger(ev)
+	run, paths, budget, readsOnly := stageTrigger(ev)
 	if !run {
 		return
 	}
+	// Most reads touch no entry: skip the database and the evaluator.
+	if readsOnly && !check.ReadTouchesEntries(check.StageOptions{Checkout: ev.Checkout, ProjectID: ev.ProjectID, MexHome: h.mex, RecordDirectory: recordDirectory, Paths: paths}) {
+		return
+	}
+	// A read changes no code, so it never asks for the judge (a model job);
+	// edits, git moves and session starts still do.
+	judge := func() {
+		if !readsOnly {
+			requestJudge(ev, recordDirectory, paths)
+		}
+	}
 	hooks, err := localrecord.OpenHooks(hooksLocation(h, recordDirectory))
 	if err != nil {
-		requestJudge(ev, recordDirectory, paths)
+		judge()
 		return
 	}
 	defer hooks.Close()
@@ -110,7 +157,7 @@ func freeStage(ev contract.Event, h home, recordDirectory string) {
 		Store: hooks, Paths: paths, Deadline: time.Now().Add(budget),
 	})
 	if err != nil || needsJudge(report) {
-		requestJudge(ev, recordDirectory, paths)
+		judge()
 	}
 	if err == nil {
 		rebuildOnFlip(report, recordDirectory, ev.ProjectID, ev.Checkout)

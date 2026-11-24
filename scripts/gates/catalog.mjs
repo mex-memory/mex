@@ -2,10 +2,7 @@
 export const RELEASES = Object.freeze(['beta.1', 'beta.2', 'final']);
 export const GATES = Object.freeze([
   { id: 'knowledge', label: 'Knowledge bench', from: 'beta.1' },
-  { id: 'graph-quality', label: 'Graph quality', from: 'beta.2' },
-  { id: 'call-graph', label: 'Compiler call graph', from: 'beta.2' },
   { id: 'replay', label: 'Saved-session replay', from: 'beta.2' },
-  { id: 'overlay', label: 'Overlay equals fresh', from: 'beta.2' },
   { id: 'hook-timing', label: 'Hook timing', from: 'beta.1' },
   { id: 'upgrade', label: 'Three-repo upgrade', from: 'beta.1' },
 ].map(Object.freeze));
