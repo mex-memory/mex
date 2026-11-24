@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runModel, selectModel, DEFAULT_MODELS, MAX_MODEL_RESULT_BYTES, MAX_MODEL_PROMPT_BYTES, MAX_MODEL_STREAM_BYTES } from "../index.js";
-import { buildModelCommand } from "../command.js";
+import { buildModelCommand, MODEL_SYSTEM_PROMPT } from "../command.js";
 import { openRecordReadOnly } from "../../record/index.js";
 
 const temps: string[] = [], pids: number[] = [];
@@ -66,6 +66,16 @@ describe("model selection", () => {
     expect(args).toEqual(expect.arrayContaining(["--ignore-user-config", "--ignore-rules", "mcp_servers={}",
       'web_search="disabled"', 'approval_policy="never"', "--skip-git-repo-check"]));
     expect(args.filter((_, i) => args[i - 1] === "--disable")).toEqual(expect.arrayContaining(["shell_tool", "apps", "plugins", "multi_agent_v2"]));
+    // Codex's own agent instructions and context notes are replaced by MEX's one line.
+    expect(args).toEqual(expect.arrayContaining(["include_permissions_instructions=false", "include_environment_context=false"]));
+    expect(args).not.toContain("agents.enabled=false");
+    // With the installed Codex's feature list, the extra tools go too, but only the features it knows.
+    const lean = buildModelCommand("codex", "-", { role: "cheap", isolatedText: true, codexFeatures: new Set(["view_image", "goals"]) }).args;
+    expect(lean).toEqual(expect.arrayContaining(["agents.enabled=false", "skills.include_instructions=false"]));
+    expect(lean.filter((_, i) => lean[i - 1] === "--disable")).toEqual(expect.arrayContaining(["view_image", "goals"]));
+    expect(lean).not.toContain("browser_use");
+    const instructions = args.find(arg => arg.startsWith("model_instructions_file="))!;
+    expect(readFileSync(JSON.parse(instructions.slice("model_instructions_file=".length)), "utf8")).toBe(MODEL_SYSTEM_PROMPT);
     expect(args[args.indexOf("--sandbox") + 1]).toBe("read-only");
     expect(args[args.indexOf("--model") + 1]).toBe(DEFAULT_MODELS.codex.cheap);
   });

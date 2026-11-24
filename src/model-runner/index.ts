@@ -2,6 +2,7 @@ import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, unlinkSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { jsonLines, object } from "../record/usage.js";
+import { codexFeatures } from "./codex-features.js";
 import { buildModelCommand, MODEL_SYSTEM_PROMPT, readOnlyLimit } from "./command.js";
 import { copilotCli } from "./agents.js";
 import { ModelRunError, ModelToolLimitError } from "./errors.js";
@@ -131,7 +132,8 @@ export async function runModel(request: ModelRequest): Promise<ModelResult> {
   }, () => stop("protocol"), MAX_MODEL_STREAM_BYTES);
   try {
     const instruction = request.agent === "copilot" ? COPILOT_INSTRUCTION : request.agent === "codex" ? "-" : "";
-    let invocation = buildModelCommand(request.agent, instruction, { ...request, access: request.readOnlyTools ? "read" : "text", maxTurns: request.readOnlyTools?.maxTurns });
+    let invocation = buildModelCommand(request.agent, instruction, { ...request, access: request.readOnlyTools ? "read" : "text", maxTurns: request.readOnlyTools?.maxTurns,
+      codexFeatures: request.agent === "codex" && request.isolatedText && !request.readOnlyTools && !request.__internal ? codexFeatures() : undefined });
     let executionDirectory = request.executionDirectory;
     if (request.agent === "gemini" || request.agent === "copilot") {
       if (request.readOnlyTools) throw new ModelRunError("arguments", request.agent);

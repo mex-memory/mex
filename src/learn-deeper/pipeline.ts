@@ -13,6 +13,7 @@ import { producerEntryId } from "../knowledge/producers.js";
 import { claimHash, retiredClaimHashes, tombstone } from "../knowledge/state.js";
 import { ModelWaitError, type runModel } from "../model-runner/index.js";
 import { modelAgent } from "../model-runner/agents.js";
+import { ModelRunError } from "../model-runner/errors.js";
 import { recoverModelBatches, withModelJob } from "../model-runner/budget-queue.js";
 import { CEILING_WAIT, recordedModelSpend, tokenCount } from "../model-runner/consent.js";
 import type { RecordWriter } from "../record/index.js";
@@ -227,10 +228,11 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   const step = stageOfCall(name);
   const subject = input.subject ?? { subject: "Rules and evidence" };
   updateActivity(input, subject, undefined, step);
-  const reply = await deps.tree.withCheckFiles(writer.location.home, job.id, [], async executionDirectory => {
+  const ask = () => deps.tree.withCheckFiles(writer.location.home, job.id, [], async executionDirectory => {
     const output = await withModelJob({ jobId: job.id, batch: job.batch, projectId: job.project_id,
       recordHome: writer.location.home, stage }, () => deps.model({
-      agent: modelAgent(plan.agent), setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true,
+      // Every learning call is text in, JSON out: Codex needs none of its tools or agent instructions.
+      agent: modelAgent(plan.agent), setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true, isolatedText: true,
       purpose: procedure ? "learn-deeper-procedure" : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
       ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
     }));
@@ -242,6 +244,15 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
     updateActivity(input, subject, "Paused or interrupted", step);
     throw error;
   });
+  let reply: Reply | undefined;
+  try { reply = await ask(); }
+  catch (error) {
+    // A command that failed or broke off produced no answer, so a resumed job would count the stage as lost.
+    // One more try now, when the allowance covers it, is cheaper than a stage nobody judged.
+    const transient = error instanceof ModelRunError && (error.category === "failed" || error.category === "protocol");
+    if (!transient || (!weekly && !procedure && tokenCount(estimate) > plan.ceiling - recordedModelSpend(writer, job.id))) throw error;
+    reply = await ask();
+  }
   if (!reply) throw new Error("The model could not start in its private workspace.");
   updateActivity(input, subject, replySummary(reply.text), step);
   return reply;

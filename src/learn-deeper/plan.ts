@@ -26,7 +26,8 @@ const anchorOutputPerRule = 192;
 export const inputOverhead = 8192;
 // All five measured best-only Codex replay calls reported the same cached
 // prefix. Reserve it separately from the prompt and uncached headroom so both
-// token ceilings and the model's cache-read price see it.
+// token ceilings and the model's cache-read price see it. Text-only calls need
+// less (2,432 cached on 25 Nov); the reservation stays at the larger prefix.
 export const codexCacheRead = 12_288;
 const iso = z.string().datetime({ offset: true });
 const slug = z.object({ host: z.enum(["github.com", "gitlab.com"]), slug: z.string() }).strict()
