@@ -415,22 +415,25 @@ impl<'a, 'modules> Resolver<'a, 'modules> {
         for (index, call) in facts.calls.iter().enumerate() {
             let mut callback_arguments =
                 std::iter::from_fn(|| arguments.next_if(|arg| arg.call == index));
-            if let CallForm::DynamicImport { import } = call.form
-                && self.modules.uses_node_resolution(&facts.path)
-            {
-                match self.import(file, import) {
-                    Ok(Value::Module { file: target, .. }) => result.edges.push(edge(
-                        (file, 0),
-                        (target, 0),
-                        "imports",
-                        facts.imports[import].range,
-                        EdgeSite::Import(import),
-                    )),
-                    Err(reason) => result.unresolved_imports.push((file, import, reason)),
-                    Ok(_) => unreachable!("import resolution only produces modules"),
+            if let CallForm::DynamicImport { import } = call.form {
+                if self.modules.uses_node_resolution(&facts.path) {
+                    match self.import(file, import) {
+                        Ok(Value::Module { file: target, .. }) => result.edges.push(edge(
+                            (file, 0),
+                            (target, 0),
+                            "imports",
+                            facts.imports[import].range,
+                            EdgeSite::Import(import),
+                        )),
+                        Err(reason) => result.unresolved_imports.push((file, import, reason)),
+                        Ok(_) => unreachable!("import resolution only produces modules"),
+                    }
+                    callback_arguments.for_each(drop);
+                    continue;
                 }
-                callback_arguments.for_each(drop);
-                continue;
+                // A topology edit can move this file into a Node project even
+                // when the file and its config text are unchanged.
+                self.files.import(file, import);
             }
             let mut interface = None;
             let resolved = self.resolve_call_with_dispatch(file, call, &mut interface);

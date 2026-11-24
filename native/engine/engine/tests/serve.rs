@@ -31,7 +31,7 @@ impl Checkout {
             &path,
             json!({
                 "contract": CONTRACT_VERSION, "mode": mode, "root": self.0, "base": base,
-                "overlay": overlay, "output": base, "files": files, "languages": ["typescript"],
+                "overlay": overlay, "output": base, "files": files, "languages": ["typescript", "javascript"],
                 "configs": ["tsconfig.json"],
                 "factsCache": self.0.join("facts"),
                 "limits": {"memoryMb": 1024, "deadlineMs": 60000}
@@ -50,12 +50,16 @@ impl Checkout {
                 "import {leaf} from './leaf'; export function use() { return leaf(); }\n",
             ),
         ];
+        (self.build(&files), files)
+    }
+
+    fn build(&self, files: &[Value]) -> PathBuf {
         let path = self.0.join("base.db");
-        let mut child = spawn("build", &self.request("build", &path, &files, None));
+        let mut child = spawn("build", &self.request("build", &path, files, None));
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(b"start\n").unwrap();
         assert!(child.wait_with_output().unwrap().status.success());
-        (path, files)
+        path
     }
 }
 
@@ -351,5 +355,64 @@ fn package_type_changes_reresolve_unchanged_importers_in_refresh_and_serve() {
             "accepted"
         );
     }
+    assert_eq!(server.eof(), Some(0));
+}
+
+#[test]
+fn dynamic_imports_follow_project_membership_when_sources_are_added_or_removed() {
+    let checkout = Checkout::new("dynamic-project");
+    std::fs::write(
+        checkout.0.join("tsconfig.json"),
+        r#"{"compilerOptions":{"module":"nodenext","allowJs":true}}"#,
+    )
+    .unwrap();
+    let files = [
+        checkout.write("leaf.ts", "export function leaf() {}\n"),
+        checkout.write("use.js", "import('./leaf.js');\n"),
+        checkout.write("use.ts", "export {};\n"),
+    ];
+    let base = checkout.build(&files);
+    let mut server = Server::start(&checkout.request("serve", &base, &files, None));
+    let has_dynamic_link = |path: &Path| {
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM edges WHERE target_name = './leaf.js')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    };
+    assert!(!has_dynamic_link(&base));
+
+    // TypeScript includes the JS file once its same-stem TS file is gone.
+    std::fs::remove_file(checkout.0.join("use.ts")).unwrap();
+    let output = checkout.0.join("candidate.db");
+    let result =
+        server.send(json!({"type":"edit","id":1,"output":output,"files":[],"deleted":["use.ts"]}));
+    assert_eq!(result["type"], "result", "{result}");
+    assert!(has_dynamic_link(&output));
+    let published = checkout.0.join("published.db");
+    std::fs::rename(&output, &published).unwrap();
+    assert_eq!(
+        server.send(json!({"type":"accept","id":1,"overlay":published}))["type"],
+        "accepted"
+    );
+
+    let source = checkout.write("use.ts", "export {};\n");
+    let result = server.send(json!({"type":"edit","id":2,"output":output,"files":[source]}));
+    assert_eq!(result["type"], "result", "{result}");
+    assert!(!has_dynamic_link(&output));
+    assert_eq!(
+        Connection::open(&output)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM shadow_files WHERE path = 'use.js'",
+                [],
+                |row| row.get::<_, u32>(0),
+            )
+            .unwrap(),
+        1
+    );
     assert_eq!(server.eof(), Some(0));
 }

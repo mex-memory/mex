@@ -17,6 +17,7 @@ pub enum LookupKind {
     FunctionName = 9,
     TsForcedImport = 10,
     TsForcedRequire = 11,
+    TsDynamicImport = 12,
 }
 
 pub enum Access<'a> {

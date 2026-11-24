@@ -23,7 +23,9 @@ pub enum Syntax {
     Import,
     /// Require calls and import-equals declarations with an external module reference.
     Require,
-    /// Dynamic import calls and type-only imports with an explicit import mode.
+    /// Literal import() calls.
+    DynamicImport,
+    /// Type-only imports with an explicit import mode in Node16/NodeNext.
     ForceImport,
     /// Type-only imports with an explicit require mode in Node16/NodeNext.
     ForceRequire,
@@ -33,7 +35,8 @@ impl From<ImportForm> for Syntax {
     fn from(form: ImportForm) -> Self {
         match form {
             ImportForm::CommonJs => Self::Require,
-            ImportForm::Dynamic | ImportForm::TypeWithImportMode => Self::ForceImport,
+            ImportForm::Dynamic => Self::DynamicImport,
+            ImportForm::TypeWithImportMode => Self::ForceImport,
             ImportForm::TypeWithRequireMode => Self::ForceRequire,
             _ => Self::Import,
         }
@@ -157,7 +160,7 @@ impl ModuleResolver {
         &self.projects.issues
     }
 
-    pub(crate) fn uses_node_resolution(&self, from_path: &str) -> bool {
+    pub fn uses_node_resolution(&self, from_path: &str) -> bool {
         self.projects
             .for_file(from_path)
             .is_some_and(|(_, project)| project.options.kind == ResolutionKind::Node16)
