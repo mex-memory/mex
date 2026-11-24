@@ -12,12 +12,10 @@ import pty
 import re
 import select
 import signal
-import socket
 import struct
 import sys
 import termios
 import time
-import urllib.parse
 
 
 def main():
@@ -105,10 +103,6 @@ def main():
                     check_time()
                     read_once(min(0.05, max(0, until - time.monotonic())))
                 event["quietOutput"] = output[start:].decode("utf-8", errors="replace")
-            if action.get("probe"):
-                address = urllib.parse.urlsplit(event["match"])
-                with socket.create_connection((address.hostname, address.port), timeout=2):
-                    event["connected"] = True
             if "input" in action:
                 # A frame can be painted before React installs its input effect.
                 # Model a human keypress, rather than injecting into that gap.

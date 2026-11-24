@@ -20,12 +20,16 @@ import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/cont
 import { compactOffersPending, publishCompactOffers } from "../compaction/notices.js";
 import { ledgerPending, settlePendingLedger } from "../ledger/background.js";
 import { queueDueWeekly, weeklyWakeDue } from "../learn-deeper/weekly-schedule.js";
+import { BackgroundHubHost } from "../hub/machine/host.js";
+import { clearBoundForPid } from "../hub/machine/state.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
- * It talks to everything else only through record.db (job rows, requests, the lease);
- * it opens no network listener. Hooks never wait on it, and everything works without it:
- * pending work runs in the foreground (`mex jobs run`) or at the next start.
+ * It talks to everything else only through record.db (job rows, requests, the lease).
+ * Its only listener is the Hub, on a separate thread, started when `mex hub` or an open tab
+ * asks for it (background.hub_until) and stopped when nobody has. Hooks never wait on it,
+ * and everything works without it: pending work runs in the foreground (`mex jobs run`) or
+ * at the next start, and `mex hub` serves from the terminal.
  */
 
 export const BACKGROUND_DEFAULTS = {
@@ -211,6 +215,8 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
   let heartbeat: NodeJS.Timeout | undefined;
   let held = false;
   let graph: BackgroundGraph | undefined;
+  let hubTimer: NodeJS.Timeout | undefined;
+  const hub = new BackgroundHubHost({ home, cache: options.cache, log });
   const stamp = () => new Date(clock()).toISOString();
 
   /** true: acquired; false: an older version is handing over, keep trying; "duplicate": a same-version process already runs. */
@@ -242,6 +248,9 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
   const stop = (reason: ExitReason): ExitReason => {
     log(`stopping: ${reason}`);
     try { graph?.stop(); } catch { /* closing */ }
+    if (hubTimer) clearInterval(hubTimer);
+    void hub.stop().catch(() => { /* the thread ends with the process */ });
+    try { clearBoundForPid(writer, process.pid); } catch { /* readers check the pid and the handshake */ }
     release();
     try { writer.close(); } catch { /* closing */ }
     return reason;
@@ -261,6 +270,12 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     const recovered = recoverInterruptedJobs(writer, self);
     if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
     graph = new BackgroundGraph(writer, queueJob, log);
+    // The Hub is checked on its own timer, so `mex hub` gets an answer between the awaits of a long batch.
+    let hubTick: Promise<void> = Promise.resolve();
+    hubTimer = setInterval(() => {
+      hubTick = hubTick.then(() => hub.tick(lease(writer).hub_until, clock(), settings.idleMs)).catch(() => { /* next tick */ });
+    }, Math.min(500, settings.pollMs));
+    hubTimer.unref();
     let lastWork = clock();
     let lastTelemetry = -Infinity;
     let lastFreshness = -Infinity;
@@ -319,7 +334,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
   }
 }
 
-/** The seam for the Hub (a later ticket): an open Hub tab keeps the process alive until `untilMs`. */
+/** An open Hub tab keeps the process alive until `untilMs`. The Hub itself uses `keepHubOpen`, which never shortens it. */
 export function noteHubActivity(writer: RecordWriter, untilMs: number): void {
   writer.db.prepare("UPDATE background SET hub_until=? WHERE id=1").run(new Date(untilMs).toISOString());
 }

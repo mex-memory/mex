@@ -76,8 +76,8 @@ Commands:
                                         are in force: proposed until the commit
                                         lands on the default branch, withdrawn
                                         on a revert
-  hub [options]                         Show the 0.9 Hub notice; open the Hub in
-                                        a 0.8 repo
+  hub [options]                         Open the MEX Hub for every repo on this
+                                        machine
   out [options] [number]                Show the full output MEX saved when it
                                         shortened a command's output; with no
                                         number, list them

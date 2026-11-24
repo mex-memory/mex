@@ -1,5 +1,4 @@
 import { releaseWorkbenchPaths } from "./routes.mjs";
-import { assertRelayFixturePage } from "./hub.mjs";
 
 const PAGE_READY_TIMEOUT_MS = 30_000;
 
@@ -13,19 +12,11 @@ export async function measureWorkbenchHeap({
   server,
   auth,
   samples,
-  knowledgeEntityId,
-  codeSymbolId,
-  relayDraftId,
-  relayDraftSummary,
-  relayId,
-  relaySummary,
+  project,
 }) {
   const { chromium } = await import("@playwright/test");
+  const workbenchPaths = releaseWorkbenchPaths({ projectId: project.id });
   const browser = await chromium.launch({ headless: true });
-  const workbenchPaths = releaseWorkbenchPaths({
-    knowledgeEntityId,
-    codeSymbolId,
-  });
   const measurements = Object.fromEntries(
     Object.keys(workbenchPaths).map((route) => [route, []]),
   );
@@ -42,7 +33,7 @@ export async function measureWorkbenchHeap({
         context.on("request", (request) => {
           const url = new URL(request.url());
           observedRequests.add(`${request.method()} ${url.pathname}`);
-          if (url.origin !== server.origin) outbound.add(request.url());
+          if (url.origin !== server.origin) outbound.add(url.origin);
         });
         await addApiCookie(context, server.origin, auth.cookie);
         const page = await context.newPage();
@@ -54,27 +45,20 @@ export async function measureWorkbenchHeap({
           if (!response?.ok()) {
             throw new Error(`${route} returned HTTP ${String(response?.status() ?? "none")}.`);
           }
-          await assertReleaseRouteReady(page, route, {
-            relayDraftId,
-            relayDraftSummary,
-            relayId,
-            relaySummary,
-          });
+          await assertReleaseRouteReady(page, route, project);
           // Give React one task turn to commit route content after network idle.
           await page.waitForTimeout(50);
-          if (outbound.size > 0) {
-            throw new Error(
-              `${route} made outbound requests: ${[...outbound].sort().slice(0, 10).join(", ")}`,
-            );
-          }
           const cdp = await context.newCDPSession(page);
           await cdp.send("HeapProfiler.collectGarbage");
           const heap = await cdp.send("Runtime.getHeapUsage");
           if (!Number.isFinite(heap.usedSize) || heap.usedSize < 0) {
             throw new Error(`${route} returned an invalid browser heap measurement.`);
           }
-          measurements[route].push(heap.usedSize);
           await cdp.detach();
+          if (outbound.size > 0) {
+            throw new Error(`${route} made outbound requests to ${[...outbound].sort().slice(0, 10).join(", ")}.`);
+          }
+          measurements[route].push(heap.usedSize);
         } finally {
           await context.close();
         }
@@ -90,75 +74,17 @@ export async function measureWorkbenchHeap({
   };
 }
 
-export async function assertReleaseRouteReady(page, route, teamFixture) {
+export async function assertReleaseRouteReady(page, route, project) {
+  const visible = { state: "visible", timeout: PAGE_READY_TIMEOUT_MS };
   if (route === "home") {
-    await page.locator('[data-overview-workbench="ready"]')
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  }
-  if (route === "diagrams") await page.getByRole("heading", { name: "Diagrams", exact: true }).waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  if (route === "diagramDetail") {
-    await page.getByRole("region", { name: "State diagram", exact: true })
-      .getByRole("group", { name: "States and transitions", exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  }
-  if (route === "knowledge") {
-    const graph = page.getByLabel("Context graph", { exact: true });
-    await graph.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await graph.getByRole("button", { name: /^Release benchmark knowledge 0000 · /u })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  }
-  if (route === "relays") {
-    const draft = page.locator(`[data-relay-draft-id="${teamFixture.relayDraftId}"]`);
-    const relay = page.locator(`[data-relay-id="${teamFixture.relayId}"]`);
-    await page.locator('[data-relay-workbench="ready"]')
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await relay.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await relay.getByText(teamFixture.relaySummary, { exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await page.getByRole("tab", { name: "Drafts on this device", exact: true }).click();
-    await draft.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await draft.getByText(teamFixture.relayDraftSummary, { exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    // Measure the default personal queue after proving the secondary local
-    // draft view is populated and independently readable.
-    await page.getByRole("tab", { name: "For you", exact: true }).click();
-    await relay.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    const [draftResponse, relayResponse] = await page.evaluate(async () => Promise.all([
-      "/api/v1/relays/drafts?limit=25",
-      "/api/v1/relays?perspective=mine&state=published,acknowledged&limit=25",
-    ].map(async (path) => {
-      const response = await fetch(path, {
-        headers: { accept: "application/json, application/problem+json" },
-      });
-      return { status: response.status, body: await response.json() };
-    })));
-    if (draftResponse.status !== 200 || relayResponse.status !== 200) {
-      throw new Error("The Relay route fixture APIs did not both return HTTP 200.");
-    }
-    assertRelayFixturePage(draftResponse.body, {
-      kind: "draft",
-      id: teamFixture.relayDraftId,
-      summary: teamFixture.relayDraftSummary,
-    });
-    assertRelayFixturePage(relayResponse.body, {
-      kind: "relay",
-      id: teamFixture.relayId,
-      summary: teamFixture.relaySummary,
-    });
-  }
-  if (route === "activity") {
-    await page.locator('[data-activity-workbench="ready"]')
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await page.locator('[role="article"][data-source]').first()
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-  }
-  if (route === "settings") {
-    await page.getByRole("heading", { name: "Agent logging", exact: true })
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    const choices = page.getByRole("group", { name: "When to write notes", exact: true });
-    await choices.waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
-    await choices.locator('input[name="logging-mode"]:checked')
-      .waitFor({ state: "visible", timeout: PAGE_READY_TIMEOUT_MS });
+    await page.getByRole("heading", { name: "All repos", exact: true }).waitFor(visible);
+    await page.getByRole("link", { name: project.name, exact: true }).waitFor(visible);
+  } else if (route === "repo") {
+    await page.getByRole("heading", { name: project.name, exact: true }).waitFor(visible);
+    await page.getByRole("list", { name: "Checkouts", exact: true })
+      .getByText(project.checkouts[0].path, { exact: true }).waitFor(visible);
+  } else {
+    throw new Error(`Unknown machine Hub benchmark route: ${route}`);
   }
 }
 

@@ -103,36 +103,50 @@
       "properties": {
         "initial": { "$ref": "#/$defs/assetGroup" },
         "routes": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
-          "properties": {
-            "home": { "$ref": "#/$defs/assetGroup" },
-            "search": { "$ref": "#/$defs/assetGroup" },
-            "knowledge": { "$ref": "#/$defs/assetGroup" },
-            "knowledgeDetail": { "$ref": "#/$defs/assetGroup" },
-            "code": { "$ref": "#/$defs/assetGroup" },
-            "codeSymbol": { "$ref": "#/$defs/assetGroup" },
-            "workstreams": { "$ref": "#/$defs/assetGroup" },
-            "diagrams": { "$ref": "#/$defs/assetGroup" },
-        "diagramDetail": { "$ref": "#/$defs/assetGroup" },
-        "specs": { "$ref": "#/$defs/assetGroup" },
-            "specsDetail": { "$ref": "#/$defs/assetGroup" },
-            "playbooks": { "$ref": "#/$defs/assetGroup" },
-            "catchUp": { "$ref": "#/$defs/assetGroup" },
-            "inbox": { "$ref": "#/$defs/assetGroup" },
-            "relays": { "$ref": "#/$defs/assetGroup" },
-            "members": { "$ref": "#/$defs/assetGroup" },
-            "activity": { "$ref": "#/$defs/assetGroup" },
-            "jobs": { "$ref": "#/$defs/assetGroup" },
-            "health": { "$ref": "#/$defs/assetGroup" },
-            "settings": { "$ref": "#/$defs/assetGroup" },
-            "notFound": { "$ref": "#/$defs/assetGroup" }
-          }
+          "oneOf": [
+            { "$ref": "#/$defs/legacyAssetRoutes" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["home", "repo"],
+              "properties": {
+                "home": { "$ref": "#/$defs/assetGroup" },
+                "repo": { "$ref": "#/$defs/assetGroup" }
+              }
+            }
+          ]
         },
         "largestJsChunk": { "type": "object", "maxProperties": 2 },
         "budgetCandidates": { "type": "object", "maxProperties": 3 },
         "violations": { "$ref": "#/$defs/violations" }
+      }
+    },
+    "legacyAssetRoutes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
+      "properties": {
+        "home": { "$ref": "#/$defs/assetGroup" },
+        "search": { "$ref": "#/$defs/assetGroup" },
+        "knowledge": { "$ref": "#/$defs/assetGroup" },
+        "knowledgeDetail": { "$ref": "#/$defs/assetGroup" },
+        "code": { "$ref": "#/$defs/assetGroup" },
+        "codeSymbol": { "$ref": "#/$defs/assetGroup" },
+        "workstreams": { "$ref": "#/$defs/assetGroup" },
+        "diagrams": { "$ref": "#/$defs/assetGroup" },
+        "diagramDetail": { "$ref": "#/$defs/assetGroup" },
+        "specs": { "$ref": "#/$defs/assetGroup" },
+        "specsDetail": { "$ref": "#/$defs/assetGroup" },
+        "playbooks": { "$ref": "#/$defs/assetGroup" },
+        "catchUp": { "$ref": "#/$defs/assetGroup" },
+        "inbox": { "$ref": "#/$defs/assetGroup" },
+        "relays": { "$ref": "#/$defs/assetGroup" },
+        "members": { "$ref": "#/$defs/assetGroup" },
+        "activity": { "$ref": "#/$defs/assetGroup" },
+        "jobs": { "$ref": "#/$defs/assetGroup" },
+        "health": { "$ref": "#/$defs/assetGroup" },
+        "settings": { "$ref": "#/$defs/assetGroup" },
+        "notFound": { "$ref": "#/$defs/assetGroup" }
       }
     },
     "profile": {
@@ -180,8 +194,18 @@
             "windowMs": { "const": 2000 }
           }
         },
-        "apiLatencyMs": { "$ref": "#/$defs/readSummaries" },
-        "maintenance": { "$ref": "#/$defs/maintenanceSummaries" },
+        "apiLatencyMs": {
+          "oneOf": [
+            { "$ref": "#/$defs/readSummaries" },
+            { "$ref": "#/$defs/machineReadSummaries" }
+          ]
+        },
+        "maintenance": {
+          "oneOf": [
+            { "$ref": "#/$defs/maintenanceSummaries" },
+            { "type": "null" }
+          ]
+        },
         "browserHeap": {
           "oneOf": [
             { "type": "null" },
@@ -190,7 +214,20 @@
               "additionalProperties": false,
               "required": ["routes", "outboundRequestCount", "observedLoopbackRequests"],
               "properties": {
-                "routes": { "$ref": "#/$defs/routeSummaries" },
+                "routes": {
+                  "oneOf": [
+                    { "$ref": "#/$defs/routeSummaries" },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["home", "repo"],
+                      "properties": {
+                        "home": { "$ref": "#/$defs/summary5" },
+                        "repo": { "$ref": "#/$defs/summary5" }
+                      }
+                    }
+                  ]
+                },
                 "outboundRequestCount": { "const": 0 },
                 "observedLoopbackRequests": {
                   "type": "array",
@@ -225,6 +262,15 @@
         "inboxProposals": { "$ref": "#/$defs/summary10" },
         "relayDrafts": { "$ref": "#/$defs/summary10" },
         "relays": { "$ref": "#/$defs/summary10" }
+      }
+    },
+    "machineReadSummaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session", "projects"],
+      "properties": {
+        "session": { "$ref": "#/$defs/summary10" },
+        "projects": { "$ref": "#/$defs/summary10" }
       }
     },
     "maintenanceMeasurement": {

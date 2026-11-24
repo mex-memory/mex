@@ -804,6 +804,7 @@ describe("no unscoped scaffold writes", () => {
       "src/hooks/shim/launcher.ts": "writes only the hook launcher file under the machine MEX home bin folder, and only when that home exists; never a repo file",
       "src/install/files.ts": "atomically restores or installs only recorded, byte-rechecked regular settings/runtime files; tracked settings and redirected paths are refused",
       "src/install/index.ts": "purges only the resolved machine record/home trees after settings restoration, stopped-background checks and a complete link/junction inspection; never Wiki content",
+      "src/hub/machine/secret.ts": "creates or replaces only the per-home Hub secret (0600) in the MEX home, via temp file plus link or rename; never a repo file",
       "src/hub/setup/commit.ts": "manages temporary and preserved Git indexes for explicit revision-reviewed setup commits; never edits Wiki content",
       "src/config.ts": "writes config.json",
       "src/global-config.ts": "writes the global config and telemetry id",

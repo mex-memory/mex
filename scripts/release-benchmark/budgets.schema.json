@@ -15,7 +15,15 @@
       "properties": {
         "status": { "type": "string", "maxLength": 100 },
         "runtimeFormula": { "const": "ceil(measured p95 * 1.15)" },
-        "assetFormula": { "const": "ceil(built bytes * 1.05)" }
+        "assetFormula": { "const": "ceil(built bytes * 1.05)" },
+        "provisionalRuntimeMetrics": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 7,
+          "items": {
+            "enum": ["coldHubReadyMs", "idleRssBytes", "idleCpuMs", "apiLatencyMs", "maintenanceMs", "maintenancePeakRssBytes", "browserHeapBytes"]
+          }
+        }
       }
     },
     "environment": {
@@ -48,25 +56,10 @@
         "routes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
+          "required": ["home", "repo"],
           "properties": {
             "home": { "$ref": "#/$defs/assetGroup" },
-            "search": { "$ref": "#/$defs/assetGroup" },
-            "knowledge": { "$ref": "#/$defs/assetGroup" },
-            "knowledgeDetail": { "$ref": "#/$defs/assetGroup" },
-            "code": { "$ref": "#/$defs/assetGroup" },
-            "codeSymbol": { "$ref": "#/$defs/assetGroup" },
-            "diagrams": { "$ref": "#/$defs/assetGroup" },
-            "diagramDetail": { "$ref": "#/$defs/assetGroup" },
-            "playbooks": { "$ref": "#/$defs/assetGroup" },
-            "catchUp": { "$ref": "#/$defs/assetGroup" },
-            "relays": { "$ref": "#/$defs/assetGroup" },
-            "members": { "$ref": "#/$defs/assetGroup" },
-            "activity": { "$ref": "#/$defs/assetGroup" },
-            "jobs": { "$ref": "#/$defs/assetGroup" },
-            "health": { "$ref": "#/$defs/assetGroup" },
-            "settings": { "$ref": "#/$defs/assetGroup" },
-            "notFound": { "$ref": "#/$defs/assetGroup" }
+            "repo": { "$ref": "#/$defs/assetGroup" }
           }
         }
       }
@@ -113,14 +106,10 @@
     "readBudgets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["search", "code", "knowledge", "activity"],
+      "required": ["session", "projects"],
       "properties": {
-        "search": { "$ref": "#/$defs/nonNegativeNumber" },
-        "code": { "$ref": "#/$defs/nonNegativeNumber" },
-        "knowledge": { "$ref": "#/$defs/nonNegativeNumber" },
-        "activity": { "$ref": "#/$defs/nonNegativeNumber" },
-        "relayDrafts": { "$ref": "#/$defs/nonNegativeNumber" },
-        "relays": { "$ref": "#/$defs/nonNegativeNumber" }
+        "session": { "$ref": "#/$defs/nonNegativeNumber" },
+        "projects": { "$ref": "#/$defs/nonNegativeNumber" }
       }
     },
     "profiledReadBudgets": {
@@ -157,25 +146,10 @@
     "routeBudgets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["home", "search", "knowledge", "knowledgeDetail", "code", "codeSymbol", "playbooks", "catchUp", "relays", "members", "activity", "jobs", "health", "notFound"],
+      "required": ["home", "repo"],
       "properties": {
         "home": { "$ref": "#/$defs/nonNegativeNumber" },
-        "search": { "$ref": "#/$defs/nonNegativeNumber" },
-        "knowledge": { "$ref": "#/$defs/nonNegativeNumber" },
-        "knowledgeDetail": { "$ref": "#/$defs/nonNegativeNumber" },
-        "code": { "$ref": "#/$defs/nonNegativeNumber" },
-        "codeSymbol": { "$ref": "#/$defs/nonNegativeNumber" },
-        "diagrams": { "$ref": "#/$defs/nonNegativeNumber" },
-        "diagramDetail": { "$ref": "#/$defs/nonNegativeNumber" },
-        "playbooks": { "$ref": "#/$defs/nonNegativeNumber" },
-        "catchUp": { "$ref": "#/$defs/nonNegativeNumber" },
-        "relays": { "$ref": "#/$defs/nonNegativeNumber" },
-        "members": { "$ref": "#/$defs/nonNegativeNumber" },
-        "activity": { "$ref": "#/$defs/nonNegativeNumber" },
-        "jobs": { "$ref": "#/$defs/nonNegativeNumber" },
-        "health": { "$ref": "#/$defs/nonNegativeNumber" },
-        "settings": { "$ref": "#/$defs/nonNegativeNumber" },
-        "notFound": { "$ref": "#/$defs/nonNegativeNumber" }
+        "repo": { "$ref": "#/$defs/nonNegativeNumber" }
       }
     },
     "profiledRouteBudgets": {

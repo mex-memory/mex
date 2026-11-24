@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare const __MEX_HUB_VERSION__: string;
+
 interface ImportMetaEnv {
   readonly DEV: boolean;
   readonly PROD: boolean;

@@ -6,7 +6,7 @@ import { BACKGROUND_AGENT_CLIS, isBackgroundAgentTool } from "../agent-command.j
 import { loadConfiguredAiTools, loadConfiguredSetupMode } from "../config.js";
 import { isCliAvailable } from "../cli-tools.js";
 import {
-  ensureToolAnchors, findSetupProjectRoot, installSetupAgentAssets, isScaffoldPopulated, setupCommitCheckpointCommands,
+  ensureToolAnchors, findSetupProjectRoot, installSetupAgentAssets, isScaffoldPopulated,
   type SetupRunOptions, type SetupRunResult,
 } from "./index.js";
 import {
@@ -24,6 +24,7 @@ import { SETUP_HANDOFF_PROMPT, describeUnfinishedSetup } from "./unfinished.js";
 import { waitForTerminalReturn } from "./terminal-return.js";
 import { assertSetupAvailable } from "./setup-lock.js";
 
+const OPEN_HUB = "Run `mex hub` to open the Hub.";
 const CONTINUE = "Run `mex setup` to continue. Existing authored files are preserved.";
 const AGENT_CONTINUE = "\nYou are the population agent. Follow the prompt below in this session.\n"
   + "When done, run `mex setup` again to finalize. Existing authored files are preserved.\n"
@@ -53,8 +54,8 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
     console.log(describeSetupHealth(health));
     return { outcome: "complete", exitCode: 0, message: health.summary };
   }
-  if (health?.needsCommitOnly && !interactive) {
-    const message = "MEX is prepared here but the setup is not committed yet. Run `mex setup --browser` to review and commit it.";
+  if (health?.needsCommitOnly) {
+    const message = "MEX is prepared here but the setup is not committed yet. Review the .mex changes with git and commit them.";
     console.log([message, ...health.notes].join("\n"));
     return { outcome: "complete", exitCode: 0, message };
   }
@@ -117,7 +118,7 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
         return { outcome: "paused", exitCode: 2, message: "Scaffold population is still required." };
       }
       console.log(result.message);
-      console.log("Run `mex setup --browser` to open the setup completion page.");
+      console.log(OPEN_HUB);
       return { outcome: "complete", exitCode: 0, message: result.message };
     }
 
@@ -144,32 +145,8 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
         update({ tools: view.tools.map(tool => tool.id === action.tool ? { ...tool, selected: !tool.selected } : tool) });
         return;
       }
-      if (action.type === "link" && view.hubUrl) {
-        // Suspend only after Ink's input handler returns. Unmounting inside it
-        // leaves Ink's read loop to start a cooked read that steals the Enter.
-        queueMicrotask(() => void showHubLink());
-        return;
-      }
       pending?.(action);
     });
-    // Setup can finish in the browser while the link is shown; closing releases the wait.
-    let linkWait: AbortController | undefined;
-    const showHubLink = async () => {
-      const release = new AbortController();
-      linkWait = release;
-      try {
-        await ui.suspend();
-        // Outside the frame, terminal wrapping adds no border characters to a copy.
-        console.log(`\nHub link (keep it private):\n${view.hubUrl}\n`);
-        if (await pressEnterToReturn(AbortSignal.any([abort.signal, release.signal])) === "cancel"
-          && !abort.signal.aborted && !release.signal.aborted) cancel();
-      } catch (error) {
-        if (!abort.signal.aborted) update({ detail: error instanceof Error ? error.message : "Could not show the Hub link." });
-      } finally {
-        if (linkWait === release) linkWait = undefined;
-        ui.resume(view);
-      }
-    };
     const choose = (): Promise<TerminalSetupAction> => {
       if (abort.signal.aborted) return Promise.resolve({ type: "cancel" });
       return new Promise(resolve => {
@@ -181,18 +158,11 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
       pending?.({ type: "cancel" });
     };
     let outcome: SetupRunResult | undefined;
-    // Prepared but uncommitted: skip the picker and the engine and go straight
-    // to the reviewed commit on the completion page (#284).
-    let validated: HeadlessSetupResult | undefined = health?.needsCommitOnly ? {
-      mode, stage: "ready", populated: true, ready: true, selectedTools, prompt: null,
-      populationTool: null, populationCompleted: true,
-      commitCommands: setupCommitCheckpointCommands(selectedTools), anchorNotes: [],
-      message: "Graph and Wiki are ready. Review and commit the canonical MEX setup.",
-    } : undefined;
+    let validated: HeadlessSetupResult | undefined;
     let anchorNotes: readonly string[] = [];
     let populationFailure: string | undefined;
     try {
-      const action: TerminalSetupAction = validated ? { type: "start" } : await choose();
+      const action = await choose();
       if (action.type !== "start") throwIfSetupAborted(abort.signal);
       const focusedTool = action.type === "start" ? action.tool : undefined;
       if (focusedTool) {
@@ -296,31 +266,21 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
           throwIfSetupAborted(abort.signal);
           update({ screen: "progress", completedSteps: view.activeStep ? [...new Set([...view.completedSteps, view.activeStep])] : view.completedSteps,
             activeStep: undefined, phaseStartedAt: Date.now(), lastActivityAt: Date.now(), progress: undefined,
-            detail: "Opening the setup completion page…", error: undefined });
-          const { runSetupHubCommand } = await import("../hub/command.js");
-          let listening = false;
-          await runSetupHubCommand({
-            projectRoot, initialMode: mode, port: options.port, openBrowser: options.openBrowser !== false,
-            signal: abort.signal,
-            onListening: ({ bootstrapUrl }) => { listening = true; update({ screen: "hub", hubUrl: bootstrapUrl,
-              detail: mode === "code-repo"
-                ? "Continue in your browser to review the setup commit, finish optional details, and open Hub."
-                : "Agent memory is ready. Finish the optional details in your browser." }); },
-            onMessage: detail => update({ detail }),
-          });
-          if (!listening) throwIfSetupAborted(abort.signal);
+            detail: "Checking setup status…", error: undefined });
           const { projectSetupStatus } = await import("../hub/setup/readiness.js");
           const finished = await projectSetupStatus(projectRoot);
-          const message = finished.mode === "agent-memory" || finished.ready
-            ? `Setup complete. Hub stopped.${validated.coverageNotice ? ` ${validated.coverageNotice}` : ""}${validated.groundingNotice ? ` ${validated.groundingNotice}` : ""} Run \`mex hub\` to open Hub again.`
-            : `${validated.message} Hub stopped. Run \`mex setup --browser\` to reopen the completion page.`;
+          throwIfSetupAborted(abort.signal);
+          const completion = finished.mode === "agent-memory" || finished.ready
+            ? ["Setup complete.", validated.coverageNotice, validated.groundingNotice].filter(Boolean).join(" ")
+            : validated.message;
+          const message = `${completion} ${OPEN_HUB}`;
           outcome = { outcome: "complete", exitCode: 0, message };
         } catch (error) {
           if (abort.signal.aborted) throw error;
           const detail = error instanceof SetupError ? error.userMessage : error instanceof Error ? error.message : String(error);
           const rawDiagnostic = error instanceof Error && error.message !== detail ? error.message : undefined;
           const diagnostic = rawDiagnostic ? `\nDiagnostics: ${rawDiagnostic}` : "";
-          const recovery = `${validated ? "Setup is ready; the Hub could not start." : "Setup could not finish."} Resolve the problem and retry.`;
+          const recovery = "Setup could not finish. Resolve the problem and retry.";
           update({ screen: "error", error: detail, detail: rawDiagnostic ? `${rawDiagnostic}\n${recovery}` : recovery, stopping: false });
           const action = await choose();
           throwIfSetupAborted(abort.signal);
@@ -329,7 +289,6 @@ export async function runTerminalSetup(options: SetupRunOptions): Promise<SetupR
       }
     } finally {
       notifyCancel = () => {};
-      linkWait?.abort();
       await ui.close();
       for (const note of anchorNotes) console.log(`Action needed: ${note}`);
     }
@@ -382,7 +341,7 @@ function previewSetup(projectRoot: string, mode: "code-repo" | "agent-memory", t
     ? "Would preserve and verify the populated scaffold."
     : "Would populate the scaffold with a selected agent or the manual prompt.");
   if (mode === "code-repo") console.log("Would capture grounding, give remaining files their Wiki ids, link and index the Wiki, then validate the result.");
-  console.log("Interactive setup would then open the Hub completion page.");
+  console.log("After setup, run `mex hub` to open the Hub.");
   const message = "Dry run complete. Population and validation were not run.";
   console.log(message);
   return { outcome: "dry-run", exitCode: 0, message };

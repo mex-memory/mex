@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hubContractAliases } from "./scripts/contract-aliases.mjs";
+import { version } from "../../package.json";
 
 const packageRoot = dirname(fileURLToPath(import.meta.url));
 const fixtureModuleId = "virtual:mex-hub-fixture-api";
@@ -48,6 +49,7 @@ function isolateRelayComboboxRuntime(): Plugin {
 }
 
 export default defineConfig(({ command }) => ({
+  define: { __MEX_HUB_VERSION__: JSON.stringify(version) },
   esbuild: {
     legalComments: "eof",
   },

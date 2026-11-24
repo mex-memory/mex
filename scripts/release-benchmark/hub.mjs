@@ -9,7 +9,6 @@ const HUB_START_TIMEOUT_MS = 30_000;
 const JOB_TIMEOUT_MS = 180_000;
 const IDLE_WINDOW_MS = 2_000;
 const TERMINAL_JOB_STATES = new Set(["succeeded", "failed", "interrupted"]);
-const REVISION_PATTERN = /^[a-f0-9]{64}$/u;
 
 export async function startHub({
   projectRoot,
@@ -21,7 +20,8 @@ export async function startHub({
     throw new Error(`Hub startup timeout must be between 1 and ${HUB_START_TIMEOUT_MS} milliseconds.`);
   }
   const startedAt = performance.now();
-  const child = spawn(process.execPath, [cliPath, "hub", "--no-open"], {
+  const deadline = startedAt + startupTimeoutMs;
+  const child = spawn(process.execPath, [cliPath, "hub", "--foreground", "--no-open"], {
     cwd: projectRoot,
     env: environment,
     stdio: ["ignore", "pipe", "pipe"],
@@ -34,18 +34,18 @@ export async function startHub({
     return next.length <= MAX_CHILD_OUTPUT_BYTES ? next : next.slice(-MAX_CHILD_OUTPUT_BYTES);
   };
 
-  const ready = await new Promise((resolve, reject) => {
+  const bootstrapUrl = await new Promise((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       rejectAfterTermination(new Error(`Timed out waiting for Hub readiness: ${bounded(stderr || stdout)}`));
     }, startupTimeoutMs);
     const onStdout = (chunk) => {
       stdout = append(stdout, chunk);
-      const match = stdout.match(/https?:\/\/127\.0\.0\.1:\d+\/#token=[A-Za-z0-9_%~-]+/u);
+      const match = stdout.match(/^http:\/\/127\.0\.0\.1:\d+\/#token=[A-Za-z0-9_-]+(?=\r?\n)/mu);
       if (!match || settled) return;
       settled = true;
       cleanup();
-      resolve({ bootstrapUrl: match[0], readyMs: performance.now() - startedAt });
+      resolve(match[0]);
     };
     const onStderr = (chunk) => { stderr = append(stderr, chunk); };
     const onExit = (code, signal) => {
@@ -79,18 +79,30 @@ export async function startHub({
     child.once("exit", onExit);
     child.once("error", onError);
   });
-  // Readiness parsing no longer needs the streams, but leaving them paused can
-  // eventually back-pressure a maintenance-heavy benchmark run.
   child.stdout?.resume();
   child.stderr?.resume();
-  return {
-    child,
-    projectRoot,
-    origin: new URL(ready.bootstrapUrl).origin,
-    bootstrapUrl: ready.bootstrapUrl,
-    readyMs: ready.readyMs,
-    close: () => stopHub(child),
-  };
+  const origin = new URL(bootstrapUrl).origin;
+  try {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error("Timed out before the Hub handshake.");
+    const hello = await hubJson({ origin }, "/api/v1/hello", undefined, {}, {
+      timeoutMs: Math.min(5_000, remaining),
+    });
+    if (hello.app !== "mex-hub" || hello.mode !== "terminal"
+      || typeof hello.version !== "string" || !/^[A-Za-z0-9_-]{22}$/u.test(hello.homeId ?? "")) {
+      throw new Error("The foreground process did not answer as a machine Hub.");
+    }
+    return {
+      child,
+      origin,
+      bootstrapUrl,
+      readyMs: performance.now() - startedAt,
+      close: () => stopHub(child),
+    };
+  } catch (error) {
+    await stopHub(child);
+    throw error;
+  }
 }
 
 export async function authenticateHub(server) {
@@ -128,124 +140,32 @@ export async function measureIdleProcess(server) {
   };
 }
 
-export async function measureCommonReads(server, auth, samples, teamFixture) {
-  const warmSearch = await hubJson(
-    server,
-    "/api/v1/search?q=releaseBenchmarkNeedle&limit=25",
-    auth,
-  );
-  const symbol = warmSearch.groups?.symbols?.items?.[0];
-  if (typeof symbol?.id !== "string") {
-    throw new Error("The benchmark Graph fixture did not produce a searchable symbol.");
-  }
-  const paths = releaseCommonReadPaths(symbol.id);
-  await hubJson(server, paths.code, auth);
-  await hubJson(server, paths.knowledge, auth);
-  await hubJson(server, paths.activity, auth);
-  const warmRelayDrafts = await hubJson(server, "/api/v1/relays/drafts?limit=25", auth);
-  const warmRelays = await hubJson(
-    server,
-    "/api/v1/relays?perspective=mine&state=published,acknowledged&limit=25",
-    auth,
-  );
-  assertRelayFixturePage(warmRelayDrafts, {
-    kind: "draft",
-    id: teamFixture.relayDraftId,
-    summary: teamFixture.relayDraftSummary,
-  });
-  assertRelayFixturePage(warmRelays, {
-    kind: "relay",
-    id: teamFixture.relayId,
-    summary: teamFixture.relaySummary,
-  });
+export const RELEASE_COMMON_READ_PATHS = Object.freeze({
+  session: "/api/v1/session",
+  projects: "/api/v1/projects",
+});
 
-  const timings = Object.fromEntries(Object.keys(paths).map((name) => [name, []]));
+export async function measureCommonReads(server, auth, samples) {
+  const session = await hubJson(server, RELEASE_COMMON_READ_PATHS.session, auth);
+  if (session.mode !== "terminal" || session.csrfToken !== auth.csrfToken) {
+    throw new Error("The benchmark did not receive its authenticated foreground session.");
+  }
+  const result = await hubJson(server, RELEASE_COMMON_READ_PATHS.projects, auth);
+  if (!Array.isArray(result.projects) || result.projects.length !== 1
+    || result.projects[0].kind !== "git" || result.projects[0].checkouts?.length !== 1
+    || result.projects[0].checkouts[0].exists !== true) {
+    throw new Error("The benchmark Hub did not return its single registered Git checkout.");
+  }
+
+  const timings = Object.fromEntries(Object.keys(RELEASE_COMMON_READ_PATHS).map((name) => [name, []]));
   for (let sample = 0; sample < samples; sample += 1) {
-    for (const [name, path] of Object.entries(paths)) {
+    for (const [name, path] of Object.entries(RELEASE_COMMON_READ_PATHS)) {
       const startedAt = performance.now();
       await hubJson(server, path, auth);
       timings[name].push(performance.now() - startedAt);
     }
   }
-  return { timings, codeSymbolId: symbol.id };
-}
-
-export function releaseCommonReadPaths(codeSymbolId) {
-  return {
-    search: "/api/v1/search?q=releaseBenchmarkNeedle&limit=25",
-    code: `/api/v1/code/symbols/${encodeURIComponent(codeSymbolId)}?view=overview`,
-    knowledge: "/api/v1/wiki/graph",
-    activity: "/api/v1/activity?limit=25",
-    relayDrafts: "/api/v1/relays/drafts?limit=25",
-    relays: "/api/v1/relays?perspective=mine&state=published,acknowledged&limit=25",
-  };
-}
-
-export function assertRelayFixturePage(page, expected) {
-  if (
-    !page
-    || !Array.isArray(page.items)
-    || page.items.length !== 1
-    || page.nextCursor !== null
-    || page.truncated !== false
-    || page.sourceTruncated !== false
-    || !REVISION_PATTERN.test(page.deterministicRevision)
-    || !Array.isArray(page.diagnostics)
-    || page.diagnostics.length !== 0
-    || page.diagnosticsTruncated !== false
-  ) {
-    throw new Error(
-      `The benchmark Relay ${expected.kind} list did not return its exact complete diagnostic-free one-item page.`,
-    );
-  }
-  const item = page.items[0];
-  const id = expected.kind === "relay" ? item?.ref?.id : item?.id;
-  if (id !== expected.id || item?.summary !== expected.summary) {
-    throw new Error(`The benchmark Relay ${expected.kind} list returned unexpected fixture content.`);
-  }
-  if (expected.kind === "relay") {
-    if (item?.state !== "published") {
-      throw new Error("The benchmark Relay is not published.");
-    }
-    if (
-      item?.schemaVersion !== 3
-      || item?.workstream !== null
-      || item?.publishedRepoState?.branch !== "benchmark"
-      || item?.publishedRepoState?.head !== null
-      || item?.publishedRepoState?.dirty !== false
-      || item?.publishedRepoState?.observedAt !== "2026-08-01T00:00:00.000Z"
-    ) {
-      throw new Error(
-        "The benchmark Relay is not the expected standalone schema-v3 publication.",
-      );
-    }
-  }
-}
-
-export async function measureMaintenance({
-  server,
-  auth,
-  timingSamples,
-  memorySamples,
-  beforeGraphRefresh,
-  beforeWikiRefresh,
-}) {
-  const output = {};
-  for (const kind of ["graph_refresh", "graph_rebuild", "wiki_refresh", "wiki_rebuild"]) {
-    const elapsedMs = [];
-    const peakRssBytes = [];
-    const cpuMs = [];
-    for (let sample = 0; sample < timingSamples; sample += 1) {
-      if (kind === "graph_refresh") beforeGraphRefresh();
-      if (kind === "wiki_refresh") beforeWikiRefresh();
-      const measured = await runMaintenanceJob(server, auth, kind);
-      elapsedMs.push(measured.elapsedMs);
-      cpuMs.push(measured.cpuMs);
-      if (sample < memorySamples) peakRssBytes.push(measured.peakRssBytes);
-    }
-    output[kind] = { elapsedMs, peakRssBytes, cpuMs };
-  }
-  return output;
+  return { timings, project: result.projects[0] };
 }
 
 export async function hubJson(server, path, auth, init = {}, requestOptions) {
@@ -263,6 +183,8 @@ export async function hubJson(server, path, auth, init = {}, requestOptions) {
   return body;
 }
 
+// The legacy job-observation tests exercise the deadline and SSE bounds
+// independently. The machine Hub has no maintenance job transport.
 export async function runMaintenanceJob(server, auth, kind, { timeoutMs = JOB_TIMEOUT_MS } = {}) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > JOB_TIMEOUT_MS) {
     throw new Error("Invalid maintenance deadline.");
@@ -316,7 +238,7 @@ async function stopHub(child) {
 }
 
 function bounded(value) {
-  const text = String(value ?? "").trim();
+  const text = String(value ?? "").replace(/#token=[^\s"]+/gu, "#token=[redacted]").trim();
   return text.length <= 2_000 ? text : `${text.slice(0, 2_000)}…`;
 }
 

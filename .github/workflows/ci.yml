@@ -131,7 +131,7 @@ jobs:
       - name: Run evaluator tests
         run: npm run eval:test
       - run: npm run build
-      - name: Smoke test packed Project Hub
+      - name: Smoke test packed machine Hub
         run: npm run test:hub:package
       - name: Smoke test packed graph CLI
         shell: bash
@@ -402,7 +402,6 @@ jobs:
   hub-browser:
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
-    # Visual baselines are exact for this runner image; do not float with ubuntu-latest.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -435,7 +434,6 @@ jobs:
           path: |
             playwright-report/
             test-results/
-            test/hub-e2e/__screenshots__/linux/
           if-no-files-found: ignore
           retention-days: 7
 

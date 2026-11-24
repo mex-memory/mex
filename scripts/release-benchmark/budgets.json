@@ -1,10 +1,14 @@
 {
   "schemaVersion": 1,
-  "provisional": false,
+  "provisional": true,
   "calibration": {
-    "status": "pinned-0.9-43151888852",
+    "status": "machine-hub-assets-measured-runtime-provisional",
     "runtimeFormula": "ceil(measured p95 * 1.15)",
-    "assetFormula": "ceil(built bytes * 1.05)"
+    "assetFormula": "ceil(built bytes * 1.05)",
+    "provisionalRuntimeMetrics": [
+      "coldHubReadyMs", "idleRssBytes", "idleCpuMs", "apiLatencyMs",
+      "maintenanceMs", "maintenancePeakRssBytes", "browserHeapBytes"
+    ]
   },
   "environment": {
     "os": "ubuntu-24.04",
@@ -17,30 +21,15 @@
     "idleMemory": 5
   },
   "assets": {
-    "maxJsChunkBytes": 493518,
+    "maxJsChunkBytes": 488160,
     "initial": {
-      "jsBytes": 493518,
-      "cssBytes": 73640,
+      "jsBytes": 488160,
+      "cssBytes": 80659,
       "fontBytes": 88961
     },
     "routes": {
-      "home": { "jsBytes": 133499, "cssBytes": 17625, "fontBytes": 0 },
-      "search": { "jsBytes": 32398, "cssBytes": 6875, "fontBytes": 0 },
-      "knowledge": { "jsBytes": 27174, "cssBytes": 7184, "fontBytes": 0 },
-      "knowledgeDetail": { "jsBytes": 75627, "cssBytes": 11097, "fontBytes": 0 },
-      "code": { "jsBytes": 32398, "cssBytes": 6875, "fontBytes": 0 },
-      "codeSymbol": { "jsBytes": 58694, "cssBytes": 21217, "fontBytes": 0 },
-      "diagrams": { "jsBytes": 82058, "cssBytes": 2768, "fontBytes": 0 },
-      "diagramDetail": { "jsBytes": 143673, "cssBytes": 4341, "fontBytes": 0 },
-      "playbooks": { "jsBytes": 5927, "cssBytes": 2748, "fontBytes": 0 },
-      "catchUp": { "jsBytes": 5927, "cssBytes": 2748, "fontBytes": 0 },
-      "relays": { "jsBytes": 144408, "cssBytes": 11283, "fontBytes": 0 },
-      "members": { "jsBytes": 89175, "cssBytes": 12602, "fontBytes": 0 },
-      "activity": { "jsBytes": 68159, "cssBytes": 19437, "fontBytes": 0 },
-      "jobs": { "jsBytes": 30342, "cssBytes": 14641, "fontBytes": 0 },
-      "health": { "jsBytes": 32066, "cssBytes": 17052, "fontBytes": 0 },
-      "settings": { "jsBytes": 8091, "cssBytes": 2964, "fontBytes": 0 },
-      "notFound": { "jsBytes": 5927, "cssBytes": 2748, "fontBytes": 0 }
+      "home": { "jsBytes": 0, "cssBytes": 0, "fontBytes": 0 },
+      "repo": { "jsBytes": 0, "cssBytes": 0, "fontBytes": 0 }
     }
   },
   "runtime": {
@@ -48,9 +37,9 @@
     "idleRssBytes": { "small": 129418240, "medium": 131980698, "large": 133963776 },
     "idleCpuMs": { "small": 0, "medium": 0, "large": 0 },
     "apiLatencyMs": {
-      "small": { "search": 108, "code": 42, "knowledge": 76, "activity": 13, "relayDrafts": 5, "relays": 17 },
-      "medium": { "search": 125, "code": 49, "knowledge": 94, "activity": 33, "relayDrafts": 9, "relays": 18 },
-      "large": { "search": 195, "code": 67, "knowledge": 165, "activity": 62, "relayDrafts": 9, "relays": 14 }
+      "small": { "session": 5, "projects": 5 },
+      "medium": { "session": 9, "projects": 9 },
+      "large": { "session": 9, "projects": 9 }
     },
     "maintenanceMs": {
       "small": { "graph_refresh": 1977, "graph_rebuild": 1709, "wiki_refresh": 206, "wiki_rebuild": 244 },
@@ -63,24 +52,9 @@
       "large": { "graph_refresh": 577702298, "graph_rebuild": 592290407, "wiki_refresh": 314777191, "wiki_rebuild": 414110106 }
     },
     "browserHeapBytes": {
-      "small": {
-        "home": 7295357, "search": 6139786, "knowledge": 6286158, "knowledgeDetail": 5585118, "code": 6105268,
-        "codeSymbol": 5582478, "diagrams": 6071269, "diagramDetail": 6838940, "playbooks": 4923505, "catchUp": 4935363,
-        "relays": 7955912, "members": 5922625, "activity": 6495246, "jobs": 5262373, "health": 5234202,
-        "settings": 5977470, "notFound": 4949725
-      },
-      "medium": {
-        "home": 7327308, "search": 6485232, "knowledge": 6443161, "knowledgeDetail": 5512935, "code": 6436049,
-        "codeSymbol": 5577951, "diagrams": 6071044, "diagramDetail": 6838968, "playbooks": 4935635, "catchUp": 4935143,
-        "relays": 7964174, "members": 5920564, "activity": 6872883, "jobs": 5266407, "health": 5232224,
-        "settings": 5981192, "notFound": 4937567
-      },
-      "large": {
-        "home": 7327235, "search": 6729046, "knowledge": 6636448, "knowledgeDetail": 5509430, "code": 6686252,
-        "codeSymbol": 5581548, "diagrams": 6070993, "diagramDetail": 6842717, "playbooks": 4935635, "catchUp": 4935124,
-        "relays": 7955788, "members": 5919855, "activity": 7113496, "jobs": 5266453, "health": 5234212,
-        "settings": 5977415, "notFound": 4949757
-      }
+      "small": { "home": 7295357, "repo": 4923505 },
+      "medium": { "home": 7327308, "repo": 4935143 },
+      "large": { "home": 7327235, "repo": 4935124 }
     },
     "databaseToInputRatio": {
       "small": { "graph": 147, "wiki": 26 },

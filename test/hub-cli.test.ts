@@ -8,12 +8,13 @@ import {
 import { createConfig } from "../src/config.js";
 
 describe("mex hub command surface", () => {
-  it("registers the Hub command and its two public options", () => {
+  it("registers the Hub command and its public options", () => {
     const command = program.commands.find((candidate) => candidate.name() === "hub");
     expect(command).toBeDefined();
     expect(command?.options.map((option) => option.long)).toEqual([
       "--port",
       "--no-open",
+      "--foreground",
     ]);
   });
 

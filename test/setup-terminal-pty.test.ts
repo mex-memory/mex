@@ -1,7 +1,6 @@
 import { currentGraphPath } from "../src/graph/storage.js";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +16,8 @@ const skipReason = process.platform === "win32" ? "requires a POSIX PTY; Windows
 const fixtures: Fixture[] = [];
 
 interface Fixture { root: string; project: string; record: string; env: NodeJS.ProcessEnv; cli?: string; workerRecord?: string }
-interface Action { expect?: string; regex?: boolean; missing?: string[]; quietMs?: number; input?: string; signal?: string; probe?: boolean }
-interface Result { exitCode: number; output: string; raw: string; error: string | null; events: { match?: string; quietOutput?: string; connected?: boolean }[] }
+interface Action { expect?: string; regex?: boolean; missing?: string[]; quietMs?: number; input?: string; signal?: string }
+interface Result { exitCode: number; output: string; raw: string; error: string | null; events: { match?: string; quietOutput?: string }[] }
 interface AgentRecord { pid: number; agent: string; stdinTTY: boolean; stdoutTTY: boolean; stderrTTY: boolean; canonical: boolean; echo: boolean; input?: string; argv: string[]; promptExists: boolean }
 
 beforeAll(() => {
@@ -232,42 +231,33 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expectPromptCleaned(f);
   });
 
-  it("validates populated files, exposes the finishing Hub URL, and closes its listener with q", async () => {
+  it("validates populated files and prints the Hub command before exiting", async () => {
     const f = fixture("complete");
     const result = await terminal(f, [], [
       { expect: "Choose your AI tools", input: "\r" },
       { expect: "MEX_PTY_CHILD_READY", input: "populate\n" },
-      { expect: "http://127\\.0\\.0\\.1:[0-9]+/#token=[A-Za-z0-9_-]+", regex: true, probe: true, input: "q" },
     ]);
     expect(result.exitCode, result.output).toBe(0);
-    expect(result.output).toContain("Continue in your browser");
-    expect(result.events[2].connected).toBe(true);
-    expect(result.output).toContain("Hub stopped");
+    expect(result.output).toContain("Setup complete.");
+    expect(result.output).toContain("Run `mex hub` to open the Hub.");
+    expect(result.raw).not.toContain("#token=");
     expect(existsSync(join(f.root, "browser-open"))).toBe(false);
-    const address = new URL(result.events[2].match!);
-    expect(await canConnect(Number(address.port))).toBe(false);
     expect(readFileSync(join(f.project, ".mex/AGENTS.md"), "utf8")).not.toContain("[YYYY-MM-DD]");
     expect(existsSync(currentGraphPath(f.project))).toBe(false);
     expect(existsSync(join(f.project, ".mex/wiki.db"))).toBe(false);
     expectPromptCleaned(f);
   });
 
-  it("shows a clean copyable Hub link at 60x16 and exits after returning to the HUD", async () => {
+  it("reports completion at 60x16 without waiting for another key", async () => {
     const f = fixture("complete");
     const result = await terminal(f, [], [
       { expect: "Choose your AI tools", input: "\r" },
       { expect: "MEX_PTY_CHILD_READY", input: "populate\n" },
-      { expect: "Continue in your browser", input: "l" },
-      { expect: "Hub link \\(keep it private\\):\\n(http://127\\.0\\.0\\.1:[0-9]+/#token=[A-Za-z0-9_-]{43})\\n", regex: true },
-      { expect: "Press Enter to return to MEX", input: "\r" },
-      { expect: "Continue in your browser", input: "q" },
     ], { columns: 60, rows: 16 });
     expect(result.exitCode, result.output).toBe(0);
-    const link = result.events[3].match!.split("\n")[1];
-    expect(result.raw).toContain(`Hub link (keep it private):\r\n${link}\r\n`);
-    expect(result.output).toContain("Setup complete. Hub stopped.");
-    const address = new URL(link);
-    expect(await canConnect(Number(address.port))).toBe(false);
+    expect(result.output).toContain("Setup complete.");
+    expect(result.output).toContain("Run `mex hub` to open the Hub.");
+    expect(result.raw).not.toContain("#token=");
     expectPromptCleaned(f);
   });
 
@@ -490,15 +480,6 @@ function expectPromptCleaned(f: Fixture): void {
   expect(existsSync(local) ? readdirSync(local).filter(name => name.startsWith("setup-population-")) : []).toEqual([]);
 }
 function isAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
-function canConnect(port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const socket = createConnection({ host: "127.0.0.1", port });
-    const finish = (connected: boolean) => { socket.destroy(); resolve(connected); };
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-    socket.setTimeout(1000, () => finish(false));
-  });
-}
 
 const FAKE_AGENT = String.raw`
 import json, os, pathlib, re, signal, sys, termios

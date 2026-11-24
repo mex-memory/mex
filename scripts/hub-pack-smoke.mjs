@@ -1,6 +1,8 @@
+import assert from "node:assert/strict";
 import { currentGraphPath } from "../dist/graph-storage.js";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -15,9 +17,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { request } from "node:http";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { createBenchmarkEnvironment } from "./release-benchmark/environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OFFICIAL_SKILLS = ["mex-statechart"];
@@ -26,13 +33,13 @@ if (!npmCli) {
   throw new Error("The packed Hub smoke must run through npm so its CLI entry is known.");
 }
 const work = mkdtempSync(join(tmpdir(), "mex-hub-pack-smoke-"));
+const smokeEnv = createBenchmarkEnvironment(work);
+let retainWorkspace = false;
 // Reuse npm's configured cache (setup-node restores it in CI). The consumer
 // projects and node_modules remain fresh; cached registry tarballs do not carry
 // project state. Prefer cached metadata while allowing uncached dependencies.
-const npmCache = runNpm(["config", "get", "cache"], root).trim();
-let child;
-
 try {
+  const npmCache = runNpm(["config", "get", "cache"], root).trim();
   const packOutput = runNpm([
     "pack",
     "--json",
@@ -89,7 +96,6 @@ try {
       },
     }, null, 2) + "\n",
   );
-  writeActivityFixture(project);
   mkdirSync(join(project, "src"), { recursive: true });
   writeFileSync(join(project, "src", "packed.ts"), [
     "export function packedService(input: number): number {",
@@ -141,8 +147,7 @@ try {
   }
 
   const installed = join(project, "node_modules", "mex-agent");
-  const manifest = join(installed, "dist", "hub", ".vite", "manifest.json");
-  if (!existsSync(manifest)) throw new Error("The packed package omitted dist/hub assets.");
+  const assets = verifyPackedHubAssets(installed, packResult);
   const installedPackageVersion = JSON.parse(
     readFileSync(join(installed, "package.json"), "utf8"),
   ).version;
@@ -160,8 +165,6 @@ try {
   }
 
   const cli = join(installed, "dist", "cli.js");
-  // The Hub logging preference stays for now; only the CLI getter was removed.
-  const defaultLogging = { data: { mode: "significant", revision: null, source: "default" } };
   const cliHelp = run(process.execPath, [cli, "--help"], project);
   if (/^\s*skills\s+/mu.test(cliHelp)) throw new Error("The packed help exposed a removed command.");
 
@@ -180,7 +183,7 @@ try {
 
   // Team workflows intentionally require the current config bytes to be
   // tracked. The product setup must not commit them, so the smoke fixture does
-  // that explicitly before exercising its pre-existing Relay/Hub assertions.
+  // that explicitly before exercising the packed Relay CLI.
   run("git", ["add", ".mex/config.json"], project);
   run("git", ["commit", "--quiet", "-m", "record packed setup selection"], project);
 
@@ -273,603 +276,20 @@ try {
   ) {
     throw new Error("The packed capability manifest expanded the compact Relay resolver descriptor.");
   }
-  const diagramCandidate = join(work, "diagram-candidate.json");
-  writeFileSync(diagramCandidate, readFileSync(join(installed, "skills/mex-statechart/references/example.json")));
-  const diagramPreview = JSON.parse(run(process.execPath,
-    [join(installed, "skills/mex-statechart/scripts/runtime.mjs"), "register", diagramCandidate, project], project));
-  run(process.execPath, [cli, "graph", "rebuild", "--root", project, "--json"], project);
-  const graphScope = run(process.execPath, [
-    cli,
-    "graph",
-    "scope",
-    "packedService",
-    "--detail",
-    "minimal",
-    "--fingerprint",
-    "--max-nodes",
-    "10",
-    "--max-files",
-    "1",
-    "--max-output-tokens",
-    "2000",
-  ], project).trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
-  const groundedFact = graphScope.find((record) => (
-    record.type === "fact" && record.name === "packedService"
-  ));
-  if (
-    typeof groundedFact?.id !== "string"
-    || typeof groundedFact.fingerprint !== "string"
-    || typeof groundedFact.bodyHash !== "string"
-  ) {
-    throw new Error("The packed graph did not expose exact grounding facts for the Wiki fixture.");
-  }
-  writeWikiFixture(project, {
-    nodeId: groundedFact.id,
-    fingerprint: groundedFact.fingerprint,
-    bodyHash: groundedFact.bodyHash,
-  });
-  run("git", ["add", ".mex/context", ".mex/excluded", ".mex/topics"], project);
-  run("git", ["commit", "--quiet", "-m", "add packed wiki fixture"], project);
-  run(process.execPath, [cli, "graph", "rebuild", "--root", project, "--json"], project);
-  run(process.execPath, [cli, "wiki", "rebuild-index", "--json"], project);
-  child = spawn(process.execPath, [cli, "hub", "--no-open"], {
-    cwd: project,
-    env: { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const bootstrapUrl = await readBootstrapUrl(child);
-  const url = new URL(bootstrapUrl);
-  const token = new URLSearchParams(url.hash.slice(1)).get("token");
-  if (!token) throw new Error("The packaged Hub did not emit a bootstrap token.");
+  const foregroundHome = join(work, "foreground-home");
+  const backgroundHome = join(work, "background-home");
+  run(process.execPath, [cli, "index", "status", "--json"], project, { ...smokeEnv, MEX_HOME: foregroundHome });
   const beforeReads = snapshotProtectedProjectState(project);
+  await verifyForegroundHub({ cli, project, home: foregroundHome, assets, version: installedPackageVersion });
+  await verifyBackgroundHub({ cli, project, home: backgroundHome, version: installedPackageVersion });
+  assert(
+    JSON.stringify(snapshotProtectedProjectState(project)) === JSON.stringify(beforeReads),
+    "The packaged Hub mutated protected project state.",
+  );
 
-  const html = await fetch(`${url.origin}/`, { redirect: "error" });
-  if (!html.ok || !(await html.text()).includes("<div id=\"root\"></div>")) {
-    throw new Error("The packaged Hub did not serve its application shell.");
-  }
-  const bootstrap = await fetch(`${url.origin}/api/v1/session/bootstrap`, {
-    method: "POST",
-    redirect: "error",
-    headers: {
-      "content-type": "application/json",
-      origin: url.origin,
-    },
-    body: JSON.stringify({ token }),
-  });
-  if (bootstrap.status !== 201) {
-    throw new Error(`Hub bootstrap failed with HTTP ${bootstrap.status}.`);
-  }
-  const cookie = bootstrap.headers.get("set-cookie")?.split(";", 1)[0];
-  if (!cookie) throw new Error("Hub bootstrap did not set a session cookie.");
-  const session = await fetch(`${url.origin}/api/v1/session`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const sessionBody = await session.json();
-  if (!session.ok || typeof sessionBody.csrfToken !== "string") {
-    throw new Error("The packaged Hub session API did not load.");
-  }
-  const diagramResponse = await fetch(`${url.origin}/api/v1/diagrams/preview/${diagramPreview.id}`, { headers: { cookie }, redirect: "error" });
-  const diagramDetail = await diagramResponse.json();
-  if (!diagramResponse.ok || diagramDetail.outcome !== "incomplete" || diagramDetail.alignment !== "unverified") throw new Error("Packed Hub lost the incomplete preview or fabricated implementation alignment.");
-  const logging = await fetch(`${url.origin}/api/v1/settings/logging`, {
-    headers: { cookie }, redirect: "error",
-  });
-  if (!logging.ok || JSON.stringify(await logging.json()) !== JSON.stringify(defaultLogging.data)) {
-    throw new Error("The packaged Hub logging read did not share the CLI's checkout default.");
-  }
-  const capabilities = await fetch(`${url.origin}/api/v1/capabilities`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const capabilitiesBody = await capabilities.json();
-  if (
-    !capabilities.ok
-    || capabilitiesBody.apiVersion !== "v1"
-    || capabilitiesBody.graph?.read?.availability !== "available"
-    || capabilitiesBody.graph?.refresh?.availability !== "available"
-    || capabilitiesBody.graph?.rebuild?.availability !== "available"
-    || capabilitiesBody.wiki?.read?.availability !== "available"
-    || capabilitiesBody.wiki?.refresh?.availability !== "available"
-    || capabilitiesBody.wiki?.rebuild?.availability !== "available"
-    || capabilitiesBody.relays?.read?.availability !== "available"
-    || capabilitiesBody.relays?.draftMutation?.availability !== "available"
-    || capabilitiesBody.relays?.publish?.availability !== "available"
-    || capabilitiesBody.relays?.lifecycleMutation?.availability !== "available"
-  ) {
-    throw new Error("The packaged Hub capabilities API did not load.");
-  }
-  const relayDrafts = await fetch(`${url.origin}/api/v1/relays/drafts?limit=25`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const relayDraftsBody = await relayDrafts.json();
-  const relays = await fetch(`${url.origin}/api/v1/relays?perspective=all&limit=25`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const relaysBody = await relays.json();
-  if (
-    !relayDrafts.ok
-    || relayDraftsBody.items?.length !== 0
-    || relayDraftsBody.nextCursor !== null
-    || !relays.ok
-    || relaysBody.items?.length !== 0
-    || relaysBody.nextCursor !== null
-  ) {
-    throw new Error("The packaged Hub did not expose empty repository-independent Relay reads.");
-  }
-  const home = await fetch(`${url.origin}/api/v1/home`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const homeBody = await home.json();
-  const overview = await fetch(`${url.origin}/api/v1/overview`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const overviewBody = await overview.json();
-  const activity = await fetch(`${url.origin}/api/v1/activity`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const activityBody = await activity.json();
-  const overviewCanonicalActivityCount = overviewBody.activity?.availability === "available"
-    && Array.isArray(overviewBody.activity.items)
-    ? overviewBody.activity.items.filter((item) => item?.source === "activity").length
-    : null;
-  if (
-    !home.ok
-    || Object.hasOwn(homeBody, "sections")
-    || Object.hasOwn(homeBody, "activity")
-    || !overview.ok
-    || overviewCanonicalActivityCount !== 1
-  ) {
-    const diagnosticCodes = Array.isArray(activityBody?.diagnostics)
-      ? activityBody.diagnostics.slice(0, 10).map((item) => ({
-          code: typeof item?.code === "string" ? item.code : "UNKNOWN",
-          severity: typeof item?.severity === "string" ? item.severity : "unknown",
-        }))
-      : null;
-    const detail = JSON.stringify({
-      homeStatus: home.status,
-      homeProblemCode: typeof homeBody?.code === "string" ? homeBody.code : null,
-      homeHasActivity: Object.hasOwn(homeBody, "sections") || Object.hasOwn(homeBody, "activity"),
-      overviewStatus: overview.status,
-      overviewProblemCode: typeof overviewBody?.code === "string" ? overviewBody.code : null,
-      overviewCanonicalActivityCount,
-      activityStatus: activity.status,
-      canonicalActivityCount: Array.isArray(activityBody?.items)
-        ? activityBody.items.filter((item) => item?.source === "activity").length
-        : null,
-      fixtureHasCarriageReturn: readFileSync(
-        join(
-          project,
-          ".mex",
-          "events",
-          "activity",
-          "2026-08",
-          "event_01K3Q080000000000000000001.md",
-        ),
-      ).includes(13),
-      diagnosticCodes,
-    });
-    throw new Error(`The packaged Hub did not keep the shell lightweight and Overview Activity exact: ${detail}`);
-  }
-  const packedActivity = activityBody.items?.find((item) => (
-    item.source === "activity" && item.action === "activity.packed"
-  ));
-  if (
-    !activity.ok
-    || activityBody.items?.length !== 2
-    || !packedActivity
-    || packedActivity.recordOrigin?.kind !== "unknown"
-    || packedActivity.label !== null
-    || !activityBody.items.some((item) => item.source === "legacy" && item.message === "Packed legacy decision")
-  ) {
-    throw new Error("The packaged Hub did not project v1 Activity as unknown-origin beside Project notes.");
-  }
-  const serializedActivity = JSON.stringify(activityBody);
-  for (const secret of [
-    "fixture must stay private",
-    "/Users/alice/private-project",
-    ".mex/traces/private.md",
-    "private-agent",
-    "private-status",
-    "../outside.ts",
-  ]) {
-    if (serializedActivity.includes(secret)) {
-      throw new Error(`The packaged activity API leaked a private field: ${secret}`);
-    }
-  }
-  const search = await fetch(`${url.origin}/api/v1/search?q=packedService&limit=10`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const searchBody = await search.json();
-  const symbol = searchBody.groups?.symbols?.items?.find((item) => (
-    item.kind === "code_symbol" && item.name === "packedService"
-  ));
-  if (
-    !search.ok
-    || searchBody.groups?.symbols?.status !== "available"
-    || searchBody.groups?.sources?.status !== "available"
-    || !symbol
-  ) {
-    throw new Error("The packaged Hub did not expose real grouped graph search.");
-  }
-  const code = await fetch(
-    `${url.origin}/api/v1/code/symbols/${encodeURIComponent(symbol.id)}?view=callers`,
-    { headers: { cookie }, redirect: "error" },
-  );
-  const codeBody = await code.json();
-  if (
-    !code.ok
-    || codeBody.symbol?.id !== symbol.id
-    || !codeBody.source?.items?.some((item) => item.content.includes("packedService"))
-    || codeBody.traversal?.view !== "callers"
-  ) {
-    throw new Error("The packaged Hub did not expose the real symbol workspace.");
-  }
-  const wikiSearch = await fetch(`${url.origin}/api/v1/search?q=packed&limit=10`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const wikiSearchBody = await wikiSearch.json();
-  const wikiHit = wikiSearchBody.groups?.wiki?.items?.find((item) => (
-    item.kind === "wiki" && item.title === "Preserve packed retries"
-  ));
-  if (!wikiSearch.ok || wikiSearchBody.groups?.wiki?.status !== "available" || !wikiHit) {
-    throw new Error("The packaged Hub did not expose real Wiki search.");
-  }
-  const excludedSearch = await fetch(`${url.origin}/api/v1/search?q=excluded-only-sentinel&limit=10`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const excludedSearchBody = await excludedSearch.json();
-  if (
-    !excludedSearch.ok
-    || excludedSearchBody.groups?.wiki?.status !== "available"
-    || excludedSearchBody.groups.wiki.items?.length !== 0
-  ) {
-    throw new Error("The packaged Hub ignored the configured Wiki exclusion during search.");
-  }
-  const completeKnowledgeList = await fetch(`${url.origin}/api/v1/wiki/entities?limit=50`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const completeKnowledgeListBody = await completeKnowledgeList.json();
-  if (
-    !completeKnowledgeList.ok
-    || completeKnowledgeListBody.items?.some((item) => item.id === "mx_01J00000000000000000000004")
-  ) {
-    throw new Error("The packaged Hub indexed a Wiki entity excluded by project configuration.");
-  }
-  const knowledgeList = await fetch(
-    `${url.origin}/api/v1/wiki/entities?kind=decision&sourceType=symbol`,
-    { headers: { cookie }, redirect: "error" },
-  );
-  const knowledgeListBody = await knowledgeList.json();
-  if (
-    !knowledgeList.ok
-    || knowledgeListBody.items?.length !== 1
-    || knowledgeListBody.items[0]?.id !== wikiHit.id
-    || knowledgeListBody.items[0]?.groundingHealth !== "fresh"
-  ) {
-    throw new Error("The packaged Hub did not list real filtered Knowledge.");
-  }
-  const knowledge = await fetch(
-    `${url.origin}/api/v1/wiki/entities/${encodeURIComponent(wikiHit.id)}`,
-    { headers: { cookie }, redirect: "error" },
-  );
-  const knowledgeBody = await knowledge.json();
-  if (
-    !knowledge.ok
-    || knowledgeBody.entity?.id !== wikiHit.id
-    || !knowledgeBody.body?.content?.includes("original stable request key")
-    || knowledgeBody.relationCount !== 1
-    || knowledgeBody.backlinkCount !== 1
-    || knowledgeBody.groundings?.items?.[0]?.requestedNode !== symbol.id
-  ) {
-    throw new Error("The packaged Hub did not expose a bounded real Knowledge detail.");
-  }
-  const relations = await fetch(
-    `${url.origin}/api/v1/wiki/entities/${encodeURIComponent(wikiHit.id)}/relations?direction=both`,
-    { headers: { cookie }, redirect: "error" },
-  );
-  const relationsBody = await relations.json();
-  if (
-    !relations.ok
-    || !relationsBody.items?.some((item) => item.direction === "outgoing" && item.relation?.type === "implements")
-    || !relationsBody.items?.some((item) => item.direction === "incoming" && item.relation?.type === "depends_on")
-  ) {
-    throw new Error("The packaged Hub did not expose real Knowledge relations.");
-  }
-  const backlinks = await fetch(
-    `${url.origin}/api/v1/wiki/entities/${encodeURIComponent(wikiHit.id)}/backlinks?type=depends_on`,
-    { headers: { cookie }, redirect: "error" },
-  );
-  const backlinksBody = await backlinks.json();
-  if (!backlinks.ok || backlinksBody.items?.length !== 1 || backlinksBody.items[0]?.type !== "depends_on") {
-    throw new Error("The packaged Hub did not expose real Knowledge backlinks.");
-  }
-  const codeKnowledge = await fetch(
-    `${url.origin}/api/v1/code/symbols/${encodeURIComponent(symbol.id)}/knowledge`,
-    { headers: { cookie }, redirect: "error" },
-  );
-  const codeKnowledgeBody = await codeKnowledge.json();
-  if (
-    !codeKnowledge.ok
-    || codeKnowledgeBody.items?.length !== 1
-    || codeKnowledgeBody.items[0]?.entity?.id !== wikiHit.id
-    || codeKnowledgeBody.items[0]?.matchedNodes?.[0] !== symbol.id
-  ) {
-    throw new Error("The packaged Hub did not expose explicit Code-to-Knowledge links.");
-  }
-  const serializedKnowledge = JSON.stringify({
-    wikiSearchBody,
-    knowledgeListBody,
-    knowledgeBody,
-    relationsBody,
-    backlinksBody,
-    codeKnowledgeBody,
-    excludedSearchBody,
-    completeKnowledgeListBody,
-  });
-  for (const secret of [
-    project,
-    "packed-private-session",
-    "packed-topic-private-metadata",
-    "packed-source-private-metadata",
-    "packed-entity-private-metadata",
-    "excluded-only-private-body",
-  ]) {
-    if (serializedKnowledge.includes(secret)) {
-      throw new Error(`The packaged Knowledge API leaked a private field: ${secret}`);
-    }
-  }
-  const health = await fetch(`${url.origin}/api/v1/health`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const healthBody = await health.json();
-  const graphHealth = healthBody.components?.find((component) => component.id === "graph");
-  const wikiHealth = healthBody.components?.find((component) => component.id === "wiki");
-  if (
-    !health.ok
-    || graphHealth?.graph?.indexStatus !== "fresh"
-    || wikiHealth?.wiki?.indexStatus !== "fresh"
-    || JSON.stringify(wikiHealth.wiki.allowedJobKinds) !== JSON.stringify(["wiki_refresh", "wiki_rebuild"])
-    || wikiHealth.wiki.recommendedJobKind !== null
-  ) {
-    throw new Error("The packaged Hub did not report fresh graph and Wiki health.");
-  }
-  const afterReads = snapshotProtectedProjectState(project);
-  if (JSON.stringify(afterReads) !== JSON.stringify(beforeReads)) {
-    throw new Error("Reading packaged Home, Activity, Search, Code, Knowledge, or Health mutated protected project state.");
-  }
-
-  const diagramHeaders = { cookie, origin: url.origin, "content-type": "application/json", "x-mex-csrf": sessionBody.csrfToken };
-  const diagramReviewResponse = await fetch(`${url.origin}/api/v1/diagrams/preview/${diagramPreview.id}/save-preview`, { method: "POST", headers: diagramHeaders, body: JSON.stringify({ revision: diagramDetail.revision }), redirect: "error" });
-  const diagramReview = await diagramReviewResponse.json();
-  if (!diagramReviewResponse.ok || !diagramReview.writes?.length) throw new Error("Packed diagram save did not return its exact reviewed writes.");
-  const diagramSaveResponse = await fetch(`${url.origin}/api/v1/diagrams/save`, { method: "POST", headers: diagramHeaders, body: JSON.stringify({ token: diagramReview.token }), redirect: "error" });
-  const savedDiagram = await diagramSaveResponse.json();
-  if (!diagramSaveResponse.ok || savedDiagram.kind !== "saved") throw new Error("Packed Hub could not save its reviewed diagram snapshot.");
-  const beforeMaintenance = snapshotProtectedProjectState(project, { includeRuntimeState: false });
-
-  for (const kind of ["graph_refresh", "graph_rebuild"]) {
-    if (kind === "graph_rebuild") {
-      writeFileSync(currentGraphPath(project), "intentionally corrupt graph for rebuild coverage\n");
-      const corruptHealth = await fetch(`${url.origin}/api/v1/health`, {
-        headers: { cookie },
-        redirect: "error",
-      });
-      const corruptHealthBody = await corruptHealth.json();
-      const corruptGraph = corruptHealthBody.components?.find((component) => component.id === "graph");
-      if (!corruptHealth.ok || corruptGraph?.graph?.indexStatus !== "corrupt") {
-        throw new Error("The packaged Hub did not observe the intentionally corrupt graph before rebuild.");
-      }
-    }
-    const started = await fetch(`${url.origin}/api/v1/jobs`, {
-      method: "POST",
-      headers: {
-        cookie,
-        origin: url.origin,
-        "content-type": "application/json",
-        "x-mex-csrf": sessionBody.csrfToken,
-      },
-      body: JSON.stringify({ kind }),
-      redirect: "error",
-    });
-    const startedBody = await started.json();
-    if (started.status !== 202 || typeof startedBody.id !== "string") {
-      throw new Error(`The packaged Hub could not start ${kind}.`);
-    }
-    const terminal = await waitForJob(url.origin, cookie, startedBody.id);
-    if (terminal.state !== "succeeded") {
-      throw new Error(`The packaged Hub ${kind} job did not succeed.`);
-    }
-  }
-  const repairedHealth = await fetch(`${url.origin}/api/v1/health`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const repairedHealthBody = await repairedHealth.json();
-  const repairedGraph = repairedHealthBody.components?.find((component) => component.id === "graph");
-  if (!repairedHealth.ok || repairedGraph?.graph?.indexStatus !== "fresh") {
-    throw new Error("The packaged Hub graph rebuild did not replace the corrupt graph with a fresh index.");
-  }
-  const afterMaintenance = snapshotProtectedProjectState(project, { includeRuntimeState: false });
-  if (JSON.stringify(afterMaintenance) !== JSON.stringify(beforeMaintenance)) {
-    throw new Error("Packaged graph maintenance mutated source, Git, activity, member, or Wiki state.");
-  }
-
-  const wikiSource = join(project, ".mex", "context", "packed-knowledge.md");
-  writeFileSync(
-    wikiSource,
-    readFileSync(wikiSource, "utf8").replace(
-      "The packed service retries only with the original stable request key.",
-      "The packed service retries transient failures with the original stable request key.",
-    ),
-  );
-  const staleWikiHealth = await fetch(`${url.origin}/api/v1/health`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const staleWikiHealthBody = await staleWikiHealth.json();
-  const staleWiki = staleWikiHealthBody.components?.find((component) => component.id === "wiki");
-  if (
-    !staleWikiHealth.ok
-    || staleWiki?.wiki?.indexStatus !== "stale"
-    || staleWiki?.wiki?.recommendedJobKind !== "wiki_refresh"
-  ) {
-    throw new Error("The packaged Hub did not recommend explicit Wiki refresh for stale canonical Markdown.");
-  }
-  const beforeWikiMaintenance = snapshotProtectedProjectState(project, {
-    includeRuntimeState: false,
-    includeGraphIndex: true,
-    includeWikiIndex: false,
-  });
-  const wikiRefresh = await startJob(
-    url.origin,
-    cookie,
-    sessionBody.csrfToken,
-    "wiki_refresh",
-    [project],
-  );
-  if (wikiRefresh.state !== "succeeded") {
-    throw new Error("The packaged Hub wiki_refresh job did not succeed.");
-  }
-  const refreshedWikiHealth = await fetch(`${url.origin}/api/v1/health`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const refreshedWikiBody = await refreshedWikiHealth.json();
-  if (
-    !refreshedWikiHealth.ok
-    || refreshedWikiBody.components?.find((component) => component.id === "wiki")?.wiki?.indexStatus !== "fresh"
-  ) {
-    throw new Error("The packaged Hub did not report fresh Wiki health after refresh.");
-  }
-
-  writeFileSync(join(project, ".mex", "wiki.db"), "intentionally corrupt Wiki index for rebuild coverage\n");
-  const corruptWikiHealth = await fetch(`${url.origin}/api/v1/health`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const corruptWikiBody = await corruptWikiHealth.json();
-  if (
-    !corruptWikiHealth.ok
-    || corruptWikiBody.components?.find((component) => component.id === "wiki")?.wiki?.indexStatus !== "corrupt"
-  ) {
-    throw new Error("The packaged Hub did not observe the intentionally corrupt Wiki index before rebuild.");
-  }
-  const wikiRebuild = await startJob(
-    url.origin,
-    cookie,
-    sessionBody.csrfToken,
-    "wiki_rebuild",
-    [project],
-  );
-  if (wikiRebuild.state !== "succeeded") {
-    throw new Error("The packaged Hub wiki_rebuild job did not succeed.");
-  }
-  const repairedWikiHealth = await fetch(`${url.origin}/api/v1/health`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const repairedWikiBody = await repairedWikiHealth.json();
-  if (
-    !repairedWikiHealth.ok
-    || repairedWikiBody.components?.find((component) => component.id === "wiki")?.wiki?.indexStatus !== "fresh"
-  ) {
-    throw new Error("The packaged Hub Wiki rebuild did not publish a fresh replacement index.");
-  }
-  const afterWikiMaintenance = snapshotProtectedProjectState(project, {
-    includeRuntimeState: false,
-    includeGraphIndex: true,
-    includeWikiIndex: false,
-  });
-  if (JSON.stringify(afterWikiMaintenance) !== JSON.stringify(beforeWikiMaintenance)) {
-    throw new Error("Packaged Wiki maintenance mutated canonical Wiki, Graph, Activity, members, source, or Git state.");
-  }
-
-  const reopenedDiagram = await fetch(`${url.origin}/api/v1/diagrams/saved/${savedDiagram.id}`, { headers: { cookie }, redirect: "error" });
-  const reopenedDiagramBody = await reopenedDiagram.json();
-  if (!reopenedDiagram.ok || JSON.stringify(reopenedDiagramBody.artifact) !== JSON.stringify(diagramDetail.artifact)) throw new Error("Graph/Wiki rebuilds changed the saved checked artifact or renewed its baseline.");
-  for (const write of diagramReview.writes) if (readFileSync(join(project, write.path), "utf8") !== write.content) throw new Error("Diagram Save did not retain exactly its reviewed files.");
-
-  // Preference changes are checkout-only. Exercise both surfaces with exact
-  // revisions after ordinary-read/maintenance assertions, before stopping Hub.
-  const beforeLoggingUpdate = snapshotProtectedProjectState(project, {
-    includeRuntimeState: false, includeGraphIndex: true,
-  });
-  const settingsHeaders = {
-    cookie, origin: url.origin, "content-type": "application/json", "x-mex-csrf": sessionBody.csrfToken,
-  };
-  const savedLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
-    method: "POST", headers: settingsHeaders, redirect: "error",
-    body: JSON.stringify({ mode: "manual", expectedRevision: null }),
-  });
-  const savedLoggingBody = await savedLogging.json();
-  if (
-    savedLogging.status !== 200
-    || savedLoggingBody?.mode !== "manual"
-    || savedLoggingBody?.source !== "local"
-    || !/^[a-f0-9]{64}$/u.test(savedLoggingBody?.revision ?? "")
-  ) {
-    throw new Error("The packaged Hub did not persist its exact logging preference.");
-  }
-  const changedResponse = await fetch(`${url.origin}/api/v1/settings/logging`, {
-    method: "POST", headers: settingsHeaders, redirect: "error",
-    body: JSON.stringify({ mode: "checkpoints", expectedRevision: savedLoggingBody.revision }),
-  });
-  const changedLogging = { ok: changedResponse.ok, scope: "checkout", data: await changedResponse.json() };
-  if (
-    changedLogging?.ok !== true
-    || changedLogging?.scope !== "checkout"
-    || changedLogging?.data?.mode !== "checkpoints"
-    || changedLogging?.data?.source !== "local"
-    || !/^[a-f0-9]{64}$/u.test(changedLogging?.data?.revision ?? "")
-    || changedLogging.data.revision === savedLoggingBody.revision
-  ) {
-    throw new Error("The packed Hub did not update logging with the exact reviewed revision.");
-  }
-  const staleLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
-    method: "POST", headers: settingsHeaders, redirect: "error",
-    body: JSON.stringify({ mode: "manual", expectedRevision: savedLoggingBody.revision }),
-  });
-  const currentLogging = await fetch(`${url.origin}/api/v1/settings/logging`, {
-    headers: { cookie }, redirect: "error",
-  });
-  if (
-    staleLogging.status !== 409
-    || (await staleLogging.json())?.code !== "REVISION_CONFLICT"
-    || !currentLogging.ok
-    || JSON.stringify(await currentLogging.json()) !== JSON.stringify(changedLogging.data)
-    || JSON.stringify(snapshotProtectedProjectState(project, {
-      includeRuntimeState: false, includeGraphIndex: true,
-    })) !== JSON.stringify(beforeLoggingUpdate)
-  ) {
-    throw new Error("Packaged logging lost a concurrent preference or changed canonical, index, Activity, or Git state.");
-  }
-
-  child.kill("SIGTERM");
-  const exit = await waitForExit(child, 8_000);
-  child = undefined;
-  const stoppedAsRequested = exit.code === 0 && exit.signal === null;
-  const terminatedAsRequestedOnWindows = process.platform === "win32"
-    && exit.code === null
-    && exit.signal === "SIGTERM";
-  if (!stoppedAsRequested && !terminatedAsRequestedOnWindows) {
-    throw new Error(`The packaged Hub did not stop cleanly (${JSON.stringify(exit)}).`);
-  }
-  // Exercise the shortcut after the immutable Hub-read and maintenance checks.
-  // Only checkout-local state may change; Git, knowledge, Members and Activity stay exact.
+  // The Relay shortcut may only change checkout-local Relay state.
   const beforeQuickSave = snapshotProtectedProjectState(project, {
     includeRuntimeState: false,
-    includeGraphIndex: true,
   });
   const quickDraftFile = join(work, "relay-quick-draft.json");
   const quickSummary = "Resume the packed-install investigation when a teammate joins.";
@@ -907,18 +327,16 @@ try {
     || JSON.stringify(savedDraft?.data?.input?.recipients) !== "[]"
     || JSON.stringify(snapshotProtectedProjectState(project, {
       includeRuntimeState: false,
-      includeGraphIndex: true,
-    })) !== JSON.stringify(beforeQuickSave)
+      })) !== JSON.stringify(beforeQuickSave)
   ) {
     throw new Error("The packed Relay shortcut lost its draft or changed protected project state.");
   }
-  process.stdout.write("Packed Project Hub and official agent-skills smoke test passed.\n");
+  process.stdout.write("Packed machine Hub (foreground and background) and official agent-skills smoke test passed.\n");
 } finally {
-  if (child && child.exitCode === null) child.kill("SIGKILL");
-  if (process.env.MEX_KEEP_SMOKE_WORK === "1") {
+  if (retainWorkspace || process.env.MEX_KEEP_SMOKE_WORK === "1") {
     process.stdout.write(`Retained packed smoke workspace: ${work}\n`);
   } else {
-    rmSync(work, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 
@@ -1038,7 +456,7 @@ async function verifyFreshCodeRepoSetup(tarball, workRoot, cache, version) {
       throw new Error(`Manual fixture population left a required placeholder in ${file}.`);
     }
   }
-  if (!existsSync(currentGraphPath(project)) || !existsSync(join(project, ".mex", "wiki.db"))) throw new Error("Fresh packed setup omitted a derived index.");
+  if (!existsSync(currentGraphPath(project, { home: join(smokeEnv.MEX_HOME, ".mex") })) || !existsSync(join(project, ".mex", "wiki.db"))) throw new Error("Fresh packed setup omitted a derived index.");
   verifySetupIgnoreProtection(project);
   const wiki = JSON.parse(run(process.execPath, [cli, "wiki", "list", "--json"], project));
   if (wiki?.ok !== true || !Array.isArray(wiki?.data?.entities) || wiki.data.entities.length === 0) {
@@ -1112,7 +530,7 @@ function populateSetupFixture(project) {
 }
 
 function runFreshCodeRepoSetup(cli, project, agentBin, agentInvocation) {
-  const env = { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" };
+  const env = { ...smokeEnv };
   // Replace every spelling of PATH, including Path on Windows, so the sentinel
   // agents always win over any developer-machine installation.
   const originalPath = Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1] ?? "";
@@ -1150,7 +568,7 @@ function runNoninteractiveAgentSetup(cli, project, workRoot) {
 
   // Also exercise selected integrations when no corresponding agent CLI is
   // installed. Keep Node absolute and prove the restricted PATH still has Git.
-  const env = { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" };
+  const env = { ...smokeEnv };
   for (const key of Object.keys(env)) {
     if (key.toLowerCase() === "path") delete env[key];
   }
@@ -1187,7 +605,7 @@ function runManualPopulationSetup(cli, project, env, tools, {
   for (const expected of [
     "Wiki ids, links and index are ready.",
     "Graph and Wiki are ready. Review and commit the canonical MEX setup.",
-    "Run `mex setup --browser` to open the setup completion page.",
+    "Run `mex hub` to open the Hub.",
   ]) {
     if (!completed.includes(expected)) {
       throw new Error(`Packed setup did not finish preparation after manual population: ${expected}\n${completed}`);
@@ -1311,7 +729,7 @@ function verifySetupIgnoreProtection(project) {
   }
   for (const path of [".mex/graph.db-wal", ".mex/wiki.db-shm", ".mex/local/team.db"]) {
     const ignored = spawnSync("git", ["check-ignore", "--no-index", "--quiet", "--", path], {
-      cwd: project,
+      cwd: project, env: smokeEnv,
     });
     if (ignored.status !== 0) throw new Error(`Packed setup left ${path} trackable.`);
   }
@@ -1527,134 +945,10 @@ function countOccurrences(value, needle) {
   return value.split(needle).length - 1;
 }
 
-function writeActivityFixture(project) {
-  const eventId = "event_01K3Q080000000000000000001";
-  const activityRoot = join(project, ".mex", "events", "activity", "2026-08");
-  mkdirSync(activityRoot, { recursive: true });
-  writeFileSync(join(activityRoot, `${eventId}.md`), [
-    "---",
-    "schema_version: 1",
-    `id: ${JSON.stringify(eventId)}`,
-    "timestamp: \"2026-08-23T01:02:03.000Z\"",
-    "actor: {\"email\":\"packed@example.test\",\"kind\":\"git\",\"name\":\"Packed Ada\"}",
-    "action: \"activity.packed\"",
-    "subjects: [{\"kind\":\"file\",\"path\":\"src/packed.ts\"},{\"hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"commit\"}]",
-    "repo_state: {\"branch\":\"main\",\"dirty\":false,\"head\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"observedAt\":\"2026-08-23T01:02:02.000Z\"}",
-    "metadata: {\"internal_note\":\"fixture must stay private\"}",
-    "---",
-    "",
-  ].join("\n"));
-  writeFileSync(join(project, ".mex", "events", "decisions.jsonl"), `${JSON.stringify({
-    timestamp: "2026-08-22T01:02:03.000Z",
-    kind: "decision",
-    message: "Packed legacy decision",
-    files: ["src/packed.ts", "../outside.ts"],
-    cwd: "/Users/alice/private-project",
-    trace: ".mex/traces/private.md",
-    source: "private-agent",
-    status: "private-status",
-  })}\n`);
-}
-
-function writeWikiFixture(project, grounding) {
-  const topicId = "mx_01J00000000000000000000001";
-  const decisionId = "mx_01J00000000000000000000002";
-  const patternId = "mx_01J00000000000000000000003";
-  const topics = join(project, ".mex", "topics");
-  const context = join(project, ".mex", "context");
-  const excluded = join(project, ".mex", "excluded");
-  mkdirSync(topics, { recursive: true });
-  mkdirSync(context, { recursive: true });
-  mkdirSync(excluded, { recursive: true });
-  writeFileSync(join(topics, "payments.md"), [
-    "<!-- mex:entity",
-    `id: ${topicId}`,
-    "type: topic",
-    "status: promoted",
-    "revision: 1",
-    "summary: Reliable payment processing knowledge.",
-    "metadata:",
-    "  aliases: [payments, checkout]",
-    "  private_note: packed-topic-private-metadata",
-    "-->",
-    "## Payments",
-    "",
-    "Payment processing must remain recoverable and idempotent.",
-    "",
-  ].join("\n"));
-  writeFileSync(join(context, "packed-knowledge.md"), [
-    "<!-- mex:entity",
-    `id: ${decisionId}`,
-    "type: decision",
-    "status: promoted",
-    "revision: 2",
-    "summary: Retry packed service calls with the original request key.",
-    `topics: [${topicId}]`,
-    "relations:",
-    "  - type: implements",
-    `    target: ${patternId}`,
-    "sources:",
-    "  - type: symbol",
-    `    ref: ${JSON.stringify(grounding.nodeId)}`,
-    "    note: Exact packed service declaration.",
-    "    metadata:",
-    "      private_source_note: packed-source-private-metadata",
-    "grounds_to:",
-    `  - node: ${JSON.stringify(grounding.nodeId)}`,
-    `    fingerprint: ${JSON.stringify(grounding.fingerprint)}`,
-    `    bodyHash: ${JSON.stringify(grounding.bodyHash)}`,
-    "    reason: Exact packed service grounding.",
-    "provenance:",
-    "  createdBy: { kind: agent, id: packed-fixture-agent }",
-    "  createdAt: 2026-08-23T00:00:00.000Z",
-    "  agentSessionId: packed-private-session",
-    "metadata:",
-    "  private_note: packed-entity-private-metadata",
-    "-->",
-    "## Preserve packed retries",
-    "",
-    "The packed service retries only with the original stable request key.",
-    "",
-    "<!-- mex:entity",
-    `id: ${patternId}`,
-    "type: pattern",
-    "status: in_flight",
-    "revision: 1",
-    "summary: Wrap packed calls in a bounded retry envelope.",
-    `topics: [${topicId}]`,
-    "relations:",
-    "  - type: depends_on",
-    `    target: ${decisionId}`,
-    "sources:",
-    "  - type: manual",
-    "    note: Maintainer reviewed.",
-    "-->",
-    "## Packed retry envelope",
-    "",
-    "Retry transient failures without duplicating the underlying operation.",
-    "",
-  ].join("\n"));
-  writeFileSync(join(excluded, "private.md"), [
-    "<!-- mex:entity",
-    "id: mx_01J00000000000000000000004",
-    "type: fact",
-    "status: promoted",
-    "revision: 1",
-    "summary: excluded-only-sentinel",
-    "-->",
-    "## Configured exclusion",
-    "",
-    "excluded-only-private-body",
-    "",
-  ].join("\n"));
-}
-
 function snapshotProtectedProjectState(
   project,
   {
     includeRuntimeState = true,
-    includeGraphIndex = includeRuntimeState,
-    includeWikiIndex = true,
   } = {},
 ) {
   const status = run("git", [
@@ -1683,10 +977,7 @@ function snapshotProtectedProjectState(
     }
   }
   for (const name of readdirSync(join(project, ".mex"))) {
-    if (
-      (includeWikiIndex && name.startsWith("wiki.db"))
-      || (includeGraphIndex && name.startsWith("graph.db"))
-    ) {
+    if (name.startsWith("wiki.db") || name.startsWith("graph.db")) {
       candidates.push(join(project, ".mex", name));
     }
   }
@@ -1720,9 +1011,10 @@ function collectSnapshotFiles(project, path, files) {
   });
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = smokeEnv) {
   const result = spawnSync(command, args, {
     cwd,
+    env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -1746,103 +1038,310 @@ function runNpm(args, cwd) {
   return run(process.execPath, [npmCli, ...args], cwd);
 }
 
-function readBootstrapUrl(processHandle) {
-  return new Promise((resolveUrl, reject) => {
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for Hub startup.\n${stderr}`));
-    }, 30_000);
-    const onStdout = (chunk) => {
-      stdout += chunk.toString("utf8");
-      const match = stdout.match(/https?:\/\/127\.0\.0\.1:\d+\/#token=[A-Za-z0-9_%~-]+/);
-      if (match) {
-        cleanup();
-        resolveUrl(match[0]);
+function verifyPackedHubAssets(installed, packResult) {
+  const hubRoot = join(installed, "dist", "hub");
+  const files = new Map(collectTreeFiles(hubRoot).map(({ path, bytes }) => [path, bytes]));
+  const packedPaths = new Set(packResult.files.map(({ path }) => path));
+  assert(packedPaths.has("dist/hub-worker.js"), "The tarball omitted dist/hub-worker.js.");
+  const worker = lstatSync(join(installed, "dist", "hub-worker.js"));
+  assert(worker.isFile() && worker.size > 0, "The installed Hub worker is not a nonempty regular file.");
+  for (const file of ["index.html", ".vite/manifest.json"]) {
+    assert(files.get(file)?.length > 0 && packedPaths.has(`dist/hub/${file}`), `The packed Hub omitted ${file}.`);
+  }
+  const manifest = JSON.parse(files.get(".vite/manifest.json").toString("utf8"));
+  assert(manifest["index.html"]?.isEntry === true, "The packed Hub has no application entry.");
+  const hashedFiles = new Map();
+  for (const entry of Object.values(manifest)) {
+    for (const file of [entry.file, ...(entry.css ?? []), ...(entry.assets ?? [])]) {
+      assert(files.get(file)?.length > 0 && packedPaths.has(`dist/hub/${file}`), `The packed Hub omitted manifest asset ${file}.`);
+      hashedFiles.set(`/${file}`, files.get(file));
+    }
+  }
+  return { html: files.get("index.html"), hashedFiles };
+}
+
+async function verifyForegroundHub({ cli, project, home, assets, version }) {
+  const port = await freePort();
+  const child = startPackagedHub(cli, project, home, ["--foreground", "--no-open", "--port", String(port)]);
+  try {
+    const link = await readBootstrapUrl(child);
+    assert.equal(link.origin, `http://127.0.0.1:${port}`, "The Hub did not bind the chosen loopback port.");
+    const { origin } = link;
+    const hello = await verifyHello(origin, "terminal", version);
+    assertBound(home, { port, pid: child.pid, version, homeId: hello.homeId, mode: "terminal" });
+
+    const readSession = (headers) => localFetch(origin, "/api/v1/session", { headers });
+    const readProjects = (headers) => localFetch(origin, "/api/v1/projects", { headers });
+    assert.equal((await readSession()).status, 401, "The session read must require a cookie.");
+    assert.equal((await readProjects()).status, 401, "The projects read must require a cookie.");
+    const token = new URLSearchParams(link.hash.slice(1)).get("token");
+    assert(/^[A-Za-z0-9_-]{43}$/u.test(token ?? ""), "The packaged Hub omitted its sign-in token.");
+    const exchange = () => localFetch(origin, "/api/v1/session/bootstrap", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: JSON.stringify({ token }),
+    });
+    const bootstrap = await exchange();
+    assert.equal(bootstrap.status, 201, "The bootstrap exchange failed.");
+    const setCookie = bootstrap.headers.get("set-cookie");
+    assert(setCookie?.startsWith("mex_hub_"), "The bootstrap exchange did not set a Hub cookie.");
+    for (const attribute of ["HttpOnly", "SameSite=Strict", "Path=/api/v1"]) {
+      assert(setCookie.split(/;\s*/u).includes(attribute), `The Hub cookie omitted ${attribute}.`);
+    }
+    const { csrfToken, expiresAt } = await bootstrap.json();
+    const headers = { cookie: setCookie.split(";", 1)[0] };
+    assert.equal((await exchange()).status, 401, "The bootstrap token was accepted twice.");
+    const session = await readSession(headers);
+    assert.equal(session.status, 200, "The packaged Hub session read failed.");
+    const sessionBody = await session.json();
+    assert(typeof csrfToken === "string" && csrfToken.length > 0 && sessionBody.csrfToken === csrfToken,
+      "The packaged Hub session did not return its CSRF token.");
+    assert.equal(sessionBody.expiresAt, expiresAt);
+    assert.equal(sessionBody.version, version);
+    assert.equal(sessionBody.mode, "terminal");
+    assert.equal(realpathSync(sessionBody.homePath), realpathSync(join(home, ".mex")));
+
+    const projects = await readProjects(headers);
+    assert.equal(projects.status, 200, "The packaged Hub projects read failed.");
+    const { projects: rows } = await projects.json();
+    assert(
+      Array.isArray(rows) && rows.length === 1 && rows[0].name === basename(project)
+        && rows[0].kind === "git" && rows[0].checkouts?.length === 1
+        && rows[0].checkouts[0].exists === true && realpathSync(rows[0].checkouts[0].path) === realpathSync(project),
+      "The packed Hub did not return exactly the registered checkout from its own home.",
+    );
+
+    const heartbeat = (writeHeaders) => localFetch(origin, "/api/v1/session/heartbeat", {
+      method: "POST", headers: { ...headers, ...writeHeaders },
+    });
+    const hubUntil = () => readRecord(home, (db) => db.prepare("SELECT hub_until FROM background WHERE id=1").get().hub_until);
+    const beforeRejectedWrites = hubUntil();
+    assert.equal((await heartbeat({ "x-mex-csrf": csrfToken })).status, 403, "A write without Origin succeeded.");
+    assert.equal((await heartbeat({ origin })).status, 403, "A write without CSRF succeeded.");
+    assert.equal(hubUntil(), beforeRejectedWrites, "A rejected heartbeat changed the Hub keepalive.");
+    assert.equal(await requestWithBadHost(origin), 400, "The packaged Hub accepted a bad Host.");
+
+    const page = await localFetch(origin, "/", { headers: { accept: "text/html" } });
+    assert.equal(page.status, 200, "The packaged Hub did not serve its application shell.");
+    assert.match(page.headers.get("content-type") ?? "", /^text\/html\b/u);
+    assertLocalCsp(page);
+    const html = await page.text();
+    assert(html.includes('<div id="root"></div>') && Buffer.from(html).equals(assets.html),
+      "The packaged Hub served different bytes from its installed HTML.");
+    const references = [...html.matchAll(/\s(?:src|href)\s*=\s*(["'])(.*?)\1/giu)].map(([, , path]) => path);
+    assert(references.some((file) => file.endsWith(".js")) && references.some((file) => file.endsWith(".css")),
+      "The application shell omitted its built JS or CSS reference.");
+    for (const file of references) {
+      assert(assets.hashedFiles.has(file), `The application shell referenced an asset outside its packed manifest: ${file}`);
+    }
+    for (const [file, bytes] of assets.hashedFiles) {
+      const response = await localFetch(origin, file);
+      assert.equal(response.status, 200, `The packaged Hub did not serve ${file}.`);
+      assert(Buffer.from(await response.arrayBuffer()).equals(bytes), `The packaged Hub changed the bytes of ${file}.`);
+    }
+    assert(child.exitCode === null && child.signalCode === null, "The foreground Hub exited before SIGTERM.");
+  } finally {
+    await stopPackagedHub(child);
+  }
+  assert.equal(readBound(home), undefined, "The foreground Hub left its hub.bound row behind.");
+}
+
+async function verifyBackgroundHub({ cli, project, home, version }) {
+  const child = startPackagedHub(cli, project, home, ["--no-open"], { background: true });
+  try {
+    const link = await readBootstrapUrl(child);
+    assertCleanExit(await waitForExit(child), "The background launcher");
+    const hello = await verifyHello(link.origin, "background", version);
+    const lease = readLease(home);
+    assert(lease.owner && Number.isSafeInteger(lease.pid) && lease.pid > 0 && lease.pid !== child.pid,
+      "The background Hub did not acquire a separate process lease.");
+    assertBound(home, { port: Number(link.port), pid: lease.pid, version, homeId: hello.homeId, mode: "background" });
+  } finally {
+    try {
+      await stopPackagedHub(child);
+    } finally {
+      try {
+        await requestBackgroundExit(home);
+      } catch (error) {
+        retainWorkspace = true;
+        throw error;
       }
-    };
-    const onStderr = (chunk) => { stderr += chunk.toString("utf8"); };
-    const onExit = (code, signal) => {
-      cleanup();
-      reject(new Error(`Hub exited before startup (${code ?? signal}).\n${stderr}`));
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      processHandle.stdout.off("data", onStdout);
-      processHandle.stderr.off("data", onStderr);
-      processHandle.off("exit", onExit);
-    };
-    processHandle.stdout.on("data", onStdout);
-    processHandle.stderr.on("data", onStderr);
-    processHandle.once("exit", onExit);
+    }
+  }
+}
+
+function startPackagedHub(cli, project, home, args, { background = false } = {}) {
+  const env = { ...smokeEnv, MEX_HOME: home };
+  if (background) delete env.MEX_BACKGROUND;
+  // Node's Windows ChildProcess.kill("SIGTERM") terminates immediately. Use
+  // a private IPC channel to deliver SIGTERM to the same CLI handler there.
+  const windows = process.platform === "win32";
+  const signalBridge = "process.on('message', message => { if (message === 'SIGTERM') { process.emit('SIGTERM'); process.disconnect(); } }); process.channel?.unref();";
+  const preload = windows ? ["--import", `data:text/javascript,${encodeURIComponent(signalBridge)}`] : [];
+  return spawn(process.execPath, [...preload, cli, "hub", ...args], {
+    cwd: project, env, windowsHide: true,
+    stdio: windows ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
   });
 }
 
-function waitForExit(processHandle, timeoutMs) {
-  return new Promise((resolveExit, reject) => {
-    if (processHandle.exitCode !== null) {
-      resolveExit({ code: processHandle.exitCode, signal: processHandle.signalCode });
+async function freePort() {
+  const listener = createServer();
+  listener.listen(0, "127.0.0.1");
+  await once(listener, "listening");
+  const { port } = listener.address();
+  const closed = once(listener, "close");
+  listener.close();
+  await closed;
+  return port;
+}
+
+function localFetch(origin, path, init) {
+  const url = new URL(path, origin);
+  assert.equal(url.origin, origin, "The packed smoke attempted an outbound request.");
+  return fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(5_000) });
+}
+
+async function verifyHello(origin, mode, version) {
+  const response = await localFetch(origin, "/api/v1/hello");
+  assert.equal(response.status, 200, "The unauthenticated Hub handshake failed.");
+  assertLocalCsp(response);
+  const body = await response.json();
+  assert.equal(body.app, "mex-hub");
+  assert.equal(body.mode, mode);
+  assert.equal(body.version, version);
+  assert.match(body.homeId, /^[A-Za-z0-9_-]{22}$/u);
+  return body;
+}
+
+function assertLocalCsp(response) {
+  const csp = response.headers.get("content-security-policy");
+  assert(csp, "The packaged Hub did not send a Content Security Policy.");
+  const directives = new Map(csp.split(";").filter((part) => part.trim()).map((part) => {
+    const [name, ...sources] = part.trim().split(/\s+/u);
+    assert(sources.every((source) => ["'self'", "'none'"].includes(source) || (name === "img-src" && source === "data:")),
+      `The packaged Hub CSP permits a nonlocal source in ${name}.`);
+    return [name, sources.join(" ")];
+  }));
+  assert.equal(directives.get("default-src"), "'self'");
+  assert.equal(directives.get("frame-ancestors"), "'none'");
+  assert.equal(directives.get("object-src"), "'none'");
+}
+
+async function requestWithBadHost(origin) {
+  const status = await new Promise((resolveStatus, reject) => {
+    const req = request(`${origin}/api/v1/hello`, {
+      headers: { host: "outside.invalid" }, signal: AbortSignal.timeout(5_000),
+    }, (res) => {
+      res.resume();
+      resolveStatus(res.statusCode);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  return status;
+}
+
+function readRecord(home, use, { readOnly = true } = {}) {
+  const path = join(home, ".mex", "record.db");
+  assert(
+    lstatSync(path).isFile() && realpathSync(path) === join(realpathSync(home), ".mex", "record.db"),
+    "The smoke record.db must be a regular file inside its temporary home.",
+  );
+  const db = new DatabaseSync(path, { readOnly });
+  try {
+    db.exec("PRAGMA busy_timeout = 1000");
+    return use(db);
+  } finally {
+    db.close();
+  }
+}
+
+function readLease(home) {
+  return readRecord(home, (db) => db.prepare("SELECT owner, pid, request, spawned_at FROM background WHERE id=1").get());
+}
+
+function readBound(home) {
+  return readRecord(home, (db) => db.prepare("SELECT value FROM settings WHERE scope='hub' AND key='bound'").get()?.value);
+}
+
+function assertBound(home, expected) {
+  const value = readBound(home);
+  assert(value, "The packaged Hub did not publish hub.bound.");
+  const { at, ...bound } = JSON.parse(value);
+  assert(Number.isFinite(Date.parse(at)), "The packaged Hub published an invalid bound timestamp.");
+  assert.deepEqual(bound, expected);
+}
+
+async function requestBackgroundExit(home) {
+  if (!existsSync(join(home, ".mex", "record.db"))) return;
+  const deadline = Date.now() + 15_000;
+  let requested = false;
+  do {
+    const lease = readLease(home);
+    if (lease.owner === null && lease.pid === null && lease.request === null
+      && (requested || (lease.spawned_at === null && readBound(home) === undefined))) {
+      assert.equal(readBound(home), undefined, "The background Hub left its hub.bound row behind.");
       return;
     }
-    const timer = setTimeout(() => {
-      processHandle.kill("SIGKILL");
-      reject(new Error("Timed out waiting for the packaged Hub to stop."));
-    }, timeoutMs);
-    processHandle.once("exit", (code, signal) => {
+    if (lease.owner !== null && !requested) {
+      readRecord(home, (db) => db.prepare("UPDATE background SET request='exit' WHERE id=1").run(), { readOnly: false });
+      requested = true;
+    }
+    await delay(100);
+  } while (Date.now() < deadline);
+  throw new Error("The packaged background Hub did not clear its lease after the exit request.");
+}
+
+function readBootstrapUrl(child) {
+  return new Promise((resolveLink, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => finish(new Error(`Timed out waiting for packaged Hub startup.\n${stderr}`)), 30_000);
+    const append = (output, chunk) => (output + chunk.toString("utf8")).slice(-16_384);
+    const onStdout = (chunk) => {
+      stdout = append(stdout, chunk);
+      const match = stdout.match(/^http:\/\/127\.0\.0\.1:\d+\/#token=[A-Za-z0-9_-]+(?=\r?\n)/mu);
+      if (match) finish(new URL(match[0]));
+    };
+    const onStderr = (chunk) => { stderr = append(stderr, chunk); };
+    const onClose = (code, signal) => finish(new Error(`The packaged Hub exited before sign-in (${code ?? signal}).\n${stderr}`));
+
+    function finish(result) {
       clearTimeout(timer);
-      resolveExit({ code, signal });
-    });
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("close", onClose);
+      child.off("error", finish);
+      child.stdout.resume();
+      child.stderr.resume();
+      if (result instanceof Error) reject(result);
+      else resolveLink(result);
+    }
+
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.once("close", onClose);
+    child.once("error", finish);
   });
 }
 
-async function waitForJob(origin, cookie, id) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    const response = await fetch(`${origin}/api/v1/jobs/${encodeURIComponent(id)}`, {
-      headers: { cookie },
-      redirect: "error",
-    });
-    const job = await response.json();
-    if (!response.ok) throw new Error(`Reading packaged Hub job ${id} failed.`);
-    if (job.state !== "queued" && job.state !== "running") return job;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  throw new Error(`Packaged Hub job ${id} did not finish before the deadline.`);
+async function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return [child.exitCode, child.signalCode];
+  return once(child, "exit", { signal: AbortSignal.timeout(8_000) });
 }
 
-async function startJob(origin, cookie, csrfToken, kind, forbiddenValues = []) {
-  const response = await fetch(`${origin}/api/v1/jobs`, {
-    method: "POST",
-    headers: {
-      cookie,
-      origin,
-      "content-type": "application/json",
-      "x-mex-csrf": csrfToken,
-    },
-    body: JSON.stringify({ kind }),
-    redirect: "error",
-  });
-  const body = await response.json();
-  if (response.status !== 202 || typeof body.id !== "string") {
-    throw new Error(`The packaged Hub could not start ${kind}.`);
+async function stopPackagedHub(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    if (process.platform === "win32") child.send("SIGTERM");
+    else child.kill("SIGTERM");
+    assertCleanExit(await waitForExit(child), "The packaged Hub");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
-  const terminal = await waitForJob(origin, cookie, body.id);
-  const events = await fetch(`${origin}/api/v1/jobs/${encodeURIComponent(body.id)}/events`, {
-    headers: { cookie },
-    redirect: "error",
-  });
-  const stream = await events.text();
-  if (
-    !events.ok
-    || !events.headers.get("content-type")?.startsWith("text/event-stream")
-    || !stream.includes("event: terminal")
-    || !stream.includes(`\"kind\":\"${kind}\"`)
-    || stream.includes("packed-private-session")
-    || stream.includes("excluded-only-private-body")
-    || forbiddenValues.some((value) => stream.includes(value))
-  ) {
-    throw new Error(`The packaged Hub did not replay a safe terminal SSE event for ${kind}.`);
-  }
-  return terminal;
+}
+
+function assertCleanExit([code, signal], label) {
+  assert.equal(code, 0, `${label} did not exit cleanly (signal ${signal ?? "none"}).`);
+  assert.equal(signal, null, `${label} stopped before cleanup.`);
 }
