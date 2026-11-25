@@ -145,6 +145,8 @@ export const RELEASE_COMMON_READ_PATHS = Object.freeze({
   projects: "/api/v1/projects",
   home: "/api/v1/home",
   jobs: "/api/v1/jobs",
+  knowledge: "/api/v1/knowledge",
+  knowledgeLanding: "/api/v1/knowledge/landing",
 });
 
 export async function measureCommonReads(server, auth, samples) {
@@ -159,6 +161,13 @@ export async function measureCommonReads(server, auth, samples) {
     throw new Error("The benchmark Hub did not return its single registered Git checkout.");
   }
 
+  // The first read starts the in-memory snapshot. Time warm reads once it is ready.
+  const warmDeadline = performance.now() + 5_000;
+  while ((await hubJson(server, RELEASE_COMMON_READ_PATHS.knowledge, auth)).updatingSince) {
+    if (performance.now() >= warmDeadline) throw new Error("The Knowledge snapshot did not become ready.");
+    await delay(25);
+  }
+
   const timings = Object.fromEntries(Object.keys(RELEASE_COMMON_READ_PATHS).map((name) => [name, []]));
   for (let sample = 0; sample < samples; sample += 1) {
     for (const [name, path] of Object.entries(RELEASE_COMMON_READ_PATHS)) {
@@ -167,6 +176,12 @@ export async function measureCommonReads(server, auth, samples) {
       timings[name].push(performance.now() - startedAt);
       if (name === "home" && (data.activity?.length !== 7 || !data.byRepo?.[result.projects[0].id])) {
         throw new Error("The benchmark Hub did not return seven days of Home overview data.");
+      }
+      if (name === "knowledge" && (!data.items?.length || data.updatingSince)) {
+        throw new Error("The benchmark Hub did not return its Knowledge entries.");
+      }
+      if (name === "knowledgeLanding" && (!data.groups?.byKind?.length || !data.groups?.byArea?.length)) {
+        throw new Error("The benchmark Hub did not group its Knowledge entries.");
       }
       if (name === "jobs" && !Array.isArray(data)) {
         throw new Error("The benchmark Hub did not return its jobs list.");

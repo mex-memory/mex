@@ -137,6 +137,8 @@ try {
 
       activeServer = await startHub({ projectRoot, cliPath, environment: hubEnvironment });
       const auth = await authenticateHub(activeServer);
+      const registered = await hubJson(activeServer, RELEASE_COMMON_READ_PATHS.projects, auth);
+      seedKnowledgeFixture(join(hubEnvironment.MEX_HOME, ".mex"), registered.projects[0].id, RELEASE_FIXTURE_PROFILES[profileName].sourceFiles);
       const { timings: apiLatency, project } = await measureCommonReads(activeServer, auth, budgets.samples.timing);
       if (project.name !== basename(projectRoot)) throw new Error("The machine Hub returned the wrong release fixture.");
       const browser = await measureWorkbenchHeap({
@@ -179,6 +181,23 @@ try {
 
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 if (!report.budgetEvaluation.passed) process.exitCode = 1;
+
+function seedKnowledgeFixture(home, projectId, count) {
+  const directory = join(home, "projects", projectId, "notes");
+  mkdirSync(directory, { recursive: true });
+  const kinds = ["rule", "recipe", "decision"];
+  for (let index = 0; index < count; index += 1) {
+    const id = "mx_bench" + String(index).padStart(4, "0");
+    const oneLine = `Keep fixture ${index} reproducible`;
+    const text = `${oneLine}. Use the same inputs across runs so a change in behavior can be traced to the code.`;
+    const mex = {
+      id, kind: kinds[index % kinds.length], scope: index % 3 === 0 ? ["**"] : [`packages/fixture-${index % 8}/**`],
+      source: { type: "person", ref: "mex note 2026-11-24", quote: text }, evidence: "person",
+      one_line: oneLine, checks: [], status: "active", created: "2026-11-24",
+    };
+    writeFileSync(join(directory, id + ".md"), `---\n${JSON.stringify({ mex })}\n---\n${text}\n`, { flag: "wx" });
+  }
+}
 
 function summarizeProfile(input) {
   const browserHeap = input.browser === null ? null : {
