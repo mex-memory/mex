@@ -128,15 +128,15 @@ export function HintsSettings({ hints }: Pick<MachineSettings, "hints">) {
   return (
     <SettingsSection icon={Lightbulb} id="hints" title="Hints from your agent">
       <dl className={styles.hintCounts}>
-        <div><dt>Active hints</dt><dd>{number.format(hints.active)}</dd></div>
-        <div><dt>Confirmed</dt><dd>{number.format(hints.confirmed)}</dd></div>
+        <div><dt>Active hints</dt><dd>{hints.active === null ? "Unavailable" : number.format(hints.active)}</dd></div>
+        <div><dt>Confirmed</dt><dd>{hints.confirmed === null ? "Unavailable" : number.format(hints.confirmed)}</dd></div>
       </dl>
       <SettingRow description="Unconfirmed hints expire after this long." title="Hint expiry">
-        <strong className={styles.readOnlyValue}>{hints.expiryMonths} {hints.expiryMonths === 1 ? "month" : "months"}</strong>
+        <strong className={styles.readOnlyValue}>{hints.expiryMonths === null ? "Varies by repo" : hints.expiryMonths + (hints.expiryMonths === 1 ? " month" : " months")}</strong>
       </SettingRow>
       <div className={styles.commandFoot}>
         <p>Set the expiry when refreshing hints from a repo’s terminal.</p>
-        <CommandCard command={"mex hints refresh --expiry-months " + hints.expiryMonths} compact />
+        <CommandCard command={"mex hints refresh --expiry-months " + (hints.expiryMonths ?? "<months>")} compact />
       </div>
     </SettingsSection>
   );
