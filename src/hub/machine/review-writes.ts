@@ -9,14 +9,14 @@ import type { LocationOptions } from "../../record/location.js";
 import { reviewAction, type ReviewAction, type ReviewDependencies } from "../../review/actions.js";
 import { groupRevision } from "../../review/queue.js";
 import type { HomeData } from "./home.js";
-import { knowledgeWriteProblem } from "./knowledge-writes.js";
+import { KnowledgeConflict, knowledgeWriteProblem, type KnowledgeWrites } from "./knowledge-writes.js";
 import { readKnowledgeEntry } from "./knowledge-detail.js";
 import { registeredCheckout } from "./knowledge-snapshot.js";
 import { activeCheckouts, knowledgeKey, readStore } from "./read.js";
 import { invalidReview, parseReviewKey, readReviewCard, reviewMissing, type ReviewDetail } from "./review.js";
 import { ReviewPreviews, type Confirmation, type ReviewTarget } from "./review-previews.js";
 import { reviewOutcome } from "./review-outcome.js";
-import { reviewLimits } from "./review-snapshot.js";
+import { judgeMember, reviewLimits } from "./review-snapshot.js";
 import { HubRequestError } from "./security.js";
 
 type Preview = MachineReviewPreviewReply["preview"];
@@ -87,6 +87,7 @@ export class ReviewWrites {
     private readonly data: HomeData, private readonly location: LocationOptions, private readonly now: () => number,
     private readonly env: NodeJS.ProcessEnv | undefined, private readonly dependencies: Partial<ReviewDependencies> | undefined,
     private readonly changed: (repoId: string, knowledgeChanged: boolean) => Promise<void>,
+    private readonly knowledgeWrites: KnowledgeWrites,
   ) { this.#previews = new ReviewPreviews(now); }
 
   async run(key: string, action: string, body: unknown, session: string): Promise<Applied | MachineReviewPreviewReply> {
@@ -110,13 +111,14 @@ export class ReviewWrites {
       if (request.expectedRevision !== detail.card.revision) throw stale(detail.card);
       if (!detail.card.actions.includes(request.action)) throw invalidReview("This action isn’t available for the card.");
       if (request.apply && !confirmation) throw stale(detail.card);
+      if (request.action === "retire") return await this.#retire(detail, request, session, key, confirmation);
       if (request.action === "use") return await this.#use(detail, request, session, key, confirmation);
       if (request.action === "share") return await this.#share(request, session, key, targetFor(detail), confirmation);
       if (request.action === "edit" && request.then === "share") return await this.#editedShare(detail, request);
       return await this.#decide(detail, request);
     } catch (error) {
       const unavailable = error instanceof HubRequestError && error.status === 404;
-      if (unavailable || error instanceof KnowledgeError && ["NOT_FOUND", "STALE_ENTRY", "STALE_PREVIEW"].includes(error.code)) {
+      if (unavailable || error instanceof KnowledgeConflict || error instanceof KnowledgeError && ["NOT_FOUND", "STALE_ENTRY", "STALE_PREVIEW"].includes(error.code)) {
         const outcome = reviewOutcome(this.location, repoId, cardId);
         if (outcome !== undefined) {
           await this.changed(repoId, true);
@@ -249,6 +251,40 @@ export class ReviewWrites {
     return {
       type: "applied", outcome: "used", knowledgeKey: knowledge,
       toast: count ? `Proposal used. ${count} ${count === 1 ? "note" : "notes"} retired.` : "Proposal saved for you",
+    };
+  }
+
+  async #retire(detail: ReviewDetail, request: Request, session: string, key: string, confirmation?: Confirmation): Promise<Applied | MachineReviewPreviewReply> {
+    const disabled = detail.card.disabled?.retire;
+    const target = targetFor(detail);
+    const note = detail.card.retireTarget;
+    const source = judgeMember(detail.group)?.item.source;
+    if (!note || !source) throw invalidReview("Only a note checked by the model can be retired here.");
+    if (disabled) {
+      if (request.apply) throw stale(detail.card);
+      throw invalidReview(disabled);
+    }
+    const team = note.audience === "team";
+    const expectedRevision = source.original_hash.slice(7);
+    const options = {
+      expectedRevision, reason: request.reason,
+      checkout: team ? source.checkout : undefined,
+      ...(confirmation ? { apply: true, previewRevision: confirmation.expect } : {}),
+    };
+    if (!team || confirmation) {
+      this.#recordConsent(target, "retire", confirmation?.expect ?? hash(JSON.stringify([expectedRevision, request.reason])));
+    }
+    // The same adapter handles the exact team retirement bytes and its
+    // native rebuild, or a personal tombstone and queued rebuild.
+    const result = await this.knowledgeWrites.forget(note.key, options);
+    if ("preview" in result) {
+      const { revision: expect, path } = result.preview;
+      return { preview: { ...result.preview, checks: [],
+        revision: this.#previews.remember(session, key, request, { target, expect, path }) } };
+    }
+    return {
+      type: "applied", outcome: "retired", toast: "Moved to Forgotten",
+      knowledgeKey: knowledgeKey(result.repoId, result.audience, result.id),
     };
   }
 

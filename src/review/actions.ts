@@ -23,7 +23,7 @@ import { learningMetadata } from "../filter/metadata.js";
 import { verifySources } from "../filter/publication.js";
 import { claimHash } from "../knowledge/state.js";
 import { entryProducer } from "../knowledge/producers.js";
-import { canonicalBytes, groupRevision, memberRevision, snapshotReview, type ReviewGroup, type ReviewScanLimits } from "./queue.js";
+import { canonicalBytes, groupRevision, hasRetiredReviewSource, memberRevision, snapshotReview, type ReviewGroup, type ReviewScanLimits } from "./queue.js";
 import { legacyJudge, put, rows, storedItems, ReviewItem, REVIEW_VISIBLE } from "./state.js";
 
 export type ReviewAction = "share" | "keep" | "edit" | "use";
@@ -73,8 +73,10 @@ async function prepare(selector: string, action: ReviewAction, { text, fields }:
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
   if (!reader) throw new KnowledgeError("NOT_FOUND", "There are no rules waiting for Review.");
   let group: ReviewGroup;
-  try { group = choose(snapshotReview(reader, project.projectId, project.location.home, project.root, deps.clock(), selection?.limits), selector, selection); }
-  finally { reader.close(); }
+  try {
+    group = choose(snapshotReview(reader, project.projectId, project.location.home, project.root, deps.clock(), selection?.limits), selector, selection);
+    if (selection?.allCards && hasRetiredReviewSource(reader, project.projectId, group)) throw stale();
+  } finally { reader.close(); }
   const notes = readNotes(project.location.home, project.projectId);
   let entry = group.entry, team: TeamPreview | undefined, names: string | undefined;
   const at = await position(project.root);
@@ -153,6 +155,7 @@ async function recoverShare(selector: string, options: KnowledgeOptions, expecte
       writer.db.exec("BEGIN IMMEDIATE");
       try {
         if (trackedNames(project.root) !== names || !sharingEnabled(writer, project.projectId, project.root)) throw stale();
+        if (selection?.allCards && hasRetiredReviewSource(writer, project.projectId, intent.group)) throw stale();
         const pending = rows(writer, project.projectId), items = storedItems(writer, project.projectId);
         for (const member of intent.group.members) {
           const row = pending.find(row => row.id === member.row.id), item = row && (items.get(row.id) ?? legacyJudge(writer, row));
@@ -193,7 +196,8 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
   const project = knowledgeProject(options);
   const validate = (writer: RecordWriter) => {
     const current = choose(snapshotReview(writer, project.projectId, project.location.home, project.root, deps.clock(), selection?.limits), prepared.group.id, selection);
-    if (groupRevision(current) !== groupRevision(prepared.group)) throw stale();
+    if (groupRevision(current) !== groupRevision(prepared.group)
+      || (selection?.allCards && hasRetiredReviewSource(writer, project.projectId, current))) throw stale();
     if (action === "share") {
       if (projectIdentity(project.root).rootPath !== realPath(project.root) || trackedNames(project.root) !== prepared.names) throw stale();
       for (const check of prepared.entry.mex.checks) for (const [path, baseline] of Object.entries(check.files)) {

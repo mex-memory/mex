@@ -5,7 +5,7 @@ import { hash } from "../../judge/evidence.js";
 import { assertNoSecrets, stripHidden } from "../../knowledge/gates.js";
 import { openRecordReadOnly, recordLocation } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
-import { snapshotReview, type ReviewGroup } from "../../review/queue.js";
+import { hasRetiredReviewSource, snapshotReview, type ReviewGroup } from "../../review/queue.js";
 import type { HomeData } from "./home.js";
 import { PROJECT_ID, registeredCheckout } from "./knowledge-snapshot.js";
 import { activeCheckouts, readStore } from "./read.js";
@@ -107,7 +107,7 @@ export async function readReviewCard(
     const active = new Set(activeCheckouts(reader, repoId, now));
     if (!active.has(checkout)) throw reviewMissing();
     const group = snapshotReview(reader, repoId, home, checkout, now, reviewLimits).find(({ id }) => id === cardId);
-    if (!group) throw reviewMissing();
+    if (!group || hasRetiredReviewSource(reader, repoId, group)) throw reviewMissing();
     const target = { ...location, home, repoId, checkout, env };
     const current = new Map<string, ReviewNote>();
     const retires = new Map<string, ReviewNote>();

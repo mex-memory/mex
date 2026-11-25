@@ -5,7 +5,7 @@ import { hash } from "../../judge/evidence.js";
 import { KNOWLEDGE_LIMITS, KnowledgeError } from "../../knowledge/entry.js";
 import { entryProducer, listProducers } from "../../knowledge/producers.js";
 import type { RecordReader } from "../../record/index.js";
-import { groupRevision, snapshotReview, type ReviewGroup } from "../../review/queue.js";
+import { groupRevision, hasRetiredReviewSource, snapshotReview, type ReviewGroup } from "../../review/queue.js";
 import { reviewReason } from "../../review/reasons.js";
 import { checkoutCollation, knowledgeKey } from "./read.js";
 import { conflictNote } from "./review-notes.js";
@@ -72,7 +72,7 @@ export function reviewPoint(
     actions: conflict ? ["use", "keepCurrent"] : target ? ["share", "keep", "edit", "retire"] : ["share", "keep", "edit"],
     disabled: conflict ? undefined : {
       ...(shareBlocked ? { share: CHECKS_REQUIRED } : {}),
-      ...(target && !active.has(target.checkout) ? { retire: "Turn on MEX in the checkout with this note before retiring it." } : {}),
+      ...(target?.level === "team" && !active.has(target.checkout) ? { retire: "Turn on MEX in the checkout with this note before retiring it." } : {}),
     },
   };
   return { checkout, row, bytes: JSON.stringify(row).length * 2 + 512 };
@@ -112,7 +112,7 @@ export async function projectReview(
     await setImmediate(undefined, { signal });
     try {
       for (const group of snapshotReview(reader, repoId, home, path, now, reviewLimits)) {
-        if (result.cards.has(group.id)) continue;
+        if (result.cards.has(group.id) || hasRetiredReviewSource(reader, repoId, group)) continue;
         const sourcePaths = new Set(group.members.map(({ item }) => item.source.checkout));
         const sources = group.conflict ? [path] : recent.filter((source) => sourcePaths.has(source));
         const checkout = group.conflict ? path : sources.find((source) => shared.has(source)) ?? recentShared[0] ?? path;

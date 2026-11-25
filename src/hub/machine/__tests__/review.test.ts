@@ -513,3 +513,53 @@ it("requires a new Use preview if a conflicting note changes", async () => {
   expect(await response.json()).toMatchObject({ code: "STALE_PREVIEW", current: { key, disabled: { use: expect.any(String) } } });
   expect(readFileSync(personalPath, "utf8")).toBe(changed);
 });
+
+function stageJudged(repo: Repo, level: "team" | "personal", checkout = repo.path) {
+  const original = entry("original", "run the current formatter.");
+  const folder = level === "team" ? join(checkout, ".mex", "learned", "rule") : notes(repo.id);
+  const { file, raw } = save(folder, original);
+  const originalHash = hash(raw);
+  const corrected = { ...original, text: "run the formatter on all changed files." };
+  const producerKey = "judge.fix." + "b".repeat(24);
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(repo.id, producerKey, JSON.stringify({
+    state: "review", judgement: { entry_hash: originalHash },
+  }));
+  stageReview(writer, repo.id, producerKey, corrected,
+    { producer: "judge", key: producerKey, checkout, level, path: file, original_hash: originalHash }, "The judge could not resolve the entry (checked by model)",
+    true, Date.parse(at(-1000)));
+  return { key: repo.id + ":" + groupId(repo.id, corrected), file, raw, id: original.mex.id };
+}
+
+it("retires a judged personal note through Knowledge and refreshes Review", async () => {
+  const repo = project("tools");
+  const { key, file, raw, id } = stageJudged(repo, "personal");
+  const card = await detail(key);
+  expect(card).toMatchObject({ checkedByModel: true, retireTarget: { audience: "onlyYou", key: repo.id + ":onlyYou:" + id } });
+  const retired = await post(key, "retire", { expectedRevision: card.revision, reason: "Use the lint command now" });
+  expect(retired.status).toBe(200);
+  expect(await retired.json()).toMatchObject({ outcome: "retired", knowledgeKey: card.retireTarget!.key });
+  expect(readFileSync(file, "utf8")).toBe(raw);
+  expect(JSON.parse(writer.setting(repo.id, "knowledge.retired." + id)!)).toMatchObject({ retired: { reason: "Use the lint command now" } });
+  expect((await queue()).total).toBe(0);
+});
+
+it("previews a judged team note in its source worktree and retires the exact team bytes", async () => {
+  const repo = project("tools");
+  const checkout = worktree(repo, "team-worktree");
+  const { key, file, raw, id } = stageJudged(repo, "team", checkout);
+  const card = await detail(key);
+  const reason = "Use the lint command now";
+  const planned = await preview(card, "retire", { reason });
+  expect(planned).toMatchObject({ checkout, path: ".mex/learned/rule/" + id + ".md" });
+  expect(planned.diff).toContain(reason);
+  expect(readFileSync(file, "utf8")).toBe(raw);
+  const apply = { expectedRevision: card.revision, apply: true, previewRevision: planned.revision };
+  const changedReason = await post(key, "retire", { ...apply, reason: "A different reason" });
+  expect(await changedReason.json()).toMatchObject({ code: "STALE_PREVIEW" });
+  const retired = await post(key, "retire", { ...apply, reason });
+  expect(retired.status).toBe(200);
+  expect(await retired.json()).toMatchObject({ outcome: "retired", knowledgeKey: card.retireTarget!.key });
+  expect(parseEntry(readFileSync(file, "utf8")).mex).toMatchObject({ status: "retired", retired: { reason } });
+  expect((await queue()).total).toBe(0);
+  expect(authority).not.toHaveBeenCalled();
+});
