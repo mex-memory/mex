@@ -4,9 +4,9 @@ import { SourceError } from "../../learn-deeper/forge.js";
 import { origin, revision } from "../../learn-deeper/git.js";
 import { LEARN_KIND, type LearningPlan } from "../../learn-deeper/plan.js";
 import { prepareLearningQuote } from "../../learn-deeper/quote.js";
-import { queueLearning } from "../../learn-deeper/queue.js";
+import { LEARNING_DISMISSED, queueLearning } from "../../learn-deeper/queue.js";
 import { ensureBackground } from "../../record/background.js";
-import { openHooksReadOnly, openRecordReadOnly, type RecordReader } from "../../record/index.js";
+import { openHooksReadOnly, openRecordReadOnly, type RecordReader, type RecordWriter } from "../../record/index.js";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
 import { realPath } from "../../record/project.js";
 import { waitForRecordWriter } from "../../record/writer-wait.js";
@@ -19,6 +19,15 @@ import { hubSetupStep, readSetupTarget, setupOfferRevision, setupRevision } from
 const QUOTE_TTL_MS = 5 * 60_000;
 const QUOTE_LIMIT = 128;
 const MAX_ACTIVE = 2;
+
+type OfferReader = Pick<RecordReader, "all" | "get" | "setting">;
+function readWriter(writer: RecordWriter): OfferReader {
+  return {
+    all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never,
+    get: (sql, ...args) => writer.db.prepare(sql).get(...args) as never,
+    setting: (scope, key) => writer.setting(scope, key),
+  };
+}
 
 type Approval = {
   repoId: string;
@@ -100,11 +109,7 @@ export class SetupLearning {
         const writer = await waitForRecordWriter(this.location);
         let step;
         try {
-          const reader: Pick<RecordReader, "all" | "get" | "setting"> = {
-            all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never,
-            get: (sql, ...args) => writer.db.prepare(sql).get(...args) as never,
-            setting: (scope, key) => writer.setting(scope, key),
-          };
+          const reader = readWriter(writer);
           const { job, existing } = queueLearning(writer, repoId, { ...plan, waitForSetup: true }, jobId => {
             const root = this.#requireOffer(reader, repoId, offerRevision);
             if (root !== plan.checkout || approval.expires <= this.now()) throw staleQuote();
@@ -127,6 +132,27 @@ export class SetupLearning {
         }
         throw error;
       }
+    });
+  }
+
+  async skip(repoId: string, session: string, body: unknown) {
+    return this.#run(repoId, async () => {
+      const { quote, offerRevision, expires } = this.#approval(repoId, session, body);
+      const writer = await waitForRecordWriter(this.location);
+      try {
+        writer.db.exec("BEGIN IMMEDIATE");
+        try {
+          this.#requireOffer(readWriter(writer), repoId, offerRevision);
+          if (expires <= this.now()) throw staleQuote();
+          writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,'true')").run(repoId, LEARNING_DISMISSED);
+          writer.db.exec("COMMIT");
+        } catch (error) {
+          writer.db.exec("ROLLBACK");
+          throw error;
+        }
+      } finally { writer.close(); }
+      this.#approvals.delete(quote.revision);
+      return { saved: true };
     });
   }
 
@@ -156,11 +182,12 @@ export class SetupLearning {
     } finally { reader?.close(); }
   }
 
-  #requireOffer(reader: Pick<RecordReader, "all" | "get" | "setting">, repoId: string, revision: string) {
+  #requireOffer(reader: OfferReader, repoId: string, revision: string) {
     const location = recordLocation({ ...this.location, create: false });
     const target = readStore(openHooksReadOnly, this.location, hooks => readSetupTarget(reader, hooks, location, repoId, this.now()));
     if (!target?.enabled || target.missing || target.run?.caller !== "person" || this.env.MEX_OFF === "1"
       || !isSameCheckout(target.checkout.path) || setupOfferRevision(target) !== revision
+      || reader.setting(repoId, LEARNING_DISMISSED) === "true"
       || reader.get("SELECT 1 FROM jobs WHERE project_id=? AND kind=? LIMIT 1", repoId, LEARN_KIND)) throw staleQuote();
     return target.checkout.path;
   }

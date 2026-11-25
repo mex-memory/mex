@@ -4,6 +4,7 @@ import { lstatSync } from "node:fs";
 import { checkoutOn } from "../../controls/index.js";
 import { containedDirectory } from "../../knowledge/files.js";
 import { hasSecret, stripHidden } from "../../knowledge/gates.js";
+import { LEARNING_DISMISSED } from "../../learn-deeper/queue.js";
 import type { CheckoutRow, ProjectRow, RecordReader } from "../../record/index.js";
 import { TERMINAL_STATES, type JobRow } from "../../record/jobs.js";
 import type { RecordLocation } from "../../record/location.js";
@@ -169,12 +170,13 @@ export function readRepoSetup(
       repo.unavailableSteps = [{ kind: "code-facts", reason: "Needs a Git repo." }];
     }
   }
-  if (!steps.some(({ kind }) => kind === "learn-deeper") && target.run?.caller === "person") {
+  if (steps.some(({ kind }) => kind === "learn-deeper")) return repo;
+  if (reader.setting(repoId, LEARNING_DISMISSED) === "true") repo.learnDeeper = { state: "skipped" };
+  else if (target.run?.caller === "person") {
     if (!target.enabled || env.MEX_OFF === "1") {
       repo.learnDeeper = { state: "unavailable", reason: "MEX is off here. Run `mex on` in the terminal." };
-    } else {
-      repo.offerRevision = setupOfferRevision(target);
-    }
+    } else if (target.kind === "folder" && !target.checkout.provisional) repo.learnDeeper = { state: "no-review-remote" };
+    else repo.offerRevision = setupOfferRevision(target);
   }
   return repo;
 }

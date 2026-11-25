@@ -367,6 +367,14 @@ export function createMachineHubApp(options: MachineHubOptions) {
     return step;
   }));
 
+  app.post("/api/v1/setup/:repo/skip-learning", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const saved = await setupLearning.skip(repoId, context.get("session").id, body);
+    setup.refresh(repoId);
+    events.controlsChanged("setup");
+    return saved;
+  }));
+
   app.post("/api/v1/setup/:repo/questions", (context) => machinePost(context, async (body) => {
     const repoId = setupRepoId(context.req.param("repo"));
     const result = await answerHubSetup(location, now, options.env ?? process.env, options.agentEntry, repoId, body);
