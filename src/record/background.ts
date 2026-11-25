@@ -120,6 +120,8 @@ export interface EnsureOptions extends LocationOptions {
   args?: string[];
   /** Start even with no pending work (demos and tests). */
   force?: boolean;
+  /** An explicit API runner choice can reload its environment through the lease handover. */
+  refreshEnvironment?: boolean;
   env?: NodeJS.ProcessEnv;
 }
 export type EnsureResult =
@@ -142,7 +144,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const settings = backgroundSettings(writer);
     const row = lease(writer);
     const live = leaseLive(row, settings);
-    if (live && row.version === VERSION) return { started: false, reason: "running" };
+    if (live && row.version === VERSION && !options.refreshEnvironment) return { started: false, reason: "running" };
     if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) &&
       !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) &&
       !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory) && !setupRefreshPending(writer.location.directory) &&
@@ -153,10 +155,11 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     }
     // Another command started one moments ago and it hasn't taken the lease yet.
     const spawned = writer.db.prepare("SELECT spawned_at FROM background WHERE id=1").get() as { spawned_at: string | null };
-    if (!live && spawned.spawned_at && Date.now() - Date.parse(spawned.spawned_at) < STARTING_MS) return { started: false, reason: "starting" };
+    if ((!live || row.request === "exit") && spawned.spawned_at && Date.now() - Date.parse(spawned.spawned_at) < STARTING_MS)
+      return { started: false, reason: "starting" };
     let replacing: string | undefined;
     if (live) {
-      // Version handshake: ask the old process to finish its batch and hand over.
+      // Finish the current batch before a version or environment handover.
       writer.db.prepare("UPDATE background SET request='exit' WHERE id=1 AND owner=?").run(row.owner);
       replacing = row.version ?? "unknown";
     }

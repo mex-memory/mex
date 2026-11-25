@@ -25,7 +25,9 @@ import { NOTE_ATTEMPT_LIMIT, settleNoteAttempts } from "./note-attempts.js";
 import { formatFilterBatch, saveFilterBatchReport, type FilterBatchReport } from "./report.js";
 import { runStageOne, stageOneEnabled, stageOneRoom, STAGE_ONE_WAIT } from "./stage-one.js";
 import { runStageTwo, stageTwoDue, stageTwoPending, type StageTwoPorts } from "./stage-two.js";
-import { filterRunner, FILTER_RUNNER_WAIT } from "./runner.js";
+import { filterRunner, FILTER_RUNNER_WAIT, prepareSessionRunner, sessionRunnerReady } from "./runner.js";
+import type { runSessionApi } from "../model-runner/session-api.js";
+import { sessionLearningAvailable, sessionRunner } from "../knowledge/session-learning.js";
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
   source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string; reply_context_hash?: string };
@@ -35,7 +37,8 @@ interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: str
   dropped?: DropCounts; notes_deferred?: number; notes_waiting_for_sync?: number; }
 interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; verdictGaps?: boolean; }
 export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; aids?: AidRanker;
-  contextMode?: ReplyContextMode; stageOne?: boolean; stageTwo?: StageTwoPorts; runner?: typeof filterRunner; }
+  contextMode?: ReplyContextMode; stageOne?: boolean; stageTwo?: StageTwoPorts; runner?: typeof filterRunner;
+  consent?: boolean; api?: typeof runSessionApi; }
 const dependencies: FilterDependencies = { model: runModel, recordChecks, clock: Date.now };
 const BATCH_BYTES = 512 << 10, STORE_BYTES = 8 << 20;
 const CONTEXT_PAUSED = "Reply context paused";
@@ -146,33 +149,44 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       const stagesEnabled = () => deps.stageOne ?? stageOneEnabled(writer);
       const checkedWriter = !!deps.stageTwo || deps.stageOne === undefined;
       const stageOne = stagesEnabled();
+      const requireConsent = deps.consent ?? (deps.stageOne === undefined && sessionLearningAvailable());
       try {
         if (!filterAllowed(writer, project, params)) return { checkpoint: state, wait: "Waiting: capture or MEX is off here" };
-        if (stageOne && (params.sourceAgent || deps.runner || deps === dependencies)) {
+        if (!statementsOn(writer)) acknowledgeTyped(writer, project, params.checkout);
+        if (params.request && (!stageOne || !statementsOn(writer))) return { checkpoint: state, wait: "Waiting: session learning is off" };
+        if (requireConsent && (!stageOne || !statementsOn(writer))) {
+          finishRequest(writer, params);
+          return { checkpoint: state, done: true, summary: "Session learning is off here" };
+        }
+        let model = deps.model;
+        if (requireConsent) {
+          ({ params, model } = prepareSessionRunner(writer, params, deps.model, deps.runner, deps.api));
+        } else if (stageOne && (params.sourceAgent || deps.runner || deps === dependencies)) {
           const sourceAgent = params.sourceAgent ?? (params.agent === "claude" ? "claude-code" : "codex");
           const agent = (deps.runner ?? filterRunner)(sourceAgent);
           if (!agent) return { checkpoint: state, wait: FILTER_RUNNER_WAIT };
           params = { ...params, agent, sourceAgent };
         }
         if (project.startsWith("g-") && !at.head) return { checkpoint: state, wait: "Waiting: Git checkout identity is unavailable" };
-        // Statement learning off: typed text is handled by not reading it.
-        if (!statementsOn(writer)) acknowledgeTyped(writer, project, params.checkout);
         if (!samePosition(state.position, at)) {
           if (!params.request) finishRequest(writer, params);
           return { checkpoint: state, done: true, gaps: true, summary: "Checkout changed; filter candidates remain local" };
         }
-        const publication = await publishNext(writer, project, params, job, deps.publication);
-        if (publication) return { checkpoint: state, ...publication };
-        const consolidated = await consolidateNext(writer, project, params, job, deps, at);
-        if (consolidated) return { checkpoint: state, ...consolidated };
+        const localOnly = params.runner?.mode === "none";
+        if (!localOnly) {
+          const publication = await publishNext(writer, project, params, job, deps.publication);
+          if (publication) return { checkpoint: state, ...publication };
+          const consolidated = await consolidateNext(writer, project, params, job, { ...deps, model }, at);
+          if (consolidated) return { checkpoint: state, ...consolidated };
+        }
         const cheap = deps.cheap ?? (!!DEFAULT_MODELS[params.agent].cheap && selectModel(params.agent, { role: "cheap" }) !== selectModel(params.agent, { role: "best" }));
         const scan: ScanWindow = { after: state.scanAfter ?? 0, carry: state.carry };
-        const input = filterInput(writer, project, params, cheap, deps.clock(), scan, deps.contextMode, stageOne);
+        const input = localOnly ? undefined : filterInput(writer, project, params, cheap, deps.clock(), scan, deps.contextMode, stageOne);
         if (!input) {
           if (stageOne && statementsOn(writer)) {
-            const verdicts = await runStageOne(writer, project, params, job, at, state.scanAfter ?? 0, { ...deps, enabled: stagesEnabled });
-            if (checkedWriter && (!verdicts || verdicts.wait === STAGE_ONE_WAIT)) {
-              const checked = await runStageTwo(writer, project, params, job, at, { ...deps, enabled: stagesEnabled,
+            const verdicts = await runStageOne(writer, project, params, job, at, state.scanAfter ?? 0, { ...deps, model, enabled: stagesEnabled });
+            if (!localOnly && checkedWriter && (!verdicts || verdicts.wait === STAGE_ONE_WAIT)) {
+              const checked = await runStageTwo(writer, project, params, job, at, { ...deps, model, enabled: stagesEnabled,
                 checksReady: () => deps !== dependencies || !!nativeBinary() });
               if (checked) return { checkpoint: state, ...checked };
             }
@@ -184,7 +198,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
           }
           advanceConsumed(writer, project);
           if (scan.more) return { checkpoint: { ...state, scanAfter: scan.through, carry: scan.deferred }, summary: "Scanning later captured messages; earlier active sessions remain unread" };
-          if (stageOne && checkedWriter && statementsOn(writer) && !stageTwoDue(writer, project, deps.clock())
+          if (!localOnly && stageOne && checkedWriter && statementsOn(writer) && !stageTwoDue(writer, project, deps.clock())
             && stageTwoPending(writer, project, params.checkout, deps.clock(), at.branch)) return { checkpoint: state, wait: STAGE_TWO_WAIT };
           finishRequest(writer, params);
           return { checkpoint: state, done: true, gaps: state.verdictGaps, summary: "Memory filter caught up; active sessions were left unread" };
@@ -198,7 +212,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         const prompt = filterPrompt(input);
         if (Buffer.byteLength(prompt) > FILTER_LIMITS.promptBytes) throw new Error("The filter's prompt limit was reached.");
         const call = async (prompt: string) => {
-          return await deps.model({ agent: params.agent, role: "cheap", projectRoot: params.checkout, purpose: "filter", prompt,
+          return await model({ agent: params.agent, role: "cheap", projectRoot: params.checkout, purpose: "filter", prompt,
             automatic: { estimate: { input: Buffer.byteLength(prompt), cache_write: 0, cache_read: 0, output: 8192 } } });
         };
         if (!cached) {
@@ -308,13 +322,18 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
     ready(job, writer) {
       const params = JSON.parse(job.params) as FilterParams;
       if (!filterAllowed(writer, job.project_id!, params)) return false;
-      if (job.reason === FILTER_RUNNER_WAIT) return !!(deps.runner ?? filterRunner)(params.sourceAgent ?? (params.agent === "claude" ? "claude-code" : "codex"));
+      if (job.reason === "Waiting: session learning is off") return (deps.stageOne ?? stageOneEnabled(writer)) && statementsOn(writer);
+      const source = params.sourceAgent ?? (params.agent === "claude" ? "claude-code" : "codex");
+      const requireConsent = deps.consent ?? (deps.stageOne === undefined && sessionLearningAvailable());
+      if (requireConsent && !sessionRunnerReady(writer, job.reason, source, deps.runner)) return false;
+      if (job.reason === FILTER_RUNNER_WAIT && !requireConsent) return !!(deps.runner ?? filterRunner)(source);
       if (job.reason === PUBLICATION_WAIT) return publicationReady(writer, job);
-      if (job.reason === "Sign in to the selected agent CLI before retrying." || job.reason === "The selected agent reached its usage limit.") return false;
+      if (job.reason === "Sign in to the selected agent CLI before retrying." || job.reason === "The selected agent reached its usage limit.")
+        return requireConsent && !!sessionRunner(writer) && sessionRunner(writer)?.mode !== "cli";
       if (job.reason === "Waiting: local filter candidates need consolidation") return candidateRoom(writer, job.project_id!);
       if (job.reason === STAGE_ONE_WAIT || job.reason === STAGE_TWO_WAIT) {
         const project = job.project_id!, now = deps.clock();
-        if (!(deps.stageOne ?? stageOneEnabled(writer)) || !statementsOn(writer)) return true;
+        if (!(deps.stageOne ?? stageOneEnabled(writer)) || !statementsOn(writer) || sessionRunner(writer)?.mode === "none") return true;
         if (job.reason === STAGE_TWO_WAIT) return stageTwoDue(writer, project, now);
         const checkpoint = job.checkpoint ? JSON.parse(job.checkpoint) as Checkpoint : undefined;
         return stageOneRoom(writer, project) || ((deps.stageTwo || deps.stageOne === undefined) && stageTwoDue(writer, project, now)

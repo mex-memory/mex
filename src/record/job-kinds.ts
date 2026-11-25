@@ -12,7 +12,7 @@ import "../filter/job.js";
 import "../learn-deeper/job.js";
 import "../knowledge/fail-pass-job.js";
 import "../repo-start/refresh.js";
-import { SESSION_LEARN_KIND } from "../knowledge/session-learning.js";
+import "../filter/import-job.js";
 
 /**
  * Built-in job kinds. Later tickets add theirs (learning, judging, graph builds) the
@@ -39,21 +39,6 @@ registerJobKind<OwnUsageOptions, { runs: number }>({
       summary: statuses.map((status) => `${status.agent}: ${status.status}`).join(", "),
     } as BatchResult<{ runs: number }>;
   },
-});
-
-/**
- * Reserved for learning from past sessions, which this version does not ship.
- * Registered so the name is taken; queuing it is refused and writes no row.
- */
-const SESSION_LEARN_RESERVED = "Learning from past sessions isn't available in this version yet; nothing was queued.";
-registerJobKind({
-  name: SESSION_LEARN_KIND,
-  label: "Learning from past sessions",
-  scope: "project",
-  machineExclusive: true,
-  sideEffects: "none",
-  reserved: SESSION_LEARN_RESERVED,
-  runBatch() { throw new Error(SESSION_LEARN_RESERVED); },
 });
 
 /**

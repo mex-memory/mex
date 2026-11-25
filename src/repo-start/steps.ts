@@ -9,13 +9,14 @@ import { jobKind, requestJob, TERMINAL_STATES, type JobRow } from "../record/job
 
 /** The setup steps that outlive the screen, in the order the screen shows them. */
 export const SETUP_STEP_KINDS = ["file-index", "code-facts", "graph-build", "learn-deeper"] as const;
-export type SetupStepKind = typeof SETUP_STEP_KINDS[number];
-/** Reserved and never queued in this version: past-session learning. */
+/** Reserved for activation by the past-session producer. */
 export const RESERVED_SETUP_KINDS = ["session-learn"] as const;
+export type SetupStepKind = typeof SETUP_STEP_KINDS[number] | typeof RESERVED_SETUP_KINDS[number];
 
 /** Plain words for each step, when the job kind isn't registered in this process. */
 const LABELS: Record<SetupStepKind, string> = {
   "file-index": "File index", "code-facts": "Code facts", "graph-build": "Code map", "learn-deeper": "Learn deeper",
+  "session-learn": "Learning from past sessions",
 };
 
 export interface StepProgress { done?: number; total?: number; unit?: string; message: string; }
@@ -91,7 +92,7 @@ export function stepFromRow(reader: Reader, row: JobRow): SetupStep {
  */
 export function readSetupSteps(reader: Reader, projectId: string): SetupStep[] {
   const steps: SetupStep[] = [];
-  for (const kind of SETUP_STEP_KINDS) {
+  for (const kind of [...SETUP_STEP_KINDS, ...RESERVED_SETUP_KINDS.filter(kind => jobKind(kind) && !jobKind(kind)!.reserved)]) {
     const row = reader.all<JobRow>(`SELECT * FROM jobs WHERE project_id=? AND kind=?
       ORDER BY CASE WHEN state IN ('done','done with gaps','failed','cancelled') THEN 1 ELSE 0 END, created_at DESC, id DESC LIMIT 1`, projectId, kind)[0];
     if (row) steps.push(stepFromRow(reader, row));

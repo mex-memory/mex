@@ -5,7 +5,9 @@
  * starts, so the offer stays due and the next `mex` at a terminal asks.
  */
 import { writeFileSync } from "node:fs";
-import { SESSION_LEARNING_UNAVAILABLE, sessionLearningAvailable } from "../knowledge/session-learning.js";
+import { SESSION_LEARNING_UNAVAILABLE } from "../knowledge/session-learning.js";
+import { producer } from "../knowledge/producers.js";
+import { sessionImportDue } from "../filter/import-offer.js";
 
 export interface OfferContext { projectId: string; root: string; }
 export interface Offer {
@@ -20,7 +22,7 @@ export interface Offer {
   /** Holds the slot until the real offer registers under the same id. */
   reserved?: true;
   due(context: OfferContext): boolean;
-  start(context: OfferContext): Promise<string>;
+  start(context: OfferContext, write?: (line: string) => void): Promise<string>;
 }
 
 const offers: Offer[] = [];
@@ -34,14 +36,18 @@ export function dueOffer(context: OfferContext): Offer | undefined {
 }
 
 /**
- * Reserved: learning from past sessions. Never due while no session producer
- * is active, so it stays hidden until a later version registers one.
+ * The reserved offer becomes a preview when the import producer is active.
  */
 registerOffer({
-  id: "session-learn", question: "Learn from your past sessions?", estimate: "the cost is shown before anything starts",
-  command: "mex config set learning.sessions on", paid: true, reserved: true,
-  due: () => sessionLearningAvailable(),
-  start: async () => SESSION_LEARNING_UNAVAILABLE,
+  id: "session-learn", question: "Preview past sessions for learning?", estimate: "the preview is free and shows the expected use before approval",
+  command: "mex learn --sessions", paid: true, reserved: true,
+  due: context => producer("session-import").active && sessionImportDue(context),
+  start: async (context, write = console.log) => {
+    if (!producer("session-import").active) return SESSION_LEARNING_UNAVAILABLE;
+    const { offerSessionImport } = await import("../filter/import-offer.js");
+    await offerSessionImport({ ...context, write, interactive: true });
+    return "";
+  },
 });
 
 /** Test-only: a fake paid offer whose start writes the file MEX_TEST_FAKE_OFFER names. */

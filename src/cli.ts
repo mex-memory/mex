@@ -1112,9 +1112,10 @@ program
   .option("--model-setup <setup>", "Choose mixed or best-only")
   .option("--raise-ceiling", "Review a higher token ceiling for a waiting learning job")
   .option("--dry-run", "Preview without queuing learning")
-  .option("--sessions", "Also import eligible past sessions (off by default)")
+  .option("--sessions", "Preview and approve eligible past sessions")
+  .option("--runner", "Choose how background learning from sessions runs")
   .option("--no-weekly", "Approve a one-time run without enrolling in weekly refresh")
-  .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }) => {
+  .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean; runner?: boolean }) => {
     try {
       const { runLearnCommand } = await import("./learn-deeper/offer.js");
       await runLearnCommand(options);

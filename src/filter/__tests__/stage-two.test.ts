@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { hash } from "../../judge/evidence.js";
 import { recordChecks } from "../../judge/native.js";
@@ -21,12 +21,20 @@ import { HOST_MEMORY_LABEL } from "../metadata.js";
 import { sessionNoteHistory } from "../session-notes.js";
 import { readStageOneBatch } from "../stage-one.js";
 import { STAGE_TWO_WAIT } from "../pending.js";
+import { createSessionImportKind } from "../import-job.js";
+import { offerSessionImport, offerSessionRunner } from "../import-offer.js";
+import { setSessionLearning } from "../../controls/index.js";
+import { SESSION_LEARN_KIND, sessionRunner, setSessionRunner, SESSION_RUNNER_WAIT } from "../../knowledge/session-learning.js";
+import { readSetupSteps } from "../../repo-start/steps.js";
+import { runSessionApi } from "../../model-runner/session-api.js";
+import { SESSION_API_AGENT, SESSION_API_CAP_WAIT, SESSION_API_DAILY_UNITS, SESSION_API_KEY, SESSION_API_KEY_WAIT,
+  SESSION_API_MODEL } from "../../model-runner/session-api-policy.js";
 
 vi.mock("../../knowledge/producers.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../knowledge/producers.js")>();
   return { ...actual, producer(id: Parameters<typeof actual.producer>[0]) {
     const producer = actual.producer(id);
-    return id === "session-ongoing" ? { ...producer, active: true } : producer;
+    return id === "session-ongoing" || id === "session-import" ? { ...producer, active: true } : producer;
   } };
 });
 
@@ -57,10 +65,10 @@ beforeAll(() => {
 }, 300_000);
 afterAll(() => rmSync(suite, { recursive: true, force: true }));
 beforeEach(() => {
-  base = mkdtempSync(join(suite, "case-")); checkout = join(base, "checkout"); home = join(base, "home");
+  base = mkdtempSync(join(suite, "case-")); checkout = join(base, "checkout"); home = join(base, ".mex");
   mkdirSync(checkout);
   writeFileSync(join(checkout, "package.json"), '{"scripts":{"test":"vitest"}}\n');
-  vi.stubEnv("MEX_HOME", home); vi.stubEnv("MEX_HOOK_BINARY", binary);
+  vi.stubEnv("MEX_HOME", base); vi.stubEnv("MEX_HOOK_BINARY", binary);
   vi.stubEnv("CLAUDE_CONFIG_DIR", join(base, "claude")); vi.stubEnv("CODEX_HOME", join(base, "codex"));
   vi.stubEnv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0"); vi.stubEnv("CLAUDE_CODE_PROJECT_DIR_NAME", "");
   writer = openRecord({ home, projectPath: checkout, isNetwork: () => false }); project = writer.checkout(checkout)!.project_id;
@@ -131,6 +139,183 @@ function codexSummary(file: string, text: string, header: string) {
 }
 
 const oneOff = (...ids: string[]) => ids.map(id => ({ action: "one-off", members: [id] }));
+
+it("holds the first background run until the person chooses a runner, then honours the CLI choice", async () => {
+  setSessionLearning(writer, "on");
+  capture("first-consent", "Always use the configured test runner for all regression tests.");
+  const model = vi.fn(async (request: ModelRequest) => response({ verdicts: payload(request).messages.map(({ id }: { id: string }) => ({ id, verdict: "none" })) }));
+  registerJobKind(createFilterKind({ stageOne: true, consent: true, runner: () => "codex", clock: () => now, recordChecks, model }));
+  const id = queue();
+  await batch(id);
+  expect(job(id)).toMatchObject({ state: "waiting", reason: SESSION_RUNNER_WAIT });
+  expect(model).not.toHaveBeenCalled();
+  const lines: string[] = [];
+  await offerSessionRunner({ interactive: false, write: line => lines.push(line) });
+  expect(lines.join("\n")).toMatch(/CLI.*tokens\/day[\s\S]*API key.*\$0\.11\/day[\s\S]*No AI.*0 model tokens\/day/u);
+  expect(sessionRunner(writer)).toBeUndefined();
+  await offerSessionRunner({ interactive: true, write: () => {}, ask: async () => "1" });
+  expect(requeueReadyJobs(writer)).toBe(1);
+  await drain(id);
+  expect(model).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agent: "codex", automatic: expect.objectContaining({ sessionRunner: sessionRunner(writer) }) }));
+});
+
+it("runs the selected API path with its own credential, measured usage and daily allowance", async () => {
+  setSessionLearning(writer, "on"); setSessionRunner(writer, "api");
+  capture("api-session", "Always use the project test command for automated regression checks.");
+  const model = vi.fn(async () => { throw new Error("The API choice used a CLI."); });
+  const choose = vi.fn(() => "codex" as const);
+  const key = "fixture_session_key_abcdefgh_123456";
+  vi.stubEnv(SESSION_API_KEY, undefined); vi.stubEnv("OPENAI_API_KEY", "fixture_unrelated_key_123456789");
+  const transport = vi.fn<typeof fetch>(async (endpoint, options) => {
+    expect(endpoint).toBe("https://api.openai.com/v1/responses");
+    expect(options).toMatchObject({ method: "POST", redirect: "error", headers: { Authorization: `Bearer ${key}` } });
+    const input = JSON.parse(String(options?.body));
+    expect(input).toMatchObject({ store: false, model: SESSION_API_MODEL, max_output_tokens: 8192 });
+    expect(input.tools).toBeUndefined();
+    const { messages } = JSON.parse(input.input.split("Input follows as JSON:\n")[1]);
+    return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text",
+      text: JSON.stringify({ verdicts: messages.map(({ id }: { id: string }) => ({ id, verdict: "none" })) }) }] }],
+    usage: { input_tokens: 97, input_tokens_details: { cached_tokens: 21 }, output_tokens: 15 } });
+  });
+  registerJobKind(createFilterKind({ stageOne: true, consent: true, runner: choose, clock: () => now, recordChecks,
+    model, api: request => runSessionApi(request, transport) }));
+  const id = queue();
+  await batch(id);
+  expect(job(id)).toMatchObject({ state: "waiting", reason: SESSION_API_KEY_WAIT });
+  expect(transport).not.toHaveBeenCalled();
+  vi.stubEnv(SESSION_API_KEY, key);
+  expect(requeueReadyJobs(writer)).toBe(1);
+  await batch(id);
+  expect(transport).toHaveBeenCalledOnce();
+  expect(model).not.toHaveBeenCalled();
+  expect(choose).not.toHaveBeenCalled();
+  expect(writer.db.prepare("SELECT agent,model,input,output,cache_read,estimated FROM model_calls").all()).toMatchObject([
+    { agent: SESSION_API_AGENT, model: SESSION_API_MODEL, input: 76, output: 15, cache_read: 21, estimated: 0 },
+  ]);
+  expect(JSON.stringify(writer.db.prepare("SELECT * FROM model_batches").all())).not.toContain(key);
+  writer.db.prepare("UPDATE model_batches SET charged_units=? WHERE agent=?").run(SESSION_API_DAILY_UNITS, SESSION_API_AGENT);
+  capture("api-too-much", "Always leave these copied fixture inputs available for regression checks.");
+  await batch(id);
+  expect(job(id)).toMatchObject({ state: "waiting", reason: SESSION_API_CAP_WAIT });
+  expect(transport).toHaveBeenCalledOnce();
+  setSessionRunner(writer, "none");
+  expect(requeueReadyJobs(writer)).toBe(1);
+  await drain(id);
+  expect(transport).toHaveBeenCalledOnce();
+  expect(model).not.toHaveBeenCalled();
+});
+
+it("keeps only exact lasting typed matches in no-AI mode, with no transport calls", async () => {
+  setSessionLearning(writer, "on"); setSessionRunner(writer, "none");
+  const typed = "Always use Vitest to run the repository regression tests.";
+  const similar = "Always prefer another runner to run the repository regression tests.";
+  const at = now - 10 * 60_000;
+  capture("local-memory", typed, { agent: "claude-code", at: new Date(at).toISOString() });
+  capture("uncorroborated", similar, { agent: "claude-code", at: new Date(at).toISOString() });
+  claudeTopic("exact", typed, at + 1000);
+  claudeTopic("foreign", "Always use unrelated wording from the host memory only.", at + 1000);
+  const model = vi.fn(async () => { throw new Error("The no-AI choice called a model."); });
+  const choose = vi.fn(() => "claude" as const);
+  registerJobKind(createFilterKind({ stageOne: true, consent: true, stageTwo: {}, runner: choose, clock: () => now, recordChecks, model, api: model }));
+  await drain();
+  expect(model).not.toHaveBeenCalled();
+  expect(choose).not.toHaveBeenCalled();
+  expect(sessionNoteHistory(writer, project)).toMatchObject([{ quote: typed, scope: { kind: "repo" }, corroborated: "host-memory" }]);
+  expect(notes()).toEqual([]);
+  expect(reviewQueue({ home, projectPath: checkout }, now).waiting).toBe(0);
+});
+
+it("discards an in-flight label when runner consent changes before the result returns", async () => {
+  setSessionLearning(writer, "on"); setSessionRunner(writer, "cli");
+  const typed = "Always use Vitest to run the repository regression tests.";
+  capture("changed-consent", typed);
+  const model = vi.fn(async (request: ModelRequest) => {
+    const { messages } = payload(request);
+    setSessionRunner(writer, "none");
+    return response({ verdicts: [{ id: messages[0].id, verdict: "candidate", kind: "instruction", lasts: "repo", marker: "Always", reason: null, quote: typed }] });
+  });
+  registerJobKind(createFilterKind({ stageOne: true, consent: true, runner: () => "codex", clock: () => now, recordChecks, model }));
+  const id = queue();
+  await batch(id);
+  expect(model).toHaveBeenCalledOnce();
+  expect(readStageOneBatch(writer, project, checkout, 1)).toBeUndefined();
+  expect(sessionNoteHistory(writer, project)).toEqual([]);
+  await drain(id);
+  expect(model).toHaveBeenCalledOnce();
+  expect(readStageOneBatch(writer, project, checkout, 1)?.attempts[0]?.model).toBeNull();
+});
+
+function pastSession(typed: string) {
+  const folder = join(base, "claude", "projects", checkout.replace(/[^a-zA-Z0-9]/gu, "-"));
+  mkdirSync(folder, { recursive: true });
+  const sessionId = "a0000000-0000-4000-8000-000000000001", file = join(folder, sessionId + ".jsonl");
+  const timestamp = new Date(now - 60 * 60_000).toISOString();
+  writeFileSync(file, [
+    { type: "assistant", message: { content: [{ type: "text", text: "Vitest is available in this repository." }] } },
+    { type: "user", cwd: checkout, sessionId, timestamp, message: { role: "user", content: typed } },
+    { type: "user", cwd: checkout, sessionId, timestamp, entrypoint: "sdk", message: { role: "user", content: "SCRIPTED_PAST_FIXTURE" } },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  utimesSync(file, new Date(timestamp), new Date(timestamp));
+  return file;
+}
+
+it("previews past sessions and runs the approved import through both production stages", async () => {
+  const typed = "Always use Vitest to run the repository regression tests.";
+  pastSession(typed);
+  const lines: string[] = [], print = (line: string) => lines.push(line);
+  const confirm = vi.fn(async () => "yes");
+  const options = { root: checkout, projectId: project, interactive: true, write: print, now, wake: false };
+  const model = vi.fn(async (request: ModelRequest) => {
+    expect(request.prompt).not.toContain("SCRIPTED_PAST_FIXTURE");
+    if (request.purpose === "filter") {
+      const data = payload(request).messages;
+      expect(data).toMatchObject([{ text: typed, previous_reply: "Vitest is available in this repository." }]);
+      return response({ verdicts: [{ id: data[0].id, verdict: "candidate", kind: "instruction", lasts: "repo", marker: "Always", reason: null, quote: typed }] });
+    }
+    expect(request.purpose).toBe("filter-stage-two");
+    const data = writerInput(request).sources;
+    expect(data).toMatchObject([{ typed, current: true }]);
+    return response({ groups: [write([data[0]!.id], "Regression tests run with Vitest.")] });
+  });
+  registerJobKind(createSessionImportKind({ model, choose: () => "codex", clock: () => now, recordChecks, checksReady: () => true }));
+  await offerSessionImport({ ...options, dryRun: true, ask: confirm });
+  expect(lines.join("\n")).toContain("1 session and 1 eligible prompt");
+  expect(lines.join("\n")).not.toContain(typed);
+  expect(confirm).not.toHaveBeenCalled();
+  expect(sessionRunner(writer)).toBeUndefined();
+  expect(writer.db.prepare("SELECT * FROM jobs").all()).toEqual([]);
+  setSessionRunner(writer, "cli");
+  await offerSessionImport({ ...options, ask: confirm });
+  expect(confirm).toHaveBeenCalledOnce();
+  const queued = writer.db.prepare("SELECT * FROM jobs WHERE kind=?").get(SESSION_LEARN_KIND) as unknown as JobRow;
+  expect(queued.params).not.toContain(typed);
+  const reader = { all: <T>(sql: string, ...args: SQLInputValue[]) => writer.db.prepare(sql).all(...args) as T[] };
+  expect(readSetupSteps(reader, project)).toMatchObject([{ kind: SESSION_LEARN_KIND, state: "queued" }]);
+  await drain(queued.id);
+  expect(model.mock.calls.map(([request]) => request.purpose)).toEqual(["filter", "filter-stage-two"]);
+  expect(notes()).toMatchObject([{ text: "Regression tests run with Vitest.", mex: { source: { producer: "session-import", quote: typed } } }]);
+  expect(hooks.prepare("SELECT * FROM journal").all()).toEqual([]);
+  expect(writer.setting(project, "journal.consumed")).toBeUndefined();
+  lines.length = 0;
+  await offerSessionImport({ ...options, dryRun: true });
+  expect(lines.join("\n")).toContain("0 sessions");
+});
+
+it("reports drift in an approved transcript, including a change to assistant context", async () => {
+  const file = pastSession("Always use Vitest to run the repository regression tests.");
+  setSessionRunner(writer, "cli");
+  const model = vi.fn(async () => { throw new Error("Drifted transcript reached the runner."); });
+  registerJobKind(createSessionImportKind({ model, choose: () => "codex", clock: () => now, checksReady: () => true }));
+  await offerSessionImport({ root: checkout, projectId: project, interactive: true, now, wake: false, write: () => {}, ask: async () => "yes" });
+  const queued = writer.db.prepare("SELECT * FROM jobs WHERE kind=?").get(SESSION_LEARN_KIND) as unknown as JobRow;
+  const before = new Date(now - 60 * 60_000);
+  writeFileSync(file, readFileSync(file, "utf8").replace("Vitest is available", "Different context is available"));
+  utimesSync(file, before, before);
+  for (let i = 0; i < 4 && job(queued.id).state === "queued"; i++) await batch(queued.id);
+  expect(job(queued.id).state).toBe("done with gaps");
+  expect(model).not.toHaveBeenCalled();
+  expect(notes()).toEqual([]);
+});
 function onlyHostHint(request: ModelRequest, message: string, text: string) {
   const { host_matches } = writerInput(request);
   expect(host_matches).toEqual([{ id: message, text, hint_id: expect.stringMatching(/^hint:[a-f0-9]{24}$/u), ref: expect.any(String) }]);

@@ -26,10 +26,11 @@ const status = { claude: "Claude Code", codex: "Codex" };
 
 export const ImportFile = z.object({ agent: agentSchema, path: z.array(z.string().max(255).regex(component))
   .min(2).max(5).refine(parts => parts.every(part => part !== "." && part !== "..")),
-digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u), messages: z.number().int().positive().max(MESSAGES_PER_SESSION) }).strict();
+digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u), messages: z.number().int().positive().max(MESSAGES_PER_SESSION),
+transcript_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional() }).strict();
 export type ImportFile = z.infer<typeof ImportFile>;
 type Settings = Pick<RecordReader, "setting">;
-type ImportOptions = { checkout: string; project: string; window: SourceWindow; store: Settings; home?: string; now?: number };
+type ImportOptions = { checkout: string; project: string; window: SourceWindow; store: Settings; home?: string; now?: number; sessionLearning?: boolean };
 type State = { gaps: Set<string>; visited: number };
 
 export function importsEnabled(store: Settings, project: string): boolean {
@@ -153,14 +154,16 @@ function claudeText(row: Record<string, unknown>): string | null | undefined {
   return blocks.length === 1 ? blocks[0]!.text as string : null;
 }
 
-function safeTyped(text: string): string | undefined {
+function safeTyped(text: string, sessionLearning?: boolean): string | undefined {
   if (text.length > 3000 || Array.from(text).length > 1500 || text.split("\n").length >= 20 || stripHidden(text) !== text
     || /^(?:\s*\/[^/\s]+(?:\s|$)|\s*<)/u.test(text)
     || /<\/?(?:system-reminder|environment_context|command-(?:name|message|args)|local-command[^ >]*|user-prompt-submit-hook|task-notification|channel)\b|\[Pasted (?:text|image)|\[(?:learned, not shared|personal, from|team, from|secret removed)/iu.test(text)
     || /(?:^|\n)\s*(?:diff --git |@@ -\d+|Traceback \(|at .+\(.+:\d+|File ".+", line \d+|\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})/u.test(text)
     || /(?:^|[^\w])[^\s@<>]+@[^\s@<>]+\.[A-Za-z]{2,}\b|(?:\/Users\/|\/home\/|[A-Z]:\\Users\\)/iu.test(text)) return undefined;
   const safe = cleanSourceText(text);
-  return safe && safe.length >= 12 ? safe : undefined;
+  if (!safe) return;
+  if (sessionLearning) return text;
+  return safe.length >= 12 ? safe : undefined;
 }
 
 /** Transcript text exists only while counting candidates or processing an approved batch. */
@@ -190,7 +193,7 @@ function decode(text: string, agent: Agent, options: ImportOptions, ignoreSessio
       session = id; local = matches(payload.cwd);
     }
     if (agent === "codex" && local && row.type === "turn_context" && typeof payload?.cwd === "string" && !matches(payload.cwd)) {
-      return { sources: [], changed: false, limited: false };
+      return { sources: [], changed: false, limited: false, session: undefined };
     }
     if (agent === "codex" && local && row.type === "response_item" && payload?.role === "user") mirroredUser = true;
     let typed: string | null | undefined;
@@ -210,7 +213,7 @@ function decode(text: string, agent: Agent, options: ImportOptions, ignoreSessio
     } else continue;
     if (typed === undefined || typeof row.timestamp !== "string") { changed = true; continue; }
     if (!session || !typed || !validAt(row.timestamp, options.window.since, options.window.until)) continue;
-    const safe = safeTyped(typed);
+    const safe = safeTyped(typed, options.sessionLearning);
     if (!safe) continue;
     const sessionKey = shortHash(`${agent}\0${session}`);
     const id = `session:${sessionKey}:${shortHash(safe)}`;
@@ -220,7 +223,7 @@ function decode(text: string, agent: Agent, options: ImportOptions, ignoreSessio
       link: `past session ${sessionKey}` });
   }
   // A novel shape in a file must never turn another row from it into evidence.
-  return { sources: changed ? [] : [...sources.values()], changed: changed || (!!text.trim() && !recognized) || mirroredUser && !userEvent, limited };
+  return { sources: changed ? [] : [...sources.values()], changed: changed || (!!text.trim() && !recognized) || mirroredUser && !userEvent, limited, session };
 }
 
 function eligibleFiles(options: ImportOptions) {
@@ -242,11 +245,12 @@ function eligibleFiles(options: ImportOptions) {
 function imported(agent: Agent, root: string, path: string[], options: ImportOptions, ignore: (agent: Agent, id: string) => boolean, gaps: Set<string>) {
   const full = join(directories(root, path.slice(0, -1)), path.at(-1)!);
   const body = readPrefix(full, options.now ?? Date.now());
-  if (!body) return [];
+  if (!body) return { sources: [] as SessionSource[] };
   const parsed = decode(body.text, agent, options, ignore);
   if (parsed.changed) gaps.add(`${status[agent]} capture paused for unreadable past sessions.`);
   if (parsed.limited || body.partial && (parsed.sources.length || !body.text)) gaps.add("Some transcript text was outside the import scan limit.");
-  return parsed.sources;
+  return { sources: parsed.sources, session: parsed.session, path: full,
+    transcriptDigest: options.sessionLearning && !body.partial ? sourceDigest(body.text) : undefined };
 }
 
 const fingerprint = (sources: SessionSource[]) => sourceDigest(JSON.stringify(sources.map(({ id, hash, at }) => [id, hash, at])));
@@ -267,13 +271,14 @@ export function previewImport(options: ImportOptions): { files: ImportFile[]; ga
         let examined = 0;
         for (const path of candidates(agent, root, options.checkout, state)) {
           if (++examined > MAX_FILES || files.length >= MAX_SESSIONS) { gaps.add("Some session files were outside the import scan limit."); break; }
-          let sources;
-          try { sources = imported(agent, root, path, options, eligible.ignoreSession, gaps); }
+          let result;
+          try { result = imported(agent, root, path, options, eligible.ignoreSession, gaps); }
           catch { gaps.add(`${status[agent]} capture paused for unreadable past sessions.`); continue; }
+          const { sources, transcriptDigest } = result;
           const digest = fingerprint(sources);
           const messages = sources.filter(source => !options.store.setting(options.project, importedSourceKey(source.id))).length;
           if (!messages || seen.has(digest)) continue;
-          seen.add(digest); files.push({ agent, path, digest, messages });
+          seen.add(digest); files.push({ agent, path, digest, messages, ...(transcriptDigest ? { transcript_digest: transcriptDigest } : {}) });
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") gaps.add(`${status[agent]} capture paused for unreadable past sessions.`);
@@ -293,10 +298,28 @@ export function readImport(files: ImportFile[], options: ImportOptions, gaps: Se
     for (const file of files) {
       try {
         const result = imported(file.agent, realPath(hostRoot(file.agent)), file.path, options, eligible.ignoreSession, gaps);
-        if (fingerprint(result) !== file.digest) { gaps.add("Some approved sessions changed or became unavailable after the preview."); continue; }
-        for (const source of result) if (!options.store.setting(options.project, importedSourceKey(source.id))) sources.set(source.id, source);
+        if (fingerprint(result.sources) !== file.digest) { gaps.add("Some approved sessions changed or became unavailable after the preview."); continue; }
+        for (const source of result.sources) if (!options.store.setting(options.project, importedSourceKey(source.id))) sources.set(source.id, source);
       } catch { gaps.add(`${status[file.agent]} capture paused for unreadable past sessions.`); }
     }
   } finally { eligible.close(); }
   return [...sources.values()];
+}
+
+/** Re-read exactly one approved host file. The complete digest also binds any reply context. */
+export function readSessionImport(file: ImportFile, options: ImportOptions, gaps: Set<string>) {
+  if (!importsEnabled(options.store, options.project)) return;
+  let eligible: ReturnType<typeof eligibleFiles> | undefined;
+  try {
+    eligible = eligibleFiles(options);
+    const result = imported(file.agent, realPath(hostRoot(file.agent)), file.path,
+      { ...options, sessionLearning: true }, eligible.ignoreSession, gaps);
+    if (!result.session || !result.path || fingerprint(result.sources) !== file.digest || result.transcriptDigest !== file.transcript_digest) {
+      gaps.add("An approved session changed or became unavailable after the preview.");
+      return;
+    }
+    const messages = result.sources.filter(source => !options.store.setting(options.project, importedSourceKey(source.id)));
+    return { session: result.session, path: result.path, messages };
+  } catch { gaps.add(`${status[file.agent]} capture paused for unreadable past sessions.`); }
+  finally { eligible?.close(); }
 }

@@ -17,11 +17,13 @@ import { NOTE_ATTEMPT_LIMIT, noteAttempt, type NoteAttempt } from "./note-attemp
 import { captureProfiles, typedCapture, type CaptureAgent, type TranscriptAgent } from "./profiles.js";
 import { readReplyCache, type ReplyCache } from "./reply-cache.js";
 import { timestampNs } from "./time.js";
+import { importLearningOn, sessionLearningOn, sessionRunner, type SessionRunner } from "../knowledge/session-learning.js";
 export { timestampNs } from "./time.js";
 
 export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, inputBytes: 200 << 10, promptBytes: 256 << 10,
   files: 16, fileBytes: 16 << 10, idleMs: 10 * 60_000, ageMs: 24 * 60 * 60_000 } as const;
-export interface FilterParams { checkout: string; agent: "claude" | "codex"; sourceAgent?: CaptureAgent; generation?: string; sessionId?: string; request?: string; }
+export interface FilterParams { checkout: string; agent: "claude" | "codex"; sourceAgent?: CaptureAgent; generation?: string; sessionId?: string; request?: string;
+  runner?: SessionRunner; importing?: true; }
 export interface Message { id: string; row: number; session: string; at: string; text: string; marks: string;
   previous_reply: string | null; previous_options?: ReplyOption[]; delivered: string[]; }
 export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; attempt?: NoteAttempt; }
@@ -44,10 +46,13 @@ export function acknowledged(writer: RecordWriter, project: string, session: str
 }
 export function filterAllowed(writer: RecordWriter, project: string, params: FilterParams): boolean {
   const checkout = writer.checkout(params.checkout);
+  const choice = params.runner && sessionRunner(writer);
   return !!checkout && checkout.project_id === project && checkout.state !== "off"
     && !(checkout.state === "off until" && Date.parse(checkout.off_until ?? "") > Date.now())
     && automaticWorkEnabled(writer, project) && writer.setting("global", "capture.enabled") !== "false"
-    && writer.setting(project, "capture.enabled") !== "false" && sessionWorkEnabled(writer, params.sourceAgent ?? params.agent, params.sessionId);
+    && writer.setting(project, "capture.enabled") !== "false" && sessionWorkEnabled(writer, params.sourceAgent ?? params.agent, params.sessionId)
+    && (!params.runner || (params.importing ? importLearningOn(writer) : sessionLearningOn(writer) && statementsOn(writer))
+      && choice?.revision === params.runner.revision && choice.mode === params.runner.mode);
 }
 export function filterSession(writer: Pick<RecordWriter, "location">, project: string, checkout: string, session: string) {
   const dir = containedDirectory(writer.location.directory, ["filter-sessions"]);
@@ -214,10 +219,14 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
   } finally { hooks?.close(); }
 }
 
-interface SessionSelection { session: string; retryRows?: readonly number[]; }
+export interface SessionSelection { session: string; retryRows?: readonly number[]; }
+export interface SessionHost { id: string; path: string; first: string; last: string; }
+export interface SessionInput {
+  session: string; input: FilterInput; sourcePosition?: SessionPosition; cache?: string; agent?: CaptureAgent; host?: SessionHost;
+}
 /** Select one finished session, with a bounded page for unusually long sessions. */
 export function stageOneInput(writer: RecordWriter, project: string, checkout: string, scan: ScanWindow, contextMode: ReplyContextMode,
-  selection?: SessionSelection, now = Date.now()): { session: string; input: FilterInput; sourcePosition?: SessionPosition; cache?: string } | undefined {
+  selection?: SessionSelection, now = Date.now()): SessionInput | undefined {
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
     if (hooks?.diagnostic) throw new Error("The filter needs a compatible capture journal.");
@@ -262,7 +271,7 @@ export function stageOneInput(writer: RecordWriter, project: string, checkout: s
       retryRows ? "retry" : "page", activity?.agent, cache);
     const meta = activity?.meta;
     const sourcePosition = meta && { branch: meta.branch, head: meta.head, position_at: meta.position_at, seen_at: meta.seen_at };
-    return { session, input, sourcePosition, cache: cache?.file };
+    return { session, input, sourcePosition, cache: cache?.file, agent: activity?.agent };
   } finally { hooks?.close(); }
 }
 

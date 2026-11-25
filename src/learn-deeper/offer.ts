@@ -17,6 +17,7 @@ import { hosts } from "./hosts.js";
 import { BACKFILL_PULLS_PER_BATCH, LEARN_COMMAND, LEARN_KIND, MAX_DOCS, MAX_PULLS, orderBackfillPulls, Plan, quoteCeiling, quoteTokens,
   reviewWindow, type LearningPlan } from "./plan.js";
 import { importsEnabled, previewImport, type ImportFile } from "./session-import.js";
+import { producer } from "../knowledge/producers.js";
 
 type Print = (line: string) => void;
 type Confirm = (lines: readonly string[], details: readonly string[]) => Promise<boolean>;
@@ -246,14 +247,26 @@ async function raiseCeiling(root: string, project: string, write: Print): Promis
   } finally { current.close(); }
 }
 
-export async function runLearnCommand(options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }): Promise<void> {
-  const project = knowledgeProject({ projectPath: process.cwd() });
+export async function runLearnCommand(options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean; runner?: boolean }): Promise<void> {
   const interactive = detectCaller() === "person";
+  if (options.runner) {
+    if (options.dryRun || options.sessions || options.raiseCeiling || options.modelSetup || options.weekly === false) throw new Error("Use --runner by itself to choose a session learning runner.");
+    const { offerSessionRunner } = await import("../filter/import-offer.js");
+    await offerSessionRunner({ write: console.log, interactive });
+    return;
+  }
+  const project = knowledgeProject({ projectPath: process.cwd() });
   if (options.modelSetup !== undefined && !["mixed", "best-only"].includes(options.modelSetup)) throw new Error("Use --model-setup mixed or --model-setup best-only.");
   const reader = openRecordReadOnly();
   try {
     if (!reader?.get("SELECT 1 FROM checkouts WHERE path=? AND project_id=?", project.root, project.projectId)) throw new Error("Run `mex` here to register this repo first.");
   } finally { reader?.close(); }
+  if (options.sessions && producer("session-import").active && !options.raiseCeiling) {
+    if (options.modelSetup || options.weekly === false) throw new Error("Use --sessions on its own, or with --dry-run to preview past sessions.");
+    const { offerSessionImport } = await import("../filter/import-offer.js");
+    await offerSessionImport({ root: project.root, projectId: project.projectId, write: console.log, interactive, dryRun: options.dryRun });
+    return;
+  }
   if (options.raiseCeiling) {
     if (options.dryRun || options.sessions !== undefined || options.weekly === false) throw new Error("Use --raise-ceiling by itself to resume the existing quote.");
     if (!interactive) { console.log("Run `mex learn --raise-ceiling` in a terminal to review and approve a new limit."); return; }

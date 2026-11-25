@@ -21,8 +21,9 @@ import { stagePromotion } from "./publication.js";
 import { planSessionNotes, saveSessionNotes, settleSessionNotes, type SessionNote } from "./session-notes.js";
 import { ownedFilterWrite, settleStageOne, stageOneBatchNeedsDecision, stageOneBatches } from "./stage-one.js";
 import { readStageTwoInput, stageTwoPending, stageTwoSourcesCurrent, type StageTwoSource } from "./stage-two-input.js";
-import { parseStageTwo, SESSION_PRODUCER, stageTwoPrompt, stageTwoRepairs, type StageTwoDraft } from "./stage-two-plan.js";
+import { parseStageTwo, stageTwoPrompt, stageTwoRepairs, type StageTwoDraft } from "./stage-two-plan.js";
 import type { ReplyContextMode } from "./transcript.js";
+import { isImportedSession } from "./import-data.js";
 export { stageTwoPending };
 
 const DAY_MS = 86_400_000;
@@ -81,9 +82,9 @@ interface StageTwoResult { summary: string; results?: number; tokens?: number; w
 export async function runStageTwo(writer: RecordWriter, project: string, params: FilterParams, job: JobRow, at: Position,
   deps: Dependencies): Promise<StageTwoResult | undefined> {
   const { checkout } = params, now = deps.clock();
-  const allowed = (record: RecordWriter) => deps.enabled() && statementsOn(record) && filterAllowed(record, project, params);
+  const allowed = (record: RecordWriter) => deps.enabled() && (params.importing || statementsOn(record)) && filterAllowed(record, project, params);
   if (!allowed(writer)) return;
-  const complete = stageOneBatches(writer, project, checkout).filter(row => !row.batch.retry.length);
+  const complete = stageOneBatches(writer, project, checkout).filter(row => !row.batch.retry.length && isImportedSession(row.batch.session) === !!params.importing);
   if (!complete.length) return;
   // Verdicts written before Stage 2 can still occupy space in the active queue.
   const handled = complete.filter(batch => !stageOneBatchNeedsDecision(batch));
@@ -101,7 +102,7 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
     if (!allowed(writer)) throw new Error(STALE);
     saveSessionNotes(writer, lifetimes);
   });
-  const input = readStageTwoInput(writer, project, checkout, now, at.branch, deps.contextMode);
+  const input = readStageTwoInput(writer, project, checkout, now, at.branch, deps.contextMode, !!params.importing);
   if (input.exhausted.size) {
     // Old, unavailable or expired sources need no model call, even on a full store.
     ownedFilterWrite(writer, job, () => {
@@ -155,14 +156,15 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
     const records = draft.members.filter(s => s.verdict.verdict === "candidate" && s.verdict.kind !== "approval" && s.note).map(sourceRecord);
     const { item } = draft, source = sourceRecord(draft.source);
     const label = draft.hostProof ? HOST_MEMORY_LABEL : undefined;
-    const sourceRef = "capture " + source.source.at.slice(0, 10) + " session " + hash(draft.source.message.session).slice(7, 23) + " row " + draft.source.message.row;
+    const sourceRef = (draft.source.host ? "past session " : "capture ") + source.source.at.slice(0, 10)
+      + " session " + hash(draft.source.message.session).slice(7, 23) + " row " + draft.source.message.row;
     let recorded: EntryCheck[] | undefined;
     try { recorded = await deps.recordChecks(request, checks); } catch { /* Leave the original note intact. */ }
     if (!recorded || recorded.length !== checks.length || !recorded.every((check, i) => CheckSchema.safeParse(check).success
       && check.kind === checks[i]!.kind && check.role === checks[i]!.role && isDeepStrictEqual(check.target, checks[i]!.target))) return;
     try {
       const entry = validateEntry({ text: stripHidden(item.text), mex: {
-        id: draft.id, kind: item.kind, scope: item.scope, source: { type: "person", ref: sourceRef, quote: item.quote, producer: SESSION_PRODUCER, model, label },
+        id: draft.id, kind: item.kind, scope: item.scope, source: { type: "person", ref: sourceRef, quote: item.quote, producer: draft.producer, model, label },
         evidence: "observed", one_line: stripHidden(item.one_line), checks: recorded,
         status: "active", created: new Date(now).toISOString().slice(0, 10),
       } });
@@ -183,7 +185,7 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
       assertNoSecrets(enriched);
       vocabulary ??= repoVocabulary(checkout);
       const holds = [...new Set(records.flatMap(record => privacyHolds({ ...item, checks: recorded!, needs_checks: false, source: record.source, quote: record.quote }, vocabulary!)))].sort();
-      const proposal: Proposal = { producer: SESSION_PRODUCER, id: draft.id, kind: enriched.mex.kind as Proposal["kind"], text: enriched.text,
+      const proposal: Proposal = { producer: draft.producer, id: draft.id, kind: enriched.mex.kind as Proposal["kind"], text: enriched.text,
         oneLine: enriched.mex.one_line, anchors: { scope: enriched.mex.scope }, checks: recorded.map(check => toProposedCheck(check)), model, label,
         source: { type: "person", ref: sourceRef, quote: item.quote, text: draft.source.message.text },
         evidence: [...new Set(records.flatMap(r => [r.source.row!, hash(r.source.session!)]))].slice(0, 32),
@@ -279,7 +281,7 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
           sessions: [...new Set(records.flatMap(r => r.source.session ? [r.source.session] : []))], sources: records,
           context_source: records.find(r => r.source.reply_context_hash), needs_checks: false, corroborated: draft.hostProof ? "host-memory" : undefined }));
         if (draft.retained.scope.kind === "seen") promoted.set(draft.retained.id, draft.hostProof ? "host-memory" : undefined);
-        if (draft.hostProof) stagePromotion(record, project, draft.id, checkout, at, hash(serializeEntry(entry)));
+        if (draft.hostProof && !draft.source.host) stagePromotion(record, project, draft.id, checkout, at, hash(serializeEntry(entry)));
         const priorId: unknown = previous && JSON.parse(previous).note;
         if (typeof priorId === "string" && /^sha256:[a-f0-9]{64}$/u.test(priorId) && priorId !== draft.retained.id)
           retire.set(priorId, { reason: draft.relation === "correction" ? "corrected" : "restated", replacement: draft.retained.id });

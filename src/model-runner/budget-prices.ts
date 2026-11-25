@@ -1,5 +1,6 @@
 import type { Tokens } from "../record/usage.js";
 import { weightedTokens, type TokenWeights } from "./budget-policy.js";
+import { SESSION_API_MODEL, SESSION_API_RATES } from "./session-api-policy.js";
 
 /** Reference list-price weights, checked 2026-11-14. Units: nanodollars/token.
  * These value tokens for admission; they are not subscription bills. Claude
@@ -24,6 +25,7 @@ const luna: Price = {
 const PRICES: Readonly<Record<string, Price>> = {
   opus, haiku, "claude-opus-5-5": opus, "claude-haiku-5-5": haiku,
   "gpt-6.1-sol": sol, "gpt-6-luna": luna,
+  [SESSION_API_MODEL]: { weights: SESSION_API_RATES },
 };
 /** Own-usage logs lack model labels and cache durations: fixed, estimated reference valuation. */
 export const OWN_REFERENCE: Readonly<Record<string, TokenWeights>> = {
