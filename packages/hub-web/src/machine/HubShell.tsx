@@ -1,17 +1,26 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
-import { FolderGit2, House, Menu, Terminal, X } from "lucide-react";
+import { FolderGit2, House, ListTodo, Menu, Terminal, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { Separator } from "../components/primitives/separator";
 import { cn } from "../lib/utils";
 import shell from "../styles/shell.module.css";
-import { AllReposPage, RepoPage, UnknownRepoPage, repoPath } from "./pages";
-import { HubBanners, HubBrand, ThemeToggle } from "./ui";
+import { useHome, useHubEvents, useJobActions, useJobs, type HubEventState } from "./data";
+import { UnknownRepoPage } from "./pages";
+import type { HomeOverview, HubJob, HubPreview, JobAction } from "./types";
+import { HubBanners, HubBrand, ThemeToggle, type PageLoad } from "./ui";
 import styles from "./machine.module.css";
 
-interface HubShellProps {
+const HomePage = lazy(() => import("./HomePage"));
+const JobsPage = lazy(() => import("./JobsPage"));
+const navPages = [
+  { page: "home", label: "Home", icon: House },
+  { page: "jobs", label: "Jobs", icon: ListTodo },
+] as const;
+
+interface ShellProps {
   session: MachineSession;
   projects: MachineProject[] | undefined;
   projectsError: boolean;
@@ -19,16 +28,74 @@ interface HubShellProps {
   connectionLost: boolean;
 }
 
-export function HubShell({ session, projects, projectsError, retryProjects, connectionLost }: HubShellProps) {
+type HubShellProps = ShellProps & (
+  | { preview: HubPreview }
+  | { preview?: undefined; checkSession: () => void; reportDataError: (error: unknown) => void }
+);
+
+interface HubData {
+  overview?: HomeOverview;
+  jobs?: readonly HubJob[];
+  homeLoad?: PageLoad;
+  jobsLoad?: PageLoad;
+  changeJob: (job: HubJob, action: JobAction) => void | Promise<void>;
+}
+
+export function HubShell(props: HubShellProps) {
+  if (props.preview) {
+    const { jobs, overview, changeJob } = props.preview;
+    return <HubLayout {...props} data={{ jobs, overview, changeJob: (job, action) => changeJob(job.id, action) }} fixture />;
+  }
+  return <LiveHubShell {...props} />;
+}
+
+function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & {
+  checkSession: () => void;
+  reportDataError: (error: unknown) => void;
+}) {
+  const events = useHubEvents(checkSession);
+  const home = useHome(events);
+  const jobs = useJobs(events);
+  const changeJob = useJobActions(props.session.csrfToken, reportDataError);
+
+  useEffect(() => {
+    if (home.error) reportDataError(home.error);
+    if (jobs.error) reportDataError(jobs.error);
+  }, [home.error, jobs.error, reportDataError]);
+
+  return <HubLayout {...props} events={events} data={{
+    overview: home.data, jobs: jobs.data, changeJob,
+    homeLoad: { loading: home.isPending, error: home.isError, retry: () => void home.refetch() },
+    jobsLoad: { loading: jobs.isPending, error: jobs.isError, retry: () => void jobs.refetch() },
+  }} />;
+}
+
+function HubLayout({ session, projects, projectsError, retryProjects, connectionLost, fixture, events, data }: ShellProps & {
+  fixture?: boolean;
+  events?: HubEventState;
+  data: HubData;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const main = useRef<HTMLElement>(null);
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const previousPath = useRef(pathname);
-  const projectId = useMatch("/repos/:projectId")?.params.projectId;
+  const projectId = useMatch("/repos/:projectId/*")?.params.projectId;
+  const machineJobs = useMatch("/jobs");
+  const repoJobs = useMatch("/repos/:projectId/jobs");
   const project = projects?.find(({ id }) => id === projectId);
   const navigate = useNavigate();
   const terminal = session.mode === "terminal";
+
+  function pagePath(page: "home" | "jobs", id?: string) {
+    const repo = id ? `/repos/${encodeURIComponent(id)}` : "";
+    const path = page === "jobs" ? `${repo}/jobs` : repo || "/";
+    return path + (fixture ? search : "");
+  }
+
+  const homeHref = pagePath("home");
+  const allJobsHref = pagePath("jobs");
+  const unknownRepo = <UnknownRepoPage homeHref={homeHref} />;
 
   useEffect(() => {
     if (previousPath.current === pathname) return;
@@ -69,17 +136,19 @@ export function HubShell({ session, projects, projectsError, retryProjects, conn
         <div className={shell.navScroller}>
           <nav aria-label="Primary" className={shell.nav}>
             <ul className={shell.navList}>
-              <li>
-                <NavLink
-                  className={({ isActive }) => cn(shell.navLink, isActive && shell.navLinkActive)}
-                  end
-                  onClick={closeMenu}
-                  to={projectId ? `/repos/${encodeURIComponent(projectId)}` : "/"}
-                >
-                  <House aria-hidden="true" />
-                  <span>Home</span>
-                </NavLink>
-              </li>
+              {navPages.map(({ page, label, icon: Icon }) => (
+                <li key={page}>
+                  <NavLink
+                    className={({ isActive }) => cn(shell.navLink, isActive && shell.navLinkActive)}
+                    end
+                    onClick={closeMenu}
+                    to={pagePath(page, projectId)}
+                  >
+                    <Icon aria-hidden="true" />
+                    <span>{label}</span>
+                  </NavLink>
+                </li>
+              ))}
             </ul>
           </nav>
         </div>
@@ -96,7 +165,7 @@ export function HubShell({ session, projects, projectsError, retryProjects, conn
           aria-label="Repo switcher"
           className={styles.switcher}
           disabled={projects === undefined}
-          onChange={(event) => navigate(event.target.value === "" ? "/" : repoPath(event.target.value))}
+          onChange={(event) => navigate(pagePath(machineJobs || repoJobs ? "jobs" : "home", event.target.value))}
           value={project?.id ?? ""}
         >
           <NativeSelectOption value="">All repos</NativeSelectOption>
@@ -106,7 +175,7 @@ export function HubShell({ session, projects, projectsError, retryProjects, conn
       </header>
       <main className={cn(shell.main, styles.main)} id="main-content" ref={main} tabIndex={-1}>
         <div className={styles.content}>
-          <HubBanners stopped={connectionLost} terminal={terminal} updated={session.version !== __MEX_HUB_VERSION__} />
+          <HubBanners events={events} stopped={connectionLost} terminal={terminal} updated={session.version !== __MEX_HUB_VERSION__} />
           {projectsError && !connectionLost && (
             <div className={styles.pageState}>
               <p role="status">Couldn’t load repos.</p>
@@ -114,11 +183,45 @@ export function HubShell({ session, projects, projectsError, retryProjects, conn
             </div>
           )}
           {projects ? (
-            <Routes>
-              <Route element={<AllReposPage projects={projects} />} path="/" />
-              <Route element={project ? <RepoPage project={project} /> : <UnknownRepoPage />} path="/repos/:projectId" />
-              <Route element={<Navigate replace to="/" />} path="*" />
-            </Routes>
+            <Suspense fallback={<p className={styles.pageState} role="status">{machineJobs || repoJobs ? "Loading jobs…" : "Loading Home…"}</p>}>
+              <Routes>
+                <Route
+                  element={(
+                    <HomePage
+                      jobs={data.jobs}
+                      jobsLoad={data.jobsLoad}
+                      jobsHref={allJobsHref}
+                      load={data.homeLoad}
+                      overview={data.overview}
+                      projects={projects}
+                    />
+                  )}
+                  path="/"
+                />
+                <Route
+                  element={project ? (
+                    <HomePage
+                      jobs={data.jobs}
+                      jobsLoad={data.jobsLoad}
+                      jobsHref={pagePath("jobs", project.id)}
+                      load={data.homeLoad}
+                      overview={data.overview}
+                      project={project}
+                      projects={projects}
+                    />
+                  ) : unknownRepo}
+                  path="/repos/:projectId"
+                />
+                <Route element={<JobsPage allJobsHref={allJobsHref} changeJob={data.changeJob} jobs={data.jobs} load={data.jobsLoad} projects={projects} />} path="/jobs" />
+                <Route
+                  element={project ? (
+                    <JobsPage allJobsHref={allJobsHref} changeJob={data.changeJob} jobs={data.jobs} key={project.id} load={data.jobsLoad} project={project} projects={projects} />
+                  ) : unknownRepo}
+                  path="/repos/:projectId/jobs"
+                />
+                <Route element={<Navigate replace to={homeHref} />} path="*" />
+              </Routes>
+            </Suspense>
           ) : !projectsError && !connectionLost && (
             <p className={styles.pageState} role="status">Loading repos…</p>
           )}

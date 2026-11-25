@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Button } from "../components/primitives/button";
 import { useMachineConnection } from "./connection";
 import { HubShell } from "./HubShell";
@@ -5,12 +6,30 @@ import { RelinkPage } from "./pages";
 import { HubBanners, HubBrand } from "./ui";
 import styles from "./machine.module.css";
 
+const FixtureHub = import.meta.env.DEV ? lazy(() => import("./FixtureHub")) : null;
+
 export function MachineHub() {
-  const { session, projects, connectionLost } = useMachineConnection();
+  if (FixtureHub) {
+    const variant = new URLSearchParams(window.location.search).get("fixture");
+    if (variant === "home" || variant === "populated" || variant === "empty" || variant === "stale" || variant === "updating") {
+      return (
+        <Suspense fallback={null}>
+          <FixtureHub key={variant} variant={variant} />
+        </Suspense>
+      );
+    }
+  }
+  return <ConnectedHub />;
+}
+
+function ConnectedHub() {
+  const { session, projects, connectionLost, checkSession, reportDataError } = useMachineConnection();
   if (session.data?.current) {
     return (
       <HubShell
+        checkSession={checkSession}
         connectionLost={connectionLost}
+        reportDataError={reportDataError}
         projects={projects.data?.projects}
         projectsError={projects.isError}
         retryProjects={() => void projects.refetch()}
