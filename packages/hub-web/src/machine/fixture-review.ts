@@ -39,7 +39,7 @@ function reviewNote(card: MachineReviewCard, fields: ReviewDraft, at: string, au
   return {
     id, repoId: card.repoId, audience, key: [card.repoId, audience, id].join(":"),
     oneLine: fields.claim, kind: fields.kind, scope: fields.scope, text: fields.text,
-    revision: "r1", status: audience === "team" ? "upToDate" : "notChecked",
+    revision: "review-" + at, status: audience === "team" ? "upToDate" : "notChecked",
     source: audience === "team" ? { type: "team", path, checkout } : { type: "note", at, via: "hub", edited: fields !== card },
     checkout, lastUsedAt: null, checks: [], useCount30Days: 0, history: [{ type: "added", at }],
   };
@@ -93,10 +93,11 @@ export function useFixtureReview(
       const writing = retired ?? note;
       if (writing.source.type !== "team") throw stale;
       const { path, checkout } = writing.source;
-      const before = retired ? teamFile(retired) : [];
+      const previousNote = retired ?? knowledge.getDetail(note.key);
+      const before = previousNote ? teamFile(previousNote) : [];
       const after = retired ? teamFile(retired, at, reason) : teamFile(note);
       const checks = retired ? [] : sharingChecks(card.repoId);
-      const signature = JSON.stringify([action, expectedRevision, retired?.revision, path, checkout, after]);
+      const signature = JSON.stringify([action, expectedRevision, previousNote?.revision, path, checkout, after]);
       if (!previewRevision) {
         const preview: ReviewWritePreview = {
           type: "preview", path, checkout, checks, diff: unifiedDiff(path, before, after), revision: "preview-" + ++sequence.current,
@@ -113,7 +114,6 @@ export function useFixtureReview(
     const finish = (outcome: "kept" | "shared" | "used" | "keptCurrent" | "retired", toast: string, knowledgeKey = note.key) => {
       const word = outcome === "shared" ? "Shared" : outcome === "used" ? "Used" : outcome === "kept" ? "Kept" : undefined;
       completed.current.set(key, { type: "alreadyHandled", outcome: word });
-      remove(key);
       return { type: "applied" as const, outcome, toast, knowledgeKey };
     };
 
@@ -142,6 +142,6 @@ export function useFixtureReview(
   return {
     queue,
     act: (key, request, onRetry) => retryKnowledgeBusy(() => perform(key, request), onRetry),
-    dismissHandled: remove,
+    removeCompleted: (key) => { if (completed.current.has(key)) remove(key); },
   };
 }

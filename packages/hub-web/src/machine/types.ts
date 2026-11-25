@@ -59,7 +59,7 @@ export type ReviewHandled = Extract<MachineReviewActionResponse, { type: "alread
 export interface ReviewPreview {
   queue?: MachineReviewQueue;
   act: (key: string, request: MachineReviewActionRequest, onRetry: () => void) => Promise<MachineReviewActionResponse>;
-  dismissHandled: (key: string) => void;
+  removeCompleted: (key: string) => void;
 }
 
 export interface KnowledgeFilters {

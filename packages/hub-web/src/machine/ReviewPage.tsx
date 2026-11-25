@@ -163,7 +163,7 @@ export default function ReviewPage({ project, projects, review, overview, load }
           {card && review ? (
             <ReviewFocus card={card} key={card.key} leaving={Boolean(leaving)} now={now} repo={repoNames.get(card.repoId) ?? "Unknown repo"} review={review} titleRef={cardTitle}
               onApplied={(result) => { setToast(result); advance(card); }}
-              onHandled={() => { review.dismissHandled(card.key); advance(card); }} />
+              onHandled={() => { advance(card); review.removeCompleted(card.key); }} />
           ) : selected ? (
             <ReviewCard now={now} repo={repoNames.get(selected.repoId) ?? "Unknown repo"} row={selected} titleRef={cardTitle} />
           ) : (

@@ -89,17 +89,20 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
     if (write.pending || moving.current || handled) return;
     setError("");
     void write.run((onRetry) => review.act(card.key, request, onRetry), (result) => {
-      if (!active.current) return;
-      if (result.type === "preview") {
+      if (result.type === "applied") {
+        if (active.current) {
+          moving.current = true;
+          setDialog(null);
+          onApplied(result);
+        }
+        review.removeCompleted(card.key);
+      } else if (!active.current) {
+        return;
+      } else if (result.type === "preview") {
         setDialog({ type: "preview", preview: result, request });
       } else {
         setDialog(null);
-        if (result.type === "applied") {
-          moving.current = true;
-          onApplied(result);
-        } else {
-          setHandled(result);
-        }
+        setHandled(result);
       }
     }, (error) => {
       if (active.current) setError(knowledgeSaveError(error, "Couldn't save. Try again."));
