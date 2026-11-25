@@ -3,6 +3,7 @@ import type { MachineProject, MachineRepoSetup, MachineSetup } from "@mex/hub-co
 import { ArrowRight } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { repoPrefix } from "./review-model";
+import { SetupQuestions } from "./SetupQuestions";
 import { SetupSteps } from "./SetupSteps";
 import type { SetupPreview } from "./types";
 import { CommandCard, HubPageHeader } from "./ui";
@@ -85,6 +86,7 @@ function FreeFindings({ repo }: { repo: MachineRepoSetup }) {
 }
 
 function SetupSummary({ project, repo }: { project: MachineProject; repo: MachineRepoSetup }) {
+  const saved = repo.questions.filter(({ outcome }) => outcome?.status === "saved").length;
   const seconds = (repo.summary.elapsedMs / 1_000).toLocaleString("en-US", { maximumFractionDigits: 1 });
   return (
     <section className={styles.summary}>
@@ -92,6 +94,7 @@ function SetupSummary({ project, repo }: { project: MachineProject; repo: Machin
         <h2>Summary</h2>
         <p>Read {project.name} in {seconds} s, for $0.</p>
         {repo.summary.commandsSaved && <p>Your agents now get its test and build commands.</p>}
+        {saved > 0 && <p>Your {saved === 1 ? "answer reaches" : `${saved} answers reach`} your agents as “you said”.</p>}
       </div>
       <div className={styles.rerun}>
         <p>To run setup again, open this repo in a terminal.</p>
@@ -109,6 +112,8 @@ export default function SetupPage({ project, projects, setup }: {
   const { search } = useLocation();
   const repo = setup.data.repos.find(({ repoId }) => repoId === project?.id);
 
+  const learning = repo?.steps.some(({ kind, state }) => kind === "learn-deeper" && state === "running") ?? false;
+
   return (
     <div className={styles.page}>
       <HubPageHeader
@@ -120,6 +125,9 @@ export default function SetupPage({ project, projects, setup }: {
         <>
           <FreeFindings repo={repo} />
           <SetupSteps key={repo.repoId} repo={repo} search={search} setup={setup} />
+          <SetupQuestions key={repo.repoId} learning={learning} questions={repo.questions}
+            reply={(id, choice) => setup.replyToQuestion(repo.repoId, id, choice)}
+            skipAll={() => setup.skipQuestions(repo.repoId)} />
           <SetupSummary project={project} repo={repo} />
         </>
       ) : <SetupCommand project={project} />}

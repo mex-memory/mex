@@ -4,7 +4,7 @@ import { useFixtureKnowledge } from "./fixture-knowledge";
 import { useFixtureReview } from "./fixture-review";
 import { fixtureHomeReview } from "./fixture-review-data";
 import {
-  fixtureSetupJobs, requestFixtureStep, settleFixtureStep, skipFixtureLearning, startFixtureLearning, updateFixtureRepo, updateFixtureStep,
+  fixtureSetupJobs, replyFixtureQuestions, requestFixtureStep, settleFixtureStep, skipFixtureLearning, startFixtureLearning, updateFixtureRepo, updateFixtureStep,
 } from "./fixture-setup";
 import { updateFixtureSettings } from "./fixture-settings";
 import { getFixture, type FixtureVariant } from "./fixtures";
@@ -132,6 +132,10 @@ export default function FixtureHub({ variant }: { variant: FixtureVariant }) {
             setSetup((current) => current && updateFixtureRepo(current, repoId, (repo) => startFixtureLearning(repo, quote, at)));
           },
           skipLearning: (repoId) => setSetup((current) => current && updateFixtureRepo(current, repoId, skipFixtureLearning)),
+          replyToQuestion: (repoId, questionId, choice) => {
+            setSetup((current) => current && updateFixtureRepo(current, repoId, (repo) => replyFixtureQuestions(repo, { questionId, choice })));
+          },
+          skipQuestions: (repoId) => setSetup((current) => current && updateFixtureRepo(current, repoId, replyFixtureQuestions)),
         },
         agents: { agents, getRepairPreview: (id) => fixture.agents.repairPreviews[id], repair },
         settings: { settings, uninstall: fixture.settings.uninstall, write },

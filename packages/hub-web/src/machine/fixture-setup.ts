@@ -200,3 +200,14 @@ export function startFixtureLearning(repo: MachineRepoSetup, quote: MachineSetup
 export function skipFixtureLearning(repo: MachineRepoSetup): MachineRepoSetup {
   return repo.learnDeeper?.state === "offered" ? { ...repo, learnDeeper: { state: "skipped" } } : repo;
 }
+
+export function replyFixtureQuestions(repo: MachineRepoSetup, reply?: { questionId: string; choice: string }): MachineRepoSetup {
+  return {
+    ...repo, questions: repo.questions.map((question) => {
+      if (question.outcome || reply && reply.questionId !== question.id) return question;
+      if (!reply || reply.choice === "skip") return { ...question, outcome: { status: "skipped" } };
+      if (!question.choices.some(({ key }) => key === reply.choice)) return question;
+      return { ...question, outcome: { status: "saved", line: 'Saved: your agents get it as "you said"' } };
+    }),
+  };
+}

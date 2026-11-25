@@ -143,4 +143,6 @@ export interface SetupPreview {
   changeStep: (jobId: string, action: SetupStepAction) => void;
   startLearning: (repoId: string, quote: MachineSetupQuote) => void;
   skipLearning: (repoId: string) => void;
+  replyToQuestion: (repoId: string, questionId: string, choice: string) => void;
+  skipQuestions: (repoId: string) => void;
 }
