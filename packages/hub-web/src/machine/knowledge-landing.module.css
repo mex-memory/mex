@@ -4,6 +4,134 @@
   gap: 16px;
 }
 
+.review.card {
+  padding-block-end: 9px;
+}
+
+.review h2 > span {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+.reviewItems {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reviewRow {
+  display: grid;
+  min-height: 56px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+}
+
+.reviewRow + .reviewRow,
+.reviewFooter {
+  border-top: 1px solid var(--border);
+}
+
+.reviewLink {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 16px minmax(0, 1fr) minmax(0, 268px);
+  align-items: center;
+  column-gap: 9px;
+  padding-block: 7px;
+  color: var(--card-foreground);
+  text-decoration: none;
+  text-underline-offset: 3px;
+}
+
+.reviewLink:hover strong {
+  text-decoration: underline;
+}
+
+.reviewLink:focus-visible {
+  outline-offset: 1px;
+}
+
+.reviewLink .reviewIcon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.reviewIdentity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.reviewIdentity > *,
+.reviewWhy {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reviewIdentity strong {
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.reviewIdentity > span,
+.reviewWhy {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.reviewActions {
+  display: flex;
+  gap: 2px;
+}
+
+.reviewActions button {
+  color: var(--text-secondary);
+}
+
+.reviewActions button:last-child:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.reviewFooter {
+  padding-top: 5px;
+}
+
+.reviewFooter > a {
+  min-height: 26px;
+}
+
+.calm.card {
+  min-height: 56px;
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  padding-block: 8px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.calm p {
+  margin: 0;
+}
+
+.calm strong {
+  color: var(--card-foreground);
+  font-weight: 550;
+}
+
+.calm svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--success);
+}
+
 .card {
   display: flex;
   min-width: 0;
@@ -127,6 +255,23 @@
   .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
+@media (max-width: 960px) {
+  .reviewLink {
+    grid-template-columns: 16px minmax(0, 1fr);
+    row-gap: 3px;
+  }
+
+  .reviewWhy {
+    grid-column: 2;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
 @media (max-width: 560px) {
   .card { padding: 14px 15px; }
+
+  .reviewRow { grid-template-columns: minmax(0, 1fr); }
+  .reviewLink { padding-block: 7px 2px; }
+  .reviewActions { justify-self: end; padding-bottom: 3px; }
 }

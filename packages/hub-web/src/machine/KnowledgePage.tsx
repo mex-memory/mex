@@ -6,8 +6,9 @@ import { Button } from "../components/primitives/button";
 import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
-import { KnowledgeDate, KnowledgeDetailPanel } from "./KnowledgeDetail";
+import { KnowledgeDate, KnowledgeDetailPanel, type KnowledgeItemAction } from "./KnowledgeDetail";
 import { KnowledgeKindGrid } from "./KnowledgeGroups";
+import { KnowledgeNeedsLook } from "./KnowledgeNeedsLook";
 import { audienceLabels, kindLabels } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
@@ -43,10 +44,14 @@ interface FilterOption {
 const kindOptions = Object.entries(kindLabels).map(([value, label]) => ({ value, label }));
 const audienceOptions = Object.entries(audienceLabels).map(([value, label]) => ({ value, label }));
 const statusSymbols = { upToDate: "✓", codeChanged: "⚠", outOfDate: "⊗", notChecked: "◌" };
-const statusOptions = knowledgeStatuses.map(({ key, slug, label }) => ({
-  value: slug, label, optionLabel: `${statusSymbols[key]} ${label}`,
-  display: <KnowledgeStatusLabel className={styles.status} status={key} />,
-}));
+const needsLookFilter = "needs-look";
+const statusOptions: readonly FilterOption[] = [
+  ...knowledgeStatuses.map(({ key, slug, label }) => ({
+    value: slug, label, optionLabel: `${statusSymbols[key]} ${label}`,
+    display: <KnowledgeStatusLabel className={styles.status} status={key} />,
+  })),
+  { value: needsLookFilter, label: "Needs a look" },
+];
 
 function FilterMenu({ label, all, value, choices, onSelect }: {
   label: string;
@@ -235,13 +240,17 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const [addOpen, setAddOpen] = useState(false);
   const [addSession, setAddSession] = useState(0);
   const addTrigger = useRef<HTMLButtonElement | null>(null);
-  const activeStatus = knowledgeStatuses.find(({ slug }) => slug === params.get("status"));
+  const [pendingAction, setPendingAction] = useState<{ key: string; action: KnowledgeItemAction }>();
+  const initialAction = pendingAction && pendingAction.key === entryKey ? pendingAction.action : undefined;
+  const statusParam = params.get("status");
+  const activeStatus = knowledgeStatuses.find(({ slug }) => slug === statusParam);
+  const statusFilter = statusParam === needsLookFilter ? needsLookFilter : activeStatus?.slug;
   const filters: KnowledgeFilters = {
     scopeId: project?.id,
     repoId: project ? undefined : projects.find(({ id }) => id === params.get("repo"))?.id,
     kind: kindOptions.find(({ value }) => value === params.get("kind"))?.value as KnowledgeFilters["kind"],
     audience: audienceOptions.find(({ value }) => value === params.get("audience"))?.value as KnowledgeFilters["audience"],
-    status: activeStatus?.key,
+    status: statusFilter === needsLookFilter ? needsLookFilter : activeStatus?.key,
     query: q,
   };
   const filterKey = JSON.stringify(filters);
@@ -270,17 +279,18 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const firstNewRow = useRef<number | null>(null);
 
   useLayoutEffect(() => {
-    if (entryKey) {
+    if (entryKey && entryKey !== previousKey.current) {
       if (narrow || !previousList.current) document.scrollingElement?.scrollTo(0, 0);
-      detailTitle.current?.focus({ preventScroll: true });
-    } else if (!browser.current?.contains(document.activeElement)) {
+      if (initialAction) setPendingAction(undefined);
+      else detailTitle.current?.focus({ preventScroll: true });
+    } else if (!entryKey && !browser.current?.contains(document.activeElement)) {
       const row = Array.from(browser.current?.querySelectorAll<HTMLAnchorElement>("[data-item-key]") ?? [])
         .find((link) => link.dataset.itemKey === previousKey.current);
       (row ?? title.current)?.focus();
     }
     previousKey.current = entryKey;
     previousList.current = showList;
-  }, [entryKey, showList]);
+  }, [entryKey, initialAction, showList]);
 
   useLayoutEffect(() => {
     if (firstNewRow.current !== null) {
@@ -327,6 +337,9 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     return linkTo(`${basePath}/${encodeURIComponent(item.key)}`, query);
   }
 
+  const needsLookParams = new URLSearchParams(params);
+  needsLookParams.set("status", needsLookFilter);
+
   function startAdd(event: MouseEvent<HTMLButtonElement>) {
     addTrigger.current = event.currentTarget;
     setAddSession((session) => session + 1);
@@ -345,12 +358,24 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           updating={first.updatingSince}
         />
         <KnowledgeSummary
-          active={activeStatus?.slug}
+          active={statusFilter}
           browseHref={showList ? undefined : browseHref}
           counts={first.statusCounts}
-          onToggle={(slug) => changeFilter("status", activeStatus?.slug === slug ? "" : slug)}
+          onToggle={(slug) => changeFilter("status", statusFilter === slug ? "" : slug)}
           total={total}
         />
+        {landing && (
+          <KnowledgeNeedsLook
+            itemHref={(item) => itemHref(item, needsLookParams)}
+            listHref={linkTo(basePath, needsLookParams)}
+            onAction={(item, action) => {
+              setPendingAction({ key: item.key, action });
+              navigate(itemHref(item, needsLookParams));
+            }}
+            repoNames={project ? undefined : repoNames}
+            summary={landing.needsLook}
+          />
+        )}
         <div className={styles.toolbar}>
           <div className={styles.search}>
             <Search aria-hidden="true" />
@@ -359,7 +384,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           {showList && <div className={styles.filters}>
             <FilterMenu all="All kinds" choices={kindOptions} label="Kind" onSelect={(value) => changeFilter("kind", value)} value={filters.kind} />
             <FilterMenu all="Everyone" choices={audienceOptions} label="Who sees it" onSelect={(value) => changeFilter("audience", value)} value={filters.audience} />
-            <FilterMenu all="All statuses" choices={statusOptions} label="Status" onSelect={(value) => changeFilter("status", value)} value={activeStatus?.slug} />
+            <FilterMenu all="All statuses" choices={statusOptions} label="Status" onSelect={(value) => changeFilter("status", value)} value={statusFilter} />
             {!project && (
               <FilterMenu all="All repos" choices={projects.map(({ id, name }) => ({ value: id, label: name }))} label="Repo" onSelect={(value) => changeFilter("repo", value)} value={filters.repoId} />
             )}
@@ -424,6 +449,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         {entryKey ? (
           <KnowledgeDetailPanel
             backHref={listHref}
+            initialAction={initialAction}
             item={detail}
             key={entryKey}
             knowledge={knowledge}

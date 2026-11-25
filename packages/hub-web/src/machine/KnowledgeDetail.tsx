@@ -105,12 +105,13 @@ function DetailSection({ title, narrow, inline, children }: { title: string; nar
   return <div className={styles.detailSection} data-inline={inline}><Heading>{title}</Heading>{children}</div>;
 }
 
-function DetailActions({ audience, onEdit, onForget, onShare, editRef, children }: {
+function DetailActions({ audience, onEdit, onForget, onShare, editRef, forgetRef, children }: {
   audience: Detail["audience"];
   onEdit: () => void;
   onForget: (event: MouseEvent<HTMLButtonElement>) => void;
   onShare: (event: MouseEvent<HTMLButtonElement>) => void;
   editRef: Ref<HTMLButtonElement>;
+  forgetRef?: Ref<HTMLButtonElement>;
   children?: ReactNode;
 }) {
   const reason = useId();
@@ -125,7 +126,7 @@ function DetailActions({ audience, onEdit, onForget, onShare, editRef, children 
           <Button aria-haspopup="dialog" onClick={onShare} size="sm" type="button" variant="ghost"><Share2 aria-hidden="true" /> Share…</Button>
         )}
         {children}
-        <Button aria-haspopup="dialog" className={styles.forgetAction} onClick={onForget} size="sm" type="button" variant="ghost"><Trash2 aria-hidden="true" /> Forget</Button>
+        <Button aria-haspopup="dialog" className={styles.forgetAction} onClick={onForget} ref={forgetRef} size="sm" type="button" variant="ghost"><Trash2 aria-hidden="true" /> Forget</Button>
       </div>
       {hint && <p className={styles.actionReason} id={reason}>Edit this hint in your agent’s memory.</p>}
     </>
@@ -134,8 +135,17 @@ function DetailActions({ audience, onEdit, onForget, onShare, editRef, children 
 
 type EditReview = { type: "preview"; preview: KnowledgeWritePreview; request: KnowledgeEdit } | EditConflict;
 type ForgetDraft = { request: KnowledgeForget; reason: string; preview?: KnowledgeWritePreview; error?: string };
+export type KnowledgeItemAction = "edit" | "forget";
 
-export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narrow, now, onForgotten }: {
+function editDraft({ key, revision, oneLine, text, kind, scope }: Detail): EditDraft {
+  return { key, expectedRevision: revision, oneLine, text, kind, scope };
+}
+
+function forgetDraft({ key, revision }: Detail): ForgetDraft {
+  return { request: { key, expectedRevision: revision }, reason: "" };
+}
+
+export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narrow, now, onForgotten, initialAction }: {
   item?: Detail;
   backHref: string;
   titleRef: Ref<HTMLHeadingElement>;
@@ -143,23 +153,28 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
   narrow: boolean;
   now: Date;
   onForgotten: () => void;
+  initialAction?: KnowledgeItemAction;
 }) {
   const Heading = narrow ? "h1" : "h2";
   const titleId = useId();
-  const [draft, setDraft] = useState<EditDraft | null>(null);
+  const [draft, setDraft] = useState(() => item && initialAction === "edit" && item.audience !== "hint" ? editDraft(item) : null);
   const [review, setReview] = useState<EditReview | null>(null);
-  const [forget, setForget] = useState<ForgetDraft | null>(null);
+  const [forget, setForget] = useState(() => item && initialAction === "forget" ? forgetDraft(item) : null);
   const [sharing, setSharing] = useState(false);
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const [error, setError] = useState("");
-  const editAtTop = useRef(false);
+  const editAtTop = useRef(narrow);
   const restoreEdit = useRef(false);
   const topEdit = useRef<HTMLButtonElement>(null);
   const bottomEdit = useRef<HTMLButtonElement>(null);
   const save = useRef<HTMLButtonElement>(null);
   const dialogTrigger = useRef<HTMLButtonElement | null>(null);
-  const returnToTrigger = () => dialogTrigger.current?.isConnected ? dialogTrigger.current : false;
+  const forgetTrigger = useRef<HTMLButtonElement>(null);
+  const returnToTrigger = () => {
+    const trigger = dialogTrigger.current ?? forgetTrigger.current;
+    return trigger?.isConnected ? trigger : false;
+  };
 
   useLayoutEffect(() => {
     if (draft || !restoreEdit.current) return;
@@ -170,8 +185,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
   function beginEdit(atTop: boolean) {
     if (!item) return;
     editAtTop.current = atTop;
-    const { key, revision, oneLine, text, kind, scope } = item;
-    setDraft({ key, expectedRevision: revision, oneLine, text, kind, scope });
+    setDraft(editDraft(item));
     setError("");
     setNotice("");
     setActionError("");
@@ -220,7 +234,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
     if (!item) return;
     dialogTrigger.current = event.currentTarget;
     setActionError("");
-    setForget({ request: { key: item.key, expectedRevision: item.revision }, reason: "" });
+    setForget(forgetDraft(item));
   }
 
   function submitForget(confirmRevision?: string) {
@@ -274,7 +288,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
           </header>
           {narrow && item && !draft && (
             <div className={styles.mobileActions}>
-              <DetailActions audience={item.audience} editRef={topEdit} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
+              <DetailActions audience={item.audience} editRef={topEdit} forgetRef={forgetTrigger} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
             </div>
           )}
           {draft ? (
@@ -300,7 +314,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
         </div>
         {item && !draft && (
           <div className={styles.detailFooter}>
-            <DetailActions audience={item.audience} editRef={bottomEdit} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
+            <DetailActions audience={item.audience} editRef={bottomEdit} forgetRef={narrow ? undefined : forgetTrigger} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
               <span className={styles.saved} role="status">{notice && <><Check aria-hidden="true" />{notice}</>}</span>
             </DetailActions>
             {actionError && <p className={styles.actionError} role="alert">{actionError}</p>}
