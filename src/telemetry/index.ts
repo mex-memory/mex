@@ -1,8 +1,7 @@
 /** Telemetry v3: local producers, background reports, identity-free CI. */
-import { ensureMexHomeDir, mexHomeDir, readMachineId, readGlobalConfig, setGlobalConfigKey } from "../global-config.js";
+import { readMachineId, readGlobalConfig, setGlobalConfigKey } from "../global-config.js";
 import { platform } from "node:os";
 import { VERSION } from "../version.js";
-import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { enqueueJob } from "../record/jobs.js";
 import { ensureBackground, markPending } from "../record/background.js";
 import { eventAttributes, type TelemetryAttributes, type TelemetryEventName, type TelemetryProjectContext } from "./schema.js";
@@ -104,17 +103,6 @@ export function enableTelemetry(): void {
   recordLifecycle("on");
   wakeTelemetry();
 }
-/** Serialize explicit preference changes from the terminal and the Hub. */
-export async function changeTelemetryPreference(enabled: boolean, check?: () => void): Promise<{ purged: boolean }> {
-  ensureMexHomeDir();
-  return withContainedArtifactLock(mexHomeDir(), "telemetry", ".preference.lock", () => {
-    check?.();
-    if (!enabled) return disableTelemetry();
-    enableTelemetry();
-    return { purged: true };
-  });
-}
-
 /** Inspection never records usage, creates an ID, repairs storage, or sends. */
 export function getTelemetryInspection(): Record<string, unknown> {
   return { schema_version: 3, ...telemetryEnabled(), notice_shown: readGlobalConfig().telemetryNoticeVersion === TELEMETRY_NOTICE_VERSION,

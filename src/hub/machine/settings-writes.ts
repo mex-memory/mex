@@ -3,7 +3,7 @@ import { rebuildNative } from "../../knowledge/native.js";
 import { openRecord, type CheckoutRow, type RecordWriter } from "../../record/index.js";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
 import { waitForRecordWriter } from "../../record/writer-wait.js";
-import { changeTelemetryPreference } from "../../telemetry/index.js";
+import { changeTelemetryPreference } from "../../telemetry/preference.js";
 import { machinePath } from "./machine-projects.js";
 import { HubRequestError } from "./security.js";
 import { cliTelemetryHome } from "./settings-snapshot.js";
