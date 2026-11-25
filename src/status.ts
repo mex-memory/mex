@@ -7,6 +7,7 @@ import { MAX_SETTINGS_BYTES, readSnapshot, snapshotBytes } from "./install/files
 import { EVENTS, installSettings, object, parseSettings, type Agent } from "./install/settings.js";
 import { binaryFileName, selfTestBinary } from "./hooks/shim/binary.js";
 import { openHooksReadOnly, openRecordReadOnly, recordLocation, type CheckoutRow, type RecordReader } from "./record/index.js";
+import { readHookErrors, type HookErrors } from "./record/hook-errors.js";
 import { realPath } from "./record/project.js";
 import type { LocationOptions } from "./record/location.js";
 import { listJobs } from "./record/jobs.js";
@@ -30,6 +31,7 @@ export interface StatusView {
   repository: { state: Switch; capture: Switch } | null;
   agents: AgentStatus[];
   binary: { state: "native" | "missing" | "unknown"; version?: string };
+  hookErrors: HookErrors | null;
   knowledge: KnowledgeStatus | null;
   background: { waiting: number; running: number; lastRun?: { name: string; at: string } } | null;
   modelUse: { runs: number; percent: number | null; capPercent: number; estimated: true } | null;
@@ -111,7 +113,8 @@ export function readStatus(options: StatusOptions = {}): StatusView {
   const reader = attempt(() => checkedReader(openRecordReadOnly(options))) ?? undefined;
   const root = attempt(() => checkoutRoot(options.cwd ?? process.cwd(), reader));
   const view: StatusView = { version: VERSION, repository: root ? { state: "unknown", capture: "unknown" } : null,
-    agents: [], binary: { state: "unknown" }, knowledge: null, background: null, modelUse: null };
+    agents: [], binary: { state: "unknown" }, hookErrors: location ? readHookErrors(location.directory) : null,
+    knowledge: null, background: null, modelUse: null };
   try {
     view.outputLevers = (env.MEX_LEVERS === "on" || env.MEX_LEVERS !== "off" && reader?.setting("global", "levers.output") === "on") ? "on" : "off";
     const rows = attempt(() => installationChanges(options));

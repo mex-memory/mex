@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -12,14 +12,15 @@ import { serializeEntry } from "../src/knowledge/entry.js";
 
 const now = Date.parse("2026-11-17T10:00:00Z");
 afterEach(() => vi.restoreAllMocks());
-function fixture() {
+function fixture(network = false) {
   const base = mkdtempSync(join(tmpdir(), "mex-status-")), root = join(base, "repo"), home = join(base, "mex");
   mkdirSync(root); mkdirSync(home);
-  const writer = openRecord({ home, projectPath: root, isNetwork: () => false, git: () => { throw new Error("No git"); } });
+  const storage = { home, cache: join(base, "cache"), isNetwork: () => network };
+  const writer = openRecord({ ...storage, projectPath: root, git: () => { throw new Error("No git"); } });
   const projectId = writer.checkout(root)!.project_id, location = writer.location;
   writer.close();
   const env = { ...process.env, CLAUDE_CONFIG_DIR: join(base, "claude"), CODEX_HOME: join(base, "codex"), MEX_OFF: "0" };
-  return { base, home, root, projectId, location, env, options: { home, cwd: root, env, now, isNetwork: () => false } };
+  return { base, home, root, projectId, location, env, options: { ...storage, cwd: root, env, now } };
 }
 
 it("reads installed agents, cached verdicts and last hook call without writing", async () => {
@@ -64,6 +65,16 @@ it("shows missing installations with fixes", () => {
   expect(view.agents.every(agent => agent.installed === false)).toBe(true);
   expect(statusProblems(view)).toContain("Hook binary missing: run mex install");
   expect(statusProblems(view)).toContain("Codex hooks missing or incomplete: run mex install");
+});
+
+it("reads hook errors from the location pointer even when hooks.db is absent", () => {
+  const f = fixture(true);
+  const first = "2026-11-17T09:57:00Z", counts = { delivery: 1 };
+  const recent = [{ at: first, agent: "claude-code", event: "Stop", kind: "delivery", detail: "could not save result" }];
+  expect(f.location.directory).not.toBe(f.location.home);
+  writeFileSync(join(f.location.directory, "hook-errors.json"), JSON.stringify({ version: 1, counts, first, recent }));
+  expect(readStatus(f.options).hookErrors).toEqual({ total: 1, announced: 1, counts, first, recent });
+  expect(existsSync(f.location.hooks)).toBe(false);
 });
 
 it("reads repo and capture switches, including a timed off that has ended", () => {
