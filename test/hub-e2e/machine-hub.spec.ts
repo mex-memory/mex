@@ -150,10 +150,18 @@ test("reads every main page from a real empty MEX home with no accessibility vio
     await expect(page.getByRole("switch", { name: "Telemetry" })).toHaveAttribute("aria-disabled", "true");
     await expect(page.getByRole("region", { name: "Storage" }).getByText(/record\.db$/)).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    const capture = page.getByRole("switch", { name: "Capture everywhere" });
+    await expect(capture).toBeChecked();
+    await capture.click();
+    await expect(page.getByText("Setting saved", { exact: true })).toBeVisible();
+    await expect(capture).not.toBeChecked();
+    await page.getByRole("button", { name: "Dismiss settings message" }).click();
+
     await page.getByRole("button", { name: "Preview uninstall" }).click();
     const uninstall = page.getByRole("dialog", { name: "Uninstall preview" });
     await expect(uninstall.getByText("No recorded installation changes.")).toBeVisible();
     await expect(uninstall.getByText("mex uninstall", { exact: true })).toBeVisible();
+    await expect(uninstall).toHaveCSS("opacity", "1");
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     expect(outbound).toEqual([]);
   } finally {
