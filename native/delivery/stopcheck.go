@@ -116,12 +116,18 @@ func StopChecks(ev contract.Event, env Environment) contract.Reply {
 	var found []stopFinding
 	if len(turn.lastEdit) > 0 {
 		if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, ev.ProjectID, ev.Checkout); err == nil {
+			found = append(found, generatedFindings(ev, env, h, &snap, turn, state)...)
 			found = append(found, obligationFindings(ev, h, &snap, turn, state)...)
 		}
 		if !state.Stopped[stopTestsRule] {
 			if f, ok := directTestsFinding(ev, env, turn, found); ok {
 				found = append(found, f)
 			}
+		}
+	}
+	if !state.Stopped[stopLockfileRule] {
+		if f, ok := lockfileFinding(ev, env, turn); ok {
+			found = append(found, f)
 		}
 	}
 	if len(found) == 0 {
