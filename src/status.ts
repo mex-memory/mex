@@ -1,6 +1,7 @@
 /** Read-only machine and checkout status. No refresh, registration or model work. */
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { VERSION } from "./version.js";
 import { AGENT_NAMES as NAMES, installationChanges, type InstallRow } from "./install/index.js";
 import { MAX_SETTINGS_BYTES, readSnapshot, snapshotBytes } from "./install/files.js";
@@ -183,7 +184,16 @@ export function statusProblems(view: StatusView): string[] {
   if (view.repository && !view.knowledge) problems.push("Knowledge unknown: run mex check for details");
   if (view.knowledge && !view.knowledge.checks) problems.push("Cached checks unknown: run mex check for details");
   if (!view.background || !view.modelUse) problems.push("Background records unknown: run mex jobs --json for details");
+  const errors = view.hookErrors;
+  if (errors && errors.announced > 0) {
+    const count = errors.announced;
+    problems.push(`${count} hook error${count === 1 ? "" : "s"} since ${hookErrorDate(errors.first)}: see the list above; if they repeat, run mex install and report the details`);
+  }
   return problems;
+}
+
+function hookErrorDate(at: string): string {
+  return new Date(at).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
 function ago(at: string, now: number): string {
@@ -197,6 +207,24 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   lines.push("Agents");
   for (const agent of view.agents) lines.push(`  ${agent.installed ? "✓" : "!"} ${NAMES[agent.agent]}: ${agent.installed === null ? "unknown" : agent.installed ? `hooks installed (${agent.events} events)` : `hooks not installed or incomplete (${agent.events} events)`}${agent.lastCall ? ` · last call ${ago(agent.lastCall, now)}` : ""}${agent.agent === "codex" && agent.installed ? " · trust them once in Codex (/hooks, or Review hooks in the app)" : ""}`);
   lines.push(`  ${view.binary.state === "native" ? "✓" : "!"} Hook binary ${view.binary.state === "native" ? `${view.binary.version || "unknown version"} (native)` : view.binary.state}`);
+  const errors = view.hookErrors;
+  if (errors && (options.doctor ? errors.total : errors.announced) > 0) {
+    const since = hookErrorDate(errors.first);
+    if (options.doctor) {
+      const counts = Object.entries(errors.counts)
+        .filter(([, count]) => count > 0)
+        .map(([kind, count]) => `${count} ${kind}${kind === "busy" ? " (a locked database; expected under load)" : ""}`);
+      lines.push("", `Hook errors: ${errors.total} since ${since} (${counts.join(", ")}) · your agents kept working`);
+      for (const error of errors.recent.slice(-5).reverse()) {
+        const time = new Date(error.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+        const text = stripVTControlCharacters(`${error.agent} ${error.event}  ${error.kind}  ${error.detail}`)
+          .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, " ").trimEnd();
+        lines.push(`  ${hookErrorDate(error.at)} ${time}  ${text}`);
+      }
+    } else {
+      lines.push("", `Hook errors: ${errors.announced} since ${since} · see mex doctor for details`);
+    }
+  }
   if (view.repository) {
     lines.push("", "Knowledge here");
     const k = view.knowledge;
