@@ -20,6 +20,7 @@ main:has(.page) {
 }
 
 .page {
+  --knowledge-card-radius: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -41,6 +42,7 @@ main:has(.page) {
 .addButton.addButton {
   height: 35px;
   padding-inline: 11px;
+  font-size: 13px;
 }
 
 .header,
@@ -82,7 +84,7 @@ main:has(.page) {
   color: var(--card-foreground);
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-card);
+  border-radius: var(--knowledge-card-radius);
 }
 
 .summary {
@@ -111,6 +113,7 @@ main:has(.page) {
 .summaryTop .clearStatus {
   height: 28px;
   padding: 0 4px;
+  font-size: 12px;
 }
 
 .segmentBar {
@@ -252,25 +255,29 @@ main:has(.page) {
   gap: 6px;
 }
 
-.filter.filter {
+.filter {
+  position: relative;
+  display: flex;
   height: 35px;
   min-width: 0;
-  justify-content: space-between;
-  gap: 7px;
+  align-items: center;
+  padding: 0 27px 0 10px;
   color: var(--text-secondary);
   background: var(--card);
-  border-color: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   font-size: 12px;
+  font-weight: 500;
 }
 
-.filter.filter:hover,
-.filter.filter[data-active="true"] {
+.filter:hover,
+.filter[data-active="true"] {
   color: var(--foreground);
   background: var(--surface-subtle);
   border-color: var(--border-strong);
 }
 
-.filter.filter[data-active="true"] {
+.filter[data-active="true"] {
   border-color: var(--primary-border);
   background: color-mix(in oklch, var(--card), var(--brand) 8%);
 }
@@ -279,23 +286,36 @@ main:has(.page) {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.filter > svg {
+.filter:has(select:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.filterSelect {
+  position: absolute;
+  inset: 0;
+}
+
+.filterSelect select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.filterSelect svg {
+  position: absolute;
+  inset-block-start: 10px;
+  inset-inline-end: 8px;
   width: 13px;
   height: 13px;
   color: var(--muted-foreground);
-}
-
-.filterMenu.filterMenu {
-  min-width: max(var(--anchor-width), 156px);
-}
-
-.filterOption.filterOption {
-  min-height: 32px;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
+  pointer-events: none;
 }
 
 .forgottenLink {
@@ -343,7 +363,7 @@ main:has(.page) {
 }
 
 .forgottenTable tbody th {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-weight: 500;
 }
 
@@ -396,7 +416,8 @@ main:has(.page) {
 }
 
 .rows > li:first-child .row {
-  border-radius: calc(var(--radius-card) - 1px) calc(var(--radius-card) - 1px) 0 0;
+  border-start-start-radius: calc(var(--knowledge-card-radius) - 1px);
+  border-start-end-radius: calc(var(--knowledge-card-radius) - 1px);
 }
 
 .row:hover {
@@ -460,6 +481,15 @@ main:has(.page) {
 .rowMeta .status svg {
   width: 11px;
   height: 11px;
+}
+
+.compactAudience {
+  display: none;
+}
+
+.paging button,
+.empty button {
+  font-size: 13px;
 }
 
 .paging {
@@ -536,6 +566,7 @@ main:has(.page) {
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1.2;
+  text-wrap: balance;
 }
 
 .detailHeader .closeItem {
@@ -575,6 +606,7 @@ main:has(.page) {
 }
 
 .chips [data-slot="badge"] > span:not(.status) {
+  margin-inline-end: 2px;
   color: var(--muted-foreground);
 }
 
@@ -603,7 +635,7 @@ main:has(.page) {
 }
 
 .detailSection {
-  padding-block: 11px;
+  padding-block: 9px;
   border-top: 1px solid var(--border);
   color: var(--muted-foreground);
   font-size: 12px;
@@ -628,7 +660,7 @@ main:has(.page) {
 
 .detailSection code {
   color: var(--text-secondary);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 0.93em;
 }
 
@@ -650,7 +682,7 @@ main:has(.page) {
 
 .checks {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .checkTarget span:first-child {
@@ -687,6 +719,7 @@ main:has(.page) {
 
 .showHistory.showHistory {
   padding-inline: 0;
+  font-size: 12px;
 }
 
 .detailFooter,
@@ -711,6 +744,10 @@ main:has(.page) {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+}
+
+.actionLine button {
+  font-size: 13px;
 }
 
 .actionLine .forgetAction {
@@ -777,6 +814,15 @@ main:has(.page) {
     scrollbar-color: var(--border-strong) transparent;
   }
 
+  .detailSection[data-inline="true"] {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .detailSection[data-inline="true"] h3 {
+    margin-bottom: 0;
+  }
 }
 
 @media (max-width: 1023px) {
@@ -816,11 +862,30 @@ main:has(.page) {
   }
 
   .row {
-    padding-inline: 11px;
+    padding-inline: 11px 6px;
+  }
+
+  .rowArrow,
+  .fullAudience {
+    display: none;
+  }
+
+  .compactAudience {
+    display: inline;
   }
 
   .rowMeta {
-    gap: 4px;
+    gap: 2px;
+    font-size: 10.5px;
+    letter-spacing: -0.015em;
+  }
+
+  .rowMeta .status {
+    gap: 3px;
+  }
+
+  .rowClaim {
+    font-size: 13.5px;
   }
 
   .detailScroll {

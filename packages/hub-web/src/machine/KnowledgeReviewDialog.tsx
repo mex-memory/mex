@@ -36,7 +36,7 @@ export function KnowledgeReviewDialog({ preview, retiring, finalFocus, onCancel,
         </pre>
         <AlertDialogFooter className={styles.dialogFooter}>
           <AlertDialogCancel ref={cancel}>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm} type="button" variant={retiring ? "destructive" : "default"}>Confirm</AlertDialogAction>
+          <AlertDialogAction className={retiring ? styles.destructive : undefined} onClick={onConfirm} type="button" variant={retiring ? "destructive" : "default"}>Confirm</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

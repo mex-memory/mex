@@ -20,7 +20,7 @@ const forgetCopy = {
   },
   hint: {
     title: "Forget this hint?",
-    text: "MEX deletes its copy; your agent’s own memory is untouched.",
+    text: "MEX deletes its copy. Your agent’s own memory is untouched.",
   },
 };
 
@@ -52,7 +52,7 @@ export function KnowledgeForgetDialog({ open, audience, reason, error, finalFocu
           {error && <p className={styles.error} role="alert">{error}</p>}
           <AlertDialogFooter className={styles.dialogFooter}>
             <AlertDialogCancel ref={cancel}>Cancel</AlertDialogCancel>
-            <AlertDialogAction type="submit" variant={audience === "team" ? "default" : "destructive"}>
+            <AlertDialogAction className={audience === "team" ? undefined : styles.destructive} type="submit" variant={audience === "team" ? "default" : "destructive"}>
               {audience === "team" ? "Review changes" : "Forget"}
             </AlertDialogAction>
           </AlertDialogFooter>

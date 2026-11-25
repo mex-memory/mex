@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { MachineHub } from "./MachineHub";
 
 const personal = "Validate checkout inputs at the API boundary";
@@ -19,8 +19,6 @@ const list = () => within(screen.getByRole("list", { name: "Items" }));
 const row = (claim: string) => list().getByRole("link", { name: new RegExp(`^${claim}`) });
 const detail = (claim: string) => within(screen.getByRole("region", { name: claim }));
 
-afterEach(() => vi.unstubAllGlobals());
-
 async function openItem(user: ReturnType<typeof userEvent.setup>, claim: string) {
   await screen.findByRole("list", { name: "Items" });
   await user.click(row(claim));
@@ -28,28 +26,23 @@ async function openItem(user: ReturnType<typeof userEvent.setup>, claim: string)
 }
 
 describe("Knowledge fixtures", () => {
-  it("reads every filter from the URL and applies keyboard menu selections to it", async () => {
-    // Base UI dispatches a pointer click when a menu item is chosen with Enter.
-    if (!window.PointerEvent) vi.stubGlobal("PointerEvent", window.MouseEvent);
+  it("reads every filter from the URL and writes selection changes back", async () => {
     const user = renderFixture("/knowledge?fixture=home&kind=rule&audience=team&status=code-changed&repo=design-kit&q=focus");
     await screen.findByRole("list", { name: "Items" });
     expect(list().getAllByRole("link")).toHaveLength(1);
     expect(row("Keep the keyboard focus ring on menu items")).toBeVisible();
     expect(screen.getByRole("searchbox", { name: "Search knowledge" })).toHaveValue("focus");
-    expect(screen.getByRole("button", { name: "Who sees it: Your team" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Status: Code changed" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Repo: Design kit" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Who sees it" })).toHaveValue("team");
+    expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("code-changed");
+    expect(screen.getByRole("combobox", { name: "Repo" })).toHaveValue("design-kit");
 
-    const kind = screen.getByRole("button", { name: "Kind: Rule" });
-    kind.focus();
-    await user.keyboard("{Enter}");
-    const menu = await screen.findByRole("menu");
-    expect(within(menu).getByRole("menuitemradio", { name: "Rule" })).toHaveAttribute("aria-checked", "true");
-    await user.keyboard("{Home}{Enter}");
+    const kind = screen.getByRole("combobox", { name: "Kind" });
+    expect(kind).toHaveValue("rule");
+    await user.selectOptions(kind, "");
     expect(params().has("kind")).toBe(false);
     expect(params().get("audience")).toBe("team");
     expect(params().get("q")).toBe("focus");
-    await waitFor(() => expect(screen.getByRole("button", { name: "Kind" })).toHaveFocus());
+    expect(kind).toHaveFocus();
   });
 
   it("opens the Knowledge page from Home with a shared status filter", async () => {
@@ -62,7 +55,7 @@ describe("Knowledge fixtures", () => {
     expect(window.location.pathname).toBe("/repos/storefront/knowledge");
     expect(params().get("status")).toBe("code-changed");
     expect(list().getAllByRole("link")).toHaveLength(2);
-    expect(screen.queryByRole("button", { name: "Repo" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Repo" })).toBeNull();
   });
 
   it("toggles status filtering from the bar and legend and clears it", async () => {
@@ -120,7 +113,7 @@ describe("Knowledge fixtures", () => {
     expect(heading).toHaveFocus();
     expect(decodeURIComponent(window.location.pathname)).toBe("/repos/storefront/knowledge/storefront:personal:mx_checkout");
     expect(panel.getByText("Applies to").parentElement).toHaveTextContent("Applies to apps/api");
-    expect(panel.getByText(/The guest flow was sending malformed address data/).tagName).toBe("BLOCKQUOTE");
+    expect(panel.getByText(/The provider got an invalid address from guest checkout/).tagName).toBe("BLOCKQUOTE");
     expect(panel.getAllByText("Last checked", { exact: false })).toHaveLength(2);
     expect(panel.getByText(/Given to agents 14 times/)).toBeVisible();
     expect(panel.getAllByText(/Checked by model: still true/)).toHaveLength(2);

@@ -100,9 +100,9 @@ function History({ events }: { events: Detail["history"] }) {
   );
 }
 
-function DetailSection({ title, narrow, children }: { title: string; narrow: boolean; children: ReactNode }) {
+function DetailSection({ title, narrow, inline, children }: { title: string; narrow: boolean; inline?: boolean; children: ReactNode }) {
   const Heading = narrow ? "h2" : "h3";
-  return <div className={styles.detailSection}><Heading>{title}</Heading>{children}</div>;
+  return <div className={styles.detailSection} data-inline={inline}><Heading>{title}</Heading>{children}</div>;
 }
 
 function DetailActions({ audience, onEdit, onForget, onShare, editRef, children }: {
@@ -290,7 +290,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
                   {item.evidence && <blockquote>{item.evidence}</blockquote>}
                 </DetailSection>
                 <DetailSection narrow={narrow} title="Checks"><Checks checks={item.checks} now={now} /></DetailSection>
-                <DetailSection narrow={narrow} title="Use"><UseSummary item={item} now={now} /></DetailSection>
+                <DetailSection inline narrow={narrow} title="Use"><UseSummary item={item} now={now} /></DetailSection>
                 <DetailSection narrow={narrow} title="History"><History events={item.history} /></DetailSection>
               </div>
             </>

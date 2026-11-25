@@ -229,7 +229,7 @@ type NoteSeed = readonly [
 
 const storefrontNotes: readonly NoteSeed[] = [
   ["checkout", "rule", "personal", "upToDate", "Validate checkout inputs at the API boundary",
-    "Parse the checkout request as soon as it reaches the API. Return field errors before looking up the cart or asking the payment provider to authorize a charge.\n\nUse the same schema for guest and signed-in checkout so both paths return the same errors.", ["apps/api/**"]],
+    "Return field errors before loading the cart or calling the payment provider.\n\nUse one schema for guest and signed-in checkout.", ["apps/api/**"]],
   ["checkout", "rule", "team", "codeChanged", "Keep the checkout total in integer cents",
     "Calculate and store the checkout total in integer cents. Format it for display only when rendering the order summary.\n\nSend the total in cents to the payment provider so the amount charged matches the amount stored.", ["apps/api/**", "packages/money/**"]],
   ["sandbox", "recipe", "team", "upToDate", "Reproduce a checkout failure with the payment sandbox",
@@ -349,7 +349,7 @@ function knowledgeFixture(now: number, generatedAt: string, variant: FixtureVari
   const personal = items[0];
   const team = items[1];
   personal.source = { type: "session", at: hoursAgo(6 * 24), checkedByModel: true };
-  personal.evidence = "The guest flow was sending malformed address data to the payment provider. Moving validation to the API returned a field error before any payment call.";
+  personal.evidence = "The provider got an invalid address from guest checkout.";
   personal.checks = [
     { kind: "symbol", target: "parseCheckoutRequest in apps/api/src/checkout.ts", result: "held", checkedAt: hoursAgo(2) },
     { kind: "key", target: "checkout.inputSchema in apps/api/config.json", result: "held", checkedAt: hoursAgo(2) },

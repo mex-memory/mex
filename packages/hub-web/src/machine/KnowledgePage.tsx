@@ -1,12 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
-import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Plus, Search } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronRight, Plus, Search } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "../components/primitives/button";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from "../components/primitives/dropdown-menu";
 import { Input } from "../components/primitives/input";
+import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
 import { KnowledgeDate, KnowledgeDetailPanel } from "./KnowledgeDetail";
 import { audienceLabels, kindLabels } from "./knowledge-labels";
@@ -37,13 +35,16 @@ interface KnowledgePageProps {
 interface FilterOption {
   value: string;
   label: string;
+  optionLabel?: string;
   display?: ReactNode;
 }
 
 const kindOptions = Object.entries(kindLabels).map(([value, label]) => ({ value, label }));
 const audienceOptions = Object.entries(audienceLabels).map(([value, label]) => ({ value, label }));
+const statusSymbols = { upToDate: "✓", codeChanged: "⚠", outOfDate: "⊗", notChecked: "◌" };
 const statusOptions = knowledgeStatuses.map(({ key, slug, label }) => ({
-  value: slug, label, display: <KnowledgeStatusLabel className={styles.status} status={key} />,
+  value: slug, label, optionLabel: `${statusSymbols[key]} ${label}`,
+  display: <KnowledgeStatusLabel className={styles.status} status={key} />,
 }));
 
 function FilterMenu({ label, all, value, choices, onSelect }: {
@@ -55,32 +56,15 @@ function FilterMenu({ label, all, value, choices, onSelect }: {
 }) {
   const selected = choices.find((choice) => choice.value === value);
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={selected ? `${label}: ${selected.label}` : label}
-        render={<Button className={styles.filter} data-active={Boolean(selected)} variant="outline" />}
-      >
-        <span>{selected?.display ?? selected?.label ?? label}</span>
-        <ChevronDown aria-hidden="true" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent aria-label={label} className={styles.filterMenu}>
-        {[{ value: "", label: all }, ...choices].map((choice) => {
-          const checked = (selected?.value ?? "") === choice.value;
-          return (
-            <DropdownMenuItem
-              aria-checked={checked}
-              className={styles.filterOption}
-              key={choice.value}
-              onClick={() => onSelect(choice.value)}
-              role="menuitemradio"
-            >
-              {choice.display ?? choice.label}
-              {checked && <Check aria-hidden="true" />}
-            </DropdownMenuItem>
-          );
-        })}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <div className={styles.filter} data-active={Boolean(selected)}>
+      <span aria-hidden="true">{selected?.display ?? selected?.label ?? label}</span>
+      <NativeSelect aria-label={label} className={styles.filterSelect} onChange={(event) => onSelect(event.target.value)} value={selected?.value ?? ""}>
+        <NativeSelectOption value="">{all}</NativeSelectOption>
+        {choices.map((choice) => (
+          <NativeSelectOption key={choice.value} value={choice.value}>{choice.optionLabel ?? choice.label}</NativeSelectOption>
+        ))}
+      </NativeSelect>
+    </div>
   );
 }
 
@@ -90,11 +74,22 @@ function KnowledgeSummary({ counts, total, active, onToggle }: {
   active?: string;
   onToggle: (status: string) => void;
 }) {
+  const activeLegend = useRef<HTMLButtonElement>(null);
   return (
     <section aria-label="Knowledge status totals" className={styles.summary}>
       <div className={styles.summaryTop}>
         <p><strong>{number.format(total)}</strong> {total === 1 ? "item" : "items"}</p>
-        {active && <Button className={styles.clearStatus} onClick={() => onToggle(active)} size="sm" variant="link">Clear<span className={shared.srOnly}> status filter</span></Button>}
+        {active && (
+          <Button
+            className={styles.clearStatus}
+            onClick={() => {
+              activeLegend.current?.focus();
+              onToggle(active);
+            }}
+            size="sm"
+            variant="link"
+          >Clear<span className={shared.srOnly}> status filter</span></Button>
+        )}
       </div>
       <div aria-label="Filter by knowledge status" className={styles.segmentBar} role="group">
         {knowledgeStatuses.map(({ key, slug, label, color }) => counts[key] > 0 && (
@@ -112,7 +107,7 @@ function KnowledgeSummary({ counts, total, active, onToggle }: {
       <ul aria-label="Status legend" className={styles.legend} role="list">
         {knowledgeStatuses.map(({ key, slug }) => (
           <li key={key}>
-            <button aria-pressed={active === slug} onClick={() => onToggle(slug)} type="button">
+            <button aria-pressed={active === slug} onClick={() => onToggle(slug)} ref={active === slug ? activeLegend : undefined} type="button">
               <KnowledgeStatusLabel className={styles.status} status={key} />
               <strong>{number.format(counts[key])}</strong>
             </button>
@@ -131,19 +126,27 @@ function KnowledgeRow({ item, href, repo, active, now }: {
   now: Date;
 }) {
   const used = item.lastUsedAt && new Date(item.lastUsedAt);
-  const identity = [kindLabels[item.kind], repo, audienceLabels[item.audience]].filter(Boolean).join(" · ");
+  const age = used && relativeTime(used, now, true);
+  const identityPrefix = [kindLabels[item.kind], repo].filter(Boolean).join(" · ");
+  const audience = audienceLabels[item.audience];
+  const compactAudience = item.audience === "hint" ? "Agent hint" : item.audience === "team" ? "Team" : audience;
+  const status = knowledgeStatuses.find(({ key }) => key === item.status)!.label;
+  const identity = `${identityPrefix} · ${audience}`;
+  const accessibleLabel = `${item.oneLine}, ${identity} · ${status} · ${age ? `used ${age}` : "never used"}`;
   return (
     <li>
-      <Link aria-current={active ? "page" : undefined} className={styles.row} data-item-key={item.key} to={href}>
+      <Link aria-current={active ? "page" : undefined} aria-label={accessibleLabel} className={styles.row} data-item-key={item.key} to={href}>
         <span className={styles.rowClaim} title={item.oneLine}>{item.oneLine}</span>
         <ChevronRight aria-hidden="true" className={styles.rowArrow} />
         <span className={styles.rowMeta}>
-          <span className={styles.rowIdentity} title={identity}>{identity}</span>
+          <span className={styles.rowIdentity} title={identity}>
+            {identityPrefix} · <span className={styles.fullAudience}>{audience}</span><span className={styles.compactAudience}>{compactAudience}</span>
+          </span>
           <span aria-hidden="true">·</span>
           <KnowledgeStatusLabel className={styles.status} status={item.status} />
           <span aria-hidden="true">·</span>
           {used
-            ? <span>used <time dateTime={item.lastUsedAt!} title={fullDateTime.format(used)}>{relativeTime(used, now)}</time></span>
+            ? <span>used <time dateTime={item.lastUsedAt!} title={fullDateTime.format(used)}>{age}</time></span>
             : <span>never used</span>}
         </span>
       </Link>
@@ -213,6 +216,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const listHref = linkTo(basePath);
   const q = params.get("q") ?? "";
   const [query, setQuery] = useState(q);
+  const writtenQuery = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [addSession, setAddSession] = useState(0);
@@ -246,7 +250,9 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const title = useRef<HTMLHeadingElement>(null);
   const detailTitle = useRef<HTMLHeadingElement>(null);
   const browser = useRef<HTMLDivElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const previousKey = useRef<string | undefined>(undefined);
+  const firstNewRow = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     if (entryKey) {
@@ -260,7 +266,17 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     previousKey.current = entryKey;
   }, [entryKey]);
 
-  useEffect(() => setQuery(q), [q]);
+  useLayoutEffect(() => {
+    if (firstNewRow.current !== null) {
+      browser.current?.querySelectorAll<HTMLAnchorElement>("[data-item-key]")[firstNewRow.current]?.focus();
+      firstNewRow.current = null;
+    }
+  }, [items.length]);
+
+  useEffect(() => {
+    if (writtenQuery.current !== q) setQuery(q);
+    writtenQuery.current = null;
+  }, [q]);
   useEffect(() => {
     const search = query.trim();
     if (search === q || isForgotten) return;
@@ -268,6 +284,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
       const next = new URLSearchParams(params);
       if (search) next.set("q", search);
       else next.delete("q");
+      writtenQuery.current = search;
       navigate({ pathname: basePath, search: next.toString() }, { replace: true });
     }, 200);
     return () => window.clearTimeout(timer);
@@ -287,6 +304,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     const next = new URLSearchParams(params);
     filterNames.forEach((name) => next.delete(name));
     setQuery("");
+    searchInput.current?.focus();
     navigate(linkTo(basePath, next));
   }
 
@@ -316,7 +334,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         <div className={styles.toolbar}>
           <div className={styles.search}>
             <Search aria-hidden="true" />
-            <Input aria-label="Search knowledge" onChange={(event) => setQuery(event.target.value)} placeholder="Search knowledge…" type="search" value={query} />
+            <Input aria-label="Search knowledge" onChange={(event) => setQuery(event.target.value)} placeholder="Search knowledge…" ref={searchInput} type="search" value={query} />
           </div>
           <div className={styles.filters}>
             <FilterMenu all="All kinds" choices={kindOptions} label="Kind" onSelect={(value) => changeFilter("kind", value)} value={filters.kind} />
@@ -351,7 +369,10 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
               <p role="status">Showing {number.format(items.length)} of {number.format(first.total)}</p>
               {page.nextCursor && (
                 <Button
-                  onClick={() => setPaging({ filterKey, pageCount: paging.filterKey === filterKey ? paging.pageCount + 1 : 2 })}
+                  onClick={() => {
+                    firstNewRow.current = items.length;
+                    setPaging({ filterKey, pageCount: paging.filterKey === filterKey ? paging.pageCount + 1 : 2 });
+                  }}
                   size="sm"
                   variant="outline"
                 >Load more</Button>
@@ -412,9 +433,11 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
 }
 
 export default function KnowledgePage({ project, projects, knowledge }: KnowledgePageProps) {
+  const unavailableTitle = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => { unavailableTitle.current?.focus({ preventScroll: true }); }, []);
   if (!knowledge) return (
     <div className={styles.page}>
-      <KnowledgeHeader scope={project?.name ?? "All repos"} />
+      <KnowledgeHeader scope={project?.name ?? "All repos"} titleRef={unavailableTitle} />
       <p className={shared.muted}>Knowledge isn’t available yet.</p>
     </div>
   );
