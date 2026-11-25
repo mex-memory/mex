@@ -59,8 +59,9 @@ Commands:
   telemetry                             Inspect anonymous usage counts or turn
                                         them off
   feedback                              Open the feedback form
-  sync [options]                        Run the knowledge judge now; use --deep
-                                        for the interactive AI sync session
+  sync [options]                        Run the knowledge judge and retry
+                                        deferred notes. Use --deep for the
+                                        interactive AI sync session.
   hints                                 Explicitly refresh or expire read-only
                                         agent-memory hints
   report [options]                      Read local advisories or session cost

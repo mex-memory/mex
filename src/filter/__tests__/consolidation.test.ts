@@ -28,6 +28,13 @@ function entry(id: string, text: string): KnowledgeEntry {
   const c = candidate(text); return { text, mex: { id, kind: c.kind, scope: c.scope, one_line: c.one_line, checks: [], evidence: "person",
     source: { type: "person", ref: "mex note 2026-11-12", quote: text }, created: "2026-11-12", status: "active" } };
 }
+function explicitCandidate(id: string, noteHash: string): FilterCandidate {
+  const c = candidate();
+  c.source = { ...c.source, session: null, row: null, note_id: id, note_hash: noteHash };
+  c.checks = [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/test" }, saw: { value: "vitest" }, files: { "package.json": hash(readFileSync(join(root, "package.json"), "utf8")) } }];
+  c.needs_checks = false;
+  return c;
+}
 function batch(key: string, candidates: FilterCandidate[]) {
   writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `filter.batch.${key}`, JSON.stringify({ version: 1, phase: "complete", input_hash: key,
     position: { head: null, branch: null }, answers: candidates.map(({ checks, needs_checks, source, ...c }) => ({ ...c, checks: [] })), candidates, model: "fake", tokens: 110 }));
@@ -77,10 +84,26 @@ it("keeps the context proof when a plain repeat replaces the observation from th
 it("classifies an explicit note under its original id and retains recorded checks", async () => {
   const original = note({ text: "Tests use vitest." }, { home, projectPath: root }, new Date(old));
   const id = original.entry.mex.id, before = snapshotNotes(writer, project);
-  const c = candidate(); c.source = { ...c.source, session: null, row: null, note_id: id, note_hash: hash(before.files.get(id)!) };
-  c.checks = [{ kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/test" }, saw: { value: "vitest" }, files: { "package.json": hash(readFileSync(join(root, "package.json"), "utf8")) } }]; c.needs_checks = false;
+  const c = explicitCandidate(id, hash(before.files.get(id)!));
   batch("b".repeat(64), [c]); grouping([{ members: [0], target: id, relation: "duplicate" }]);
   await apply(); expect(notes()).toHaveLength(1); expect(notes()[0]!.mex).toMatchObject({ id, checks: c.checks });
+});
+it.each(["deferred", "legacy unchecked"])("keeps a %s explicit note byte-for-byte while consolidating its sibling", async state => {
+  const original = note({ text: "Keep the project test script." }, { home, projectPath: root }, new Date(old));
+  const id = original.entry.mex.id, raw = snapshotNotes(writer, project).files.get(id)!;
+  const sibling = candidate("Tests use vitest.", "s2", recent);
+  const candidates = [sibling];
+  if (state === "deferred") {
+    writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, `filter.note-retry.${id}`, JSON.stringify({ hash: hash(raw), failures: 1 }));
+  } else {
+    candidates.push({ ...candidate(), source_id: id, source: { ...candidate().source, note_id: id, note_hash: hash(raw), session: null, row: null } });
+  }
+  batch("e".repeat(64), candidates); grouping([{ members: [0], target: null, relation: "duplicate" }]);
+  expect(await apply()).toMatchObject({ results: 1 });
+  expect(deps.model).toHaveBeenCalledWith(expect.objectContaining({ prompt: expect.not.stringContaining(id) }));
+  const after = snapshotNotes(writer, project).files;
+  expect(after.get(id)).toBe(raw);
+  expect(after.size).toBe(2);
 });
 it("merges duplicates and preserves a later correction with both dates and a current label", async () => {
   const original = note({ text: "Tests use the old runner." }, { home, projectPath: root }, new Date(old));
@@ -115,14 +138,14 @@ it("keeps continuity and unknown delivered context in bounded pending data and r
 });
 it("keeps an edited explicit note intact and releases the old source batch", async () => {
   const n = note({ text: "Tests use vitest." }, { home, projectPath: root }, new Date(old));
-  const c = candidate(); c.source.note_id = n.entry.mex.id; c.source.note_hash = hash("outdated bytes");
+  const c = explicitCandidate(n.entry.mex.id, hash("outdated bytes"));
   const key = "9".repeat(64); batch(key, [c]); await apply();
   expect(notes()).toEqual([n.entry]); expect(writer.setting(project, `filter.batch.${key}`)).toBeUndefined(); expect(deps.model).not.toHaveBeenCalled();
   expect(JSON.parse(writer.setting(project, `learning.pending.${key}`)!)).toMatchObject({ reason: "source-note-changed" });
 });
 it.each(["duplicate", "omitted", "unknown", "note-id"])("rejects %s grouping without touching the live notes", async failure => {
   const n = note({ text: "Tests use vitest." }, { home, projectPath: root }, new Date(old)), before = snapshotNotes(writer, project);
-  const c = candidate(); if (failure === "note-id") c.source = { ...c.source, note_id: n.entry.mex.id, note_hash: hash(before.files.get(n.entry.mex.id)!) };
+  const c = failure === "note-id" ? explicitCandidate(n.entry.mex.id, hash(before.files.get(n.entry.mex.id)!)) : candidate();
   batch("e".repeat(64), [c]);
   grouping(failure === "omitted" ? [] : [{ members: failure === "duplicate" ? [0, 0] : [0], target: failure === "unknown" ? "mx_unknown0" : null, relation: "duplicate" }]);
   await expect(apply()).rejects.toThrow(); expect(snapshotNotes(writer, project)).toEqual(before);

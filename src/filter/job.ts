@@ -4,9 +4,9 @@ export { sourceSchema } from "./provenance.js";
 import { isDeepStrictEqual } from "node:util";
 import { registerJobKind, type JobKind, type JobRow } from "../record/jobs.js";
 import type { RecordWriter } from "../record/index.js";
-import { ENTRY_KINDS, CheckSchema, assertPersonQuote, validateEntry, type EntryCheck } from "../knowledge/entry.js";
+import { ENTRY_KINDS, CheckSchema, KnowledgeError, validateEntry, type EntryCheck } from "../knowledge/entry.js";
 import { readEntryFile } from "../knowledge/files.js";
-import { assertNoSecrets, stripHidden } from "../knowledge/gates.js";
+import { assertNoSecrets } from "../knowledge/gates.js";
 import { runModel, ModelWaitError, ModelRunError, selectModel, DEFAULT_MODELS, type ModelRequest } from "../model-runner/index.js";
 import { hash, position, samePosition, readSource, type Position } from "../judge/evidence.js";
 import { recordChecks } from "../judge/native.js";
@@ -20,23 +20,15 @@ import { consolidateNext } from "./consolidation.js";
 import { statementDate } from "../knowledge/labels.js";
 import { publishNext, publicationReady, PUBLICATION_WAIT, type PublicationDependencies } from "./publication.js";
 import { replyContextDigest, type ReplyContextMode, type TranscriptIssue } from "./transcript.js";
-
-const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
-  role: z.enum(["complete", "supporting"]), target: z.record(z.unknown()) }).strict();
-const Item = z.object({ source_id: z.string().max(128), quote: z.string().min(1).max(8192).refine(s => s.trim().length > 0),
-  label: z.enum(["task", "next-session", "lasting", "unsure"]), kind: z.enum(ENTRY_KINDS),
-  scope: z.array(z.string().min(1).max(512)).min(1).max(32), text: z.string().min(1).max(8192),
-  one_line: z.string().min(1).max(1024), private: z.boolean(), checks: z.array(CheckRequest).max(32),
-  // Candidate search aids, written in this same call; only those the alias filter keeps are saved.
-  aliases: z.array(z.string().max(120)).max(16).optional(), asks: z.array(z.string().max(240)).max(10).optional() }).strict();
-const Response = z.object({ items: z.array(Item).max(128) }).strict();
-type Answer = z.infer<typeof Item>;
+import { Item, DropCounts, countDrop, itemIdentity, parseItems, type Answer } from "./items.js";
+import { NOTE_ATTEMPT_LIMIT, settleNoteAttempts } from "./note-attempts.js";
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
   source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string; reply_context_hash?: string };
 }
 interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: string; position: Position;
-  answers: Answer[]; repair_attempted?: boolean; repair?: Answer[]; candidates?: FilterCandidate[]; model: string; tokens: number; }
+  answers: Answer[]; repair_attempted?: boolean; repair?: Answer[]; candidates?: FilterCandidate[]; model: string; tokens: number;
+  dropped?: DropCounts; notes_deferred?: number; notes_waiting_for_sync?: number; }
 interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; }
 export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; aids?: AidRanker;
   contextMode?: ReplyContextMode; }
@@ -57,11 +49,22 @@ function contextSummary(summary: string, issues?: readonly TranscriptIssue[]): s
   return `${summary}. ${CONTEXT_PAUSED} for ${issues.length} session${issues.length === 1 ? "" : "s"} (${reasons}). Used typed text only for those sessions.`;
 }
 
+function batchSummary(batch: CachedBatch, summary: string): string {
+  const parts = [summary];
+  const dropped = Object.entries(batch.dropped ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (dropped.length) parts.push(`Items dropped (${dropped.map(([reason, count]) => `${reason} ${count}`).join(", ")})`);
+  if (batch.notes_deferred) parts.push(`${batch.notes_deferred} explicit ${batch.notes_deferred === 1 ? "note" : "notes"} deferred`);
+  if (batch.notes_waiting_for_sync) parts.push(`${batch.notes_waiting_for_sync} explicit ${batch.notes_waiting_for_sync === 1 ? "note" : "notes"} waiting for mex sync`);
+  return parts.join(". ");
+}
+
 export const candidateSchema = Item.omit({ checks: true }).extend({ checks: z.array(CheckSchema).max(32), needs_checks: z.boolean(), source: sourceSchema }).strict();
 const batchSchema = z.object({ version: z.literal(1), phase: z.enum(["draft", "complete"]), input_hash: z.string().regex(/^[a-f0-9]{64}$/u),
   position: z.object({ branch: z.string().max(1024).nullable(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).nullable() }).strict(),
   answers: z.array(Item).max(128), repair_attempted: z.boolean().optional(), repair: z.array(Item).max(128).optional(),
   candidates: z.array(candidateSchema).max(128).optional(), model: z.string().min(1).max(128), tokens: z.number().int().nonnegative().safe(),
+  dropped: DropCounts.optional(), notes_deferred: z.number().int().nonnegative().max(FILTER_LIMITS.notes).optional(),
+  notes_waiting_for_sync: z.number().int().nonnegative().max(FILTER_LIMITS.notes).optional(),
 }).strict().refine(value => (value.phase !== "complete" || value.candidates !== undefined)
   && [...value.answers, ...(value.repair ?? []), ...(value.candidates ?? [])].every(item => item.label !== "task"));
 function candidateRoom(writer: RecordWriter, project: string): boolean {
@@ -124,31 +127,6 @@ Return JSON only, in this exact shape: {"items":[{"source_id":"m123","quote":"ex
 Allowed check kinds: key, command, section, source, value, symbol, pattern, relation. For a declared dependency use key target {file,pointer,member:"dependency-name"}: pointer selects its array or dependency map, and member tests presence without pinning other dependencies or versions. Ordinary key targets omit member and pin the complete value. For next-session and unsure items checks may be empty. Never downgrade an explicit note to a task.
 Input follows as JSON:\n${JSON.stringify({ ...input, notes: input.notes.map(n => ({ id: n.id, entry: n.entry })) })}`;
 }
-function parse(text: string, input: FilterInput, repairIds?: Set<string>): Answer[] {
-  let answers: Answer[];
-  try { answers = Response.parse(JSON.parse(text)).items; } catch { throw new Error("The filter did not return valid structured items."); }
-  const notes = new Set<string>();
-  const identities = new Set<string>();
-  for (const answer of answers) {
-    const identity = JSON.stringify([answer.source_id, answer.quote, answer.text]);
-    if (identities.has(identity)) throw new Error("The filter returned duplicate items.");
-    identities.add(identity);
-    const message = input.messages.find(m => m.id === answer.source_id), note = input.notes.find(n => n.id === answer.source_id);
-    const typed = message?.text ?? note?.entry.mex.source.quote;
-    if ((!message && !note) || !typed || !typed.includes(answer.quote) || (repairIds && !repairIds.has(answer.source_id))
-      || stripHidden(answer.quote) !== answer.quote || answer.quote.includes("[secret removed]")) throw new Error("The filter quote was not found in its typed source.");
-    if (note && (answer.label !== "lasting" || notes.has(note.id))) throw new Error("The filter must preserve each explicit note once.");
-    if (note) notes.add(note.id);
-    // Use the established entry/quote contract, with a temporary internal id.
-    const entry = validateEntry({ text: stripHidden(answer.text), mex: { id: "mx_filter0", kind: answer.kind, scope: answer.scope,
-      source: { type: "person", ref: answer.source_id, quote: answer.quote }, evidence: "person", one_line: stripHidden(answer.one_line),
-      checks: [], status: "active", created: "2000-01-01" } });
-    assertPersonQuote(entry, typed); assertNoSecrets(answer);
-    answer.text = entry.text; answer.one_line = entry.mex.one_line;
-  }
-  if (input.notes.some(n => (!repairIds || repairIds.has(n.id)) && !notes.has(n.id))) throw new Error("The filter omitted an explicit note.");
-  return answers;
-}
 function stableInput(input: FilterInput): unknown {
   // Keep only a digest in replay identity; reply text is never persisted.
   return { ...input, messages: input.messages.map(({ previous_reply, ...m }) => ({ ...m,
@@ -196,13 +174,13 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
             automatic: { estimate: { input: Buffer.byteLength(prompt), cache_write: 0, cache_read: 0, output: 8192 } } });
         };
         if (!cached) {
-          const result = await call(prompt), answers = parse(result.text, input).filter(a => a.label !== "task");
+          const result = await call(prompt), { answers, dropped } = parseItems(result.text, input);
           if (!await unchanged(writer, project, params, input, at)) return { checkpoint: state, summary: "Filter response discarded: source, checkout or consent changed" };
-          cached = { version: 1, phase: "draft", input_hash: key, position: at, answers, model: result.selectedModel,
+          cached = { version: 1, phase: "draft", input_hash: key, position: at, answers: answers.filter(a => a.label !== "task"), dropped, model: result.selectedModel,
             tokens: result.usage.input + result.usage.output + result.usage.cache_write + result.usage.cache_read };
           save(writer, project, cached, job);
         }
-        if (cached.phase === "complete") return { checkpoint: state, done: true, summary: contextSummary("Filter batch already saved", scan.contextIssues) };
+        if (cached.phase === "complete") return { checkpoint: state, done: true, summary: contextSummary(batchSummary(cached, "Filter batch already saved"), scan.contextIssues) };
         const request = { checkout: params.checkout, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory };
         async function checked(answers: Answer[]) {
           const out = new Map<Answer, EntryCheck[] | undefined>();
@@ -217,9 +195,10 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         }
         let checks = await checked(cached.answers);
         const failures = cached.answers.filter(a => a.label === "lasting" && !checks.get(a));
-        if (failures.length && !cached.repair_attempted) {
-          const retryPrompt = `${prompt}\nRepair only these source_ids whose checks could not be recorded against today's code: ${JSON.stringify(failures)}. Keep each quote, label, kind, scope, fact and reason unchanged. Return corrected check targets in the same response shape. This is the only check-repair attempt.`;
-          if (Buffer.byteLength(retryPrompt) > FILTER_LIMITS.promptBytes) throw new Error("The filter's repair prompt limit was reached.");
+        const retryPrompt = failures.length && !cached.repair_attempted
+          ? `${prompt}\nRepair only these source_ids whose checks could not be recorded against today's code: ${JSON.stringify(failures)}. Keep each quote, label, kind, scope, fact and reason unchanged. Return corrected check targets in the same response shape. This is the only check-repair attempt.`
+          : undefined;
+        if (retryPrompt && Buffer.byteLength(retryPrompt) <= FILTER_LIMITS.promptBytes) {
           cached.repair_attempted = true;
           save(writer, project, cached, job);
           let result;
@@ -228,29 +207,41 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
             if (error instanceof ModelWaitError) { cached.repair_attempted = false; save(writer, project, cached, job); }
             throw error;
           }
-          const repaired = parse(result.text, input, new Set(failures.map(a => a.source_id)));
-          if (repaired.length !== failures.length || failures.some(a => !repaired.some(b => b.source_id === a.source_id && b.quote === a.quote
-            && b.text === a.text && b.one_line === a.one_line && b.label === a.label && b.kind === a.kind && JSON.stringify(b.scope) === JSON.stringify(a.scope) && b.private === a.private))) throw new Error("The filter's check repair changed its source or claim.");
-          cached.repair = repaired;
+          const repaired = parseItems(result.text, input, failures);
+          cached.repair = repaired.answers;
+          for (const [reason, count] of Object.entries(repaired.dropped)) countDrop(cached.dropped ??= {}, reason as keyof DropCounts, count);
           cached.tokens += result.usage.input + result.usage.output + result.usage.cache_write + result.usage.cache_read;
           if (!await unchanged(writer, project, params, input, at)) return { checkpoint: state, summary: "Filter check repair discarded: inputs changed" };
           save(writer, project, cached, job);
         }
-        if (cached.repair) {
-          cached.answers = cached.answers.map(a => cached!.repair!.find(b => b.source_id === a.source_id && b.quote === a.quote && b.text === a.text) ?? a);
-          checks = await checked(cached.answers);
+        let answers = cached.answers;
+        if (cached.repair?.length) {
+          const repaired = new Map(cached.repair.map(answer => [itemIdentity(answer), answer]));
+          answers = answers.map(answer => repaired.get(itemIdentity(answer)) ?? answer);
+          checks = await checked(answers);
         }
         const keepAids = aidFilter(params, writer, deps.aids ?? nativeAidRanker);
-        const candidates: FilterCandidate[] = cached.answers.filter(a => a.label !== "task").map(a => {
+        const dropped = { ...cached.dropped }, candidates: FilterCandidate[] = [], accepted = new Set<string>();
+        for (const a of answers) {
           const m = input.messages.find(m => m.id === a.source_id), n = input.notes.find(n => n.id === a.source_id);
+          const recorded = checks.get(a);
+          if (n && !recorded) { countDrop(dropped, "unrecordable checks"); continue; }
           const replyHash = m && replyContextDigest(m);
-          return { ...keepAids(a), checks: checks.get(a) ?? [], needs_checks: !checks.get(a), source: { session: m?.session ?? null,
+          const candidate: FilterCandidate = { ...keepAids(a), checks: recorded ?? [], needs_checks: !recorded, source: { session: m?.session ?? null,
             row: m?.row ?? null, at: m?.at ?? statementDate(n!.entry), marks: m?.marks ?? "", delivered: m?.delivered ?? [],
             message_hash: hash(m?.text ?? n?.entry.mex.source.quote ?? ""),
             ...(replyHash ? { reply_context_hash: replyHash } : {}),
             private_tag: /<\s*\/?\s*private\b[^>]*>/iu.test(m?.text ?? n?.entry.mex.source.quote ?? ""),
             ...(n ? { note_id: n.id, note_hash: n.hash } : {}) } };
-        });
+          try { assertNoSecrets(candidate); }
+          catch (error) {
+            if (!(error instanceof KnowledgeError) || error.code !== "SECRET_FOUND") throw error;
+            countDrop(dropped, "secret");
+            continue;
+          }
+          if (n) accepted.add(n.id);
+          candidates.push(candidate);
+        }
         for (const candidate of candidates) for (const check of candidate.checks) for (const [path, baseline] of Object.entries(check.files)) {
           const current = readSource(params.checkout, path);
           if (current === null || hash(current) !== baseline) return { checkpoint: state, summary: "Filter check inputs changed; checking again" };
@@ -258,15 +249,17 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         const fresh = filterInput(writer, project, params, cheap, deps.clock(), { after: state.scanAfter ?? 0, carry: state.carry }, deps.contextMode);
         if (!fresh || hash(JSON.stringify(stableInput(fresh))) !== hash(JSON.stringify(stableInput(input))) || !await unchanged(writer, project, params, input, at))
           return { checkpoint: state, summary: "Filter response discarded: session activity or source changed" };
-        cached = { ...cached, phase: "complete", candidates };
+        const failed = input.notes.filter(note => !accepted.has(note.id));
+        const waiting = failed.filter(note => (note.attempt?.failures ?? 0) + 1 >= NOTE_ATTEMPT_LIMIT).length;
+        cached = { ...cached, phase: "complete", candidates, dropped, notes_deferred: failed.length - waiting, notes_waiting_for_sync: waiting };
         save(writer, project, cached, job, () => {
           for (const m of input.messages) writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
             .run(project, ackKey(m.session), String(Math.max(m.row, acknowledged(writer, project, m.session))));
-          for (const n of input.notes) writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(project, `filter.note.${n.id}`, n.hash);
+          settleNoteAttempts(writer, project, input.notes, accepted);
           advanceConsumed(writer, project);
         });
         return { checkpoint: state, results: candidates.length, tokens: cached.tokens,
-          summary: contextSummary(`${candidates.length} local filter candidates saved`, scan.contextIssues) };
+          summary: contextSummary(batchSummary(cached, `${candidates.length} local filter candidates saved`), scan.contextIssues) };
       } catch (error) {
         // Preserve the original checkout position even when the very first call waits.
         if (error instanceof ModelWaitError || (error instanceof ModelRunError && ["authentication", "usage_limit"].includes(error.category)))

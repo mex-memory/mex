@@ -1200,7 +1200,7 @@ program
 // ── Knowledge freshness ──
 program
   .command("sync")
-  .description("Run the knowledge judge now; use --deep for the interactive AI sync session")
+  .description("Run the knowledge judge and retry deferred notes. Use --deep for the interactive AI sync session.")
   .option("--deep", "Run the legacy drift check and interactive AI session")
   .option("--dry-run", "Show what would be synced without executing")
   .option("--warnings", "With --deep: include warning-only files")
