@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type CSSProperties } from "react";
-import { Check, CircleDashed, CircleX, TriangleAlert } from "lucide-react";
+import { Link } from "react-router-dom";
+import { knowledgeStatuses as statusSeries } from "./KnowledgeStatus";
 import type { DailyActivity, HomeOverview, KnowledgeStatusCounts } from "./types";
 import styles from "./home.module.css";
 import shared from "./machine.module.css";
@@ -13,13 +14,6 @@ const activityFields = [
   { key: "gave", label: "Items given", legend: "given", color: "var(--chart-given)" },
   { key: "heldBack", label: "Items held back", legend: "held back", color: "var(--chart-held-back)" },
   { key: "replaced", label: "Long outputs replaced" },
-] as const;
-
-const statusSeries = [
-  { key: "upToDate", label: "up to date", color: "var(--chart-up-to-date)", Icon: Check },
-  { key: "codeChanged", label: "code changed", color: "var(--chart-code-changed)", Icon: TriangleAlert },
-  { key: "outOfDate", label: "out of date", color: "var(--chart-out-of-date)", Icon: CircleX },
-  { key: "notChecked", label: "not checked", color: "var(--chart-not-checked)", Icon: CircleDashed },
 ] as const;
 
 function chartDate(day: string) {
@@ -235,7 +229,7 @@ export function KnowledgeLegend({ id, counts }: { id: string; counts: KnowledgeS
           <span className={styles.statusLabel}>
             <span aria-hidden="true" className={styles.swatch} style={{ background: color }} />
             <Icon aria-hidden="true" />
-            {label}
+            {label.toLowerCase()}
           </span>
         </li>
       ))}
@@ -249,11 +243,12 @@ interface KnowledgeRow {
   total: number;
 }
 
-export function KnowledgeChart({ caption, rows, summary, legendId, compact = false }: {
+export function KnowledgeChart({ caption, rows, summary, legendId, href, compact = false }: {
   caption: string;
   rows: readonly KnowledgeRow[];
   summary: KnowledgeStatusCounts & { total: number };
   legendId: string;
+  href: string;
   compact?: boolean;
 }) {
   const clip = useId();
@@ -266,7 +261,8 @@ export function KnowledgeChart({ caption, rows, summary, legendId, compact = fal
   const max = Math.max(1, ...rows.map(({ total }) => total));
   const x = (count: number) => `${count / max * 100}%`;
   const y = (index: number) => (index + 0.5) * rowHeight - barHeight / 2;
-  const label = `${caption}: ${number.format(summary.total)} items, ${statusSeries.map(({ key, label }) => `${number.format(summary[key])} ${label}`).join(", ")}`;
+  const label = `${caption}: ${number.format(summary.total)} items, ${statusSeries.map(({ key, label }) => `${number.format(summary[key])} ${label.toLowerCase()}`).join(", ")}`;
+  const [pathname, search] = href.split("?");
 
   return (
     <div className={compact ? undefined : styles.knowledgeChart}>
@@ -275,43 +271,64 @@ export function KnowledgeChart({ caption, rows, summary, legendId, compact = fal
           {rows.map(({ label }) => <span key={label} title={label}>{label}</span>)}
         </div>
       )}
-      <svg aria-describedby={legendId} aria-label={label} height={rows.length * rowHeight} role="img" width="100%">
-        <clipPath id={clip}>
-          {rows.map(({ label, total }, index) => <rect key={label} y={y(index)} width={x(total)} height={barHeight} rx="4" />)}
-        </clipPath>
-        {!compact && rows.map(({ label }, index) => (
-          <rect key={label} y={y(index)} width="100%" height={barHeight} rx="4" fill="var(--muted)" />
-        ))}
-        <g clipPath={`url(#${clip})`}>
-          {rows.map(({ label, counts }, index) => {
-            let offset = 0;
-            return (
-              <g key={label}>
-                {statusSeries.map(({ key, color }) => {
-                  const count = counts[key];
-                  if (!count) return null;
-                  const start = x(offset);
-                  offset += count;
-                  return (
-                    <g key={key}>
-                      <rect x={start} y={y(index)} width={x(count)} height={barHeight} fill={color} />
-                      {offset > count && <line x1={start} x2={start} y1={y(index)} y2={y(index) + barHeight} stroke="var(--card)" strokeWidth="2" />}
-                    </g>
-                  );
-                })}
-              </g>
-            );
-          })}
-        </g>
-      </svg>
+      <div className={styles.knowledgePlot}>
+        <svg aria-describedby={legendId} aria-label={label} height={rows.length * rowHeight} role="img" width="100%">
+          <clipPath id={clip}>
+            {rows.map(({ label, total }, index) => <rect key={label} y={y(index)} width={x(total)} height={barHeight} rx="4" />)}
+          </clipPath>
+          {!compact && rows.map(({ label }, index) => (
+            <rect key={label} y={y(index)} width="100%" height={barHeight} rx="4" fill="var(--muted)" />
+          ))}
+          <g clipPath={`url(#${clip})`}>
+            {rows.map(({ label, counts }, index) => {
+              let offset = 0;
+              return (
+                <g key={label}>
+                  {statusSeries.map(({ key, color }) => {
+                    const count = counts[key];
+                    if (!count) return null;
+                    const start = x(offset);
+                    offset += count;
+                    return (
+                      <g key={key}>
+                        <rect x={start} y={y(index)} width={x(count)} height={barHeight} fill={color} />
+                        {offset > count && <line x1={start} x2={start} y1={y(index)} y2={y(index) + barHeight} stroke="var(--card)" strokeWidth="2" />}
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+        <div className={styles.knowledgeTargets}>
+          {rows.map(({ label, counts, total }) => (
+            <div key={label} style={{ width: x(total), height: rowHeight }}>
+              {statusSeries.map(({ key, label: status, slug }) => {
+                if (!counts[key]) return null;
+                const params = new URLSearchParams(search);
+                params.set("status", slug);
+                return (
+                  <Link
+                    aria-label={`View ${status.toLowerCase()} items (${label}, ${number.format(counts[key])})`}
+                    key={key}
+                    style={{ flexGrow: counts[key] }}
+                    to={{ pathname, search: params.toString() }}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
       {!compact && (
-        <div aria-hidden="true" className={styles.barLabels}>
+        <div aria-hidden="true" className={`${styles.barLabels} ${styles.barValues}`}>
           {rows.map(({ label, total }) => <span key={label}>{number.format(total)}</span>)}
         </div>
       )}
       <ChartData
         caption={caption}
-        headers={["Name", ...statusSeries.map(({ label }) => label), "Total"]}
+        headers={["Name", ...statusSeries.map(({ label }) => label.toLowerCase()), "Total"]}
         rows={rows.map(({ label, counts, total }) => [label, ...statusSeries.map(({ key }) => counts[key]), total])}
       />
     </div>

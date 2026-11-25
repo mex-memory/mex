@@ -15,7 +15,7 @@ export const NEEDS_LIMIT = 20;
 const CHECKOUT_LIMIT = 128;
 const REVIEW_PREVIEW_LENGTH = KNOWLEDGE_LIMITS.oneLineCharacters;
 const reviewLimits = { retainedBytes: 8 << 20, vocabularyBytes: 48 << 20 };
-const checkoutCollation = process.platform === "win32" ? "COLLATE NOCASE" : "";
+export const checkoutCollation = process.platform === "win32" ? "COLLATE NOCASE" : "";
 
 type Need = MachineHome["needs"][number] & { contradiction: boolean };
 type NeedsCount = MachineHome["needsCount"][string];
@@ -23,7 +23,10 @@ type Knowledge = MachineHome["knowledge"][string];
 type StatusCounts = Omit<Knowledge, "total" | "onlyYou" | "team" | "updatingSince" | "byKind">;
 type Kind = keyof Knowledge["byKind"];
 type ScopedEntry = { id: string; kind: Kind; level: "onlyYou" | "team" };
-type Verdict = "held" | "changed" | "broken" | "unknown";
+const knowledgeStatuses = { held: "upToDate", changed: "codeChanged", broken: "outOfDate", unknown: "notChecked" } as const;
+export function knowledgeStatus(verdict: string | undefined) {
+  return Object.hasOwn(knowledgeStatuses, verdict ?? "") ? knowledgeStatuses[verdict as keyof typeof knowledgeStatuses] : "notChecked";
+}
 
 interface ProjectSnapshot {
   needs: Need[];
@@ -46,14 +49,14 @@ function emptyCounts(): StatusCounts {
   return { upToDate: 0, codeChanged: 0, outOfDate: 0, notChecked: 0 };
 }
 
-function activeCheckouts(reader: RecordReader, project: string, now: number): string[] {
+export function activeCheckouts(reader: RecordReader, project: string, now: number): string[] {
   const rows = reader.all<{ path: string }>(`SELECT path FROM checkouts WHERE project_id=?
     AND (state='on' OR (state='off until' AND off_until<=?)) ORDER BY path LIMIT ?`, project, new Date(now).toISOString(), CHECKOUT_LIMIT + 1);
   if (rows.length > CHECKOUT_LIMIT) throw new Error("Home checkout scan limit exceeded");
   return rows.map(({ path }) => path).filter((path) => lstatSync(path, { throwIfNoEntry: false })?.isDirectory());
 }
 
-function mostRecentCheckout(hooks: RecordReader | undefined, project: string, paths: string[]) {
+export function mostRecentCheckout(hooks: RecordReader | undefined, project: string, paths: string[]) {
   if (paths.length < 2) return paths[0];
   const last = hooks?.get<{ checkout: string }>(`SELECT checkout FROM sessions WHERE project_id=?
     AND checkout ${checkoutCollation} IN (SELECT value FROM json_each(?))
@@ -71,15 +74,14 @@ function readKnowledge(reader: RecordReader, hooks: RecordReader | undefined, pr
   if (checkout) scan(containedDirectory(checkout, [".mex", "learned"]), 1, collect("team"));
 
   const ids = new Set(entries.map(({ id }) => id));
-  const verdictRows = hooks && checkout && ids.size ? hooks.all<{ entry_id: string; verdict: Verdict }>(`SELECT entry_id,verdict FROM verdicts
+  const verdictRows = hooks && checkout && ids.size ? hooks.all<{ entry_id: string; verdict: string }>(`SELECT entry_id,verdict FROM verdicts
     WHERE project_id=? AND checkout=? ${checkoutCollation} AND entry_id IN (SELECT value FROM json_each(?)) LIMIT ?`,
     project, checkout, JSON.stringify([...ids]), KNOWLEDGE_LIMITS.entries + 1) : [];
   if (verdictRows.length > KNOWLEDGE_LIMITS.entries) throw new Error("Home verdict scan limit exceeded");
   const verdicts = new Map(verdictRows.map(({ entry_id, verdict }) => [entry_id, verdict]));
-  const status = { held: "upToDate", changed: "codeChanged", broken: "outOfDate", unknown: "notChecked" } as const;
   const knowledge: Knowledge = { ...emptyCounts(), total: entries.length, onlyYou: 0, team: 0, byKind: {} };
   for (const { id, kind, level } of entries) {
-    const field = status[verdicts.get(id) ?? "unknown"] ?? "notChecked";
+    const field = knowledgeStatus(verdicts.get(id));
     knowledge[level]++;
     knowledge[field]++;
     (knowledge.byKind[kind] ??= emptyCounts())[field]++;

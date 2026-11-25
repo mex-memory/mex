@@ -1,6 +1,6 @@
 import { constants, openSync, closeSync, fstatSync, readSync, lstatSync, mkdirSync, writeSync, linkSync, unlinkSync, renameSync, fsyncSync } from "node:fs";
 import { join, relative, isAbsolute, sep, dirname, basename } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { absolutePath, realPath } from "../record/project.js";
 import { EntryIdSchema, KnowledgeError, KNOWLEDGE_LIMITS } from "./entry.js";
 
@@ -35,11 +35,27 @@ export function containedDirectory(home: string, parts: string[], create = false
 }
 /** Exact regular-file read, bounded even if the file grows while it is open. */
 export function readEntryFile(path: string): string | undefined {
+  return readEntry(path)?.content;
+}
+
+/** A revision is tied to the original bytes, including a UTF-8 BOM or CRLF. */
+export function readEntryRevision(path: string, maxBytes = KNOWLEDGE_LIMITS.entryBytes as number) {
+  const found = readEntry(path, maxBytes);
+  return found && { content: found.content, size: found.bytes.length, revision: createHash("sha256").update(found.bytes).digest("hex") };
+}
+
+function readEntry(path: string, maxBytes = KNOWLEDGE_LIMITS.entryBytes as number) {
   const check = personalReadGuard(dirname(path));
-  const text = readBoundedTextFile(path, KNOWLEDGE_LIMITS.entryBytes); check(); return text;
+  const found = readBoundedText(path, maxBytes);
+  check();
+  return found;
 }
 /** Host/source text has its own explicit bound; entry reads keep the 64 KiB limit. */
 export function readBoundedTextFile(path: string, maxBytes: number): string | undefined {
+  return readBoundedText(path, maxBytes)?.content;
+}
+
+function readBoundedText(path: string, maxBytes: number): { content: string; bytes: Uint8Array } | undefined {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024) throw new KnowledgeError("STORE_LIMIT", "Invalid text read bound.");
   let fd: number;
   let expected;
@@ -62,7 +78,8 @@ export function readBoundedTextFile(path: string, maxBytes: number): string | un
     if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || BigInt(length) !== after.size) {
       throw new KnowledgeError("STORE_CHANGED", "A note changed while it was read; retry the command.");
     }
-    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)); }
+    const exact = bytes.subarray(0, length);
+    try { return { content: new TextDecoder("utf-8", { fatal: true }).decode(exact), bytes: exact }; }
     catch { throw new KnowledgeError("INVALID_ENTRY", "Entry is not valid UTF-8."); }
   } finally { closeSync(fd); }
 }
@@ -101,7 +118,7 @@ export function createEntryFile(directory: string, id: string, content: string):
 }
 
 /** Caller holds the local record's write transaction to serialize MEX editors. */
-export function replaceEntryFile(directory: string, id: string, expected: string, content: string): void {
+export function replaceEntryFile(directory: string, id: string, expected: string, content: string, expectedRevision?: string): void {
   personalReadGuard(directory)();
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
@@ -129,7 +146,12 @@ export function replaceEntryFile(directory: string, id: string, expected: string
     if (currentDirectory.dev !== originalDirectory.dev || currentDirectory.ino !== originalDirectory.ino || realPath(directory) !== absolutePath(directory)) {
       throw new KnowledgeError("STORE_CHANGED", "The entry directory changed; retry the command.");
     }
-    if (readEntryFile(target) !== expected) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
+    if (expectedRevision !== undefined && readEntryRevision(target)?.revision !== expectedRevision) {
+      throw new KnowledgeError("REVISION_CONFLICT", "The entry changed since it was opened.");
+    }
+    if (expectedRevision === undefined && readEntryFile(target) !== expected) {
+      throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
+    }
     renameSync(temporary, target);
   } finally {
     if (fd !== undefined) { try { closeSync(fd); } catch { /* preserve publication outcome */ } }

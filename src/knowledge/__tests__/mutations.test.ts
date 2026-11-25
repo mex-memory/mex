@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -32,6 +33,20 @@ describe("explicit personal note changes", () => {
     expect(expand(id, options()).entry).toEqual(changed.entry);
     expect(recall("seeded", options()).entries[0].id).toBe(id);
     expect(git(repo, "status", "--porcelain")).toBe("");
+  });
+
+  it("compares the editor's opened bytes while holding the writer lock", () => {
+    const saved = note({ text: "Tests use golden files." }, options());
+    const id = saved.entry.mex.id;
+    const path = entryPath(id);
+    const opened = readFileSync(path);
+    const revision = createHash("sha256").update(opened).digest("hex");
+    const changed = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), opened]);
+    writeFileSync(path, changed);
+    const input = { text: "Tests use small golden files." };
+    expect(() => edit(id, input, options(), new Date(), revision)).toThrow(expect.objectContaining({ code: "REVISION_CONFLICT" }));
+    expect(readFileSync(path)).toEqual(changed);
+    expect(edit(id, input, options(), new Date(), createHash("sha256").update(changed).digest("hex")).entry.text).toBe(input.text);
   });
 
   it("never revives a forgotten id even if its old active file is restored, across worktrees and clones", () => {

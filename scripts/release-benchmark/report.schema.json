@@ -112,7 +112,8 @@
               "properties": {
                 "home": { "$ref": "#/$defs/assetGroup" },
                 "repo": { "$ref": "#/$defs/assetGroup" },
-                "jobs": { "$ref": "#/$defs/assetGroup" }
+                "jobs": { "$ref": "#/$defs/assetGroup" },
+                "knowledge": { "$ref": "#/$defs/assetGroup" }
               }
             }
           ]
@@ -269,12 +270,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["session", "projects"],
-      "dependentRequired": { "home": ["jobs"], "jobs": ["home"] },
+      "dependentRequired": { "home": ["jobs"], "jobs": ["home"], "knowledge": ["knowledgeLanding"], "knowledgeLanding": ["knowledge"] },
       "properties": {
         "session": { "$ref": "#/$defs/summary10" },
         "projects": { "$ref": "#/$defs/summary10" },
         "home": { "$ref": "#/$defs/summary10" },
-        "jobs": { "$ref": "#/$defs/summary10" }
+        "jobs": { "$ref": "#/$defs/summary10" },
+        "knowledge": { "$ref": "#/$defs/summary10" },
+        "knowledgeLanding": { "$ref": "#/$defs/summary10" }
       }
     },
     "maintenanceMeasurement": {

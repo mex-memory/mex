@@ -47,6 +47,7 @@ export function useMachineConnection() {
         queryClient.removeQueries({ queryKey: PROJECTS_KEY });
         queryClient.removeQueries({ queryKey: ["home"] });
         queryClient.removeQueries({ queryKey: ["jobs"] });
+        queryClient.removeQueries({ queryKey: ["knowledge"] });
       }
       return { current: rejectedLink.current ? null : current, rejectedLink: rejectedLink.current };
     },

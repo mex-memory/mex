@@ -21,7 +21,7 @@ export class HubNetworkError extends Error {
 }
 
 export class HubProblemError extends Error {
-  constructor(readonly status: number, readonly problem?: MachineProblem) {
+  constructor(readonly status: number, readonly problem?: MachineProblem, readonly body?: unknown) {
     super(problem?.title ?? `The Hub returned HTTP ${status}.`);
     this.name = "HubProblemError";
   }
@@ -45,25 +45,27 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   headers.set("accept", "application/json, application/problem+json");
   let response: Response;
   try {
+    const timeout = AbortSignal.timeout(8_000);
     response = await fetch(`/api/v1${path}`, {
       ...init,
       headers,
       credentials: "same-origin",
       redirect: "error",
-      signal: AbortSignal.timeout(8_000),
+      signal: init.signal && typeof AbortSignal.any === "function" ? AbortSignal.any([init.signal, timeout]) : timeout,
     });
   } catch (error) {
     throw new HubNetworkError(error);
   }
   if (!response.ok) {
-    const schema = response.status === 409 ? MachineJobConflictSchema : MachineProblemSchema;
-    const problem = schema.safeParse(await readJson(response));
-    throw new HubProblemError(response.status, problem.success ? problem.data : undefined);
+    const schema = response.status === 409 && path.startsWith("/jobs/") ? MachineJobConflictSchema : MachineProblemSchema;
+    const body = await readJson(response);
+    const problem = schema.safeParse(body);
+    throw new HubProblemError(response.status, problem.success ? problem.data : undefined, body);
   }
   return response;
 }
 
-async function requestJson<T>(path: string, schema: { parse(value: unknown): T }, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, schema: { parse(value: unknown): T }, init?: RequestInit): Promise<T> {
   return schema.parse(await readJson(await request(path, init)));
 }
 

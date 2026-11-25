@@ -6,11 +6,17 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { openRecord, openRecordReadOnly, type RecordWriter } from "../../record/index.js";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
-import { readBoundedJson } from "../http/request.js";
+import { readBoundedJson, readStrictQuery } from "../http/request.js";
 import { validateHubRequestPath, type HubAssetManifest } from "../static/assets.js";
 import { HubEvents } from "./events.js";
 import { HomeData } from "./home.js";
 import { changeHubJob, readHubJobs } from "./jobs.js";
+import { KnowledgeData } from "./knowledge.js";
+import { readKnowledgeItem } from "./knowledge-detail.js";
+import { readForgotten } from "./knowledge-forgotten.js";
+import { readKnowledgeLanding } from "./knowledge-landing.js";
+import { readKnowledgePage } from "./knowledge-list.js";
+import { KnowledgeConflict, KnowledgeReplays, KnowledgeWrites, knowledgeReadProblem, knowledgeWriteProblem } from "./knowledge-writes.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { consumeBootstrap, keepHubOpen, TAB_KEEPALIVE_MS, type HubMode } from "./state.js";
 
@@ -49,8 +55,24 @@ export function createMachineHubApp(options: MachineHubOptions) {
   };
 
   const home = new HomeData(location, now);
+  const knowledge = new KnowledgeData(location, now, options.env);
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
-  const events = new HubEvents(location, home, now, keepOpen);
+  const events = new HubEvents(location, home, knowledge, now, keepOpen);
+  const knowledgeWrites = new KnowledgeWrites(location, now, options.env, async (repoId) => {
+    await knowledge.refreshProject(repoId);
+    events.knowledgeChanged();
+  });
+  const knowledgeReplays = new KnowledgeReplays(now);
+  const knowledgePost = async (context: Context<{ Variables: Variables }>, action: (body: unknown) => Promise<unknown>, status: 200 | 201 = 200) => {
+    const body = await readBoundedJson(context.req.raw, 64 << 10);
+    return knowledgeReplays.run(context.get("session").id, context.req.header("Idempotency-Key"), context.req.path, body, async () => {
+      try { return context.json(await action(body), status); }
+      catch (error) {
+        if (error instanceof KnowledgeConflict) return problem(context, error, error.current && { current: error.current, attempted: error.attempted });
+        return problem(context, knowledgeWriteProblem(error));
+      }
+    });
+  };
 
   app.use("*", async (context, next) => {
     const requestId = randomUUID();
@@ -128,6 +150,30 @@ export function createMachineHubApp(options: MachineHubOptions) {
 
   app.get("/api/v1/home", (context) => context.json(home.get(context.req.query("tz"))));
 
+  app.get("/api/v1/knowledge", (context) => context.json(readKnowledgePage(knowledge,
+    readStrictQuery(context.req.raw, ["repo", "q", "kind", "audience", "status", "area", "cursor", "limit"])),
+  ));
+
+  app.get("/api/v1/knowledge/landing", (context) => {
+    const { repo } = readStrictQuery(context.req.raw, ["repo"]);
+    return context.json(readKnowledgeLanding(knowledge, repo));
+  });
+
+  app.get("/api/v1/knowledge/items/:key", async (context) => {
+    knowledge.get();
+    try { return context.json(await readKnowledgeItem(location, context.req.param("key"), now(), options.env)); }
+    catch (error) { return problem(context, knowledgeReadProblem(error)); }
+  });
+
+  app.get("/api/v1/knowledge/forgotten", (context) => {
+    const { repo, cursor } = readStrictQuery(context.req.raw, ["repo", "cursor"]);
+    return context.json(readForgotten(knowledge, repo, cursor));
+  });
+
+  app.post("/api/v1/knowledge/notes", (context) => knowledgePost(context, (body) => knowledgeWrites.create(body), 201));
+  app.post("/api/v1/knowledge/items/:key/edit", (context) => knowledgePost(context, (body) => knowledgeWrites.edit(context.req.param("key"), body)));
+  app.post("/api/v1/knowledge/items/:key/forget", (context) => knowledgePost(context, (body) => knowledgeWrites.forget(context.req.param("key"), body)));
+
   app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
 
   app.post("/api/v1/jobs/:id/actions", async (context) => {
@@ -165,6 +211,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   return Object.assign(app, { close() {
     events.close();
     home.close();
+    knowledge.close();
   } });
 }
 
@@ -206,7 +253,7 @@ function sessionCookie(sessions: HubSessions, session: HubSession, value: string
   return generateCookie(sessions.cookieName, value, { httpOnly: true, sameSite: "Strict", path: "/api/v1", maxAge: sessions.maxAgeSeconds(session) });
 }
 
-function problem(context: Context, error: unknown, extensions?: { job: import("@mex/hub-contracts/machine").MachineJob }): Response {
+function problem(context: Context, error: unknown, extensions?: Record<string, unknown>): Response {
   const known = error instanceof HubRequestError
     || (typeof (error as { status?: unknown })?.status === "number" && typeof (error as { code?: unknown })?.code === "string");
   const status = known ? (error as { status: number }).status : 500;

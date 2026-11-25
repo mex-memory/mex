@@ -11,3 +11,9 @@ export function readStore<T>(open: Opener, location: LocationOptions, read: (rea
     return read(reader);
   } finally { reader?.close(); }
 }
+
+export function boundedSetting(reader: RecordReader, scope: string, key: string, maxBytes: number): string | undefined {
+  return reader.get<{ value: string }>(
+    "SELECT value FROM settings WHERE scope=? AND key=? AND length(CAST(value AS BLOB))<=?", scope, key, maxBytes,
+  )?.value;
+}

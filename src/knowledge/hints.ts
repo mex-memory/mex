@@ -6,7 +6,7 @@ import { openRecord, openRecordReadOnly, RecordReader, type RecordWriter } from 
 import { absolutePath, shortHash } from "../record/project.js";
 import { EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { knowledgeProject } from "./context.js";
-import { containedDirectory, createEntryFile, readEntryFile, replaceEntryFile } from "./files.js";
+import { containedDirectory, createEntryFile, readEntryFile, readEntryRevision, replaceEntryFile } from "./files.js";
 import { gateEntry, sanitizeText, stripHidden, hasSecret } from "./gates.js";
 import { entryLabel } from "./labels.js";
 import { references } from "./references.js";
@@ -70,14 +70,24 @@ export function hintExpiresAt(lastSeen: number, months: number): number {
 function hintDirectory(writer: RecordWriter, projectId: string, create = false): string | undefined {
   return containedDirectory(writer.location.home, ["projects", projectId, "hints"], create);
 }
-function readHint(directory: string, state: HintState): { entry: KnowledgeEntry; content: string } | undefined {
-  const content = readEntryFile(join(directory, `${state.id}.md`));
+function readHint(directory: string, state: HintState, expectedRevision?: string): { entry: KnowledgeEntry; content: string } | undefined {
+  const path = join(directory, state.id + ".md");
+  let content;
+  if (expectedRevision === undefined) content = readEntryFile(path);
+  else {
+    const found = readEntryRevision(path);
+    if (!found || found.revision !== expectedRevision) throw new KnowledgeError("REVISION_CONFLICT", "The hint changed since it was opened.");
+    content = found.content;
+  }
   if (!content) return undefined;
   const entry = parseEntry(content);
+  checkHintEntry(entry, state);
+  return { entry, content };
+}
+function checkHintEntry(entry: KnowledgeEntry, state: HintState): void {
   if (entry.mex.id !== state.id || entry.mex.kind !== "hint" || entry.mex.source.type !== "agent-memory"
     || entry.mex.evidence !== "observed" || entry.mex.source.ref !== state.ref || entry.mex.checks.length !== 0
     || claimHash(entry.text) !== state.claimHash) throw new KnowledgeError("INVALID_STATE", "A hint does not match its local source observation.");
-  return { entry, content };
 }
 function removeHintFile(home: string, projectId: string, id: string): boolean {
   const directory = containedDirectory(home, ["projects", projectId, "hints"]);
@@ -133,6 +143,44 @@ export function readHints(options: MemoryOptions, now = new Date()): HintRead {
     }
     return { entries, withheld, partial };
   } finally { reader.close(); }
+}
+
+/** Read a local hint for a person, without the recipient-agent filtering used for delivery. */
+export function localHintReader(reader: RecordReader, projectId: string, options: MemoryOptions, now: number) {
+  const checked = new Map<string, boolean>();
+  let sourceBytes = 0;
+  let roots: ReturnType<typeof memoryRoots> | undefined;
+  let context: ReturnType<typeof references> | undefined;
+  let months: number | undefined;
+  let forgotten: Set<string> | undefined;
+  return (entry: KnowledgeEntry): Pick<HintEntry, "origin" | "observations"> & { entry: KnowledgeEntry } | undefined => {
+    const { id } = entry.mex;
+    const row = reader.get<{ value: string | null }>(`SELECT CASE WHEN length(CAST(value AS BLOB))<=32768 THEN value END AS value
+      FROM settings WHERE scope=? AND key=?`, projectId, stateKey(id));
+    if (row?.value === null) throw new KnowledgeError("STORE_LIMIT", "A hint observation record exceeds its size limit.");
+    const state = parseState(row?.value, id);
+    if (!state || state.confirmed || entry.mex.status !== "active") return undefined;
+    if (hintExpiresAt(state.lastSeen, months ??= expiryMonths(reader, projectId)) <= now
+      || (forgotten ??= retiredClaimHashes(reader, projectId)).has(state.claimHash)) return undefined;
+    checkHintEntry(entry, state);
+    const key = JSON.stringify([state.agent, state.sourceRoot, state.sourcePath, state.sourceHash]);
+    if (!checked.has(key)) {
+      sourceBytes += state.sourceBytes;
+      if (sourceBytes > MEMORY_LIMITS.bytes) throw new KnowledgeError("STORE_LIMIT", "Hints exceed the source read limit.");
+      roots ??= memoryRoots(options);
+      checked.set(key, checkMemorySource(state, options, roots));
+    }
+    if (!checked.get(key)) return undefined;
+    return { entry: gateEntry(entry, context ??= references(options.projectPath)), origin: state.agent, observations: state.observations.length };
+  };
+}
+
+/** A confirmed hint keeps its ID when it becomes a personal note. */
+export function isObservedHint(reader: RecordReader, projectId: string, id: string): boolean {
+  const row = reader.get<{ hint: number }>(`SELECT CASE WHEN length(CAST(value AS BLOB))<=32768 AND json_valid(value)
+    THEN json_extract(value,'$.id')=? AND json_extract(value,'$.confirmed')=0 ELSE 0 END AS hint
+    FROM settings WHERE scope=? AND key=?`, id, projectId, stateKey(id));
+  return row?.hint === 1;
 }
 
 /**
@@ -305,10 +353,10 @@ export function hintStatus(options: MemoryOptions) {
   } finally { reader.close(); }
 }
 
-export function confirmHint(id: string, input: NoteInput, options: MemoryOptions, now = new Date()): PersonalEntry {
-  try { return confirmHintNow(id, input, options, now); } finally { writeHintMirror(options, now); }
+export function confirmHint(id: string, input: NoteInput, options: MemoryOptions, now = new Date(), expectedRevision?: string): PersonalEntry {
+  try { return confirmHintNow(id, input, options, now, expectedRevision); } finally { writeHintMirror(options, now); }
 }
-function confirmHintNow(id: string, input: NoteInput, options: MemoryOptions, now: Date): PersonalEntry {
+function confirmHintNow(id: string, input: NoteInput, options: MemoryOptions, now: Date, expectedRevision?: string): PersonalEntry {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   const project = knowledgeProject(options), context = references(project.root);
   const text = sanitizeText(input.text, context);
@@ -326,6 +374,10 @@ function confirmHintNow(id: string, input: NoteInput, options: MemoryOptions, no
     try {
       const state = parseState(writer.setting(projectId, stateKey(id)), id);
       if (!state || state.confirmed || tombstone(writer, projectId, id) || hintExpiresAt(state.lastSeen, expiryMonths(writer, projectId)) <= now.getTime()) throw new KnowledgeError("NOT_FOUND", "No active hint has that id.");
+      if (expectedRevision !== undefined) {
+        const from = hintDirectory(writer, projectId);
+        if (!from || !readHint(from, state, expectedRevision)) throw new KnowledgeError("REVISION_CONFLICT", "The hint changed since it was opened.");
+      }
       const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"], true)!;
       createEntryFile(directory, id, serializeEntry(entry));
       put(writer, projectId, stateKey(id), { ...state, confirmed: true });
@@ -336,10 +388,10 @@ function confirmHintNow(id: string, input: NoteInput, options: MemoryOptions, no
   } finally { writer.close(); }
 }
 
-export function forgetHint(id: string, reason: string, options: MemoryOptions, now = new Date(), action: "forget" | "wrong" = "forget"): Tombstone {
-  try { return forgetHintNow(id, reason, options, now, action); } finally { writeHintMirror(options, now); }
+export function forgetHint(id: string, reason: string, options: MemoryOptions, now = new Date(), action: "forget" | "wrong" = "forget", expectedRevision?: string): Tombstone {
+  try { return forgetHintNow(id, reason, options, now, action, expectedRevision); } finally { writeHintMirror(options, now); }
 }
-function forgetHintNow(id: string, reason: string, options: MemoryOptions, now: Date, action: "forget" | "wrong"): Tombstone {
+function forgetHintNow(id: string, reason: string, options: MemoryOptions, now: Date, action: "forget" | "wrong", expectedRevision?: string): Tombstone {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   reason = stripHidden(reason);
   if (hasSecret(reason)) throw new KnowledgeError("SECRET_FOUND", "The retirement reason contains a possible secret.");
@@ -356,7 +408,7 @@ function forgetHintNow(id: string, reason: string, options: MemoryOptions, now: 
     try {
       const state = parseState(writer.setting(projectId, stateKey(id)), id);
       const directory = hintDirectory(writer, projectId);
-      const found = state && directory && readHint(directory, state);
+      const found = state && directory && readHint(directory, state, expectedRevision);
       if (!found || state!.confirmed) throw new KnowledgeError("NOT_FOUND", "No active hint has that id.");
       marker = saveTombstone(writer, projectId, found.entry, { reason, by: `mex ${action}`, at: now.toISOString().slice(0, 10) });
       writer.db.exec("COMMIT");

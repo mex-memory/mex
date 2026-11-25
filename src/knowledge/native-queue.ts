@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { openRecord } from "../record/index.js";
+import type { LocationOptions } from "../record/location.js";
 import { queueJob } from "../record/background.js";
 import "./native-job.js";
 
@@ -11,9 +12,9 @@ import "./native-job.js";
  * worktree. Best effort: a failure here never fails the command that changed
  * the entry.
  */
-export function queueNativeRebuild(projectPath: string, options: { local?: boolean } = {}): boolean {
+export function queueNativeRebuild(projectPath: string, options: { local?: boolean } = {}, location: LocationOptions = {}): boolean {
   try {
-    const writer = openRecord({ create: true, projectPath });
+    const writer = openRecord({ ...location, create: true, projectPath });
     try {
       const row = writer.checkout(projectPath);
       if (!row) return false;

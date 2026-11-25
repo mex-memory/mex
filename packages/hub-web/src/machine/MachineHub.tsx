@@ -11,7 +11,7 @@ const FixtureHub = import.meta.env.DEV ? lazy(() => import("./FixtureHub")) : nu
 export function MachineHub() {
   if (FixtureHub) {
     const variant = new URLSearchParams(window.location.search).get("fixture");
-    if (variant === "home" || variant === "populated" || variant === "empty" || variant === "stale" || variant === "updating") {
+    if (variant === "home" || variant === "populated" || variant === "empty" || variant === "stale" || variant === "updating" || variant === "conflict" || variant === "calm") {
       return (
         <Suspense fallback={null}>
           <FixtureHub key={variant} variant={variant} />

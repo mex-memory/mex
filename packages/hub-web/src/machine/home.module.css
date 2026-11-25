@@ -574,8 +574,40 @@ main:has(.page) {
   font-size: 12px;
 }
 
-.knowledgeChart > svg + .barLabels {
+.barValues {
   text-align: right;
+}
+
+.knowledgePlot {
+  position: relative;
+  min-width: 0;
+}
+
+.knowledgePlot svg {
+  display: block;
+}
+
+.knowledgeTargets {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+}
+
+.knowledgeTargets > div {
+  display: flex;
+  align-items: center;
+}
+
+.knowledgeTargets a {
+  display: block;
+  height: 18px;
+  min-width: 0;
+  flex-basis: 0;
+  border-radius: 3px;
+}
+
+.knowledgeTargets a:hover {
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
 }
 
 .ownership {
