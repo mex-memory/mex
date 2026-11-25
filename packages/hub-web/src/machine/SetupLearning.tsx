@@ -31,11 +31,11 @@ function Estimate({ quote }: { quote: MachineSetupQuote }) {
   );
 }
 
-/** What learn deeper adds, in the words of its entry kinds: rules, decisions (including approaches ruled out) and pitfalls. */
+/** What learn deeper adds, in the words of its entry kinds: rules, decisions and pitfalls. */
 const gains = [
-  { icon: MessagesSquare, text: "The conventions reviewers keep asking for" },
-  { icon: Scale, text: "Decisions, and approaches your team ruled out" },
-  { icon: ShieldCheck, text: "Pitfalls that past reviews already caught" },
+  { icon: MessagesSquare, text: "Review conventions" },
+  { icon: Scale, text: "Past decisions" },
+  { icon: ShieldCheck, text: "Known pitfalls" },
 ] as const;
 
 function minutesText(seconds: number) {
@@ -59,27 +59,18 @@ export function SetupLearningOffer({ offer, trigger, onQuote, onSkip }: {
           {offered && <Badge className={styles.recommended} variant="outline"><Sparkles aria-hidden="true" />Recommended</Badge>}
         </div>
         {offered ? (
-          <div className={styles.offer}>
+          <>
             <p className={styles.offerLead}>Give your agents what your team already knows.</p>
-            <p>
-              MEX reads this repo’s past pull request reviews and docs, and turns what keeps coming up into notes your agents
-              get in every session. Richer context means they follow your team’s way of working without being told.
-            </p>
-            <ul className={styles.gains} role="list">
+            <ul aria-label="What it learns" className={styles.gains} role="list">
               {gains.map(({ icon: Icon, text }) => <li key={text}><Icon aria-hidden="true" />{text}</li>)}
             </ul>
-            <p className={styles.offerNote}>
-              Every lesson links to the review or doc it came from. Lessons go to your personal notes, and nothing reaches your
-              team until you share it.
-            </p>
             <p className={styles.offerCost}>
-              {minutesText(offer.quote.seconds)} · about {number.format(offer.quote.tokens)} tokens of your {offer.quote.agent} plan
-              {offer.quote.recentUse && <><br />{offer.quote.recentUse}</>}
+              {minutesText(offer.quote.seconds)} · about {number.format(offer.quote.tokens)} tokens
             </p>
-          </div>
+          </>
         ) : (
           <p role="status">
-            {offer.state === "skipped" ? <>Not started · $0 · whenever you’re ready, run <code>mex learn</code> to add your team’s conventions from past reviews</>
+            {offer.state === "skipped" ? <>Not started · run <code>mex learn</code> whenever you’re ready</>
               : offer.state === "no-review-remote" ? "No reviews to learn from (no GitHub or GitLab remote) · $0, nothing started"
               : <SetupText text={offer.reason} />}
           </p>
@@ -115,16 +106,16 @@ export function SetupLearningDialog({ quote, waitsForSetup, finalFocus, onClose,
         <AlertDialogHeader className={styles.confirmationHeader}>
           <AlertDialogTitle>Learn from your team’s reviews?</AlertDialogTitle>
           <AlertDialogDescription>
-            MEX reads past reviews and docs in the background using your {quote?.agent} plan, so your agents start with your
-            team’s conventions. You can keep working.{waitsForSetup && " It starts after the code map finishes."}
+            MEX reads past reviews and docs in the background with your {quote?.agent} plan.
+            Lessons stay personal until you share them.{waitsForSetup && " Starts after the code map."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         {quote && (
           <div className={styles.confirmationBody}>
             <Estimate quote={quote} />
-            {quote.privateRepo && <p>Review and doc excerpts from this private repo will be sent to your selected agent account. Start only if your organization allows it.</p>}
+            {quote.privateRepo && <p>Excerpts from this private repo go to your agent account. Start only if your organization allows it.</p>}
             {quote.weekly && (
-              <p>Afterwards, MEX keeps these lessons fresh: every 7–14 days it checks for new reviews and docs, only when idle, signed in, and within the 3% automatic allowance. For a one-time run, use <code>mex learn --no-weekly</code> in a terminal.</p>
+              <p>Then it checks for new reviews every 7–14 days, within the 3% automatic allowance. One-time run: <code>mex learn --no-weekly</code>.</p>
             )}
           </div>
         )}

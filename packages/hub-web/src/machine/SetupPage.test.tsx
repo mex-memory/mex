@@ -46,7 +46,7 @@ describe("Setup fixtures", () => {
     ]);
     expect(screen.getByRole("region", { name: "Free setup" })).toHaveTextContent("Test and build commands for 3 packages.");
     expect(steps().getByRole("progressbar", { name: "Code map progress" })).toHaveAttribute("value", "1504");
-    expect(steps().getByText(/About 4 minutes · about 48,000 tokens of your Claude Code plan/)).toBeVisible();
+    expect(steps().getByText("About 4 minutes · about 48,000 tokens")).toBeVisible();
     expect(screen.getByRole("heading", { name: "2 quick questions" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Summary" })).toBeVisible();
   });
@@ -89,15 +89,16 @@ describe("Setup fixtures", () => {
   it("shows the estimate before consent and queues one job after keyboard confirmation", async () => {
     const user = await openHub();
     expect(steps().getByText("Give your agents what your team already knows.")).toBeVisible();
-    expect(steps().getByText("Decisions, and approaches your team ruled out")).toBeVisible();
-    expect(steps().getByText(/nothing reaches your team until you share it/)).toBeVisible();
+    expect(within(steps().getByRole("list", { name: "What it learns" })).getAllByRole("listitem").map((item) => item.textContent))
+      .toEqual(["Review conventions", "Past decisions", "Known pitfalls"]);
     const start = steps().getByRole("button", { name: "Learn deeper" });
     start.focus();
     await user.keyboard("{Enter}");
     const dialog = within(await screen.findByRole("alertdialog", { name: "Learn from your team’s reviews?" }));
     for (const detail of ["About 4 minutes", "48,000 tokens", "72,000 tokens"]) expect(dialog.getByText(detail)).toBeVisible();
-    expect(dialog.getByText(/It starts after the code map finishes\./)).toBeVisible();
+    expect(dialog.getByText(/Starts after the code map\./)).toBeVisible();
     expect(dialog.getByText(/Claude Code plan/)).toBeVisible();
+    expect(dialog.getByText(/Lessons stay personal until you share them/)).toBeVisible();
     expect(dialog.getByText(/every 7–14 days/)).toBeVisible();
     await waitFor(() => expect(dialog.getByRole("button", { name: "Back" })).toHaveFocus());
     await user.keyboard("{Escape}");
@@ -123,7 +124,7 @@ describe("Setup fixtures", () => {
   it("skips learning without a job or charge and keeps the questions available", async () => {
     const user = await openHub();
     await user.click(steps().getByRole("button", { name: "Not now" }));
-    expect(steps().getByText(/Not started · \$0/)).toBeVisible();
+    expect(steps().getByText(/Not started · run/)).toBeVisible();
     expect(steps().getByText("mex learn", { exact: true })).toBeVisible();
     expect(steps().queryByRole("link", { name: "View job for Learn deeper" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "2 quick questions" })).toBeVisible();

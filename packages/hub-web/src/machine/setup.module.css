@@ -438,12 +438,6 @@
   height: 12px;
 }
 
-.offer {
-  display: grid;
-  max-width: 62ch;
-  gap: 8px;
-}
-
 .stepMain .offerLead {
   color: var(--foreground);
   font-size: 14px;
@@ -451,9 +445,10 @@
 }
 
 .gains {
-  display: grid;
-  gap: 5px;
-  margin: 2px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
   padding: 0;
   list-style: none;
   font-size: 13px;
@@ -462,18 +457,17 @@
 .gains li {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: var(--foreground);
 }
 
 .gains svg {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   flex: none;
   color: var(--muted-foreground);
 }
 
-.stepMain .offerNote,
 .stepMain .offerCost {
   font-size: 12px;
 }
