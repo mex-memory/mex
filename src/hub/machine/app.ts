@@ -27,7 +27,8 @@ import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes
 import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { rotateHubSecret } from "./secret.js";
-import { SetupData } from "./setup-data.js";
+import { changeSetupStep } from "./setup-step-actions.js";
+import { SetupData, setupRepoId } from "./setup-data.js";
 import { takeSettingsSnapshot } from "./settings-snapshot.js";
 import { applyRecordSetting, applyTelemetrySetting, refreshCheckoutRules } from "./settings-writes.js";
 import { takeUninstallSnapshot } from "./uninstall-snapshot.js";
@@ -351,6 +352,14 @@ export function createMachineHubApp(options: MachineHubOptions) {
     const { repo } = readStrictQuery(context.req.raw, ["repo"]);
     return context.json(setup.get(repo));
   });
+
+  app.post("/api/v1/setup/:repo/steps/:id", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const step = await changeSetupStep(location, options.env, options.agentEntry, repoId, context.req.param("id"), body);
+    setup.refresh(repoId);
+    events.controlsChanged("setup", "jobs");
+    return step;
+  }));
 
   app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
 

@@ -27,6 +27,7 @@ export interface SetupStep {
   /** The checkout the step ran for. */
   scope: string | null;
   state: JobState;
+  pending?: "pause" | "cancel";
   /** Set before a paid step starts; seconds are derived from the tokens at the quote's rate. */
   estimate?: { tokens?: number; seconds?: number };
   progress?: StepProgress;
@@ -84,6 +85,7 @@ export function stepFromRow(reader: Reader, row: JobRow): SetupStep {
   const progress = terminal ? undefined : parseProgress(row.progress);
   return {
     kind, jobId: row.id, label: jobKind(row.kind)?.label ?? LABELS[kind] ?? row.kind, scope, state: row.state,
+    ...(row.state === "running" && row.request ? { pending: row.request } : {}),
     ...(estimate ? { estimate } : {}), ...(progress ? { progress } : {}), ...(summary ? { summary } : {}),
     cost: costOf(reader, row.id), startedAt: row.created_at, finishedAt: row.finished_at,
     ...(row.reason && (row.state === "failed" || row.state === "waiting" || row.state === "cancelled") ? { error: row.reason } : {}),
@@ -105,13 +107,18 @@ export function readSetupStepRows(reader: Reader, projectId: string): JobRow[] {
   return steps;
 }
 
-export function readSetupSteps(reader: Reader, projectId: string): SetupStep[] {
-  return readSetupStepRows(reader, projectId).map(row => stepFromRow(reader, row));
+export function readSetupSteps(reader: Reader, projectId: string): SetupStep[];
+export function readSetupSteps<T>(reader: Reader, projectId: string, project: (step: SetupStep, row: JobRow) => T): T[];
+export function readSetupSteps<T>(reader: Reader, projectId: string, project?: (step: SetupStep, row: JobRow) => T): (SetupStep | T)[] {
+  return readSetupStepRows(reader, projectId).map(row => {
+    const step = stepFromRow(reader, row);
+    return project ? project(step, row) : step;
+  });
 }
 
 export type StepAction = "pause" | "resume" | "cancel";
 /** The only way a view starts or stops setup work: through the jobs API, never a process. */
-export function actOnStep(writer: RecordWriter, jobId: string, action: StepAction): SetupStep {
-  const row = requestJob(writer, jobId, action);
+export function actOnStep(writer: RecordWriter, jobId: string, action: StepAction, requireCurrent?: (row: JobRow) => void): SetupStep {
+  const row = requestJob(writer, jobId, action, requireCurrent);
   return stepFromRow({ all: (sql, ...args) => writer.db.prepare(sql).all(...(args as never[])) as never }, row);
 }

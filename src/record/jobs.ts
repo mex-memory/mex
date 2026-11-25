@@ -157,12 +157,15 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
   });
 }
 
-/** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
-export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params"> & Partial<Pick<JobRow, "reason">>, approvedParams?: string): JobRow {
+type JobExpectation = Pick<JobRow, "state" | "params"> & Partial<Pick<JobRow, "reason">>;
+
+/** Pause, cancel or resume. A view can also check its revision under the write lock. */
+export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: JobExpectation | ((job: JobRow) => void), approvedParams?: string): JobRow {
   return inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
-    if (expected && (job.state !== expected.state || job.params !== expected.params || "reason" in expected && job.reason !== expected.reason)) return job;
+    if (typeof expected === "function") expected(job);
+    else if (expected && (job.state !== expected.state || job.params !== expected.params || "reason" in expected && job.reason !== expected.reason)) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.

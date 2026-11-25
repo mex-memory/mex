@@ -14,14 +14,14 @@ import { machineCheckouts, machinePath, machineProjects, machineTime } from "./m
 import { mostRecentCheckout } from "./read.js";
 
 type SetupReader = Pick<RecordReader, "all" | "get" | "setting">;
-type StepGuard = Pick<JobRow, "id" | "project_id" | "kind" | "state" | "params" | "request" | "reason">;
+type StepGuard = Pick<JobRow, "id" | "project_id" | "kind" | "state" | "params">;
 
 export function setupRevision(inputs: unknown): string {
   return createHash("sha256").update(JSON.stringify(inputs)).digest("hex");
 }
 
-export function stepRevision({ id, project_id, kind, state, params, request, reason }: StepGuard): string {
-  return setupRevision([id, project_id, kind, state, params, request, reason]);
+export function stepRevision({ id, project_id, kind, state, params }: StepGuard, request?: SetupStep["pending"] | null): string {
+  return setupRevision([id, project_id, kind, state, params, request ?? null]);
 }
 
 function safeLine(value: string) {
@@ -39,8 +39,7 @@ export function hubSetupStep(step: SetupStep, row: StepGuard): MachineSetupStep 
     summary: step.summary && safeLine(step.summary) || undefined,
     error: step.error && safeLine(step.error) || undefined,
     progress: progress ? { ...step.progress, message: progress } : undefined,
-    pending: row.state === "running" ? row.request ?? undefined : undefined,
-    revision: stepRevision(row),
+    revision: stepRevision(row, step.pending),
   };
 }
 
@@ -150,17 +149,10 @@ export function readRepoSetup(
 ): MachineRepoSetup | null {
   const target = reader && readSetupTarget(reader, hooks, location, repoId, now);
   if (!reader || !target) return null;
-  const steps = readSetupSteps(reader, repoId);
+  const steps = readSetupSteps(reader, repoId, hubSetupStep);
   if (!target.run && !steps.length && !target.missing) return null;
-  const rows = reader.all<StepGuard>(`SELECT id,project_id,kind,state,params,request,reason FROM jobs
-    WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(steps.map(({ jobId }) => jobId)));
-  const byId = new Map(rows.map(row => [row.id, row]));
-  const stepViews = steps.flatMap(step => {
-    const row = byId.get(step.jobId);
-    return row && row.state === step.state ? [hubSetupStep(step, row)] : [];
-  });
   const repo: MachineRepoSetup = {
-    repoId, checkout: target.checkout.path, steps: stepViews, questions: [], summary: setupSummary(target.run),
+    repoId, checkout: target.checkout.path, steps, questions: [], summary: setupSummary(target.run),
     ...(target.missing ? { missingCheckout: true } : {}),
   };
   if (target.missing) return repo;
