@@ -4,6 +4,7 @@ import { hash } from "../judge/evidence.js";
 import { sessionWorkEnabled } from "../judge/session.js";
 import { hasSecret, stripHidden } from "../knowledge/gates.js";
 import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
+import type { MemoryAgent } from "../knowledge/host-memory.js";
 import { readNotes } from "../knowledge/personal-store.js";
 import { learningMetadata } from "./metadata.js";
 import { deliveredContext, deliveredNoteLookup } from "./delivered.js";
@@ -21,10 +22,10 @@ interface Selection {
   note?: SessionNote;
   activeNote?: SessionNote;
   current: boolean;
+  hostOnly?: boolean;
 }
-export interface StageTwoSource extends Selection { message: Message; }
+export interface StageTwoSource extends Selection { message: Message; agent: MemoryAgent; }
 export interface ExistingNote { entry: KnowledgeEntry; at: string; raw: string; }
-export interface HostMatch { id: string; ref: string; text: string; }
 export interface StageTwoInput {
   batches: StageOneBatch[];
   exhausted: Set<number>;
@@ -35,7 +36,7 @@ export interface StageTwoInput {
   unchecked: boolean;
 }
 const SOURCE_LIMIT = 64;
-const HISTORY_LIMIT = 16;
+export const STAGE_TWO_HISTORY_LIMIT = 16;
 
 function observation(notes: ReadonlyMap<string, SessionNote>, project: string, session: string, verdict: Verdict, now: number) {
   const note = notes.get(sessionNoteId(project, session, verdict.id));
@@ -64,14 +65,15 @@ function sourceRows(writer: RecordWriter, project: string, checkout: string, sel
     const bySession = new Map<string, StageTwoSource[]>();
     for (const source of selected) {
       const { verdict, note } = source, row = rows.get(Number(verdict.id.slice(1)));
-      if (!row || row.session_id !== source.batch.batch.session || row.marks || row.paused || !Number.isFinite(Date.parse(row.ts))) continue;
+      if (!row || row.session_id !== source.batch.batch.session || row.marks || row.paused || !Number.isFinite(Date.parse(row.ts))
+        || (row.agent !== "claude-code" && row.agent !== "codex")) continue;
       const text = Array.from(row.text).slice(0, FILTER_LIMITS.characters).join("");
       if (!text || hasSecret(text)) continue;
       if (verdict.verdict === "candidate" && (verdict.at !== row.ts || hash(text) !== verdict.message_hash
         || text.slice(verdict.quote.start, verdict.quote.end) !== verdict.quote.text || note?.quote !== verdict.quote.text)) continue;
       const message: Message = { id: verdict.id, row: row.id, session: row.session_id, at: row.ts, text, marks: "", previous_reply: null, delivered: [] };
       const sources = bySession.get(row.session_id) ?? [];
-      sources.push({ ...source, message });
+      sources.push({ ...source, message, agent: row.agent });
       bySession.set(row.session_id, sources);
     }
     const out: StageTwoSource[] = [];
@@ -86,7 +88,7 @@ function sourceRows(writer: RecordWriter, project: string, checkout: string, sel
       const meta = filterSession(writer, project, checkout, session);
       const mode = contextMode ?? "design";
       if (contextMode !== undefined && mode !== "none" && masks && meta?.transcript && meta.agent === agent) {
-        replyContexts(meta.transcript, meta.agent === "claude-code" ? "claude" : "codex", trusted.map(item => item.message), mode,
+        replyContexts(meta.transcript, meta.agent === "claude-code" ? "claude" : "codex", trusted.filter(item => !item.hostOnly).map(item => item.message), mode,
           { checkout, notes: masks, maxFullReplyBytes: 12_000, includeOptions: true });
       }
       for (const item of trusted) {
@@ -167,9 +169,15 @@ export function readStageTwoInput(writer: RecordWriter, project: string, checkou
   const terms = new Set([...first].flatMap(({ verdict }) => verdict.verdict === "candidate" ? words(verdict.quote.text) : []));
   const historical = select(stageOneBatches(writer, project, checkout, true), false, notes, project, now)
     .concat(select(batches, false, notes, project, now).filter(source => source.batch.batch.settled?.includes(Number(source.verdict.id.slice(1)))))
-    .filter(s => s.note && s.verdict.verdict === "candidate" && words(s.verdict.quote.text).some(term => terms.has(term)))
-    .sort((a, b) => (b.note?.at ?? 0) - (a.note?.at ?? 0)).slice(0, HISTORY_LIMIT);
-  const sources = sourceRows(writer, project, checkout, [...first, ...historical], contextMode);
+    .filter(s => s.note && s.verdict.verdict === "candidate")
+    .sort((a, b) => (b.note?.at ?? 0) - (a.note?.at ?? 0));
+  const related = historical.filter(source => words(source.note!.quote).some(term => terms.has(term))).slice(0, STAGE_TWO_HISTORY_LIMIT);
+  // Codex can write a summary after the original verdict was deferred. A
+  // later due batch can still offer that recent typed claim for corroboration.
+  const included = new Set(related);
+  const deferred = historical.filter(source => source.activeNote?.scope.kind === "seen" && !included.has(source)).slice(0, STAGE_TWO_HISTORY_LIMIT / 2)
+    .map(source => ({ ...source, hostOnly: true }));
+  const sources = sourceRows(writer, project, checkout, [...first, ...related, ...deferred], contextMode);
   if (!sources) return empty;
   const verified = new Set(sources.map(source => source.message.row));
   for (const { verdict } of first) {
@@ -190,7 +198,7 @@ export function readStageTwoInput(writer: RecordWriter, project: string, checkou
       existing.push({ entry, at, raw });
     }
   }
-  const files = active.sessions ? contextFiles(checkout, sources.map(source => source.message), [])
+  const files = active.sessions ? contextFiles(checkout, sources.filter(source => !source.hostOnly).map(source => source.message), [])
     .filter(file => !hasSecret(file.text) && !file.path.split("/").includes(".mex")) : [];
   return { batches, exhausted, sources, existing, files, ...active };
 }
@@ -202,7 +210,7 @@ export function stageTwoSourcesCurrent(writer: RecordWriter, project: string, ch
   const notes = new Map(sessionNoteHistory(writer, project).map(note => [note.id, note]));
   return confirmed.every((source, i) => {
     const old = sources[i]!, verified = observation(notes, project, source.message.session, source.verdict, now);
-    return source.message.id === old.message.id && source.message.text === old.message.text && source.message.at === old.message.at
+    return source.agent === old.agent && source.message.id === old.message.id && source.message.text === old.message.text && source.message.at === old.message.at
       && isDeepStrictEqual(source.message.delivered, old.message.delivered) && isDeepStrictEqual(verified?.activeNote, old.activeNote)
       && isDeepStrictEqual(verified?.note, old.note);
   });

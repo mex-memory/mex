@@ -250,6 +250,7 @@ export function labelled(text: string): { label: string; text: string } {
   }
   if ((m = /^(\d+) rule files? read \((.+)\)(?:; they agree)?$/u.exec(text))) return { label: "Rule files", text: `${m[1]} read · ${m[2]}` };
   if ((m = /^(\d+ notes?) from your (.+?) memory, offered to your agents as hints$/u.exec(text))) return { label: "Agent memory", text: `${m[1]} from ${m[2]}, offered as hints` };
+  if (/^(?:Claude Code|Codex) memory is off:/u.test(text)) return { label: "Agent memory", text };
   if ((m = /^Indexed (.+)$/u.exec(text))) return { label: "Your code", text: `${m[1]} indexed` };
   if ((m = /^Git history \((.+?)\):/u.exec(text))) return { label: "Git history", text: `${m[1]} read` };
   if ((m = /^Git history: (.+)$/u.exec(text))) return { label: "Git history", text: m[1]! };

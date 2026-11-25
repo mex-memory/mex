@@ -17,6 +17,7 @@ import { renderNext } from "./screen.js";
 import { Rich, RichStep, RICH_MIN_COLUMNS } from "./rich.js";
 import { readBoundedTextFile } from "../knowledge/files.js";
 import type { RuleScan } from "../knowledge/rule-files.js";
+import type { MemoryAgent } from "../knowledge/host-memory.js";
 import type { NativeAgent } from "../knowledge/agents-in-use.js";
 import type { PluginAgent } from "../install/index.js";
 import type { Agent } from "../install/settings.js";
@@ -80,7 +81,6 @@ function killAt(point: KillPoint, env: NodeJS.ProcessEnv): void {
   if (env[KILL_AT_VARIABLE] === point) process.kill(process.pid, "SIGKILL");
 }
 
-const MEMORY_NAMES = { "claude-code": "Claude Code", codex: "Codex" } as const;
 function list(names: string[]): string {
   return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
@@ -114,15 +114,19 @@ async function installHooks(): Promise<HookSummary> {
   }
 }
 
-interface NotesFound { count: number; agents: string[]; }
-export async function readAgentMemory(root: string): Promise<NotesFound | undefined> {
+interface NotesFound { count: number; agents: string[]; unavailable: Array<{ agent: MemoryAgent; disabled: boolean; text: string }>; }
+export async function readAgentMemory(root: string, env = process.env): Promise<NotesFound | undefined> {
   try {
     const { refreshHints, hintStatus } = await import("../knowledge/hints.js");
-    const refreshed = refreshHints({ projectPath: root });
-    const agents = (Object.keys(MEMORY_NAMES) as Array<keyof typeof MEMORY_NAMES>)
-      .filter(agent => refreshed.agents[agent] !== undefined && refreshed.agents[agent] !== "missing")
-      .map(agent => MEMORY_NAMES[agent]);
-    return { count: hintStatus({ projectPath: root }).active, agents };
+    const { MEMORY_NAMES, memoryOffNotice } = await import("../knowledge/host-memory.js");
+    const options = { projectPath: root, env };
+    const refreshed = refreshHints(options), hosts = Object.keys(MEMORY_NAMES) as MemoryAgent[];
+    const agents = hosts.filter(agent => ["readable", "partial"].includes(refreshed.agents[agent])).map(agent => MEMORY_NAMES[agent]);
+    const unavailable = hosts.flatMap(agent => {
+      const state = refreshed.agents[agent];
+      return state === "off" || state === "missing" ? [{ agent, disabled: state === "off", text: memoryOffNotice(agent) }] : [];
+    });
+    return { count: hintStatus(options).active, agents, unavailable };
   } catch { return undefined; }
 }
 
@@ -349,9 +353,12 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       if (rules && rules.files > 0) findings.push(...rules.findings);
       ruleScan = rules?.scan;
       showNew();
-      const memory = await live("Reading your agents' memory", () => readAgentMemory(checkout.path));
-      if (memory && memory.count > 0) {
+      const memory = await live("Reading your agents' memory", () => readAgentMemory(checkout.path, env));
+      if (memory && memory.count > 0 && memory.agents.length) {
         findings.push({ state: "ok", text: `${memory.count} ${memory.count === 1 ? "note" : "notes"} from your ${list(memory.agents) || "agents'"} memory, offered to your agents as hints` });
+      }
+      for (const unavailable of memory?.unavailable ?? []) {
+        if (unavailable.disabled || hooks.agents?.includes(unavailable.agent)) findings.push({ state: "ok", text: unavailable.text });
       }
       killAt("free-step", env);
       // These reads just ran: a session starting now need not ask for them again.

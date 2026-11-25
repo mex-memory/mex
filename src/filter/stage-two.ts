@@ -6,19 +6,21 @@ import { recordChecks } from "../judge/native.js";
 import { ModelRunError, ModelWaitError, runModel, type ModelRole } from "../model-runner/index.js";
 import { applyCandidateAids, type AidRanker } from "../knowledge/aids.js";
 import { aidCorpus } from "../knowledge/aid-store.js";
-import { assertPersonQuote, CheckSchema, validateEntry, type EntryCheck, type KnowledgeEntry } from "../knowledge/entry.js";
+import { assertPersonQuote, CheckSchema, serializeEntry, validateEntry, type EntryCheck, type KnowledgeEntry } from "../knowledge/entry.js";
 import { propose, summarizeResults, toProposedCheck, type AcceptedEntry, type GateResult, type Proposal } from "../knowledge/gate.js";
-import { assertNoSecrets, gateEntry, stripHidden } from "../knowledge/gates.js";
+import { assertNoSecrets, gateEntry, sanitizeText, stripHidden } from "../knowledge/gates.js";
 import { readNotes } from "../knowledge/personal-store.js";
 import { references } from "../knowledge/references.js";
 import { currentPosition } from "./consolidation.js";
 import { FILTER_LIMITS, filterAllowed, statementsOn, type FilterParams } from "./input.js";
 import type { Answer } from "./items.js";
-import type { SourceRecord } from "./metadata.js";
+import { currentHostProofs, hostRecallMatches, type HostMatch } from "./host-recall.js";
+import { HOST_MEMORY_LABEL, type SourceRecord } from "./metadata.js";
 import { privacyHolds, repoVocabulary } from "./privacy.js";
+import { stagePromotion } from "./publication.js";
 import { planSessionNotes, saveSessionNotes, settleSessionNotes, type SessionNote } from "./session-notes.js";
 import { ownedFilterWrite, settleStageOne, stageOneBatchNeedsDecision, stageOneBatches } from "./stage-one.js";
-import { readStageTwoInput, stageTwoPending, stageTwoSourcesCurrent, type HostMatch, type StageTwoSource } from "./stage-two-input.js";
+import { readStageTwoInput, stageTwoPending, stageTwoSourcesCurrent, type StageTwoSource } from "./stage-two-input.js";
 import { parseStageTwo, SESSION_PRODUCER, stageTwoPrompt, stageTwoRepairs, type StageTwoDraft } from "./stage-two-plan.js";
 import type { ReplyContextMode } from "./transcript.js";
 export { stageTwoPending };
@@ -110,7 +112,9 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
   }
   if ((!input.unchecked && input.sessions < 3) || !input.sources.some(source => source.current)) return;
   if (!deps.checksReady()) return { summary: CHECKS_WAIT, wait: CHECKS_WAIT };
-  const supplied = stageTwoPrompt(input, deps.stageTwo?.hostMatches?.(input.sources, checkout) ?? []);
+  const hints = deps.stageTwo?.hostMatches?.(input.sources, checkout) ?? hostRecallMatches(writer, project, checkout, input.sources, now);
+  const activeHints = currentHostProofs(writer, project, checkout, hints.flatMap(hint => hint.proof ? [hint.proof] : []));
+  const supplied = stageTwoPrompt(input, hints.filter(hint => !hint.proof || activeHints.has(hint.proof.id)));
   assertNoSecrets(supplied.prompt);
   if (!allowed(writer)) return { summary: STALE };
   const last = writer.setting(project, LAST_RUN), reservation = String(now);
@@ -140,7 +144,8 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
     throw error;
   }
   if (!allowed(writer) || !samePosition(at, currentPosition(checkout))) return { summary: STALE, tokens };
-  const plan = parseStageTwo(response.text, supplied);
+  const activeProofs = currentHostProofs(writer, project, checkout, supplied.proofs);
+  const plan = parseStageTwo(response.text, { ...supplied, proofs: supplied.proofs.filter(proof => activeProofs.has(proof.id)) });
   const ref = references(checkout);
   let corpus: KnowledgeEntry[] | undefined, vocabulary: ReturnType<typeof repoVocabulary> | undefined;
   const request = { checkout, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory };
@@ -149,6 +154,7 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
     if (!checks.some(check => check.role === "complete")) return;
     const records = draft.members.filter(s => s.verdict.verdict === "candidate" && s.verdict.kind !== "approval" && s.note).map(sourceRecord);
     const { item } = draft, source = sourceRecord(draft.source);
+    const label = draft.hostProof ? HOST_MEMORY_LABEL : undefined;
     const sourceRef = "capture " + source.source.at.slice(0, 10) + " session " + hash(draft.source.message.session).slice(7, 23) + " row " + draft.source.message.row;
     let recorded: EntryCheck[] | undefined;
     try { recorded = await deps.recordChecks(request, checks); } catch { /* Leave the original note intact. */ }
@@ -156,7 +162,7 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
       && check.kind === checks[i]!.kind && check.role === checks[i]!.role && isDeepStrictEqual(check.target, checks[i]!.target))) return;
     try {
       const entry = validateEntry({ text: stripHidden(item.text), mex: {
-        id: draft.id, kind: item.kind, scope: item.scope, source: { type: "person", ref: sourceRef, quote: item.quote, producer: SESSION_PRODUCER, model },
+        id: draft.id, kind: item.kind, scope: item.scope, source: { type: "person", ref: sourceRef, quote: item.quote, producer: SESSION_PRODUCER, model, label },
         evidence: "observed", one_line: stripHidden(item.one_line), checks: recorded,
         status: "active", created: new Date(now).toISOString().slice(0, 10),
       } });
@@ -178,7 +184,7 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
       vocabulary ??= repoVocabulary(checkout);
       const holds = [...new Set(records.flatMap(record => privacyHolds({ ...item, checks: recorded!, needs_checks: false, source: record.source, quote: record.quote }, vocabulary!)))].sort();
       const proposal: Proposal = { producer: SESSION_PRODUCER, id: draft.id, kind: enriched.mex.kind as Proposal["kind"], text: enriched.text,
-        oneLine: enriched.mex.one_line, anchors: { scope: enriched.mex.scope }, checks: recorded.map(check => toProposedCheck(check)), model,
+        oneLine: enriched.mex.one_line, anchors: { scope: enriched.mex.scope }, checks: recorded.map(check => toProposedCheck(check)), model, label,
         source: { type: "person", ref: sourceRef, quote: item.quote, text: draft.source.message.text },
         evidence: [...new Set(records.flatMap(r => [r.source.row!, hash(r.source.session!)]))].slice(0, 32),
         aliases: enriched.mex.aliases, asks: enriched.mex.asks, replaces: draft.replaces };
@@ -219,11 +225,18 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
     }
   }
 
+  // Corroboration can keep the person's verbatim note even when today's code
+  // cannot check it. It stays in lifetime storage without a sharing offer.
+  const checkedIds = new Set(verified.map(({ draft }) => draft.id));
+  const verbatim = failed.filter(draft => draft.hostProof && !checkedIds.has(draft.id)
+    && sanitizeText(draft.item.quote, ref) === draft.item.quote);
+  const usedProofs = [...verified.map(({ draft }) => draft), ...verbatim].flatMap(draft => draft.hostProof ? [draft.hostProof] : []);
   if (verified.some(({ draft }) => draft.retained.scope.kind === "branch" || draft.retained.scope.kind === "release")
     && (await planSessionNotes(writer, project, checkout, deps.clock())).size) return { summary: STALE, tokens };
   const current = (record: RecordWriter) => {
     if (!allowed(record) || record.setting(project, LAST_RUN) !== reservation || !samePosition(at, currentPosition(checkout))
       || !stageTwoSourcesCurrent(record, project, checkout, supplied.sources, deps.clock())) throw new StaleDraft();
+    if (currentHostProofs(record, project, checkout, usedProofs).size !== usedProofs.length) throw new StaleDraft();
     const snapshots = new Map([...input.batches, ...supplied.sources.map(source => source.batch)].map(snapshot => [snapshot.key, snapshot]));
     for (const snapshot of snapshots.values())
       if (record.setting(project, snapshot.key) !== snapshot.value) throw new StaleDraft();
@@ -247,10 +260,14 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
   const commit = (record: RecordWriter, accepted: readonly AcceptedEntry[], results: readonly GateResult[]) => {
     const kept = new Map(accepted.map(row => [row.entryId, row.entry]));
     const retire = new Map<string, { reason: "one-off" | "corrected" | "restated"; replacement?: string }>(plan.retire);
-    const promoted = new Set<string>();
+    const promoted = new Map<string, SessionNote["corroborated"]>();
     const settle = (draft: StageTwoDraft) => {
       for (const member of draft.members) if (member.current) plan.settled.add(member.message.row);
     };
+    for (const draft of verbatim) {
+      promoted.set(draft.retained.id, "host-memory");
+      settle(draft);
+    }
     for (const value of [...scoped, ...publishable.filter(value => kept.has(value.draft.id))]) {
       const { draft, records, holds } = value;
       const entry = kept.get(draft.id);
@@ -260,8 +277,9 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
       if (entry) {
         putSetting(record, project, "learning.note." + draft.id, JSON.stringify({ at: draft.source.message.at, holds,
           sessions: [...new Set(records.flatMap(r => r.source.session ? [r.source.session] : []))], sources: records,
-          context_source: records.find(r => r.source.reply_context_hash), needs_checks: false }));
-        if (draft.retained.scope.kind === "seen") promoted.add(draft.retained.id);
+          context_source: records.find(r => r.source.reply_context_hash), needs_checks: false, corroborated: draft.hostProof ? "host-memory" : undefined }));
+        if (draft.retained.scope.kind === "seen") promoted.set(draft.retained.id, draft.hostProof ? "host-memory" : undefined);
+        if (draft.hostProof) stagePromotion(record, project, draft.id, checkout, at, hash(serializeEntry(entry)));
         const priorId: unknown = previous && JSON.parse(previous).note;
         if (typeof priorId === "string" && /^sha256:[a-f0-9]{64}$/u.test(priorId) && priorId !== draft.retained.id)
           retire.set(priorId, { reason: draft.relation === "correction" ? "corrected" : "restated", replacement: draft.retained.id });
@@ -293,7 +311,8 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
     throw error;
   }
   const saved = results.filter(r => r.status === "accepted").length;
-  return { tokens, results: saved + scoped.length,
+  return { tokens, results: saved + scoped.length + verbatim.length,
     summary: "Stage 2 " + summarizeResults(results) + " · " + scoped.length + " checked scoped drafts · "
-      + (plan.drafts.length - verified.length) + " checks unresolved · " + plan.invalid + " invalid groups" };
+      + (plan.drafts.length - verified.length) + " checks unresolved · " + plan.invalid + " invalid groups"
+      + (verbatim.length ? " · " + verbatim.length + " corroborated verbatim notes" : "") };
 }

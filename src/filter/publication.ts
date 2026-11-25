@@ -17,7 +17,7 @@ import { judgeActor } from "../judge/ownership.js";
 import { wakeNotice } from "../judge/notices.js";
 import { withCheckoutPublication } from "../judge/publication.js";
 import { filterAllowed, filterSession, type FilterParams } from "./input.js";
-import { contextSource, learningMetadata, type SourceRecord } from "./metadata.js";
+import { contextSource, hostCorroborated, learningMetadata, type SourceRecord } from "./metadata.js";
 import { typedQuote } from "./transcript.js";
 import { promotionDecision, type Evidence } from "./evidence.js";
 import { repositoryPolicy, sharingEnabled } from "./repository.js";
@@ -93,14 +93,19 @@ export function verifySources(writer: RecordWriter, project: string, entry: Know
       result.verified = s.note_id === entry.mex.id && !!entry.mex.source.quote?.includes(record.quote); return result;
     }
     if (!hooks || hooks.diagnostic || !s.session || !s.row || !s.message_hash) return result;
-    const session = hooks.get<{ checkout: string; agent: string }>("SELECT checkout,agent FROM sessions WHERE session_id=? AND project_id=?", s.session, project);
+    const session = hooks.get<{ checkout: string; agent: string; paused: number }>("SELECT checkout,agent,paused FROM sessions WHERE session_id=? AND project_id=?", s.session, project);
     if (!session || !["claude-code", "codex"].includes(session.agent)) return result;
+    const host = hostCorroborated(entry);
+    if (host && session.paused) return result;
     const info = filterSession(writer, project, session.checkout, s.session);
     if (!info || info.agent !== session.agent) return result;
     const live = hooks.get<{ text: string; marks: string; ts: string }>("SELECT text,marks,ts FROM journal WHERE id=? AND session_id=? AND kind='typed'", s.row, s.session);
     if (live && (hash(Array.from(live.text).slice(0, 1200).join("")) !== s.message_hash || live.marks || live.ts !== s.at)) return result;
     result.delivered ||= !!hooks.get("SELECT 1 FROM deliveries WHERE session_id=? AND entry_id=? AND action IN ('given','replaced')", s.session, entry.mex.id);
-    result.verified = typedQuote(info.transcript, session.agent === "claude-code" ? "claude" : "codex", record.quote, s.message_hash);
+    // Host-backed Stage 2 kept the typed journal bytes as its sole wording
+    // authority. The host's hint is never replayed as a source for Review.
+    result.verified = host && !!live && Array.from(live.text).slice(0, 1200).join("").includes(record.quote)
+      || typedQuote(info.transcript, session.agent === "claude-code" ? "claude" : "codex", record.quote, s.message_hash);
     return result;
   }); } finally { hooks?.close(); }
 }
@@ -130,29 +135,45 @@ export async function publishNext(writer: RecordWriter, project: string, params:
   }
   const row = writer.db.prepare(`SELECT value FROM settings WHERE scope=? AND key LIKE 'learning.offer.%'
     AND (json_valid(value)=0 OR (json_extract(value,'$.checkout')=? AND json_extract(value,'$.state')<>'applied'
+    AND (json_extract(value,'$.state')<>'review' OR coalesce(json_extract(value,'$.reason'),'')<>'host-memory')
     AND (coalesce(json_extract(value,'$.last_job'),'')<>? OR json_extract(value,'$.state')='preview'))) ORDER BY key LIMIT 1`).get(project, params.checkout, job.id);
   if (!row) return undefined;
   let offer: OfferRow;
   try { if (Buffer.byteLength(String(row.value)) > 128 << 10) throw new Error(); offer = Offer.parse(JSON.parse(String(row.value))); }
   catch { throw new Error("Learned-entry publication metadata is invalid; notes were kept."); }
-  const hold = (reason: string, review = false) => {
+  const hold = (reason: string, review = false, reviewEntry?: KnowledgeEntry) => {
     offer = { ...offer, state: review ? "review" : "held", reason, last_job: job.id, ...(review ? { review_at: offer.review_at ?? deps.clock() } : {}) };
     save(writer, project, params, job, offer, () => {
       if (!review) return;
       const personal = readPersonal(writer, project, offer.id);
-      if (personal && hash(personal.raw) === offer.personal_hash) stageReview(writer, project, learningReviewId(project, personal.entry), personal.entry,
-        { producer: "learning", key: keyFor(offer.id), checkout: params.checkout, level: "personal", path: personal.path, original_hash: offer.personal_hash }, reviewReason(reason), true, offer.review_at);
+      if (!personal || hash(personal.raw) !== offer.personal_hash) return;
+      const entry = reviewEntry ?? personal.entry;
+      stageReview(writer, project, learningReviewId(project, entry), entry, { producer: "learning", key: keyFor(offer.id),
+        checkout: params.checkout, level: "personal", path: personal.path, original_hash: offer.personal_hash }, reviewReason(reason), true, offer.review_at);
     });
     return { results: 0, summary: "Learned entry stays personal: " + reason };
   };
   if (!sharingEnabled(writer, project, params.checkout)) return hold("not-shared");
-  if (writer.setting(project, "learning.sharing") === "manual") return hold("manual-sharing");
   const found = readPersonal(writer, project, offer.id);
+  const host = !!found && hostCorroborated(found.entry);
+  const manual = writer.setting(project, "learning.sharing") === "manual";
+  if (manual && !host) return hold("manual-sharing");
   if (!found || hash(found.raw) !== offer.personal_hash) return hold("personal-entry-changed");
   const quiet = reviewQuiet(writer, project, found.entry, deps.clock());
   if (quiet) return hold(quiet);
   const metadata = learningMetadata(writer, project, offer.id), metadataHash = hash(JSON.stringify(metadata));
   if (metadata.holds?.length || shareProblems(found.entry).length) return hold("privacy");
+  if (host) {
+    const sources = metadata.sources ?? [], quote = found.entry.mex.source.quote;
+    const observations = deps.verify(writer, project, found.entry, sources).filter((_, i) => sources[i]?.quote === quote);
+    const decision = promotionDecision({ evidence: { source: "person", observations,
+      corroboration: { kind: "host-memory", verified: metadata.corroborated === "host-memory", sameClaim: !!quote } },
+      shared: true, manual, visibility: "unknown", authorized: false, privacyHolds: [],
+      checksHold: !metadata.needs_checks && found.entry.mex.checks.some(check => check.role === "complete"), conflict: false });
+    // The personal entry retains observed evidence. Review proposes a new team
+    // copy from the independently verified person quote, with explicit consent.
+    return hold(decision.reason, decision.destination === "review", { ...found.entry, mex: { ...found.entry.mex, evidence: "person" } });
+  }
   if (found.entry.mex.source.type !== "person" || found.entry.mex.evidence !== "person") return hold("producer-evidence-unavailable");
   const at = await position(params.checkout);
   if (!at.branch || !at.head || !samePosition(at, offer.position)) return hold("checkout-changed");

@@ -3,13 +3,13 @@ export interface Evidence {
   source: "person" | "docs" | "ci" | "review" | "observed" | "agent-memory";
   observations?: Array<{ session: string; verified: boolean; lasting: boolean; marked: boolean; delivered: boolean }>;
   pullRequests?: Array<{ repository: string; number: number; merged: boolean; authorized: boolean }>;
-  corroboration?: { kind: "ci" | "script" | "docs"; verified: boolean; sameClaim: boolean };
+  corroboration?: { kind: "ci" | "script" | "docs" | "host-memory"; verified: boolean; sameClaim: boolean };
 }
 export interface PromotionPolicy {
   evidence: Evidence; shared: boolean; manual: boolean; visibility: "private" | "public" | "unknown";
   authorized: boolean; privacyHolds: string[]; checksHold: boolean; conflict: boolean;
 }
-export type EvidenceReason = "not-shared" | "manual-sharing" | "privacy" | "source-authority" | "insufficient-evidence" | "public-session" | "checks" | "team-conflict" | "eligible";
+export type EvidenceReason = "not-shared" | "manual-sharing" | "privacy" | "source-authority" | "insufficient-evidence" | "public-session" | "checks" | "team-conflict" | "host-memory" | "eligible";
 export function evidenceHolds(evidence: Evidence): boolean {
   if (evidence.source === "person") {
     const observations = (evidence.observations ?? []).filter(o => o.verified && !o.marked && !o.delivered);
@@ -25,6 +25,14 @@ export function evidenceHolds(evidence: Evidence): boolean {
 export function promotionDecision(policy: PromotionPolicy): { destination: "personal" | "review" | "team"; reason: EvidenceReason } {
   const personal = (reason: EvidenceReason) => ({ destination: "personal" as const, reason });
   if (!policy.shared) return personal("not-shared");
+  if (policy.evidence.corroboration?.kind === "host-memory") {
+    if (policy.privacyHolds.length) return personal("privacy");
+    if (!policy.checksHold) return personal("checks");
+    const evidence = policy.evidence;
+    return evidence.source === "person" && evidence.corroboration?.verified && evidence.corroboration.sameClaim
+      && evidence.observations?.some(row => row.verified && !row.marked && !row.delivered)
+      ? { destination: "review", reason: "host-memory" } : personal("insufficient-evidence");
+  }
   if (policy.manual) return personal("manual-sharing");
   if (policy.privacyHolds.length) return personal("privacy");
   if (!policy.authorized) return personal("source-authority");

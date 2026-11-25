@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,13 +7,17 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vite
 import { hash } from "../../judge/evidence.js";
 import { recordChecks } from "../../judge/native.js";
 import { parseEntry } from "../../knowledge/entry.js";
+import { readHints, refreshHints } from "../../knowledge/hints.js";
 import { readNotes } from "../../knowledge/personal-store.js";
+import { prepareTeamWrite } from "../../knowledge/team.js";
+import { reviewQueue } from "../../review/queue.js";
 import { ModelWaitError, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob, registerJobKind, requeueReadyJobs, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { shortHash } from "../../record/project.js";
 import { createFilterKind } from "../job.js";
 import type { FilterInput } from "../input.js";
+import { HOST_MEMORY_LABEL } from "../metadata.js";
 import { sessionNoteHistory } from "../session-notes.js";
 import { readStageOneBatch } from "../stage-one.js";
 import { STAGE_TWO_WAIT } from "../pending.js";
@@ -30,7 +34,7 @@ const day = 86_400_000;
 const check = { kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/test" } };
 const payload = (request: ModelRequest) => JSON.parse(request.prompt.split("Input follows as JSON:\n")[1]!);
 type WriterInput = { sources: Array<{ id: string; typed: string; current: boolean; previous_reply: string | null }>;
-  notes: Array<{ id: string; text: string; editable: boolean }>; host_matches: Array<{ id: string; text: string }> };
+  notes: Array<{ id: string; text: string; editable: boolean }>; host_matches: Array<{ id: string; text: string; hint_id?: string }> };
 const writerInput = (request: ModelRequest): WriterInput => payload(request);
 function write(members: string[], fact = "Tests use the project test runner.") {
   return { members, fact, action: "write", relation: "same", target: null, lasts: "repo", kind: "rule", reason: null,
@@ -44,6 +48,7 @@ function response(value: unknown): ModelResult {
 let suite: string, binary: string, base: string, checkout: string, home: string, project: string;
 let writer: RecordWriter, hooks: DatabaseSync, now: number, calls: ModelRequest[];
 let decide: (request: ModelRequest) => unknown;
+const repository = vi.fn(async () => ({ visibility: "private" as const, authorized: true }));
 
 beforeAll(() => {
   suite = realpathSync(mkdtempSync(join(tmpdir(), "mex-stage-two-")));
@@ -56,6 +61,8 @@ beforeEach(() => {
   mkdirSync(checkout);
   writeFileSync(join(checkout, "package.json"), '{"scripts":{"test":"vitest"}}\n');
   vi.stubEnv("MEX_HOME", home); vi.stubEnv("MEX_HOOK_BINARY", binary);
+  vi.stubEnv("CLAUDE_CONFIG_DIR", join(base, "claude")); vi.stubEnv("CODEX_HOME", join(base, "codex"));
+  vi.stubEnv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "0"); vi.stubEnv("CLAUDE_CODE_PROJECT_DIR_NAME", "");
   writer = openRecord({ home, projectPath: checkout, isNetwork: () => false }); project = writer.checkout(checkout)!.project_id;
   writer.db.prepare("INSERT OR REPLACE INTO settings VALUES('global','learning.statements','on')").run();
   hooks = new DatabaseSync(join(writer.location.directory, "hooks.db"));
@@ -64,9 +71,16 @@ beforeEach(() => {
   hooks.exec("PRAGMA user_version=6");
   now = Date.now(); calls = [];
   decide = request => ({ groups: [write(writerInput(request).sources.filter(source => source.current).map(source => source.id))] });
-  registerJobKind(createFilterKind({ stageOne: true, stageTwo: {
+  repository.mockClear();
+  registerFixture(false);
+});
+afterEach(() => { hooks.close(); writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });
+
+function registerFixture(useHostFiles: boolean) {
+  registerJobKind(createFilterKind({ stageOne: true, stageTwo: useHostFiles ? {} : {
     hostMatches: sources => sources.slice(0, 1).map(source => ({ id: source.message.id, ref: "fixture", text: "Imported host context" })),
-  }, clock: () => now, recordChecks, aids: (entries, queries) => new Map(queries.map(query => [query.id, [{ id: entries[0]!.mex.id, score: 1, sent: true }]])),
+  }, clock: () => now, publication: { repository, clock: () => now }, recordChecks,
+  aids: (entries, queries) => new Map(queries.map(query => [query.id, [{ id: entries[0]!.mex.id, score: 1, sent: true }]])),
   model: async request => {
     calls.push(request);
     if (request.purpose === "filter-stage-two") return response(decide(request));
@@ -78,16 +92,14 @@ beforeEach(() => {
         lasts: "repo", quote: text, marker, reason };
     }) });
   } }));
-});
-afterEach(() => { hooks.close(); writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });
+}
 
-function capture(session: string, text: string) {
-  const at = new Date(now - 20_000).toISOString();
-  hooks.prepare("INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,0)").run(session, "codex", project, checkout, at, at);
+function capture(session: string, text: string, { agent = "codex", at = new Date(now - 20_000).toISOString(), transcript = "" } = {}) {
+  hooks.prepare("INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,0)").run(session, agent, project, checkout, at, at);
   const row = Number(hooks.prepare("INSERT INTO journal(session_id,ts,kind,text,marks) VALUES(?,?,'typed',?,'')").run(session, at, text).lastInsertRowid);
   const dir = join(writer.location.directory, "filter-sessions"); mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, shortHash(project + "\0" + session) + ".json"), JSON.stringify({ version: 1, project_id: project, checkout, agent: "codex",
-    session_id: session, seen_at: at, finished: true, transcript: "" }));
+  writeFileSync(join(dir, shortHash(project + "\0" + session) + ".json"), JSON.stringify({ version: 1, project_id: project, checkout, agent,
+    session_id: session, seen_at: at, finished: true, transcript }));
   return row;
 }
 
@@ -102,6 +114,120 @@ async function drain(id = queue()) {
 }
 const writes = () => calls.filter(call => call.purpose === "filter-stage-two");
 const notes = () => [...readNotes(home, project).files.values()].map(parseEntry);
+
+function claudeTopic(name: string, text: string, modifiedAt: number) {
+  const folder = join(base, "claude", "projects", checkout.replace(/[^a-zA-Z0-9]/gu, "-"), "memory");
+  mkdirSync(folder, { recursive: true });
+  const path = join(folder, name + ".md");
+  writeFileSync(path, text + "\n");
+  utimesSync(path, new Date(modifiedAt), new Date(modifiedAt));
+  return path;
+}
+
+function codexSummary(file: string, text: string, header: string) {
+  const folder = join(base, "codex", "memories_v2", "rollout_summaries");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, file + ".md"), `${header}\ncwd: ${checkout}\nupdated_at: ${new Date(now).toISOString()}\n\n## Reusable knowledge\n- ${text}\n`);
+}
+
+const oneOff = (...ids: string[]) => ids.map(id => ({ action: "one-off", members: [id] }));
+function onlyHostHint(request: ModelRequest, message: string, text: string) {
+  const { host_matches } = writerInput(request);
+  expect(host_matches).toEqual([{ id: message, text, hint_id: expect.stringMatching(/^hint:[a-f0-9]{24}$/u), ref: expect.any(String) }]);
+  return host_matches[0]!.hint_id;
+}
+
+it("uses Claude's typed session window and sends the checked note to Review without sharing it", async () => {
+  registerFixture(true);
+  writer.db.prepare("UPDATE projects SET shared=1 WHERE id=?").run(project);
+  const typed = "run the regression tests with vitest.";
+  const at = now - 30 * 60_000;
+  capture("claude-source", typed, { agent: "claude-code", at: new Date(at).toISOString() });
+  capture("other-one", "set aside the temporary branch");
+  capture("other-two", "fold in this last edit");
+  const hint = "use vitest for regression tests. memory-only detail.";
+  claudeTopic("early", "too early for the session", at - 1000);
+  claudeTopic("late", "too late for the session", at + 15 * 60_000 + 1000);
+  claudeTopic("matched", hint, at + 15 * 60_000);
+  decide = request => ({ groups: [
+    { ...write(["m1"], "memory-only wording is not a source."), host_hint: onlyHostHint(request, "m1", hint) },
+    ...oneOff("m2", "m3"),
+  ] });
+  await drain();
+  const [entry] = notes();
+  expect(entry).toMatchObject({ text: typed, mex: { evidence: "observed", source: { type: "person", label: HOST_MEMORY_LABEL, quote: typed } } });
+  expect(sessionNoteHistory(writer, project).find(note => note.row === "m1")).toMatchObject({ quote: typed, corroborated: "host-memory", scope: { kind: "repo" } });
+  const options = { home, projectPath: checkout };
+  expect(reviewQueue(options, now)).toMatchObject({ waiting: 1, items: [{ reason: "host memory corroborated the person's typed words",
+    entry: { text: typed, mex: { source: { quote: typed } } } }] });
+  expect(() => prepareTeamWrite(entry!, options, typed)).toThrow(/Unconfirmed observations/u);
+  expect(repository).not.toHaveBeenCalled();
+  expect(existsSync(join(checkout, ".mex", "learned"))).toBe(false);
+  expect(refreshHints(options).imported).toBe(3);
+  expect(readHints({ ...options, consumerAgent: "claude" }).entries).toEqual([]);
+  expect(readHints({ ...options, consumerAgent: "codex" }).entries.map(item => item.entry.text)).toContain("too late for the session");
+});
+
+it.each(["thread id", "rollout path"])("binds a Codex memory to its captured %s", async reference => {
+  registerFixture(true);
+  const typed = "use the vitest test runner.";
+  const folder = join(base, "codex", "sessions"); mkdirSync(folder, { recursive: true });
+  const transcript = join(folder, "rollout.jsonl"), session = "codex-source";
+  writeFileSync(transcript, JSON.stringify({ type: "session_meta", payload: { id: session } }) + "\n");
+  capture(session, typed, { transcript });
+  const missing = join(folder, "missing.jsonl");
+  capture("other-one", "rename this fixture file", { transcript: missing });
+  capture("other-two", "inspect the temporary config");
+  const hint = "the project test runner is vitest";
+  codexSummary("matches", hint, reference === "thread id" ? `thread_id: ${session}` : `rollout_path: ${transcript}`);
+  codexSummary("foreign-session", "a different session's test runner", "thread_id: other-unrecorded-session");
+  codexSummary("foreign-path", "a different rollout's test runner", `rollout_path: ${missing}`);
+  decide = request => ({ groups: [{ ...write(["m1"]), host_hint: onlyHostHint(request, "m1", hint) }, ...oneOff("m2", "m3")] });
+  await drain();
+  expect(notes()).toMatchObject([{ text: typed, mex: { source: { label: HOST_MEMORY_LABEL, quote: typed } } }]);
+});
+
+it("can corroborate a deferred claim when its Codex summary arrives before a later daily pass", async () => {
+  registerFixture(true);
+  const typed = "use the vitest test runner.";
+  capture("codex-source", typed);
+  capture("other-one", "edit this one line");
+  capture("other-two", "move the current patch");
+  decide = request => ({ groups: [{ action: "defer", members: ["m1"] }, ...oneOff("m2", "m3")] });
+  await drain();
+  expect(notes()).toEqual([]);
+  now += day;
+  const hint = "vitest runs the repository checks";
+  codexSummary("late", hint, "thread_id: codex-source");
+  capture("unchecked", "Always write short test descriptions.");
+  decide = request => {
+    expect(writerInput(request).sources).toContainEqual(expect.objectContaining({ id: "m1", current: false }));
+    return { groups: [{ ...write(["m1"]), host_hint: onlyHostHint(request, "m1", hint) }, ...oneOff("m4")] };
+  };
+  await drain();
+  expect(notes()).toMatchObject([{ text: typed, mex: { source: { label: HOST_MEMORY_LABEL } } }]);
+});
+
+it.each(["uncheckable", "changed"])("keeps host corroboration safe when it is %s", async variant => {
+  registerFixture(true);
+  const typed = "use the project test runner.";
+  capture("claude-source", typed, { agent: "claude-code" });
+  capture("other-one", "finish this task");
+  capture("other-two", "review this diff");
+  const hint = "prefer the project test runner";
+  const path = claudeTopic("runner", hint, now - 1000);
+  decide = request => {
+    if (request.prompt.startsWith("Repair checks only")) return { repairs: [] };
+    const host_hint = onlyHostHint(request, "m1", hint);
+    if (variant === "changed") writeFileSync(path, "changed while the model ran\n");
+    return { groups: [{ ...write(["m1"]), checks: [], host_hint }, ...oneOff("m2", "m3")] };
+  };
+  await drain();
+  expect(notes()).toEqual([]);
+  const note = sessionNoteHistory(writer, project).find(note => note.row === "m1");
+  expect(note).toMatchObject(variant === "uncheckable" ? { quote: typed, corroborated: "host-memory", scope: { kind: "repo" } } : { scope: { kind: "seen" } });
+  expect(reviewQueue({ home, projectPath: checkout }, now).waiting).toBe(0);
+});
 
 it("requires three distinct sessions for weak candidates and merges recurring typed evidence", async () => {
   const first = capture("first", "Run code verification with the project test runner.");
