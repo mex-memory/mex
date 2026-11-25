@@ -56,10 +56,11 @@
         "routes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["home", "repo"],
+          "required": ["home", "repo", "jobs"],
           "properties": {
             "home": { "$ref": "#/$defs/assetGroup" },
-            "repo": { "$ref": "#/$defs/assetGroup" }
+            "repo": { "$ref": "#/$defs/assetGroup" },
+            "jobs": { "$ref": "#/$defs/assetGroup" }
           }
         }
       }
@@ -106,10 +107,12 @@
     "readBudgets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session", "projects"],
+      "required": ["session", "projects", "home", "jobs"],
       "properties": {
         "session": { "$ref": "#/$defs/nonNegativeNumber" },
-        "projects": { "$ref": "#/$defs/nonNegativeNumber" }
+        "projects": { "$ref": "#/$defs/nonNegativeNumber" },
+        "home": { "$ref": "#/$defs/nonNegativeNumber" },
+        "jobs": { "$ref": "#/$defs/nonNegativeNumber" }
       }
     },
     "profiledReadBudgets": {
