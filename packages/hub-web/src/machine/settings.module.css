@@ -129,7 +129,8 @@ main:has(.page) {
 .row {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /* The label keeps a readable width; a long value such as a path wraps instead. */
+  grid-template-columns: minmax(min(14rem, 100%), 1fr) minmax(0, auto);
   align-items: center;
   gap: 10px 18px;
   padding: 13px 18px;
