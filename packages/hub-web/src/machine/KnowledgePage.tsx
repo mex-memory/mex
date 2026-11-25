@@ -7,9 +7,9 @@ import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
 import { KnowledgeDate, KnowledgeDetailPanel, type KnowledgeItemAction } from "./KnowledgeDetail";
-import { KnowledgeKindGrid } from "./KnowledgeGroups";
+import { KnowledgeAreaGrid, KnowledgeGrouping, KnowledgeKindGrid } from "./KnowledgeGroups";
 import { KnowledgeNeedsLook } from "./KnowledgeNeedsLook";
-import { audienceLabels, kindLabels } from "./knowledge-labels";
+import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
 import type { ForgottenItem, KnowledgeFilters, KnowledgeItem, KnowledgePreview, KnowledgeStatusCounts } from "./types";
@@ -17,7 +17,7 @@ import styles from "./knowledge.module.css";
 import shared from "./machine.module.css";
 
 const number = new Intl.NumberFormat();
-const filterNames = ["q", "kind", "audience", "status", "repo"] as const;
+const filterNames = ["q", "kind", "audience", "status", "repo", "area"] as const;
 type FilterName = typeof filterNames[number];
 
 const narrowLayout = "(max-width: 1023px)";
@@ -232,7 +232,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   browseParams.set("view", "list");
   const browseHref = linkTo(basePath, browseParams);
   const showList = Boolean(entryKey || params.get("view") === "list" || filterNames.some((name) => params.get(name)?.trim()));
-  const landing = showList ? undefined : knowledge.getLanding(project?.id);
+  const grouping = params.get("view") === "area" ? "area" : "kind";
   const q = params.get("q") ?? "";
   const [query, setQuery] = useState(q);
   const writtenQuery = useRef<string | null>(null);
@@ -251,8 +251,14 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     kind: kindOptions.find(({ value }) => value === params.get("kind"))?.value as KnowledgeFilters["kind"],
     audience: audienceOptions.find(({ value }) => value === params.get("audience"))?.value as KnowledgeFilters["audience"],
     status: statusFilter === needsLookFilter ? needsLookFilter : activeStatus?.key,
+    area: params.get("area") || undefined,
     query: q,
   };
+  const landing = !showList ? knowledge.getLanding(project?.id) : undefined;
+  const areaOptions = filters.area ? [...new Set([
+    ...knowledge.getLanding(project?.id ?? filters.repoId).groups.byArea.map(({ pattern }) => pattern),
+    filters.area,
+  ])].map((value) => ({ value, label: scopeLabel([value]) })) : [];
   const filterKey = JSON.stringify(filters);
   const [paging, setPaging] = useState({ filterKey, pageCount: 1 });
   const first = knowledge.getPage(filters);
@@ -376,19 +382,27 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
             summary={landing.needsLook}
           />
         )}
-        <div className={styles.toolbar}>
+        <div className={styles.toolbar} data-landing={!showList}>
           <div className={styles.search}>
             <Search aria-hidden="true" />
             <Input aria-label="Search knowledge" onChange={(event) => setQuery(event.target.value)} placeholder="Search knowledge…" ref={searchInput} type="search" value={query} />
           </div>
-          {showList && <div className={styles.filters}>
+          {showList ? <div className={styles.filters}>
             <FilterMenu all="All kinds" choices={kindOptions} label="Kind" onSelect={(value) => changeFilter("kind", value)} value={filters.kind} />
             <FilterMenu all="Everyone" choices={audienceOptions} label="Who sees it" onSelect={(value) => changeFilter("audience", value)} value={filters.audience} />
             <FilterMenu all="All statuses" choices={statusOptions} label="Status" onSelect={(value) => changeFilter("status", value)} value={statusFilter} />
             {!project && (
               <FilterMenu all="All repos" choices={projects.map(({ id, name }) => ({ value: id, label: name }))} label="Repo" onSelect={(value) => changeFilter("repo", value)} value={filters.repoId} />
             )}
-          </div>}
+            {filters.area && (
+              <FilterMenu all="All areas" choices={areaOptions} label="Area" onSelect={(value) => changeFilter("area", value)} value={filters.area} />
+            )}
+          </div> : <KnowledgeGrouping onChange={(value) => {
+            const next = new URLSearchParams(params);
+            if (value === "area") next.set("view", value);
+            else next.delete("view");
+            navigate(linkTo(basePath, next));
+          }} value={grouping} />}
           <Link className={`${shared.textLink} ${styles.forgottenLink}`} to={linkTo(`${basePath}/forgotten`)}>
             Forgotten ({number.format(forgotten.length)})
           </Link>
@@ -399,7 +413,17 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         <span className={shared.srOnly} role="status">{notice}</span>
       </div>
       {landing?.groups.byKind.length ? (
-        <KnowledgeKindGrid groups={landing.groups.byKind} href={(kind, item) => {
+        grouping === "area" ? <KnowledgeAreaGrid
+          groups={landing.groups.byArea}
+          href={({ pattern, repoId }, item) => {
+            const next = new URLSearchParams(params);
+            next.set("area", pattern);
+            if (!project && repoId) next.set("repo", repoId);
+            return item ? itemHref(item, next) : linkTo(basePath, next);
+          }}
+          repoNames={project ? undefined : repoNames}
+          total={total}
+        /> : <KnowledgeKindGrid groups={landing.groups.byKind} href={(kind, item) => {
           const next = new URLSearchParams(params);
           next.set("kind", kind);
           return item ? itemHref(item, next) : linkTo(basePath, next);

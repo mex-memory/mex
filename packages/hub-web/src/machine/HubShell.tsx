@@ -102,7 +102,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
     const variant = fixture && currentSearch.get("fixture");
     if (variant) params.set("fixture", variant);
     if (page === "knowledge" && knowledgeRoute) {
-      for (const name of ["q", "kind", "audience", "status", "repo"]) {
+      for (const name of ["q", "kind", "audience", "status", "repo", "area", "view"]) {
         const value = currentSearch.get(name);
         if (value && (name !== "repo" || !id)) params.set(name, value);
       }

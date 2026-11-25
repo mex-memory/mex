@@ -4,6 +4,50 @@
   gap: 16px;
 }
 
+.grouping {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 35px;
+  padding: 3px;
+  color: var(--muted-foreground);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.grouping label {
+  display: flex;
+  cursor: pointer;
+}
+
+.grouping label > span {
+  display: flex;
+  align-items: center;
+  padding-inline: 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.grouping input:checked + span {
+  color: var(--foreground);
+  background: var(--card);
+  border-color: var(--border);
+}
+
+.grouping label:hover > span {
+  color: var(--foreground);
+}
+
+.grouping input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
 .review.card {
   padding-block-end: 9px;
 }
@@ -228,6 +272,8 @@
 .groupItem {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   min-height: 26px;
   color: var(--text-secondary);
   font-size: 13px;
@@ -236,15 +282,28 @@
   text-underline-offset: 3px;
 }
 
-.groupItem:hover {
+.groupItem:hover > span:first-child {
   color: var(--foreground);
   text-decoration: underline;
+}
+
+.groupKind {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: 11px;
 }
 
 .groupMore {
   width: fit-content;
   min-height: 24px;
   margin-top: auto;
+}
+
+.areaFootnote {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 @media (min-width: 700px) {

@@ -226,6 +226,10 @@ main:has(.page) {
   flex: 1 1 220px;
 }
 
+.toolbar[data-landing="true"] .search {
+  max-width: 400px;
+}
+
 .search > svg {
   position: absolute;
   z-index: 1;
@@ -839,6 +843,10 @@ main:has(.page) {
 
   .search {
     flex-basis: 100%;
+  }
+
+  .toolbar[data-landing="true"] .search {
+    max-width: none;
   }
 
   .filters {

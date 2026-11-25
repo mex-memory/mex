@@ -2,11 +2,15 @@ import { useId } from "react";
 import { ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import { knowledgeStatuses } from "./KnowledgeStatus";
+import { kindLabels, scopeLabel } from "./knowledge-labels";
 import type { KnowledgeItem, KnowledgeKind, KnowledgeLandingData, KnowledgeStatusCounts } from "./types";
 import styles from "./knowledge-landing.module.css";
 import shared from "./machine.module.css";
 
 const number = new Intl.NumberFormat();
+type AreaGroup = KnowledgeLandingData["groups"]["byArea"][number];
+type Grouping = "kind" | "area";
+
 const kindCopy = {
   rule: { title: "Rules", description: "What to do and what to avoid" },
   decision: { title: "Decisions", description: "Choices made and why" },
@@ -34,7 +38,7 @@ function GroupStatus({ counts }: { counts: KnowledgeStatusCounts }) {
   );
 }
 
-function GroupCard({ title, description, count, statusCounts, topItems, listHref, itemHref }: {
+function GroupCard({ title, description, count, statusCounts, topItems, listHref, itemHref, showKind }: {
   title: string;
   description?: string;
   count: number;
@@ -42,6 +46,7 @@ function GroupCard({ title, description, count, statusCounts, topItems, listHref
   topItems: readonly KnowledgeItem[];
   listHref: string;
   itemHref: (item: KnowledgeItem) => string;
+  showKind?: boolean;
 }) {
   const heading = useId();
   return (
@@ -57,6 +62,7 @@ function GroupCard({ title, description, count, statusCounts, topItems, listHref
           <li key={item.key}>
             <Link className={styles.groupItem} data-item-key={item.key} to={itemHref(item)}>
               <span title={item.oneLine}>{item.oneLine}</span>
+              {showKind && <span className={styles.groupKind}>{kindLabels[item.kind]}</span>}
             </Link>
           </li>
         ))}
@@ -65,6 +71,60 @@ function GroupCard({ title, description, count, statusCounts, topItems, listHref
         See all {number.format(count)} <ArrowRight aria-hidden="true" /><span className={shared.srOnly}> in {title}</span>
       </Link>
     </section>
+  );
+}
+
+export function KnowledgeAreaGrid({ groups, total, href, repoNames }: {
+  groups: readonly AreaGroup[];
+  total: number;
+  href: (group: AreaGroup, item?: KnowledgeItem) => string;
+  repoNames?: ReadonlyMap<string, string>;
+}) {
+  const wholeRepo = groups.find(({ pattern }) => pattern === "**");
+  return (
+    <>
+      <div className={styles.grid}>
+        {groups.map((group) => {
+          const area = scopeLabel([group.pattern]);
+          const repo = group.repoId && repoNames ? repoNames.get(group.repoId) ?? "Unknown repo" : undefined;
+          const title = repo ? `${repo} · ${area}` : area;
+          return (
+            <GroupCard
+              {...group}
+              itemHref={(item) => href(group, item)}
+              key={JSON.stringify([group.repoId, group.pattern])}
+              listHref={href(group)}
+              showKind
+              title={title}
+            />
+          );
+        })}
+      </div>
+      {wholeRepo && wholeRepo.count / total > 0.6 && (
+        <p className={styles.areaFootnote}>Most items apply to the whole repo. Areas fill in as MEX learns about specific parts of your code.</p>
+      )}
+    </>
+  );
+}
+
+export function KnowledgeGrouping({ value, onChange }: { value: Grouping; onChange: (value: Grouping) => void }) {
+  const name = useId();
+  return (
+    <div aria-label="Group knowledge by" className={styles.grouping} role="radiogroup">
+      {(["kind", "area"] as const).map((grouping) => (
+        <label key={grouping}>
+          <input
+            checked={value === grouping}
+            className={shared.srOnly}
+            name={name}
+            onChange={() => onChange(grouping)}
+            type="radio"
+            value={grouping}
+          />
+          <span>By {grouping}</span>
+        </label>
+      ))}
+    </div>
   );
 }
 
