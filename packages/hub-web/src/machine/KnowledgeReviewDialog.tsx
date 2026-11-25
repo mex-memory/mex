@@ -3,8 +3,12 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "../components/primitives/alert-dialog";
+import { readableDiff, type DiffLine } from "./knowledge-diff";
 import type { KnowledgeWritePreview } from "./types";
 import styles from "./knowledge-forms.module.css";
+
+// Matches the existing CSS hooks: header, "-", "+", and plain context.
+const lineMark: Record<DiffLine["kind"], string> = { header: "header", removed: "-", added: "+", context: " ", fold: "header" };
 
 export function KnowledgeReviewDialog({ preview, retiring, pending, status, finalFocus, onCancel, onConfirm }: {
   preview: KnowledgeWritePreview | null;
@@ -32,8 +36,8 @@ export function KnowledgeReviewDialog({ preview, retiring, pending, status, fina
           </AlertDialogDescription>
         </AlertDialogHeader>
         <pre aria-label="File diff" className={styles.diff} role="region" tabIndex={0}>
-          {preview?.diff.split("\n").map((line, index) => (
-            <code data-line={line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@") ? "header" : line[0]} key={index}>{line}{"\n"}</code>
+          {preview && readableDiff(preview.diff).map((line, index) => (
+            <code data-line={lineMark[line.kind]} key={index}>{line.text}{"\n"}</code>
           ))}
         </pre>
         {status && <p role="status">{status}</p>}
