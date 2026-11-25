@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Monitor } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
-import { BrowserSettings } from "./SettingsControls";
+import { BrowserSettings, PowerSettings, SharingSettings, type SettingsEdits } from "./SettingsControls";
 import type { SettingsPreview } from "./types";
 import { HubPageHeader } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./settings.module.css";
 
 const sections = [
-  { id: "browser", label: "This browser", icon: Monitor },
+  { id: "browser", label: "This browser" },
+  { id: "power", label: "MEX on or off" },
+  { id: "sharing", label: "Sharing" },
 ] as const;
 type SectionId = typeof sections[number]["id"];
 
@@ -96,11 +97,21 @@ function SectionNavigation() {
 }
 
 function SettingsWorkspace({ preview }: { preview: SettingsPreview }) {
+  const [feedback, setFeedback] = useState<{ target: string; count: number } | null>(null);
+  const edits: SettingsEdits = {
+    save: (target, request) => {
+      preview.write(request);
+      setFeedback((current) => ({ target, count: (current?.count ?? 0) + 1 }));
+    },
+    savedFor: (target) => feedback?.target === target ? feedback.count : undefined,
+  };
   return (
     <div className={styles.layout}>
       <SectionNavigation />
       <div className={styles.sections}>
         <BrowserSettings settings={preview.settings.browser} write={preview.write} />
+        <PowerSettings edits={edits} settings={preview.settings} />
+        <SharingSettings edits={edits} repos={preview.settings.repos} />
       </div>
     </div>
   );

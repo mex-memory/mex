@@ -8,7 +8,7 @@ export const fullDateTime = new Intl.DateTimeFormat(undefined, {
   hour: "numeric", minute: "2-digit", second: "2-digit", timeZoneName: "short",
 });
 
-const shortDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+export const localShortDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
 export function relativeTime(at: Date, now: Date, compactDays = false) {
   const minutes = Math.floor((now.getTime() - at.getTime()) / 60_000);
@@ -19,5 +19,5 @@ export function relativeTime(at: Date, now: Date, compactDays = false) {
 
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
-  return at.toDateString() === yesterday.toDateString() ? "yesterday" : shortDate.format(at);
+  return at.toDateString() === yesterday.toDateString() ? "yesterday" : localShortDate.format(at);
 }
