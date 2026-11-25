@@ -147,6 +147,7 @@ export const RELEASE_COMMON_READ_PATHS = Object.freeze({
   jobs: "/api/v1/jobs",
   knowledge: "/api/v1/knowledge",
   knowledgeLanding: "/api/v1/knowledge/landing",
+  knowledgeRules: "/api/v1/knowledge/rules?repo=:repo&checkout=:checkout",
   review: "/api/v1/review",
   reviewDetail: "/api/v1/review/cards/:key",
   agents: "/api/v1/agents",
@@ -186,11 +187,14 @@ export async function measureCommonReads(server, auth, samples) {
   if (!key || review.partial) throw new Error("The benchmark Hub did not return its staged Review cards.");
   const repoId = result.projects[0].id;
   const paths = { ...RELEASE_COMMON_READ_PATHS,
+    knowledgeRules: RELEASE_COMMON_READ_PATHS.knowledgeRules.replace(":repo", encodeURIComponent(repoId))
+      .replace(":checkout", encodeURIComponent(result.projects[0].checkouts[0].path)),
     reviewDetail: RELEASE_COMMON_READ_PATHS.reviewDetail.replace(":key", encodeURIComponent(key)),
     setupDetail: RELEASE_COMMON_READ_PATHS.setupDetail.replace(":repo", encodeURIComponent(repoId)),
   };
 
   const controls = {
+    knowledgeRules: (data) => data.cache?.state === "current" && data.cache.files?.some(file => file.path === "AGENTS.md"),
     agents: (data) => data.agents?.length === 4,
     agentDetail: (data) => data.agent?.id === "claude-code",
     settings: (data) => data.settings?.repos?.some((repo) => repo.id === result.projects[0].id),

@@ -284,6 +284,7 @@
         "jobs": { "$ref": "#/$defs/summary10" },
         "knowledge": { "$ref": "#/$defs/summary10" },
         "knowledgeLanding": { "$ref": "#/$defs/summary10" },
+        "knowledgeRules": { "$ref": "#/$defs/summary10" },
         "review": { "$ref": "#/$defs/summary10" },
         "reviewDetail": { "$ref": "#/$defs/summary10" },
         "agents": { "$ref": "#/$defs/summary10" },

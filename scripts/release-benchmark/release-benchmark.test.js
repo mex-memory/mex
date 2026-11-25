@@ -68,12 +68,13 @@ describe("release benchmark contract", () => {
     }
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       const cap = Math.min(...Object.values(previous.apiLatencyMs[profile]));
-      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail, agents, agentDetail, settings, uninstallPreview, setup: setupIndex, setupDetail } = budgets.runtime.apiLatencyMs[profile];
+      const { session, projects, home, jobs, knowledge, knowledgeLanding, knowledgeRules, review, reviewDetail, agents, agentDetail, settings, uninstallPreview, setup: setupIndex, setupDetail } = budgets.runtime.apiLatencyMs[profile];
       expect({ session, projects }).toEqual({ session: cap, projects: cap });
       expect(home).toBeGreaterThan(0);
       expect(jobs).toBeGreaterThan(0);
       expect(knowledge).toBeGreaterThan(0);
       expect(knowledgeLanding).toBeGreaterThan(0);
+      expect(knowledgeRules).toBe(knowledge);
       expect(review).toBeGreaterThan(0);
       expect(reviewDetail).toBeGreaterThan(0);
       expect([agents, agentDetail, settings, uninstallPreview, setupIndex, setupDetail]).toEqual(Array(6).fill(review));
@@ -88,7 +89,7 @@ describe("release benchmark contract", () => {
     const measuredInitial = { jsBytes: 464914, cssBytes: 76818, fontBytes: 84724 };
     const home = { jsBytes: 112676, cssBytes: 9787, fontBytes: 0 };
     const jobs = { jsBytes: 69761, cssBytes: 3983, fontBytes: 0 };
-    const knowledge = { jsBytes: 125960, cssBytes: 25588, fontBytes: 0 };
+    const knowledgeBudget = { jsBytes: 142597, cssBytes: 31843, fontBytes: 0 };
     const review = { jsBytes: 103715, cssBytes: 17786, fontBytes: 0 };
     const agents = { jsBytes: 132824, cssBytes: 13137, fontBytes: 0 };
     const settings = { jsBytes: 113560, cssBytes: 32363, fontBytes: 0 };
@@ -97,7 +98,7 @@ describe("release benchmark contract", () => {
       maxJsChunkBytes: assetBudgetCandidate(measuredInitial.jsBytes),
       initial: assetGroup(measuredInitial),
       routes: {
-        home: assetGroup(home), repo: assetGroup(home), jobs: assetGroup(jobs), knowledge: assetGroup(knowledge),
+        home: assetGroup(home), repo: assetGroup(home), jobs: assetGroup(jobs), knowledge: knowledgeBudget,
         review: assetGroup(review), agents: assetGroup(agents), settings: assetGroup(settings), setup: assetGroup(setup),
       },
     });
@@ -129,6 +130,7 @@ describe("release benchmark contract", () => {
     expect(RELEASE_COMMON_READ_PATHS).toEqual({
       session: "/api/v1/session", projects: "/api/v1/projects", home: "/api/v1/home", jobs: "/api/v1/jobs",
       knowledge: "/api/v1/knowledge", knowledgeLanding: "/api/v1/knowledge/landing",
+      knowledgeRules: "/api/v1/knowledge/rules?repo=:repo&checkout=:checkout",
       review: "/api/v1/review", reviewDetail: "/api/v1/review/cards/:key",
       agents: "/api/v1/agents", agentDetail: "/api/v1/agents/claude-code",
       settings: "/api/v1/settings", uninstallPreview: "/api/v1/settings/uninstall",
@@ -651,7 +653,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(81);
+    expect(exactMetrics).toHaveLength(84);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);

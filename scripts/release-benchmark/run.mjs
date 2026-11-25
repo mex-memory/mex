@@ -124,6 +124,10 @@ try {
       execFileSync(process.execPath, [cliPath, "index", "status", "--json"], {
         cwd: projectRoot, env: hubEnvironment, timeout: 30_000, windowsHide: true,
       });
+      writeFileSync(join(projectRoot, "AGENTS.md"), "# Testing\n\nKeep benchmark inputs deterministic.\n", { flag: "wx" });
+      execFileSync(process.execPath, [cliPath, "rules", "--json"], {
+        cwd: projectRoot, env: hubEnvironment, timeout: 30_000, windowsHide: true,
+      });
       const beforeOrdinaryReads = snapshotReleaseReadState(projectRoot, benchmarkEnvironment);
       const idleRssBytes = [];
       const idleCpuMs = [];
