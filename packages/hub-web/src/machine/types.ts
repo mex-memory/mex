@@ -33,6 +33,7 @@ import type {
   MachineStorageSchema,
   MachineUninstallPreviewSchema,
 } from "@mex/hub-contracts/machine";
+import type { SetupStepAction } from "./setup-model";
 
 export type KnowledgeStatusCounts = z.infer<typeof MachineKnowledgeStatusCountsSchema>;
 export type KnowledgeStatus = z.infer<typeof MachineKnowledgeStatusSchema>;
@@ -109,7 +110,7 @@ export interface HubPreview {
   review: ReviewPreview;
   agents: AgentsPreview;
   settings: SettingsPreview;
-  setup?: MachineSetup;
+  setup?: SetupPreview;
   changeJob: (id: string, action: JobAction) => void;
 }
 
@@ -134,4 +135,9 @@ export interface SettingsPreview {
   settings: MachineSettings;
   uninstall?: MachineUninstallPreview;
   write: (request: SettingsWrite, onRetry?: () => void) => void | Promise<{ notice?: string }>;
+}
+
+export interface SetupPreview {
+  data: MachineSetup;
+  changeStep: (jobId: string, action: SetupStepAction) => void;
 }

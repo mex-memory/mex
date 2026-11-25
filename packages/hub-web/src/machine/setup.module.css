@@ -146,3 +146,124 @@
   .summary { align-items: start; flex-direction: column; }
   .repoIdentity a { min-height: 28px; }
 }
+
+.section {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.steps {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  list-style: none;
+}
+
+.step {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 22px;
+  padding: 13px 18px;
+}
+
+.step + .step {
+  border-top: 1px solid var(--border);
+}
+
+.stepMain,
+.stepAside {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  justify-items: start;
+}
+
+.stepAside {
+  justify-items: end;
+}
+
+.stepTitle,
+.actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+}
+
+.stepTitle h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.stepMain p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.stepMain progress {
+  display: block;
+  width: min(240px, 100%);
+  height: 4px;
+  overflow: hidden;
+  appearance: none;
+  color: var(--text-secondary);
+  background: var(--muted);
+  border: 0;
+  border-radius: 999px;
+}
+
+.stepMain progress::-webkit-progress-bar {
+  background: var(--muted);
+}
+
+.stepMain progress::-webkit-progress-value {
+  background: var(--text-secondary);
+}
+
+.stepMain progress::-moz-progress-bar {
+  background: var(--text-secondary);
+}
+
+.progressText {
+  font-variant-numeric: tabular-nums;
+}
+
+.progressText:empty {
+  position: absolute;
+}
+
+.actions button[aria-disabled="true"] {
+  opacity: 0.65;
+}
+
+.confirmation.confirmation {
+  width: min(calc(100% - 32px), 420px);
+  overflow-y: auto;
+  max-height: calc(100dvh - 32px);
+  box-shadow: var(--overlay-shadow);
+}
+
+.confirmation [data-slot="alert-dialog-title"],
+.confirmation [data-slot="alert-dialog-description"] {
+  margin: 0;
+}
+
+.confirmation [data-slot="alert-dialog-footer"] {
+  border-color: var(--border);
+}
+
+@media (max-width: 600px) {
+  .step { grid-template-columns: minmax(0, 1fr); }
+  .stepAside { justify-items: start; }
+  .actions [data-slot="button"] { min-height: 44px; }
+  .stepAside a { min-height: 28px; }
+}

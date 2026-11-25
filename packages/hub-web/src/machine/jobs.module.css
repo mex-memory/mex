@@ -59,6 +59,10 @@
   text-align: start;
 }
 
+.jobToggle {
+  scroll-margin-top: 60px;
+}
+
 .jobToggle:hover,
 .jobToggle[aria-expanded="true"] {
   background: var(--surface-subtle);

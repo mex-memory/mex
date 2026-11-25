@@ -5,6 +5,7 @@ import {
   type MachineSetup,
   type MachineSetupStep,
 } from "@mex/hub-contracts/machine";
+import { setupJobTokens, type SetupStepAction } from "./setup-model";
 import type { HubJob } from "./types";
 
 export const localSetupProject = {
@@ -142,10 +143,6 @@ function jobState(step: MachineSetupStep): HubJob["state"] {
   }
 }
 
-export function setupJobTokens({ cost }: MachineSetupStep): number {
-  return cost.uncachedInput + cost.cacheWrite + cost.cacheRead + cost.output;
-}
-
 export function fixtureSetupJobs({ repos }: MachineSetup): HubJob[] {
   return repos.flatMap(({ repoId, steps }) => steps.map((step): HubJob => {
     const { progress, estimate } = step;
@@ -157,4 +154,28 @@ export function fixtureSetupJobs({ repos }: MachineSetup): HubJob[] {
       started: step.startedAt,
     };
   })).sort((a, b) => b.started!.localeCompare(a.started!));
+}
+
+export function updateFixtureStep(setup: MachineSetup, jobId: string, update: (step: MachineSetupStep) => MachineSetupStep): MachineSetup {
+  return { repos: setup.repos.map((repo) => repo.steps.some((step) => step.jobId === jobId)
+    ? { ...repo, steps: repo.steps.map((step) => step.jobId === jobId ? update(step) : step) } : repo) };
+}
+
+export function requestFixtureStep(step: MachineSetupStep, action: SetupStepAction, at: string): MachineSetupStep {
+  const { state } = step;
+  if (step.pending || state === "done" || state === "done with gaps" || state === "cancelled") return step;
+  if (action === "resume") {
+    if (state !== "paused" && state !== "waiting" && state !== "failed") return step;
+    return { ...step, state: "queued", error: undefined, finishedAt: null };
+  }
+  if (state === "running") return { ...step, pending: action };
+  if (action === "pause") return state === "queued" || state === "waiting" ? { ...step, state: "paused" } : step;
+  return { ...step, state: "cancelled", error: undefined, progress: undefined, finishedAt: at };
+}
+
+export function settleFixtureStep(step: MachineSetupStep, action: SetupStepAction, at: string): MachineSetupStep {
+  if (action === "resume" && step.state === "queued" && step.progress) return { ...step, state: "running" };
+  if (step.pending !== action) return step;
+  if (action === "pause") return { ...step, state: "paused", pending: undefined };
+  return { ...step, state: "cancelled", pending: undefined, progress: undefined, finishedAt: at };
 }

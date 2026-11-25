@@ -3,6 +3,8 @@ import type { MachineProject, MachineRepoSetup, MachineSetup } from "@mex/hub-co
 import { ArrowRight } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { repoPrefix } from "./review-model";
+import { SetupSteps } from "./SetupSteps";
+import type { SetupPreview } from "./types";
 import { CommandCard, HubPageHeader } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./setup.module.css";
@@ -102,10 +104,10 @@ function SetupSummary({ project, repo }: { project: MachineProject; repo: Machin
 export default function SetupPage({ project, projects, setup }: {
   project?: MachineProject;
   projects: MachineProject[];
-  setup: MachineSetup;
+  setup: SetupPreview;
 }) {
   const { search } = useLocation();
-  const repo = setup.repos.find(({ repoId }) => repoId === project?.id);
+  const repo = setup.data.repos.find(({ repoId }) => repoId === project?.id);
 
   return (
     <div className={styles.page}>
@@ -114,9 +116,10 @@ export default function SetupPage({ project, projects, setup }: {
         subtitle={project?.name ?? "All repos"}
         title="Setup"
       />
-      {!project ? <SetupRepos projects={projects} search={search} setup={setup} /> : repo ? (
+      {!project ? <SetupRepos projects={projects} search={search} setup={setup.data} /> : repo ? (
         <>
           <FreeFindings repo={repo} />
+          <SetupSteps changeStep={setup.changeStep} repo={repo} search={search} />
           <SetupSummary project={project} repo={repo} />
         </>
       ) : <SetupCommand project={project} />}

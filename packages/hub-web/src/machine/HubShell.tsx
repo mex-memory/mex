@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { MachineProject, MachineSession, MachineSetup } from "@mex/hub-contracts/machine";
+import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
 import { BookOpen, Bot, ClipboardCheck, FolderGit2, House, ListChecks, ListTodo, Menu, Monitor, Settings, Terminal, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { Button } from "../components/primitives/button";
@@ -13,7 +13,7 @@ import type { ReviewConnection } from "./ReviewPage";
 import type { KnowledgeConnection } from "./KnowledgePage";
 import { UnknownRepoPage } from "./pages";
 import { reviewCount } from "./review-model";
-import type { AgentsPreview, HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview, ReviewPreview, SettingsPreview } from "./types";
+import type { AgentsPreview, HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview, ReviewPreview, SettingsPreview, SetupPreview } from "./types";
 import { HubBanners, HubBrand, ThemeToggle, type PageLoad } from "./ui";
 import styles from "./machine.module.css";
 
@@ -51,7 +51,7 @@ type HubShellProps = ShellProps & (
 interface HubData {
   agents?: AgentsPreview;
   settings?: SettingsPreview;
-  setup?: MachineSetup;
+  setup?: SetupPreview;
   controlsLive?: ControlConnection;
   agentsNeedAttention?: boolean;
   overview?: HomeOverview;
