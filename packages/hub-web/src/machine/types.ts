@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type {
   MachineDailyActivitySchema,
   MachineForgottenItemSchema,
+  MachineForgottenPageSchema,
   MachineHomeSchema,
   MachineJobActionRequestSchema,
   MachineJobSchema,
@@ -32,12 +33,15 @@ export type KnowledgeItem = z.infer<typeof MachineKnowledgeItemSchema>;
 export type KnowledgeDetail = z.infer<typeof MachineKnowledgeDetailSchema>;
 export type KnowledgePageData = z.infer<typeof MachineKnowledgePageSchema>;
 export type KnowledgeLandingData = z.infer<typeof MachineKnowledgeLandingSchema>;
+export type ForgottenPageData = z.infer<typeof MachineForgottenPageSchema>;
 export type ForgottenItem = z.infer<typeof MachineForgottenItemSchema>;
 export type KnowledgeCreate = z.infer<typeof MachineKnowledgeCreateRequestSchema>;
-export type KnowledgeEdit = z.infer<typeof MachineKnowledgeEditRequestSchema>;
-export type KnowledgeForget = z.infer<typeof MachineKnowledgeForgetRequestSchema>;
+export type KnowledgeEdit = z.infer<typeof MachineKnowledgeEditRequestSchema> & { checkout?: string };
+export type KnowledgeForget = z.infer<typeof MachineKnowledgeForgetRequestSchema> & { checkout?: string };
 export type KnowledgeCreateResult = z.infer<typeof MachineKnowledgeCreateResponseSchema>;
-export type KnowledgeEditResult = z.infer<typeof MachineKnowledgeEditResponseSchema>;
+type FixtureEditResult = z.infer<typeof MachineKnowledgeEditResponseSchema>;
+export type KnowledgeEditResult = Exclude<FixtureEditResult, { type: "conflict" }>
+  | { type: "conflict"; current: KnowledgeDetail; attempted: KnowledgeEdit };
 export type KnowledgeForgetResult = z.infer<typeof MachineKnowledgeForgetResponseSchema>;
 export type KnowledgeWritePreview = z.infer<typeof MachineKnowledgeWritePreviewSchema>;
 export type DailyActivity = z.infer<typeof MachineDailyActivitySchema>;
@@ -53,6 +57,12 @@ export interface KnowledgeFilters {
   status?: KnowledgeStatus | "needs-look";
   area?: string;
   query: string;
+}
+
+export interface KnowledgeActions {
+  createNote: (request: KnowledgeCreate, onRetry?: () => void) => KnowledgeCreateResult | Promise<KnowledgeCreateResult>;
+  editNote: (request: KnowledgeEdit, onRetry?: () => void) => KnowledgeEditResult | Promise<KnowledgeEditResult>;
+  forgetItem: (request: KnowledgeForget, onRetry?: () => void) => KnowledgeForgetResult | Promise<KnowledgeForgetResult>;
 }
 
 export interface KnowledgePreview {
