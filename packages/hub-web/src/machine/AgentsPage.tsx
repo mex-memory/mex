@@ -1,7 +1,8 @@
 import type { ComponentType, ReactNode } from "react";
 import { ArrowRight, Bot, CircleCheck, CircleMinus, Code2, Plug, Sparkle, Terminal, TriangleAlert } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
+import { AgentDetail } from "./AgentDetail";
 import { localDateTime, relativeTime } from "./local-time";
 import type { AgentsPreview, MachineAgent } from "./types";
 import { HubPageHeader } from "./ui";
@@ -77,6 +78,23 @@ function AgentCard({ agent, search }: { agent: MachineAgent; search: string }) {
 
 export default function AgentsPage({ preview }: { preview?: AgentsPreview }) {
   const { search } = useLocation();
+  const { agent: agentId } = useParams();
+  const agent = preview?.agents.find(({ id }) => id === agentId);
+  if (agent) {
+    return (
+      <div className={styles.page}>
+        <AgentDetail agent={agent} overviewHref={"/agents" + search} status={<AgentBadge state={agent.state} />} />
+      </div>
+    );
+  }
+  if (agentId && preview) {
+    return (
+      <div className={styles.page}>
+        <HubPageHeader title="Agent not found" subtitle="Choose a supported agent to see its details." />
+        <Link className={shared.textLink} to={"/agents" + search}>Back to Agents</Link>
+      </div>
+    );
+  }
   return (
     <div className={styles.page}>
       <HubPageHeader title="Agents" subtitle={subtitle} />

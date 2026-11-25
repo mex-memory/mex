@@ -241,7 +241,10 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
           )}
           {agentsRoute ? (
             <Suspense fallback={<p className={styles.pageState} role="status">Loading Agents…</p>}>
-              <AgentsPage preview={data.agents} />
+              <Routes>
+                <Route element={<AgentsPage preview={data.agents} />} path="/agents/:agent?" />
+                <Route element={<Navigate replace to={pagePath("agents")} />} path="*" />
+              </Routes>
             </Suspense>
           ) : projects ? (
             <Suspense fallback={<p className={styles.pageState} role="status">Loading {loadingPage}…</p>}>

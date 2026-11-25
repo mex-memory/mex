@@ -195,3 +195,201 @@ main:has(.page) {
   .cardFooter { padding: 4px 14px; }
   .cardFooter :is(a, button) { min-height: 44px; }
 }
+
+.detailHeader,
+.detailSide {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 14px;
+}
+
+.detailHeader > a {
+  width: fit-content;
+  min-height: 20px;
+}
+
+.detailHeading,
+.detailTitle {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.detailHeading {
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.detailTitle {
+  gap: 9px 12px;
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+.panelHeader {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 15px 17px;
+}
+
+.panelHeader h2,
+.approval h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.panelHeader span,
+.panelNote {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.panelNote {
+  margin: 0;
+  padding: 11px 17px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.hookRows,
+.fileRows,
+.errorRows {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hookRows li,
+.fileRows li,
+.errorRows li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 9px 17px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.hookRows code,
+.fileRows code,
+.approval code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.hookState,
+.fileMeta span,
+.fileGroup h3 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hookState {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.hookState svg,
+.fileMeta svg,
+.fileGroup h3 svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.hookState[data-state="installed"] { color: var(--success); }
+.hookState[data-state="missing"] { color: var(--warning); }
+
+.fileGroup h3 {
+  margin: 0;
+  padding: 7px 17px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.fileRows li {
+  min-height: 60px;
+}
+
+.fileRows li > div {
+  min-width: 0;
+}
+
+.fileMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.errorRows li { flex-wrap: wrap; }
+.errorRows time {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.approval {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 15px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-lg);
+  background: var(--warning-soft);
+}
+
+.approval > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--warning);
+}
+
+.approval p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@container (max-width: 630px) {
+  .detailGrid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 720px) {
+  .fileRows [data-slot="button"] { width: 44px; height: 44px; }
+  .detailHeader > a { min-height: 36px; }
+}
