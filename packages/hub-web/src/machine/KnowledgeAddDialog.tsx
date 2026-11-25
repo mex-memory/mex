@@ -5,6 +5,7 @@ import { Button } from "../components/primitives/button";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/primitives/dialog";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { Textarea } from "../components/primitives/textarea";
+import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
 import { KindSelect, ScopeInputs, scopePatterns } from "./knowledge-fields";
 import type { KnowledgeCreate, KnowledgeKind } from "./types";
 import styles from "./knowledge-forms.module.css";
@@ -16,7 +17,7 @@ export function KnowledgeAddDialog({ open, project, projects, preferredRepo, fin
   preferredRepo?: string;
   finalFocus: () => HTMLElement | false;
   onClose: () => void;
-  onSave: (request: KnowledgeCreate) => void;
+  onSave: (request: KnowledgeCreate, onRetry: () => void) => void | Promise<void>;
 }) {
   const textLabel = useId();
   const repoLabel = useId();
@@ -27,6 +28,7 @@ export function KnowledgeAddDialog({ open, project, projects, preferredRepo, fin
   const [patterns, setPatterns] = useState(["**"]);
   const [repo, setRepo] = useState(preferredRepo ?? "");
   const [error, setError] = useState("");
+  const write = useKnowledgeWrite();
   const noRepo = !project && projects.length === 0;
 
   function save() {
@@ -35,15 +37,13 @@ export function KnowledgeAddDialog({ open, project, projects, preferredRepo, fin
       setError("Enter note text and choose a repo.");
       return;
     }
-    try {
-      onSave({ expectedRevision: "new", repoId, text: text.trim(), kind, scope: scopePatterns(patterns) });
-    } catch {
-      setError("Couldn’t add this note. Try again.");
-    }
+    setError("");
+    void write.run((retry) => onSave({ expectedRevision: "new", repoId, text: text.trim(), kind, scope: scopePatterns(patterns) }, retry),
+      () => {}, (error) => setError(knowledgeSaveError(error, "Couldn’t add this note. Try again.")));
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next && !write.pending) onClose(); }}>
       <DialogContent className={styles.dialog} finalFocus={finalFocus} initialFocus={bodyInput} showCloseButton={false}>
         <DialogHeader><DialogTitle>Add a note</DialogTitle></DialogHeader>
         <form className={styles.form} onSubmit={(event) => { event.preventDefault(); save(); }}>
@@ -77,10 +77,11 @@ export function KnowledgeAddDialog({ open, project, projects, preferredRepo, fin
           </div>
           <ScopeInputs onChange={setPatterns} patterns={patterns} />
           {noRepo && <p className={styles.help} id={disabledReason}>Register a repo before saving a note.</p>}
+          {write.status && <p role="status">{write.status}</p>}
           {error && <p className={styles.error} role="alert">{error}</p>}
           <DialogFooter className={styles.dialogFooter}>
-            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-            <Button aria-describedby={noRepo ? disabledReason : undefined} disabled={noRepo} type="submit">Save note</Button>
+            <DialogClose disabled={write.pending} render={<Button variant="outline" />}>Cancel</DialogClose>
+            <Button aria-describedby={noRepo ? disabledReason : undefined} disabled={noRepo || write.pending} type="submit">Save note</Button>
           </DialogFooter>
         </form>
       </DialogContent>

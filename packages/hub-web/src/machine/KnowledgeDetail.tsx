@@ -6,11 +6,12 @@ import { Button, buttonVariants } from "../components/primitives/button";
 import { KnowledgeConflictDialog, KnowledgeEditor, type EditConflict, type EditDraft } from "./KnowledgeEditor";
 import { KnowledgeForgetDialog, KnowledgeShareDialog } from "./KnowledgeItemDialogs";
 import { KnowledgeReviewDialog } from "./KnowledgeReviewDialog";
+import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
 import { scopePatterns } from "./knowledge-fields";
 import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
 import { KnowledgeStatusLabel } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
-import type { KnowledgeDetail as Detail, KnowledgeEdit, KnowledgeForget, KnowledgePreview, KnowledgeWritePreview } from "./types";
+import type { KnowledgeDetail as Detail, KnowledgeEdit, KnowledgeForget, KnowledgeActions, KnowledgeWritePreview } from "./types";
 import styles from "./knowledge.module.css";
 import shared from "./machine.module.css";
 
@@ -115,8 +116,9 @@ function DetailSection({ title, narrow, inline, children }: { title: string; nar
   return <div className={styles.detailSection} data-inline={inline}><Heading>{title}</Heading>{children}</div>;
 }
 
-function DetailActions({ audience, onEdit, onForget, onShare, editRef, forgetRef, children }: {
+function DetailActions({ audience, canEditHint, onEdit, onForget, onShare, editRef, forgetRef, children }: {
   audience: Detail["audience"];
+  canEditHint?: boolean;
   onEdit: () => void;
   onForget: (event: MouseEvent<HTMLButtonElement>) => void;
   onShare: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -126,10 +128,11 @@ function DetailActions({ audience, onEdit, onForget, onShare, editRef, forgetRef
 }) {
   const reason = useId();
   const hint = audience === "hint";
+  const editDisabled = hint && !canEditHint;
   return (
     <>
       <div className={styles.actionLine}>
-        <Button aria-describedby={hint ? reason : undefined} disabled={hint} onClick={onEdit} ref={editRef} size="sm" type="button" variant="outline">
+        <Button aria-describedby={hint ? reason : undefined} disabled={editDisabled} onClick={onEdit} ref={editRef} size="sm" type="button" variant="outline">
           <Pencil aria-hidden="true" /> Edit
         </Button>
         {audience === "onlyYou" && (
@@ -138,7 +141,7 @@ function DetailActions({ audience, onEdit, onForget, onShare, editRef, forgetRef
         {children}
         <Button aria-haspopup="dialog" className={styles.forgetAction} onClick={onForget} ref={forgetRef} size="sm" type="button" variant="ghost"><Trash2 aria-hidden="true" /> Forget</Button>
       </div>
-      {hint && <p className={styles.actionReason} id={reason}>Edit this hint in your agent’s memory.</p>}
+      {hint && <p className={styles.actionReason} id={reason}>{canEditHint ? "Saving an edit turns this hint into a personal note." : "Edit this hint in your agent’s memory."}</p>}
     </>
   );
 }
@@ -147,19 +150,21 @@ type EditReview = { type: "preview"; preview: KnowledgeWritePreview; request: Kn
 type ForgetDraft = { request: KnowledgeForget; reason: string; preview?: KnowledgeWritePreview; error?: string };
 export type KnowledgeItemAction = "edit" | "forget";
 
-function editDraft({ key, revision, oneLine, text, kind, scope }: Detail): EditDraft {
-  return { key, expectedRevision: revision, oneLine, text, kind, scope };
+function editDraft({ key, revision, oneLine, text, kind, scope, checkout, audience }: Detail): EditDraft {
+  return { key, expectedRevision: revision, oneLine, text, kind: audience === "hint" ? "rule" : kind, scope, checkout };
 }
 
-function forgetDraft({ key, revision }: Detail): ForgetDraft {
-  return { request: { key, expectedRevision: revision }, reason: "" };
+function forgetDraft({ key, revision, checkout }: Detail): ForgetDraft {
+  return { request: { key, expectedRevision: revision, checkout }, reason: "" };
 }
 
-export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narrow, now, onForgotten, initialAction }: {
+export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narrow, now, onForgotten, onUpdated, initialAction, canEditHint }: {
   item?: Detail;
   backHref: string;
   titleRef: Ref<HTMLHeadingElement>;
-  knowledge: KnowledgePreview;
+  knowledge: KnowledgeActions;
+  canEditHint?: boolean;
+  onUpdated: (item: Detail) => void;
   narrow: boolean;
   now: Date;
   onForgotten: () => void;
@@ -167,13 +172,14 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
 }) {
   const Heading = narrow ? "h1" : "h2";
   const titleId = useId();
-  const [draft, setDraft] = useState(() => item && initialAction === "edit" && item.audience !== "hint" ? editDraft(item) : null);
+  const [draft, setDraft] = useState(() => item && initialAction === "edit" && (item.audience !== "hint" || canEditHint) ? editDraft(item) : null);
   const [review, setReview] = useState<EditReview | null>(null);
   const [forget, setForget] = useState(() => item && initialAction === "forget" ? forgetDraft(item) : null);
   const [sharing, setSharing] = useState(false);
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const [error, setError] = useState("");
+  const write = useKnowledgeWrite();
   const editAtTop = useRef(narrow);
   const restoreEdit = useRef(false);
   const topEdit = useRef<HTMLButtonElement>(null);
@@ -210,17 +216,17 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
 
   function submitEdit(request: KnowledgeEdit) {
     setError("");
-    try {
-      const result = knowledge.editNote(request);
+    void write.run((retry) => knowledge.editNote(request, retry), (result) => {
       if (result.type === "ok") {
         closeEditor("Saved");
+        onUpdated(result.item);
       } else {
         setReview(result.type === "preview" ? { type: "preview", preview: result, request } : result);
       }
-    } catch {
+    }, (error) => {
       setReview(null);
-      setError("Couldn’t save this note. Try again.");
-    }
+      setError(knowledgeSaveError(error, "Couldn’t save this note. Try again."));
+    });
   }
 
   function saveDraft() {
@@ -250,8 +256,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
   function submitForget(confirmRevision?: string) {
     if (!forget) return;
     const request = { ...forget.request, reason: forget.reason.trim() || undefined, confirmRevision };
-    try {
-      const result = knowledge.forgetItem(request);
+    void write.run((retry) => knowledge.forgetItem(request, retry), (result) => {
       if (result.type === "preview") setForget({ ...forget, preview: result });
       else if (result.type === "conflict") {
         setForget(null);
@@ -261,9 +266,9 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
         setForget(null);
         onForgotten();
       }
-    } catch {
-      setForget({ ...forget, preview: undefined, error: "Couldn’t forget this item. Try again." });
-    }
+    }, (error) => {
+      setForget({ ...forget, preview: undefined, error: knowledgeSaveError(error, "Couldn’t forget this item. Try again.") });
+    });
   }
 
   const startShare = (event: MouseEvent<HTMLButtonElement>) => {
@@ -298,11 +303,11 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
           </header>
           {narrow && item && !draft && (
             <div className={styles.mobileActions}>
-              <DetailActions audience={item.audience} editRef={topEdit} forgetRef={forgetTrigger} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
+              <DetailActions audience={item.audience} canEditHint={canEditHint} editRef={topEdit} forgetRef={forgetTrigger} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
             </div>
           )}
           {draft ? (
-            <KnowledgeEditor draft={draft} error={error} onCancel={() => closeEditor()} onChange={setDraft} onSave={saveDraft} saveRef={save} />
+            <KnowledgeEditor draft={draft} error={error} pending={write.pending} status={review ? undefined : write.status} onCancel={() => closeEditor()} onChange={setDraft} onSave={saveDraft} saveRef={save} />
           ) : item ? (
             <>
               <div className={styles.detailText}>
@@ -324,7 +329,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
         </div>
         {item && !draft && (
           <div className={styles.detailFooter}>
-            <DetailActions audience={item.audience} editRef={bottomEdit} forgetRef={narrow ? undefined : forgetTrigger} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
+            <DetailActions audience={item.audience} canEditHint={canEditHint} editRef={bottomEdit} forgetRef={narrow ? undefined : forgetTrigger} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
               <span className={styles.saved} role="status">{notice && <><Check aria-hidden="true" />{notice}</>}</span>
             </DetailActions>
             {actionError && <p className={styles.actionError} role="alert">{actionError}</p>}
@@ -338,11 +343,15 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
           if (retirement) submitForget(retirement.revision);
           else if (editPreview) submitEdit({ ...editPreview.request, confirmRevision: editPreview.preview.revision });
         }}
+        pending={write.pending}
+        status={write.status}
         preview={retirement ?? editPreview?.preview ?? null}
         retiring={Boolean(retirement)}
       />
       <KnowledgeConflictDialog
         conflict={review?.type === "conflict" ? review : null}
+        pending={write.pending}
+        status={write.status}
         finalFocus={() => save.current ?? false}
         onCurrent={() => closeEditor("Using current note")}
         onEditAgain={editAgain}
@@ -356,6 +365,8 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
         <KnowledgeForgetDialog
           audience={item.audience}
           error={forget?.error}
+          pending={write.pending}
+          status={write.status}
           finalFocus={() => retirement ? false : returnToTrigger()}
           onCancel={() => setForget(null)}
           onConfirm={() => submitForget()}

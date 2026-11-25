@@ -6,16 +6,18 @@ import {
 import type { KnowledgeWritePreview } from "./types";
 import styles from "./knowledge-forms.module.css";
 
-export function KnowledgeReviewDialog({ preview, retiring, finalFocus, onCancel, onConfirm }: {
+export function KnowledgeReviewDialog({ preview, retiring, pending, status, finalFocus, onCancel, onConfirm }: {
   preview: KnowledgeWritePreview | null;
   retiring?: boolean;
+  pending?: boolean;
+  status?: string;
   finalFocus: () => HTMLElement | false;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   const cancel = useRef<HTMLButtonElement>(null);
   return (
-    <AlertDialog open={preview !== null} onOpenChange={(open) => { if (!open) onCancel(); }}>
+    <AlertDialog open={preview !== null} onOpenChange={(open) => { if (!open && !pending) onCancel(); }}>
       <AlertDialogContent
         className={`${styles.dialog} ${styles.wideDialog}`}
         finalFocus={finalFocus}
@@ -34,9 +36,10 @@ export function KnowledgeReviewDialog({ preview, retiring, finalFocus, onCancel,
             <code data-line={line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@") ? "header" : line[0]} key={index}>{line}{"\n"}</code>
           ))}
         </pre>
+        {status && <p role="status">{status}</p>}
         <AlertDialogFooter className={styles.dialogFooter}>
-          <AlertDialogCancel ref={cancel}>Cancel</AlertDialogCancel>
-          <AlertDialogAction className={retiring ? styles.destructive : undefined} onClick={onConfirm} type="button" variant={retiring ? "destructive" : "default"}>Confirm</AlertDialogAction>
+          <AlertDialogCancel disabled={pending} ref={cancel}>Cancel</AlertDialogCancel>
+          <AlertDialogAction disabled={pending} className={retiring ? styles.destructive : undefined} onClick={onConfirm} type="button" variant={retiring ? "destructive" : "default"}>Confirm</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

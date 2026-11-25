@@ -5,6 +5,9 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { Button } from "../components/primitives/button";
 import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
+import { HubProblemError } from "./api";
+import type { HubEventState } from "./data";
+import { useForgotten, useKnowledgeActions, useKnowledgeItem, useKnowledgeLanding, useKnowledgePage } from "./knowledge-data";
 import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
 import { KnowledgeDate, KnowledgeDetailPanel, type KnowledgeItemAction } from "./KnowledgeDetail";
 import { KnowledgeAreaGrid, KnowledgeGrouping, KnowledgeKindGrid } from "./KnowledgeGroups";
@@ -12,7 +15,8 @@ import { KnowledgeNeedsLook } from "./KnowledgeNeedsLook";
 import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
-import type { ForgottenItem, KnowledgeFilters, KnowledgeItem, KnowledgePreview, KnowledgeStatusCounts } from "./types";
+import type { ForgottenItem, KnowledgeActions, KnowledgeDetail, KnowledgeFilters, KnowledgeItem, KnowledgeLandingData, KnowledgePreview, KnowledgeStatusCounts } from "./types";
+import type { PageLoad } from "./ui";
 import styles from "./knowledge.module.css";
 import shared from "./machine.module.css";
 
@@ -28,11 +32,40 @@ function subscribeToLayout(listener: () => void) {
 }
 const isNarrow = () => window.matchMedia(narrowLayout).matches;
 
-interface KnowledgePageProps {
+interface KnowledgeScope {
   project?: MachineProject;
   projects: readonly MachineProject[];
-  knowledge?: KnowledgePreview;
 }
+
+export interface KnowledgeConnection {
+  events: HubEventState;
+  csrfToken: string;
+  reportDataError: (error: unknown) => void;
+}
+
+type KnowledgePageProps = KnowledgeScope & ({ knowledge: KnowledgePreview; live?: undefined } | {
+  knowledge?: undefined;
+  live: KnowledgeConnection;
+});
+
+interface KnowledgeView {
+  items: KnowledgeItem[];
+  total: number;
+  counts: KnowledgeStatusCounts;
+  updating?: string;
+  partial?: KnowledgeLandingData["partial"];
+  landing?: KnowledgeLandingData;
+  areas: KnowledgeLandingData["groups"]["byArea"];
+  detail?: KnowledgeDetail;
+  detailLoad?: PageLoad;
+  forgotten: readonly ForgottenItem[];
+  forgottenCount?: number;
+  load?: PageLoad;
+  loadMore?: () => void;
+  fetching?: boolean;
+}
+
+const emptyCounts = (): KnowledgeStatusCounts => ({ upToDate: 0, codeChanged: 0, outOfDate: 0, notChecked: 0 });
 
 interface FilterOption {
   value: string;
@@ -143,7 +176,8 @@ function KnowledgeRow({ item, href, repo, active, now }: {
   const compactAudience = item.audience === "hint" ? "Agent hint" : item.audience === "team" ? "Team" : audience;
   const status = knowledgeStatuses.find(({ key }) => key === item.status)!.label;
   const identity = `${identityPrefix} · ${audience}`;
-  const accessibleLabel = `${item.oneLine}, ${identity} · ${status} · ${age ? `used ${age}` : "never used"}`;
+  const noUse = item.useCount30Days === undefined ? "never used" : "no recent use";
+  const accessibleLabel = `${item.oneLine}, ${identity} · ${status} · ${age ? `used ${age}` : noUse}`;
   return (
     <li>
       <Link aria-current={active ? "page" : undefined} aria-label={accessibleLabel} className={styles.row} data-item-key={item.key} to={href}>
@@ -158,7 +192,7 @@ function KnowledgeRow({ item, href, repo, active, now }: {
           <span aria-hidden="true">·</span>
           {used
             ? <span>used <time dateTime={item.lastUsedAt!} title={fullDateTime.format(used)}>{age}</time></span>
-            : <span>never used</span>}
+            : <span>{noUse}</span>}
         </span>
       </Link>
     </li>
@@ -183,11 +217,31 @@ function KnowledgeHeader({ scope, updating, titleRef, action }: {
   );
 }
 
-function ForgottenView({ items, repoNames, backHref, titleRef }: {
+function KnowledgeLoad({ load, label }: { load: PageLoad; label: string }) {
+  if (load.loading) return <p className={shared.pageState} role="status">Loading {label}…</p>;
+  if (!load.error) return null;
+  return <div className={shared.pageState}>
+    <p role="status">Couldn’t load {label}.</p>
+    <Button onClick={load.retry} size="sm" type="button" variant="outline">Retry</Button>
+  </div>;
+}
+
+function KnowledgePartial({ partial, repoNames }: { partial: KnowledgeView["partial"]; repoNames: ReadonlyMap<string, string> }) {
+  if (!partial?.length) return null;
+  return <div role="status" className={shared.muted}>
+    {partial.map(({ repoId, note }) => <p key={(repoId ?? "") + note}>{repoId && repoNames.has(repoId) && `${repoNames.get(repoId)} · `}{note}</p>)}
+  </div>;
+}
+
+function ForgottenView({ items, repoNames, backHref, titleRef, load, loadMore, fetching, partial }: {
   items: readonly ForgottenItem[];
   repoNames: ReadonlyMap<string, string>;
   backHref: string;
   titleRef: React.Ref<HTMLHeadingElement>;
+  load?: PageLoad;
+  loadMore?: () => void;
+  fetching?: boolean;
+  partial?: KnowledgeView["partial"];
 }) {
   return (
     <div className={styles.page}>
@@ -196,6 +250,8 @@ function ForgottenView({ items, repoNames, backHref, titleRef }: {
         <h1 className={shared.pageTitle} ref={titleRef} tabIndex={-1}>Forgotten</h1>
         <p className={shared.muted}>Forgotten items stay out of what MEX gives your agents. Their content isn’t shown here.</p>
       </header>
+      {load && <KnowledgeLoad label="forgotten items" load={load} />}
+      <KnowledgePartial partial={partial} repoNames={repoNames} />
       {items.length ? (
         <div className={styles.listCard}>
           <table aria-label="Forgotten items" className={styles.forgottenTable}>
@@ -212,15 +268,48 @@ function ForgottenView({ items, repoNames, backHref, titleRef }: {
             </tbody>
           </table>
         </div>
-      ) : <p className={`${styles.listCard} ${styles.emptyForgotten}`}>No forgotten items.</p>}
+      ) : !load?.loading && !load?.error && <p className={`${styles.listCard} ${styles.emptyForgotten}`}>No forgotten items.</p>}
+      {loadMore && (
+        <div className={styles.paging}>
+          <Button disabled={fetching} onClick={loadMore} size="sm" type="button" variant="outline">Load more</Button>
+        </div>
+      )}
     </div>
   );
 }
 
-function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePageProps, "knowledge"> & { knowledge: KnowledgePreview }) {
+function useKnowledgeRoute({ project, projects }: KnowledgeScope) {
   const { entryKey } = useParams();
-  const narrow = useSyncExternalStore(subscribeToLayout, isNarrow);
   const [params] = useSearchParams();
+  const showList = Boolean(entryKey || params.get("view") === "list" || filterNames.some((name) => params.get(name)?.trim()));
+  const statusParam = params.get("status");
+  const activeStatus = knowledgeStatuses.find(({ slug }) => slug === statusParam);
+  const statusFilter = statusParam === needsLookFilter ? needsLookFilter : activeStatus?.slug;
+  const audience = params.get("audience");
+  const q = params.get("q") ?? "";
+  const filters: KnowledgeFilters = {
+    scopeId: project?.id,
+    repoId: project ? undefined : projects.find(({ id }) => id === params.get("repo"))?.id,
+    kind: kindOptions.find(({ value }) => value === params.get("kind"))?.value as KnowledgeFilters["kind"],
+    audience: audienceOptions.find(({ value }) => value === (audience === "personal" ? "onlyYou" : audience))?.value as KnowledgeFilters["audience"],
+    status: statusFilter === needsLookFilter ? needsLookFilter : activeStatus?.key,
+    area: params.get("area") || undefined,
+    query: q.slice(0, 256),
+  };
+  return { entryKey, params, showList, statusFilter, filters, q };
+}
+
+type KnowledgeRoute = ReturnType<typeof useKnowledgeRoute>;
+
+function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: KnowledgeScope & {
+  route: KnowledgeRoute;
+  view: KnowledgeView;
+  knowledge: KnowledgeActions;
+  live?: boolean;
+}) {
+  const { entryKey, params, showList, filters, statusFilter, q } = route;
+  const { items, landing, detail, forgotten, load, detailLoad } = view;
+  const narrow = useSyncExternalStore(subscribeToLayout, isNarrow);
   const navigate = useNavigate();
   const basePath = project ? `/repos/${encodeURIComponent(project.id)}/knowledge` : "/knowledge";
   const linkTo = (path: string, query = params) => `${path}${query.size ? `?${query}` : ""}`;
@@ -232,9 +321,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const browseParams = new URLSearchParams(landingParams);
   browseParams.set("view", "list");
   const browseHref = linkTo(basePath, browseParams);
-  const showList = Boolean(entryKey || params.get("view") === "list" || filterNames.some((name) => params.get(name)?.trim()));
   const grouping = params.get("view") === "area" ? "area" : "kind";
-  const q = params.get("q") ?? "";
   const [query, setQuery] = useState(q);
   const writtenQuery = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -243,61 +330,37 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const addTrigger = useRef<HTMLButtonElement | null>(null);
   const [pendingAction, setPendingAction] = useState<{ key: string; action: KnowledgeItemAction }>();
   const initialAction = pendingAction && pendingAction.key === entryKey ? pendingAction.action : undefined;
-  const statusParam = params.get("status");
-  const activeStatus = knowledgeStatuses.find(({ slug }) => slug === statusParam);
-  const statusFilter = statusParam === needsLookFilter ? needsLookFilter : activeStatus?.slug;
-  const filters: KnowledgeFilters = {
-    scopeId: project?.id,
-    repoId: project ? undefined : projects.find(({ id }) => id === params.get("repo"))?.id,
-    kind: kindOptions.find(({ value }) => value === params.get("kind"))?.value as KnowledgeFilters["kind"],
-    audience: audienceOptions.find(({ value }) => value === params.get("audience"))?.value as KnowledgeFilters["audience"],
-    status: statusFilter === needsLookFilter ? needsLookFilter : activeStatus?.key,
-    area: params.get("area") || undefined,
-    query: q,
-  };
-  const landing = !showList ? knowledge.getLanding(project?.id) : undefined;
   const areaOptions = filters.area ? [...new Set([
-    ...knowledge.getLanding(project?.id ?? filters.repoId).groups.byArea.map(({ pattern }) => pattern),
-    filters.area,
+    ...view.areas.map(({ pattern }) => pattern), filters.area,
   ])].map((value) => ({ value, label: scopeLabel([value]) })) : [];
-  const filterKey = JSON.stringify(filters);
-  const [paging, setPaging] = useState({ filterKey, pageCount: 1 });
-  const first = knowledge.getPage(filters);
-  let page = first;
-  const items = [...first.items];
-  for (let n = 1; paging.filterKey === filterKey && n < paging.pageCount && page.nextCursor; n++) {
-    page = knowledge.getPage(filters, page.nextCursor);
-    items.push(...page.items);
-  }
-
-  const total = Object.values(first.counts.status).reduce((sum, count) => sum + count, 0);
+  const total = Object.values(view.counts).reduce((sum, count) => sum + count, 0);
   const repoNames = new Map(projects.map(({ id, name }) => [id, name]));
   const now = new Date();
-  const forgotten = knowledge.forgotten.filter(({ repoId }) => !project || repoId === project.id);
   const isForgotten = entryKey === "forgotten";
-  const found = entryKey && !isForgotten ? knowledge.getDetail(entryKey) : undefined;
-  const detail = !project || found?.repoId === project.id ? found : undefined;
   const title = useRef<HTMLHeadingElement>(null);
   const detailTitle = useRef<HTMLHeadingElement>(null);
   const browser = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const previousKey = useRef<string | undefined>(undefined);
+  const focusedDetail = useRef<string | undefined>(undefined);
   const previousList = useRef(showList);
   const firstNewRow = useRef<number | null>(null);
 
   useLayoutEffect(() => {
-    if (entryKey && entryKey !== previousKey.current) {
-      if (narrow || !previousList.current) document.scrollingElement?.scrollTo(0, 0);
+    if (entryKey && entryKey !== previousKey.current && (narrow || !previousList.current)) document.scrollingElement?.scrollTo(0, 0);
+    if (entryKey && detailTitle.current && focusedDetail.current !== entryKey && (!initialAction || detail)) {
+      focusedDetail.current = entryKey;
       if (initialAction) setPendingAction(undefined);
-      else detailTitle.current?.focus({ preventScroll: true });
+      else detailTitle.current.focus({ preventScroll: true });
     } else if (!entryKey && !browser.current?.contains(document.activeElement)) {
       const row = Array.from(browser.current?.querySelectorAll<HTMLAnchorElement>("[data-item-key]") ?? [])
         .find((link) => link.dataset.itemKey === previousKey.current);
       (row ?? title.current)?.focus();
     }
+    if (!entryKey) focusedDetail.current = undefined;
     previousKey.current = entryKey;
     previousList.current = showList;
-  }, [entryKey, initialAction, showList]);
+  }, [entryKey, detail?.key, detailLoad?.loading, detailLoad?.error, initialAction, showList, narrow]);
 
   useLayoutEffect(() => {
     if (firstNewRow.current !== null) {
@@ -353,7 +416,8 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     setAddOpen(true);
   }
 
-  if (isForgotten) return <ForgottenView backHref={listHref} items={forgotten} repoNames={repoNames} titleRef={detailTitle} />;
+  if (isForgotten) return <ForgottenView backHref={listHref} fetching={view.fetching} items={forgotten} load={load} loadMore={view.loadMore}
+    partial={view.partial} repoNames={repoNames} titleRef={detailTitle} />;
 
   return (
     <div className={styles.page} data-detail={Boolean(entryKey)} ref={browser}>
@@ -362,17 +426,18 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           action={<Button aria-haspopup="dialog" className={styles.addButton} onClick={startAdd} type="button"><Plus aria-hidden="true" /> Add a note</Button>}
           scope={project?.name ?? "All repos"}
           titleRef={title}
-          updating={first.updatingSince}
+          updating={view.updating}
         />
         <KnowledgeSummary
           active={statusFilter}
           browseHref={showList ? undefined : browseHref}
-          counts={first.counts.status}
+          counts={view.counts}
           onToggle={(slug) => changeFilter("status", statusFilter === slug ? "" : slug)}
           total={total}
         />
         {landing && (
           <KnowledgeNeedsLook
+            canEditHints={live}
             itemHref={(item) => itemHref(item, needsLookParams)}
             listHref={linkTo(basePath, needsLookParams)}
             onAction={(item, action) => {
@@ -405,12 +470,14 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
             navigate(linkTo(basePath, next));
           }} value={grouping} />}
           <Link className={`${shared.textLink} ${styles.forgottenLink}`} to={linkTo(`${basePath}/forgotten`)}>
-            Forgotten ({number.format(forgotten.length)})
+            Forgotten{view.forgottenCount !== undefined && ` (${number.format(view.forgottenCount)})`}
           </Link>
         </div>
         {showList && (
           <Link className={`${shared.textLink} ${styles.back}`} to={allKnowledgeHref}><ArrowLeft aria-hidden="true" /> All knowledge</Link>
         )}
+        <KnowledgePartial partial={view.partial} repoNames={repoNames} />
+        {load?.error && <KnowledgeLoad label="Knowledge" load={{ ...load, loading: false }} />}
         <span className={shared.srOnly} role="status">{notice}</span>
       </div>
       {landing?.groups.byKind.length ? (
@@ -432,7 +499,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
       ) : <div className={styles.workspace}>
         {items.length > 0 ? (
           <section aria-label="Knowledge items" className={styles.listCard}>
-            <ul aria-label="Items" className={styles.rows} role="list">
+            <ul aria-label="Items" className={styles.rows} data-many={live && items.length > 100} role="list">
               {items.map((item) => (
                 <KnowledgeRow
                   active={item.key === entryKey}
@@ -445,12 +512,13 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
               ))}
             </ul>
             <div className={styles.paging}>
-              <p role="status">Showing {number.format(items.length)} of {number.format(first.total)}</p>
-              {page.nextCursor && (
+              <p role="status">Showing {number.format(items.length)} of {number.format(view.total)}</p>
+              {view.loadMore && (
                 <Button
+                  disabled={view.fetching}
                   onClick={() => {
                     firstNewRow.current = items.length;
-                    setPaging({ filterKey, pageCount: paging.filterKey === filterKey ? paging.pageCount + 1 : 2 });
+                    view.loadMore?.();
                   }}
                   size="sm"
                   variant="outline"
@@ -458,7 +526,9 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
               )}
             </div>
           </section>
-        ) : (
+        ) : load?.loading ? (
+          <KnowledgeLoad label="Knowledge" load={load} />
+        ) : !load?.error && (
           <section aria-label="Knowledge items" className={`${styles.listCard} ${styles.empty}`}>
             {total === 0 ? (
               <>
@@ -472,8 +542,9 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           </section>
         )}
         {entryKey ? (
-          <KnowledgeDetailPanel
+          !detail && (detailLoad?.loading || detailLoad?.error) ? <KnowledgeLoad label="item" load={detailLoad} /> : <KnowledgeDetailPanel
             backHref={listHref}
+            canEditHint={live}
             initialAction={initialAction}
             item={detail}
             key={entryKey}
@@ -483,6 +554,9 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
             onForgotten={() => {
               setNotice("Item moved to Forgotten.");
               navigate(listHref, { replace: true });
+            }}
+            onUpdated={(updated) => {
+              if (updated.key !== entryKey) navigate(itemHref(updated), { replace: true });
             }}
             titleRef={detailTitle}
           />
@@ -494,8 +568,8 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         finalFocus={() => addTrigger.current?.isConnected ? addTrigger.current : false}
         key={addSession}
         onClose={() => setAddOpen(false)}
-        onSave={(request) => {
-          const { item } = knowledge.createNote(request);
+        onSave={async (request, onRetry) => {
+          const { item } = await knowledge.createNote(request, onRetry);
           setQuery("");
           addTrigger.current = null;
           setAddOpen(false);
@@ -510,14 +584,78 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   );
 }
 
-export default function KnowledgePage({ project, projects, knowledge }: KnowledgePageProps) {
-  const unavailableTitle = useRef<HTMLHeadingElement>(null);
-  useLayoutEffect(() => { unavailableTitle.current?.focus({ preventScroll: true }); }, []);
-  if (!knowledge) return (
-    <div className={styles.page}>
-      <KnowledgeHeader scope={project?.name ?? "All repos"} titleRef={unavailableTitle} />
-      <p className={shared.muted}>Knowledge isn’t available yet.</p>
-    </div>
-  );
-  return <KnowledgeBrowser knowledge={knowledge} project={project} projects={projects} />;
+function FixtureKnowledgePage({ knowledge, ...scope }: KnowledgeScope & { knowledge: KnowledgePreview }) {
+  const route = useKnowledgeRoute(scope);
+  const { entryKey, filters, showList } = route;
+  const filterKey = JSON.stringify(filters);
+  const [paging, setPaging] = useState({ filterKey, pageCount: 1 });
+  const first = knowledge.getPage(filters);
+  let page = first;
+  const items = [...first.items];
+  for (let n = 1; paging.filterKey === filterKey && n < paging.pageCount && page.nextCursor; n++) {
+    page = knowledge.getPage(filters, page.nextCursor);
+    items.push(...page.items);
+  }
+  const forgotten = knowledge.forgotten.filter(({ repoId }) => !scope.project || repoId === scope.project.id);
+  const item = entryKey && entryKey !== "forgotten" ? knowledge.getDetail(entryKey) : undefined;
+  const view: KnowledgeView = {
+    items, total: first.total, counts: first.counts.status, updating: first.updatingSince,
+    landing: showList ? undefined : knowledge.getLanding(scope.project?.id),
+    areas: filters.area ? knowledge.getLanding(scope.project?.id ?? filters.repoId).groups.byArea : [],
+    forgotten, forgottenCount: forgotten.length,
+    detail: !scope.project || item?.repoId === scope.project.id ? item : undefined,
+    loadMore: page.nextCursor ? () => setPaging({ filterKey, pageCount: paging.filterKey === filterKey ? paging.pageCount + 1 : 2 }) : undefined,
+  };
+  return <KnowledgeBrowser {...scope} knowledge={knowledge} route={route} view={view} />;
+}
+
+function LiveKnowledgePage({ live, ...scope }: KnowledgeScope & { live: KnowledgeConnection }) {
+  const route = useKnowledgeRoute(scope);
+  const { entryKey, filters, showList } = route;
+  const { events, csrfToken, reportDataError } = live;
+  const isForgotten = entryKey === "forgotten";
+  const repo = filters.scopeId ?? filters.repoId;
+  const list = useKnowledgePage(filters, events, showList && !isForgotten);
+  const landing = useKnowledgeLanding(repo, events, !showList || Boolean(filters.area && !isForgotten));
+  const detail = useKnowledgeItem(isForgotten ? undefined : entryKey, events);
+  const forgotten = useForgotten(repo, events, isForgotten);
+  const actions = useKnowledgeActions(csrfToken, reportDataError);
+  useEffect(() => {
+    for (const error of [list.error, landing.error, detail.error, forgotten.error]) if (error) reportDataError(error);
+  }, [list.error, landing.error, detail.error, forgotten.error, reportDataError]);
+
+  const firstPage = list.data?.pages[0];
+  const firstForgotten = forgotten.data?.pages[0];
+  const active = isForgotten ? forgotten : showList ? list : landing;
+  const current = isForgotten ? firstForgotten : showList ? firstPage : landing.data;
+  const paging = isForgotten ? forgotten : list;
+  const counts = (showList ? firstPage?.counts.status : undefined) ?? emptyCounts();
+  if (!showList && landing.data) {
+    for (const group of landing.data.groups.byKind) {
+      for (const { key } of knowledgeStatuses) counts[key] += group.statusCounts[key];
+    }
+  }
+  const items = list.data?.pages.flatMap((page) => page.items) ?? [];
+  const forgottenItems = forgotten.data?.pages.flatMap((page) => page.items) ?? [];
+  const item = !scope.project || detail.data?.repoId === scope.project.id ? detail.data : undefined;
+  const detailMissing = detail.error instanceof HubProblemError && detail.error.status === 404;
+  const view: KnowledgeView = {
+    items, total: firstPage?.total ?? 0, counts,
+    landing: !showList && !(landing.data?.updatingSince && landing.data.groups.byKind.length === 0) ? landing.data : undefined,
+    areas: landing.data?.groups.byArea ?? [],
+    detail: item, detailLoad: entryKey ? { loading: detail.isPending, error: detail.isError && !detailMissing, retry: () => void detail.refetch() } : undefined,
+    forgotten: forgottenItems, forgottenCount: firstForgotten && !forgotten.hasNextPage ? forgottenItems.length : undefined,
+    updating: current?.updatingSince, partial: current?.partial,
+    load: {
+      loading: active.isPending || Boolean(current?.updatingSince && (isForgotten ? !forgottenItems.length : !showList || !items.length)),
+      error: active.isError, retry: () => void active.refetch(),
+    },
+    loadMore: paging.hasNextPage ? () => void paging.fetchNextPage({ cancelRefetch: false }) : undefined,
+    fetching: paging.isFetching,
+  };
+  return <KnowledgeBrowser {...scope} knowledge={actions} live route={route} view={view} />;
+}
+
+export default function KnowledgePage({ knowledge, live, ...scope }: KnowledgePageProps) {
+  return knowledge ? <FixtureKnowledgePage {...scope} knowledge={knowledge} /> : <LiveKnowledgePage {...scope} live={live} />;
 }

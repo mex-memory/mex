@@ -12,11 +12,12 @@ import shared from "./machine.module.css";
 
 const number = new Intl.NumberFormat();
 
-export function KnowledgeNeedsLook({ summary, listHref, itemHref, repoNames, onAction }: {
+export function KnowledgeNeedsLook({ summary, listHref, itemHref, repoNames, onAction, canEditHints }: {
   summary: KnowledgeLandingData["needsLook"];
   listHref: string;
   itemHref: (item: KnowledgeItem) => string;
   repoNames?: ReadonlyMap<string, string>;
+  canEditHints?: boolean;
   onAction: (item: KnowledgeItem, action: KnowledgeItemAction) => void;
 }) {
   const heading = useId();
@@ -50,7 +51,7 @@ export function KnowledgeNeedsLook({ summary, listHref, itemHref, repoNames, onA
               </Link>
               <span className={styles.reviewWhy} id={whyId} title={item.why}>{item.why}</span>
               <div className={styles.reviewActions}>
-                <Button aria-label={`Edit ${item.oneLine}`} disabled={item.audience === "hint"} onClick={() => onAction(item, "edit")} size="xs" type="button" variant="ghost">Edit</Button>
+                <Button aria-label={`Edit ${item.oneLine}`} disabled={item.audience === "hint" && !canEditHints} onClick={() => onAction(item, "edit")} size="xs" type="button" variant="ghost">Edit</Button>
                 <Button aria-haspopup="dialog" aria-label={`Forget ${item.oneLine}`} onClick={() => onAction(item, "forget")} size="xs" type="button" variant="ghost">Forget</Button>
               </div>
             </li>

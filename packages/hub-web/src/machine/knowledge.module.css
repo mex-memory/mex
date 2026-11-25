@@ -401,6 +401,12 @@ main:has(.page) {
   border-top: 1px solid var(--border);
 }
 
+/* Keep offscreen rows out of layout and paint while preserving keyboard navigation. */
+.rows[data-many="true"] > li {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 59px;
+}
+
 .row {
   position: relative;
   display: grid;

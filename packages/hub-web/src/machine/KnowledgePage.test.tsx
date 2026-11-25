@@ -1,8 +1,12 @@
+import type { MachineProject } from "@mex/hub-contracts/machine";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getFixture } from "./fixtures";
 import { MachineHub } from "./MachineHub";
+import type { KnowledgeDetail } from "./types";
 
 const personal = "Validate checkout inputs at the API boundary";
 const team = "Keep the checkout total in integer cents";
@@ -445,3 +449,175 @@ describe("Knowledge fixtures", () => {
     expect(params().has("kind")).toBe(false);
   });
 });
+
+const repoId = "g-" + "a".repeat(24);
+const checkout = "/work/alder";
+const knownRepo = {
+  id: repoId, name: "Alder", kind: "git", shared: false, provisional: null,
+  checkouts: [{ path: checkout, state: "on", offUntil: null, exists: true }],
+} satisfies MachineProject;
+const time = "2026-11-24T18:00:00.000Z";
+const statusCounts = { upToDate: 0, codeChanged: 0, outOfDate: 0, notChecked: 3 };
+
+function item(id: string, oneLine: string, audience: "onlyYou" | "team" = "onlyYou"): KnowledgeDetail {
+  return {
+    id, key: repoId + ":" + audience + ":" + id, repoId, audience, oneLine, text: oneLine + ".",
+    kind: "rule", scope: ["**"], status: "notChecked", revision: "a".repeat(64),
+    lastUsedAt: null, useCount30Days: 0, history: [], checks: [],
+    ...(audience === "team" ? { checkout, source: { type: "team", path: ".mex/learned/" + id + ".md", checkout } }
+      : { source: { type: "note", at: time } }),
+  };
+}
+
+function livePage(items: KnowledgeDetail[], nextCursor: string | null = null, total = items.length) {
+  return Response.json({ items, nextCursor, total, generatedAt: time,
+    counts: { status: { ...statusCounts, notChecked: total }, kind: { rule: total }, audience: {} } });
+}
+
+function problem(status: number, code: string, extra: Record<string, unknown> = {}) {
+  return Response.json({ title: "Try again", status, code, detail: "This request needs attention.", requestId: "test", ...extra }, { status });
+}
+
+function renderLive(request: (url: URL, init?: RequestInit) => Response | Promise<Response>, path = "/knowledge?view=list") {
+  const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+    const url = new URL(input, window.location.origin);
+    switch (url.pathname) {
+      case "/api/v1/session": return Response.json({ version: __MEX_HUB_VERSION__, csrfToken: "signed", expiresAt: time, mode: "background" });
+      case "/api/v1/projects": return Response.json({ projects: [knownRepo] });
+      case "/api/v1/home": return Response.json(getFixture("empty").overview);
+      case "/api/v1/jobs": return Response.json([]);
+      default: return request(url, init);
+    }
+  });
+  vi.stubGlobal("fetch", fetch);
+  const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
+  window.history.replaceState(null, "", path);
+  render(<QueryClientProvider client={client}><BrowserRouter><MachineHub /></BrowserRouter></QueryClientProvider>);
+  return { user: userEvent.setup(), fetch };
+}
+
+afterEach(() => { vi.unstubAllGlobals(); });
+
+describe("Live Knowledge", () => {
+  it("shows loading, reports a read failure, and retries the list", async () => {
+    const note = item("mx_first123", "Read from the server");
+    let fail!: (response: Response) => void;
+    const blocked = new Promise<Response>((resolve) => { fail = resolve; });
+    const read = vi.fn().mockReturnValueOnce(blocked).mockImplementation(() => livePage([note]));
+    const { user } = renderLive(() => read());
+    expect(await screen.findByText("Loading Knowledge…")).toBeVisible();
+    fail(problem(500, "INTERNAL_ERROR"));
+    expect(await screen.findByText("Couldn’t load Knowledge.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await listLink(note.oneLine)).toBeVisible();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the next cursor, appends rows, and focuses the first new one", async () => {
+    const first = item("mx_first123", "First result");
+    const second = item("mx_second123", "Second result");
+    const read = vi.fn((url: URL) => url.searchParams.has("cursor") ? livePage([second], null, 2) : livePage([first], "after-first", 2));
+    const { user } = renderLive(read);
+    await listLink(first.oneLine);
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await listLink(second.oneLine)).toHaveFocus();
+    expect(row(first.oneLine)).toBeVisible();
+    expect(screen.getByText("Showing 2 of 2")).toBeVisible();
+    expect(read.mock.calls.map(([url]) => url.searchParams.get("cursor"))).toEqual([null, "after-first"]);
+  });
+
+  it("starts at page one when a newer snapshot invalidates the cursor", async () => {
+    const first = item("mx_first123", "Old first result");
+    const latest = item("mx_latest123", "New first result");
+    let changed = false;
+    const read = vi.fn((url: URL) => {
+      if (url.searchParams.has("cursor")) { changed = true; return problem(409, "KNOWLEDGE_CHANGED"); }
+      return changed ? livePage([latest]) : livePage([first], "old-generation", 2);
+    });
+    const { user } = renderLive(read);
+    await listLink(first.oneLine);
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await listLink(latest.oneLine)).toBeVisible();
+    expect(list().queryByRole("link", { name: /Old first result/ })).toBeNull();
+    expect(read.mock.calls.map(([url]) => url.searchParams.get("cursor"))).toEqual([null, "old-generation", null]);
+  });
+
+  it("shows a conflict returned by the server and can keep the file’s current text", async () => {
+    const original = item("mx_first123", "Opened rule");
+    const latest = { ...original, oneLine: "Terminal rule", text: "A newer version written in the terminal.", revision: "b".repeat(64) };
+    let current = original;
+    const { user } = renderLive((url, init) => {
+      if (init?.method === "POST") {
+        current = latest;
+        return problem(409, "REVISION_CONFLICT", { current, attempted: JSON.parse(String(init.body)) });
+      }
+      return url.pathname.includes("/items/") ? Response.json(current) : livePage([current]);
+    });
+    await openItem(user, original.oneLine);
+    await user.click(detail(original.oneLine).getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByRole("textbox", { name: "Note text" }));
+    await user.type(screen.getByRole("textbox", { name: "Note text" }), "My browser edit.");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("dialog", { name: "This item changed since you opened it" });
+    expect(within(dialog).getByText(latest.text)).toBeVisible();
+    expect(within(dialog).getByText("My browser edit.")).toBeVisible();
+    await user.click(within(dialog).getByRole("button", { name: "Use current" }));
+    expect(await screen.findByText(latest.text)).toBeVisible();
+  });
+
+  it("posts a team edit preview, shows the diff, then sends its revision on confirm", async () => {
+    const original = item("mx_shared123", "A team rule", "team");
+    const diff = "-Original text\n+Reviewed text";
+    const revision = "c".repeat(64);
+    let saved = original;
+    const writes: Array<{ body: Record<string, unknown>; headers: Headers }> = [];
+    const { user } = renderLive((url, init) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        writes.push({ body, headers: new Headers(init.headers) });
+        if (!body.apply) return Response.json({ preview: { diff, checkout, path: ".mex/learned/mx_shared123.md", revision } });
+        saved = { ...original, text: body.text, revision };
+        return Response.json(saved);
+      }
+      return url.pathname.includes("/items/") ? Response.json(saved) : livePage([saved]);
+    });
+    await openItem(user, original.oneLine);
+    await user.click(detail(original.oneLine).getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByRole("textbox", { name: "Note text" }));
+    await user.type(screen.getByRole("textbox", { name: "Note text" }), "Reviewed text");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const preview = await screen.findByRole("alertdialog", { name: "Review changes to team note" });
+    expect(within(preview).getByRole("region", { name: "File diff" })).toHaveTextContent("+Reviewed text");
+    expect(writes[0].body).toMatchObject({ text: "Reviewed text", expectedRevision: original.revision, checkout });
+    expect(writes[0].body).not.toHaveProperty("apply");
+    await user.click(within(preview).getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByText("Saved")).toBeVisible();
+    expect(writes[1].body).toMatchObject({ apply: true, previewRevision: revision, checkout });
+    expect(writes[0].headers.get("x-mex-csrf")).toBe("signed");
+    expect(writes[0].headers.get("idempotency-key")).not.toBe(writes[1].headers.get("idempotency-key"));
+  });
+
+  it("announces a busy retry, reuses the key, and reports a second busy failure", async () => {
+    const note = item("mx_first123", "Locked note");
+    const requests: Headers[] = [];
+    const { user } = renderLive((url, init) => {
+      if (init?.method === "POST") {
+        requests.push(new Headers(init.headers));
+        return problem(503, "MEX_BUSY", { detail: "MEX is busy. Try again in a moment." });
+      }
+      return url.pathname.includes("/items/") ? Response.json(note) : livePage([note]);
+    });
+    await openItem(user, note.oneLine);
+    await user.click(detail(note.oneLine).getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("MEX is busy, retrying…")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(requests).toHaveLength(1);
+    expect(await screen.findByText("Couldn't save. Try again.", {}, { timeout: 2_000 })).toBeVisible();
+    expect(requests).toHaveLength(2);
+    expect(requests[0].get("idempotency-key")).toMatch(/^[\da-f-]{36}$/u);
+    expect(requests[1].get("idempotency-key")).toBe(requests[0].get("idempotency-key"));
+  });
+});
+
+const listLink = (claim: string) => screen.findByRole("link", { name: new RegExp("^" + claim) });

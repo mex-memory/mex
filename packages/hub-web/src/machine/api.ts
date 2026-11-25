@@ -51,7 +51,7 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
       headers,
       credentials: "same-origin",
       redirect: "error",
-      signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+      signal: init.signal && typeof AbortSignal.any === "function" ? AbortSignal.any([init.signal, timeout]) : timeout,
     });
   } catch (error) {
     throw new HubNetworkError(error);

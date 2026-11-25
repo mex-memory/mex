@@ -8,6 +8,7 @@ import { Separator } from "../components/primitives/separator";
 import { cn } from "../lib/utils";
 import shell from "../styles/shell.module.css";
 import { useHome, useHubEvents, useJobActions, useJobs, type HubEventState } from "./data";
+import type { KnowledgeConnection } from "./KnowledgePage";
 import { UnknownRepoPage } from "./pages";
 import type { HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview } from "./types";
 import { HubBanners, HubBrand, ThemeToggle, type PageLoad } from "./ui";
@@ -40,6 +41,7 @@ interface HubData {
   overview?: HomeOverview;
   jobs?: readonly HubJob[];
   knowledge?: KnowledgePreview;
+  knowledgeLive?: KnowledgeConnection;
   homeLoad?: PageLoad;
   jobsLoad?: PageLoad;
   changeJob: (job: HubJob, action: JobAction) => void | Promise<void>;
@@ -69,6 +71,7 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
 
   return <HubLayout {...props} events={events} data={{
     overview: home.data, jobs: jobs.data, changeJob,
+    knowledgeLive: { events, csrfToken: props.session.csrfToken, reportDataError },
     homeLoad: { loading: home.isPending, error: home.isError, retry: () => void home.refetch() },
     jobsLoad: { loading: jobs.isPending, error: jobs.isError, retry: () => void jobs.refetch() },
   }} />;
@@ -93,6 +96,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const project = projects?.find(({ id }) => id === projectId);
   const navigate = useNavigate();
   const terminal = session.mode === "terminal";
+  const knowledgeProps = data.knowledge ? { knowledge: data.knowledge } : { live: data.knowledgeLive! };
 
   function pagePath(page: NavPage, id?: string) {
     const repo = id ? `/repos/${encodeURIComponent(id)}` : "";
@@ -216,12 +220,12 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                   path="/"
                 />
                 <Route
-                  element={<KnowledgePage key="all" knowledge={data.knowledge} projects={projects} />}
+                  element={<KnowledgePage key="all" {...knowledgeProps} projects={projects} />}
                   path="/knowledge/:entryKey?"
                 />
                 <Route
                   element={project ? (
-                    <KnowledgePage key={project.id} knowledge={data.knowledge} project={project} projects={projects} />
+                    <KnowledgePage key={project.id} {...knowledgeProps} project={project} projects={projects} />
                   ) : unknownRepo}
                   path="/repos/:projectId/knowledge/:entryKey?"
                 />

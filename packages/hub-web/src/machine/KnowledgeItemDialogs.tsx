@@ -24,11 +24,13 @@ const forgetCopy = {
   },
 };
 
-export function KnowledgeForgetDialog({ open, audience, reason, error, finalFocus, onReason, onCancel, onConfirm }: {
+export function KnowledgeForgetDialog({ open, audience, reason, error, pending, status, finalFocus, onReason, onCancel, onConfirm }: {
   open: boolean;
   audience: KnowledgeAudience;
   reason: string;
   error?: string;
+  pending?: boolean;
+  status?: string;
   finalFocus: () => HTMLElement | false;
   onReason: (reason: string) => void;
   onCancel: () => void;
@@ -38,7 +40,7 @@ export function KnowledgeForgetDialog({ open, audience, reason, error, finalFocu
   const reasonId = useId();
   const { title, text } = forgetCopy[audience];
   return (
-    <AlertDialog open={open} onOpenChange={(next) => { if (!next) onCancel(); }}>
+    <AlertDialog open={open} onOpenChange={(next) => { if (!next && !pending) onCancel(); }}>
       <AlertDialogContent className={styles.dialog} finalFocus={finalFocus} initialFocus={cancel}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
@@ -49,10 +51,11 @@ export function KnowledgeForgetDialog({ open, audience, reason, error, finalFocu
             <label htmlFor={reasonId}>Reason <span>(optional)</span></label>
             <Input id={reasonId} maxLength={512} onChange={(event) => onReason(event.target.value)} value={reason} />
           </div>
+          {status && <p role="status">{status}</p>}
           {error && <p className={styles.error} role="alert">{error}</p>}
           <AlertDialogFooter className={styles.dialogFooter}>
-            <AlertDialogCancel ref={cancel}>Cancel</AlertDialogCancel>
-            <AlertDialogAction className={audience === "team" ? undefined : styles.destructive} type="submit" variant={audience === "team" ? "default" : "destructive"}>
+            <AlertDialogCancel disabled={pending} ref={cancel}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={pending} className={audience === "team" ? undefined : styles.destructive} type="submit" variant={audience === "team" ? "default" : "destructive"}>
               {audience === "team" ? "Review changes" : "Forget"}
             </AlertDialogAction>
           </AlertDialogFooter>
