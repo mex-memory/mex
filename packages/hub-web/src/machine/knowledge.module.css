@@ -36,7 +36,14 @@ main:has(.page) {
 }
 
 .header {
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
 }
 
 .addButton.addButton {

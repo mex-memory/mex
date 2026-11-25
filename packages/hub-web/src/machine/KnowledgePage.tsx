@@ -9,6 +9,7 @@ import { HubProblemError } from "./api";
 import type { HubEventState } from "./data";
 import { useForgotten, useKnowledgeActions, useKnowledgeItem, useKnowledgeLanding, useKnowledgePage } from "./knowledge-data";
 import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
+import { KnowledgeBrief } from "./KnowledgeBrief";
 import { KnowledgeDate, KnowledgeDetailPanel, type KnowledgeItemAction } from "./KnowledgeDetail";
 import { KnowledgeAreaGrid, KnowledgeGrouping, KnowledgeKindGrid } from "./KnowledgeGroups";
 import { KnowledgeNeedsLook } from "./KnowledgeNeedsLook";
@@ -325,6 +326,7 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
 }) {
   const { entryKey, params, showList, filters, statusFilter, q } = route;
   const { items, landing, detail, forgotten, load, detailLoad } = view;
+  const tools = "tools" in knowledge ? knowledge.tools : undefined;
   const narrow = useSyncExternalStore(subscribeToLayout, isNarrow);
   const navigate = useNavigate();
   const basePath = project ? `/repos/${encodeURIComponent(project.id)}/knowledge` : "/knowledge";
@@ -442,7 +444,12 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
     <div className={styles.page} data-detail={Boolean(entryKey)} ref={browser}>
       <div className={styles.overview}>
         <KnowledgeHeader
-          action={<Button aria-haspopup="dialog" className={styles.addButton} onClick={startAdd} type="button"><Plus aria-hidden="true" /> Add a note</Button>}
+          action={(
+            <div className={styles.headerActions}>
+              {tools && <KnowledgeBrief preferredRepo={filters.repoId} previewBrief={tools.previewBrief} project={project} projects={projects} />}
+              <Button aria-haspopup="dialog" className={styles.addButton} onClick={startAdd} type="button"><Plus aria-hidden="true" /> Add a note</Button>
+            </div>
+          )}
           scope={project?.name ?? "All repos"}
           titleRef={title}
           updating={view.updating}
@@ -489,7 +496,7 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
             navigate(linkTo(basePath, next));
           }} value={grouping} />}
           <div className={styles.relatedLinks}>
-            {"tools" in knowledge && <Link className={shared.textLink} to={linkTo(basePath, rulesParams)}>Rules</Link>}
+            {tools && <Link className={shared.textLink} to={linkTo(basePath, rulesParams)}>Rules</Link>}
             <Link className={shared.textLink} to={linkTo(`${basePath}/forgotten`)}>
               Forgotten{view.forgottenCount !== undefined && ` (${number.format(view.forgottenCount)})`}
             </Link>
