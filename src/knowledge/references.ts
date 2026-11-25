@@ -55,8 +55,8 @@ class Full extends Error {}
  * stops discovery (in priority order: package scripts, CI, docs, root files)
  * and marks the result `truncated` instead of failing. An unfound command or
  * link is treated as unverified and removed, so truncation can only make the
- * gates stricter. A link under docs or CI is skipped with a gap; other
- * redirected or linked sources still fail.
+ * gates stricter. A committed link is skipped with a gap; a redirected
+ * folder that is not a link still fails.
  */
 /** Anchors in a workflow or repo config are ordinary YAML. An alias bomb stops at this count. */
 const REPO_YAML_ALIASES = 100;
@@ -85,8 +85,23 @@ export function references(root: string): References {
     } finally { handle.closeSync(); }
     return children;
   };
+  // A link committed in the repository is skipped, never followed or read, so
+  // nothing outside it is reached through one. One gap says so.
+  let linked = false;
+  const skipLink = (): void => { if (!linked) { linked = true; result.gaps.push("Some linked files were skipped."); } };
+  /** True, after recording the gap, when the path or a folder on the way to it is a link. */
+  const isLinked = (path: string): boolean => {
+    let current = root;
+    for (const part of path.replace(/^\.\//u, "").split("/")) {
+      if (!part || part === "." || part === "..") return false;
+      current = join(current, part);
+      try { if (lstatSync(current).isSymbolicLink()) { skipLink(); return true; } } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT" || (e as NodeJS.ErrnoException).code === "ENOTDIR") return false; throw e; }
+    }
+    return false;
+  };
   const read = (path: string): string | undefined => {
     if (entries >= REFERENCE_LIMITS.files) full();
+    if (isLinked(path)) return undefined;
     const file = repoFile(root, path);
     if (!file) return undefined;
     entries++;
@@ -132,8 +147,9 @@ export function references(root: string): References {
   };
   const safeDirectory = (path: string) => {
     const directory = join(root, path);
+    if (isLinked(path)) return undefined;
     try {
-      if (lstatSync(directory).isSymbolicLink() || realPath(directory) !== absolutePath(directory)) throw new KnowledgeError("UNSAFE_SOURCE", "A knowledge reference directory is redirected.");
+      if (realPath(directory) !== absolutePath(directory)) throw new KnowledgeError("UNSAFE_SOURCE", "A knowledge reference directory is redirected.");
       return childrenOf(directory);
     } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT" || (e as NodeJS.ErrnoException).code === "ENOTDIR") return undefined; throw e; }
   };
@@ -160,20 +176,7 @@ export function references(root: string): References {
       for (const child of safeDirectory(parent) ?? []) if (child.isDirectory() && !child.isSymbolicLink()) packageFile(`${parent}/${child.name}/package.json`);
     }
   };
-  // A link committed under docs or CI is skipped, never followed or read, so
-  // nothing outside the repository is reached through it. One gap says so.
-  let linked = false;
-  const skipLink = (): void => { if (!linked) { linked = true; result.gaps.push("Some linked files in docs or CI were skipped."); } };
-  const linkedFolder = (path: string): boolean => {
-    let current = root;
-    for (const part of path.split("/")) {
-      current = join(current, part);
-      try { if (lstatSync(current).isSymbolicLink()) return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT" || (e as NodeJS.ErrnoException).code === "ENOTDIR") return false; throw e; }
-    }
-    return false;
-  };
   const walk = (path: string, kind: "docs" | "ci", depth = 0): void => {
-    if (depth === 0 && linkedFolder(path)) { skipLink(); return; }
     const children = safeDirectory(path);
     for (const child of children ?? []) {
       const name = path ? `${path}/${child.name}` : child.name;
@@ -210,7 +213,7 @@ export function references(root: string): References {
     // commands. These are local reads; no evaluator or repository command runs.
     const config = new RepoFiles(root);
     for (const found of [...readNode(config).found, ...readPython(config).found, ...readCargo(config).found, ...readGradle(config).found]) {
-      if (repoFile(root, found.origin.file)) addRuns(found.command);
+      if (!isLinked(found.origin.file) && repoFile(root, found.origin.file)) addRuns(found.command);
     }
     const makefile = ["Makefile", "makefile", "GNUmakefile"].find(file => config.isFile(file));
     if (makefile) for (const target of makeTargets(read(makefile) ?? "")) {

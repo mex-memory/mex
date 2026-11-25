@@ -108,7 +108,7 @@ describe("knowledge references", () => {
         symlinkSync(join(outside, "secret.md"), join(root, "docs", "secret.md"), "file");
       } catch (e) { ctx.skip(`symlinks need extra privilege here: ${(e as Error).message}`); }
       const source = references(root);
-      expect(source.gaps).toEqual(["Some linked files in docs or CI were skipped."]);
+      expect(source.gaps).toEqual(["Some linked files were skipped."]);
       expect(commandExists("make inside", source)).toBe(true);
       expect(commandExists("make outside", source)).toBe(false);
       expect([...source.links]).toEqual(["https://inside.example/link"]);
@@ -124,14 +124,38 @@ describe("knowledge references", () => {
       symlinkSync(join(root, "real"), join(root, ".github", "workflows"), "junction");
     } catch { return; }
     const source = references(root);
-    expect(source.gaps).toEqual(["Some linked files in docs or CI were skipped."]);
+    expect(source.gaps).toEqual(["Some linked files were skipped."]);
     expect(commandExists("make outside", source)).toBe(false);
     expect(commandExists("make ci", source)).toBe(false);
   });
 
-  it("still refuses other linked sources", () => {
-    write("real/package.json", JSON.stringify({ scripts: { test: "x" } }));
+  it("skips linked package, workspace and recipe files with one gap and never reads through them", ctx => {
+    const outside = realPath(mkdtempSync(join(tmpdir(), "mex-references-outside-")));
+    try {
+      writeFileSync(join(outside, "package.json"), JSON.stringify({ name: "outside", scripts: { leak: "node leak.mjs" } }));
+      writeFileSync(join(outside, "Cargo.toml"), "[package]\nname = \"outside\"\n");
+      write("package.json", JSON.stringify({ workspaces: ["packages/*", "linked/*", "apps/web"] }));
+      write("packages/api/package.json", JSON.stringify({ name: "api", scripts: { test: "node test.mjs" } }));
+      mkdirSync(join(root, "packages", "linked"));
+      mkdirSync(join(root, "apps", "web"), { recursive: true });
+      try {
+        symlinkSync(join(outside, "package.json"), join(root, "apps", "web", "package.json"), "file");
+        symlinkSync(outside, join(root, "linked"), "junction");
+        symlinkSync(join(outside, "Cargo.toml"), join(root, "Cargo.toml"), "file");
+      } catch (e) { ctx.skip(`symlinks need extra privilege here: ${(e as Error).message}`); }
+      const source = references(root);
+      expect(source.gaps).toEqual(["Some linked files were skipped."]);
+      expect(source.scripts.has("test")).toBe(true);
+      expect(source.scripts.has("leak")).toBe(false);
+      expect([...source.commands].some(command => /cargo/u.test(command))).toBe(false);
+    } finally { rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  it("skips a linked root package.json with a gap instead of failing", () => {
+    write("real/package.json", JSON.stringify({ scripts: { leak: "x" } }));
     try { symlinkSync(join(root, "real", "package.json"), join(root, "package.json"), "file"); } catch { return; }
-    expect(() => references(root)).toThrow(/redirected/u);
+    const source = references(root);
+    expect(source.gaps).toEqual(["Some linked files were skipped."]);
+    expect(source.scripts.has("leak")).toBe(false);
   });
 });
