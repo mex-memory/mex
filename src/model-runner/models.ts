@@ -8,7 +8,7 @@ export type ModelTable = Readonly<Record<"claude" | "codex", ModelEntry> & Parti
 /** Model names belong only in this replaceable table, never in runner logic. */
 export const DEFAULT_MODELS = Object.freeze({
   claude: Object.freeze({ cheap: "haiku", best: "opus" }),
-  codex: Object.freeze({ cheap: "gpt-6-luna", best: "gpt-6.1-sol" }),
+  codex: Object.freeze({ cheap: "gpt-6-luna", best: "gpt-6.2-sol" }),
   gemini: Object.freeze({ cheap: "flash", best: "pro" }),
   copilot: Object.freeze({ cheap: null, best: null }),
 }) satisfies ModelTable;

@@ -23,7 +23,7 @@ const luna: Price = {
 };
 const PRICES: Readonly<Record<string, Price>> = {
   opus, haiku, "claude-opus-5-5": opus, "claude-haiku-5-5": haiku,
-  "gpt-6.1-sol": sol, "gpt-6-luna": luna,
+  "gpt-6.1-sol": sol, "gpt-6.2-sol": sol, "gpt-6-luna": luna,
 };
 /** Own-usage logs lack model labels and cache durations: fixed, estimated reference valuation. */
 export const OWN_REFERENCE: Readonly<Record<string, TokenWeights>> = {

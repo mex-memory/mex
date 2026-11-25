@@ -40,7 +40,7 @@ const agents: ReadonlyArray<{
   { id: "claude-code", name: "Claude Code", commands: ["claude"], hooks: true,
     runner: { usage: "reported", models: "Opus writes the rules, Haiku checks them" } },
   { id: "codex", name: "Codex", commands: ["codex"], hooks: true,
-    runner: { usage: "reported", models: "gpt-6.1-sol writes the rules, gpt-6-luna checks them" } },
+    runner: { usage: "reported", models: "gpt-6.2-sol writes and checks the rules, gpt-6-luna sorts the sources" } },
   { id: "gemini", name: "Gemini CLI", commands: ["gemini"],
     runner: { usage: "reported", models: "Pro writes the rules, Flash checks them" } },
   { id: "cursor", name: "Cursor", commands: ["agent", "cursor-agent"],
