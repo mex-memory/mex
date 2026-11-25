@@ -122,7 +122,7 @@ function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
   check(); return notes;
 }
 /** Bounded repository context helps the same text-only call propose check targets. */
-function contextFiles(checkout: string, messages: Message[], notes: NoteInput[]): FilterInput["files"] {
+export function contextFiles(checkout: string, messages: Message[], notes: NoteInput[]): FilterInput["files"] {
   const paths = new Set(["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "README.md"]);
   for (const text of [...messages.map(m => m.text), ...notes.map(n => n.entry.text)]) {
     for (const m of text.matchAll(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]+/gu)) if (paths.size < FILTER_LIMITS.files) paths.add(m[0]);

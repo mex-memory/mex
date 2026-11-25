@@ -12,7 +12,7 @@ import { hash, position, samePosition, readSource, type Position } from "../judg
 import { recordChecks } from "../judge/native.js";
 import { nativeBinary } from "../knowledge/check.js";
 import { filterInput, advanceConsumed, ackKey, acknowledged, acknowledgeTyped, filterAllowed, statementsOn, FILTER_LIMITS, type FilterParams, type FilterInput, type ScanWindow } from "./input.js";
-import { finishRequest } from "./pending.js";
+import { finishRequest, STAGE_TWO_WAIT } from "./pending.js";
 import { AID_WRITER_RULE, applyCandidateAids, nativeAidRanker, type AidRanker } from "../knowledge/aids.js";
 import { aidCorpus } from "../knowledge/aid-store.js";
 import type { KnowledgeEntry } from "../knowledge/entry.js";
@@ -24,6 +24,7 @@ import { Item, DropCounts, countDrop, itemIdentity, parseItems, type Answer } fr
 import { NOTE_ATTEMPT_LIMIT, settleNoteAttempts } from "./note-attempts.js";
 import { formatFilterBatch, saveFilterBatchReport, type FilterBatchReport } from "./report.js";
 import { runStageOne, stageOneEnabled, stageOneRoom, STAGE_ONE_WAIT } from "./stage-one.js";
+import { runStageTwo, stageTwoDue, stageTwoPending, type StageTwoPorts } from "./stage-two.js";
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
   source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string; reply_context_hash?: string };
@@ -33,7 +34,7 @@ interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: str
   dropped?: DropCounts; notes_deferred?: number; notes_waiting_for_sync?: number; }
 interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; verdictGaps?: boolean; }
 export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; aids?: AidRanker;
-  contextMode?: ReplyContextMode; stageOne?: boolean; }
+  contextMode?: ReplyContextMode; stageOne?: boolean; stageTwo?: StageTwoPorts; }
 const dependencies: FilterDependencies = { model: runModel, recordChecks, clock: Date.now };
 const BATCH_BYTES = 512 << 10, STORE_BYTES = 8 << 20;
 const CONTEXT_PAUSED = "Reply context paused";
@@ -142,6 +143,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
     async runBatch({ writer, job, params, checkpoint }) {
       const project = job.project_id!, at = await position(params.checkout), state = checkpoint ?? { position: at };
       const stagesEnabled = () => deps.stageOne ?? stageOneEnabled(writer);
+      const checkedWriter = !!deps.stageTwo || deps.stageOne === undefined;
       const stageOne = stagesEnabled();
       try {
         if (!filterAllowed(writer, project, params)) return { checkpoint: state, wait: "Waiting: capture or MEX is off here" };
@@ -159,6 +161,11 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         if (!input) {
           if (stageOne && statementsOn(writer)) {
             const verdicts = await runStageOne(writer, project, params, job, at, state.scanAfter ?? 0, { ...deps, enabled: stagesEnabled });
+            if (checkedWriter && (!verdicts || verdicts.wait === STAGE_ONE_WAIT)) {
+              const checked = await runStageTwo(writer, project, params, job, at, { ...deps, enabled: stagesEnabled,
+                checksReady: () => deps !== dependencies || !!nativeBinary() });
+              if (checked) return { checkpoint: state, ...checked };
+            }
             if (verdicts) {
               const { after, gaps, contextIssues, ...result } = verdicts;
               return { ...result, checkpoint: { ...state, scanAfter: after, verdictGaps: state.verdictGaps || gaps },
@@ -167,6 +174,8 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
           }
           advanceConsumed(writer, project);
           if (scan.more) return { checkpoint: { ...state, scanAfter: scan.through, carry: scan.deferred }, summary: "Scanning later captured messages; earlier active sessions remain unread" };
+          if (stageOne && checkedWriter && statementsOn(writer) && !stageTwoDue(writer, project, deps.clock())
+            && stageTwoPending(writer, project, params.checkout, deps.clock(), at.branch)) return { checkpoint: state, wait: STAGE_TWO_WAIT };
           finishRequest(writer, params);
           return { checkpoint: state, done: true, gaps: state.verdictGaps, summary: "Memory filter caught up; active sessions were left unread" };
         }
@@ -282,7 +291,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       }
     },
     display(job, reader) {
-      const batch = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? AND (summary LIKE 'Filter batch % kept %' OR summary LIKE 'Session verdicts batch %' OR summary LIKE ?) ORDER BY batch DESC LIMIT 1",
+      const batch = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? AND (summary LIKE 'Filter batch % kept %' OR summary LIKE 'Session verdicts batch %' OR summary LIKE 'Stage 2 %' OR summary LIKE ?) ORDER BY batch DESC LIMIT 1",
         job.id, `%${CONTEXT_PAUSED}%`)[0];
       return batch ? { summary: batch.summary } : {};
     },
@@ -292,7 +301,14 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       if (job.reason === PUBLICATION_WAIT) return publicationReady(writer, job);
       if (job.reason === "Sign in to the selected agent CLI before retrying." || job.reason === "The selected agent reached its usage limit.") return false;
       if (job.reason === "Waiting: local filter candidates need consolidation") return candidateRoom(writer, job.project_id!);
-      if (job.reason === STAGE_ONE_WAIT) return !(deps.stageOne ?? stageOneEnabled(writer)) || !statementsOn(writer) || stageOneRoom(writer, job.project_id!);
+      if (job.reason === STAGE_ONE_WAIT || job.reason === STAGE_TWO_WAIT) {
+        const project = job.project_id!, now = deps.clock();
+        if (!(deps.stageOne ?? stageOneEnabled(writer)) || !statementsOn(writer)) return true;
+        if (job.reason === STAGE_TWO_WAIT) return stageTwoDue(writer, project, now);
+        const checkpoint = job.checkpoint ? JSON.parse(job.checkpoint) as Checkpoint : undefined;
+        return stageOneRoom(writer, project) || ((deps.stageTwo || deps.stageOne === undefined) && stageTwoDue(writer, project, now)
+          && stageTwoPending(writer, project, params.checkout, now, checkpoint?.position.branch));
+      }
       if (job.reason === "Waiting: the filter needs the installed check evaluator") return !!nativeBinary();
       return true;
     },

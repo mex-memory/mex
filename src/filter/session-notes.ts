@@ -23,19 +23,21 @@ const Scope = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("repo") }).strict(),
   z.object({ kind: z.literal("all") }).strict(),
 ]);
-const Reason = z.enum(["branch-merged", "release-tag", "release-age", "seen-once", "restated"]);
+const Reason = z.enum(["branch-merged", "release-tag", "release-age", "seen-once", "restated", "corrected", "one-off"]);
 const Note = z.object({ version: z.literal(1), id: Digest, claim: Digest, scope: Scope, at: Time,
   session: z.string().min(1).max(512), row: z.string().regex(/^m[1-9]\d{0,15}$/u),
   quote: z.string().min(1).max(2400).refine(text => !!text.trim() && stripHidden(text) === text && !hasSecret(text)),
   retired: z.object({ reason: Reason, at: Time, replacement: Digest.optional() }).strict().optional(),
 }).strict();
-type Note = z.infer<typeof Note>;
+export type SessionNote = z.infer<typeof Note>;
+type Note = SessionNote;
 type Scope = z.infer<typeof Scope>;
 type Reason = z.infer<typeof Reason>;
 type Candidate = Extract<StageOneVerdict, { verdict: "candidate" }>;
 interface StoredNote { scope: string; key: string; value?: string; note: Note; }
 interface NoteInput { session: string; sourcePosition?: SessionPosition; verdicts: readonly Candidate[]; }
 export type NoteChanges = Map<string, StoredNote>;
+export const sessionNoteId = (project: string, session: string, id: string) => claimHash(JSON.stringify([project, session, id]));
 
 function readNotes(store: RecordReader | RecordWriter, scope: string): StoredNote[] {
   return localSettings(store, scope, PREFIX, NOTE_BYTES).map(({ key, value }) => {
@@ -91,7 +93,7 @@ export function sessionNoteQuotes(store: RecordReader | RecordWriter, project: s
 
 function noteFromVerdict(project: string, source: NoteInput, verdict: Candidate): Note | undefined {
   if (verdict.lasts === "task") return;
-  const id = claimHash(JSON.stringify([project, source.session, verdict.id]));
+  const id = sessionNoteId(project, source.session, verdict.id);
   const quote = verdict.quote.text;
   // Strip the verified scope phrase only at the edge of a quote. A restatement
   // with different claim text is left for Stage 2 to reconcile.
@@ -198,4 +200,19 @@ export function saveSessionNotes(writer: RecordWriter, changes: NoteChanges): vo
     if (Buffer.byteLength(data) > NOTE_BYTES) throw new KnowledgeError("STORE_LIMIT", "A session note exceeds its size limit.");
     put.run(row.scope, row.key, data);
   }
+}
+
+/** Stage 2 changes the active projection and keeps the typed source in history. */
+export function settleSessionNotes(writer: RecordWriter, project: string, ids: ReadonlyMap<string, { reason: "one-off" | "corrected" | "restated"; replacement?: string }>,
+  promoted: ReadonlySet<string>, now: number): void {
+  if (!ids.size && !promoted.size) return;
+  const changes: NoteChanges = new Map();
+  for (const row of [...readNotes(writer, project), ...readNotes(writer, "global")]) {
+    if (row.note.retired) continue;
+    const retired = ids.get(row.note.id);
+    if (retired) changes.set(row.note.id, { ...row, note: { ...row.note, retired: { ...retired, at: now } } });
+    else if (promoted.has(row.note.id) && row.note.scope.kind === "seen")
+      changes.set(row.note.id, { ...row, note: { ...row.note, scope: { kind: "repo" } } });
+  }
+  saveSessionNotes(writer, changes);
 }
