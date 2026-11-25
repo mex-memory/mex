@@ -45,8 +45,12 @@ export function compactStates(reader: RecordReader, checkout: string) {
   return entries(reader).map(row => row.change).filter(change => change.scope === "user" || change.checkout === checkout).map(publicState);
 }
 
+export function recordedCompactChanges(reader: RecordReader) {
+  return entries(reader).flatMap(({ key, change }) => change.state === "active" ? [{ key, ...change }] : []);
+}
+
 export function compactSettingFiles(reader: RecordReader): string[] {
-  return entries(reader).flatMap(({ change }) => change.state === "active" ? [change.path] : []);
+  return recordedCompactChanges(reader).map(({ path }) => path);
 }
 
 export function compactReviewNeeded(writer: RecordWriter): boolean {

@@ -94,6 +94,17 @@ export interface SettingsChange {
   after: Snapshot;
 }
 
+/** Read the managed setting alone, leaving other settings outside the projection. */
+export function recordedCompactValue(change: SettingsChange, bytes: Buffer | null): unknown {
+  if (change.agent === "codex" && change.choice !== "idle") {
+    return parseToml(bytes?.toString("utf8") ?? "")[codexKey[change.choice]];
+  }
+  const settings = parseSettings(bytes);
+  if (change.choice === "idle") return object(settings.env) ? settings.env.CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS : undefined;
+  const model = object(settings.modelSettings) ? settings.modelSettings[change.model] : undefined;
+  return object(model) ? model.autoCompactWindow : undefined;
+}
+
 /** Restore exact bytes in the usual case. Preserve unrelated subsequent edits. */
 export function restoreCompactSettings(change: SettingsChange): void {
   const { path, before, after, agent, choice } = change;
@@ -108,19 +119,13 @@ export function restoreCompactSettings(change: SettingsChange): void {
   if (!live || !installed) throw new Error("Compaction settings changed after acceptance. The current file was kept.");
   let bytes: Buffer;
   if (agent === "claude-code") {
-    const value = (buffer: Buffer | null) => {
-      const settings = parseSettings(buffer);
-      if (choice === "idle") return object(settings.env) ? settings.env.CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS : undefined;
-      const models = settings.modelSettings;
-      const model = object(models) ? models[change.model] : undefined;
-      return object(model) ? model.autoCompactWindow : undefined;
-    };
+    const value = (buffer: Buffer | null) => recordedCompactValue(change, buffer);
     if (isDeepStrictEqual(value(live), value(old))) return;
     bytes = undoSettings(live, old, installed);
   } else {
     if (choice === "idle") throw new Error("Invalid Codex compaction setting.");
     const key = codexKey[choice];
-    const get = (buffer: Buffer | null) => parseToml(buffer?.toString("utf8") ?? "")[key];
+    const get = (buffer: Buffer | null) => recordedCompactValue(change, buffer);
     const previous = get(old), active = get(installed), value = get(live);
     if (value === previous) return;
     if (value !== active || (previous !== undefined && typeof previous !== "number")) {

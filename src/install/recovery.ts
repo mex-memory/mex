@@ -13,6 +13,14 @@ export function decodeSnapshot(value: string): Snapshot {
   return result as unknown as Snapshot;
 }
 
+/** Pure projection used to check a restore against the live file, including intervening edits. */
+export function settingsRestorePlan(current: Snapshot, before: Snapshot, after: Snapshot): Snapshot {
+  if (equalSnapshot(current, before)) return current;
+  if (equalSnapshot(current, after)) return before;
+  if (current.data === null || after.data === null) throw new Error("Changed settings were kept.");
+  return { data: undoSettings(snapshotBytes(current)!, snapshotBytes(before), snapshotBytes(after)!).toString("base64"), mode: current.mode };
+}
+
 /** No database, Git, repository commands or package imports on this path. */
 export function restoreSettings(row: RecoveryRow): void {
   if (!isAbsolute(row.path)) throw new Error("Invalid installation path.");
@@ -21,12 +29,7 @@ export function restoreSettings(row: RecoveryRow): void {
   if ((before.data?.length ?? 0) > MAX_SETTINGS_BYTES * 1.4 || (after.data?.length ?? 0) > MAX_SETTINGS_BYTES * 1.4) throw new Error("Settings snapshot exceeds its bound.");
   const current = readSnapshot(row.path, MAX_SETTINGS_BYTES);
   if (equalSnapshot(current, before)) return;
-  let desired = before;
-  if (!equalSnapshot(current, after)) {
-    if (current.data === null || after.data === null) throw new Error("Changed settings were kept.");
-    desired = { data: undoSettings(snapshotBytes(current)!, snapshotBytes(before), snapshotBytes(after)!).toString("base64"), mode: current.mode };
-  }
-  replaceFile(row.path, current, desired);
+  replaceFile(row.path, current, settingsRestorePlan(current, before, after));
 }
 
 /** Only a valid launcher naming a definitely absent CLI authorizes cleanup. */
