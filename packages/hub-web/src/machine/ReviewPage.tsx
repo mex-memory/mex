@@ -1,10 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import type { MachineProject, MachineReviewCard } from "@mex/hub-contracts/machine";
+import type { MachineProject, MachineReviewCard, MachineReviewQueue } from "@mex/hub-contracts/machine";
 import { ArrowLeft, ArrowRight, CircleCheck, X } from "lucide-react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Button } from "../components/primitives/button";
-import type { HomeOverview, ReviewApplied, ReviewPreview } from "./types";
-import { orderReviewRows, repoPrefix, reviewCount, reviewHref, waitingAge, type ReviewRow } from "./review-model";
+import { HubProblemError } from "./api";
+import type { HubEventState } from "./data";
+import { reviewProblem } from "./review-api";
+import { useReviewActions, useReviewCard, useReviewQueue, useReviewRefresh } from "./review-data";
+import type { ReviewActions, ReviewApplied, ReviewPreview } from "./types";
+import { orderReviewRows, repoPrefix, reviewHref, waitingAge, type ReviewRow } from "./review-model";
 import { ReviewCard } from "./ReviewCard";
 import { ReviewFocus } from "./ReviewFocus";
 import { ReviewQueue } from "./ReviewQueue";
@@ -20,20 +24,51 @@ function subscribeToLayout(listener: () => void) {
 }
 const isNarrow = () => window.matchMedia(narrowLayout).matches;
 
-type Props = {
-  project?: MachineProject;
-  projects: readonly MachineProject[];
-  review?: ReviewPreview;
-  overview?: HomeOverview;
-  load?: PageLoad;
-};
+export interface ReviewConnection {
+  events: HubEventState;
+  csrfToken: string;
+  reportDataError: (error: unknown) => void;
+}
 
+type Scope = { project?: MachineProject; projects: readonly MachineProject[] };
+type ViewProps = Scope & {
+  queue?: MachineReviewQueue;
+  review: ReviewActions;
+  fixtureCards?: readonly MachineReviewCard[];
+  card?: MachineReviewCard;
+  load?: PageLoad;
+  detailLoad?: PageLoad;
+  showMore?: () => void;
+  loadingMore?: boolean;
+};
 type LeavingCard = { card: MachineReviewCard; locationKey: string; nextHref: string };
 
-function summaryRows(overview?: HomeOverview): ReviewRow[] {
-  return (overview?.needs ?? []).filter(({ kind }) => kind !== "missingFolder").map(({ repoId, id, rule, waitingSince }) => ({
-    key: repoId + ":" + id, repoId, claim: rule, createdAt: waitingSince, kind: "rule", checkedByModel: false,
-  }));
+export default function ReviewPage(props: Scope & ({ review: ReviewPreview; live?: undefined } | { live: ReviewConnection; review?: undefined })) {
+  if (props.live) return <LiveReviewPage {...props} live={props.live} />;
+  return <ReviewView {...props} queue={props.review.queue} fixtureCards={props.review.queue?.cards} review={props.review} />;
+}
+
+function LiveReviewPage({ live, project, projects }: Scope & { live: ReviewConnection }) {
+  const { cardKey } = useParams();
+  const queue = useReviewQueue(project?.id, live.events);
+  const first = queue.data?.pages[0];
+  const rows = queue.data?.pages.flatMap((page) => page.cards);
+  const key = cardKey ?? rows?.[0]?.key;
+  const scopedKey = key && (!project || key.startsWith(project.id + ":")) ? key : undefined;
+  const item = useReviewCard(scopedKey, live.events);
+  const act = useReviewActions(live.csrfToken, live.reportDataError);
+  const refresh = useReviewRefresh();
+  const queueError = queue.isError && !reviewProblem(queue.error, "REVIEW_CHANGED");
+  const detailError = item.isError && !(item.error instanceof HubProblemError && item.error.status === 404);
+  const error = queueError ? queue.error : detailError ? item.error : undefined;
+  useEffect(() => { if (error) live.reportDataError(error); }, [error, live.reportDataError]);
+
+  return <ReviewView project={project} projects={projects} review={{ act, removeCompleted: refresh }}
+    queue={first && { ...first, cards: rows!, nextCursor: queue.data!.pages.at(-1)!.nextCursor }}
+    card={item.data} load={{ loading: queue.isPending || !rows?.length && Boolean(first?.updatingSince), error: queueError, retry: () => void queue.refetch() }}
+    detailLoad={{ loading: Boolean(scopedKey && item.isPending), error: detailError, retry: () => void item.refetch() }}
+    loadingMore={queue.isFetchingNextPage}
+    showMore={queue.hasNextPage ? () => void queue.fetchNextPage({ cancelRefetch: false }) : undefined} />;
 }
 
 function canUseShortcut(event: KeyboardEvent) {
@@ -43,7 +78,7 @@ function canUseShortcut(event: KeyboardEvent) {
     && !target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox'], [role='dialog'], [role='alertdialog']");
 }
 
-export default function ReviewPage({ project, projects, review, overview, load }: Props) {
+function ReviewView({ project, projects, review, queue, fixtureCards, card: liveCard, load, detailLoad, showMore, loadingMore }: ViewProps) {
   const { cardKey } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -58,8 +93,9 @@ export default function ReviewPage({ project, projects, review, overview, load }
   const repoId = project?.id;
   const scope = project?.name ?? "All repos";
   const repoNames = new Map(projects.map(({ id, name }) => [id, name]));
-  const queue = review?.queue;
-  const rows = orderReviewRows((review ? queue?.cards ?? [] : summaryRows(overview)).filter((row) => !repoId || row.repoId === repoId));
+  const listed = (queue?.cards ?? []).filter((row) => !repoId || row.repoId === repoId);
+  const deepLink = liveCard && liveCard.key === cardKey && !listed.some(({ key }) => key === cardKey) ? liveCard : undefined;
+  const rows = detailLoad ? deepLink ? [...listed, deepLink] : listed : orderReviewRows(listed);
   const repos = new Map<string, ReviewRow[]>();
   for (const row of rows) {
     const group = repos.get(row.repoId);
@@ -70,17 +106,17 @@ export default function ReviewPage({ project, projects, review, overview, load }
   const ordered = [...repos.values()].flat();
   const leaving = exit?.locationKey === location.key ? exit : null;
   const selected = leaving?.card ?? (cardKey ? ordered.find(({ key }) => key === cardKey) : ordered[0]);
-  const card = leaving?.card ?? queue?.cards.find(({ key }) => key === selected?.key);
-  const total = review ? (repoId ? queue?.byRepo[repoId] : queue?.total) ?? 0 : reviewCount(overview, repoId);
-  const oldest = review
-    ? repoId ? rows.reduce<string | null>((at, row) => !at || Date.parse(row.createdAt) < Date.parse(at) ? row.createdAt : at, null) : queue?.oldest
-    : Object.entries(overview?.needsCount ?? {}).filter(([id]) => !repoId || repoId === id).map(([, { oldest }]) => oldest).sort()[0];
-  const loading = review ? !queue : !rows.length && Boolean(load?.loading || overview?.pending);
-  const updating = Boolean(queue?.updatingSince || !review && overview?.pending && rows.length);
+  const card = leaving?.card ?? (liveCard?.key === selected?.key ? liveCard : undefined) ?? fixtureCards?.find(({ key }) => key === selected?.key);
+  const total = (repoId ? queue?.byRepo[repoId] : queue?.total) ?? 0;
+  // The live endpoint has the oldest card across all pages of this scope.
+  const oldest = repoId && fixtureCards ? rows.map(({ createdAt }) => createdAt).sort()[0] : queue?.oldest;
+  const loading = load?.loading ?? !queue;
+  const updating = Boolean(queue?.updatingSince);
   const href = (key?: string) => reviewHref(repoId, key, location.search);
   const knowledgeHref = repoPrefix(repoId) + "/knowledge" + location.search;
   const back = <Link className={shared.textLink + " " + styles.back} to={href()}><ArrowLeft aria-hidden="true" /> Review</Link>;
   const selectedRoute = Boolean(cardKey && selected);
+  const loadedRoute = cardKey && card?.key;
 
   useEffect(() => {
     if (!leaving) return;
@@ -108,7 +144,7 @@ export default function ReviewPage({ project, projects, review, overview, load }
       (previous ?? title.current)?.focus();
     }
     previousKey.current = cardKey;
-  }, [cardKey, location.key, narrow, selectedRoute]);
+  }, [cardKey, location.key, narrow, selectedRoute, loadedRoute]);
 
   function advance(card: MachineReviewCard) {
     const index = ordered.findIndex(({ key }) => key === card.key);
@@ -157,15 +193,20 @@ export default function ReviewPage({ project, projects, review, overview, load }
       </header>
       {cardKey && <div className={styles.mobileBack}>{back}</div>}
       {loading || load?.error ? <PageRequestState name="Review" {...load} loading={loading} /> : null}
-      {(ordered.length > 0 || leaving) && (
+      {queue?.partial && <ul className={styles.partial} aria-label="Review reading limits">
+        {queue.partial.map(({ note, repoId: id }) => <li key={id ?? "all"}>{id && repoNames.has(id) ? repoNames.get(id) + " · " : ""}{note}</li>)}
+      </ul>}
+      {(ordered.length > 0 || leaving || cardKey && !loading && !load?.error) && (
         <div className={styles.workspace}>
           <ReviewQueue counts={queue?.byRepo} href={href} now={now} repoNames={repoNames} repos={repos} scoped={Boolean(project)}
-            selected={cardKey || !narrow ? selected?.key : undefined} total={total} visible={ordered.length} />
-          {card && review ? (
-            <ReviewFocus card={card} key={card.key} leaving={Boolean(leaving)} now={now} repo={repoNames.get(card.repoId) ?? "Unknown repo"} review={review} titleRef={cardTitle}
+            selected={cardKey || !narrow ? selected?.key : undefined} total={total} visible={listed.length} showMore={showMore} loadingMore={loadingMore} />
+          {card ? (
+            <ReviewFocus card={card} key={card.key} leaving={Boolean(leaving)} now={now} repo={repoNames.get(card.repoId) ?? "Unknown repo"} review={review} titleRef={cardTitle} live={Boolean(detailLoad)}
               onApplied={(result) => { setToast(result); advance(card); }}
               onHandled={() => { advance(card); review.removeCompleted(card.key); }} />
-          ) : selected ? (
+          ) : detailLoad && (detailLoad.loading || detailLoad.error) ? (
+            <section className={styles.missing}><PageRequestState name="Review" {...detailLoad} /></section>
+          ) : selected && !detailLoad ? (
             <ReviewCard now={now} repo={repoNames.get(selected.repoId) ?? "Unknown repo"} row={selected} titleRef={cardTitle} />
           ) : (
             <section className={styles.missing}>
@@ -175,7 +216,7 @@ export default function ReviewPage({ project, projects, review, overview, load }
           )}
         </div>
       )}
-      {!loading && !load?.error && !ordered.length && !leaving && (
+      {!loading && !load?.error && !ordered.length && !leaving && !cardKey && (
         <section aria-labelledby="review-empty-title" className={styles.empty}>
           <h2 id="review-empty-title">Nothing to review.</h2>
           <p>MEX will ask when it learns something worth sharing.</p>

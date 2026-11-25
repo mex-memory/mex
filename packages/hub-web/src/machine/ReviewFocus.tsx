@@ -5,9 +5,10 @@ import { Button } from "../components/primitives/button";
 import { Kbd } from "../components/primitives/kbd";
 import { scopePatterns } from "./knowledge-labels";
 import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
+import { reviewProblem } from "./review-api";
 import { ReviewCard } from "./ReviewCard";
 import type { ReviewDialogState } from "./ReviewDialogs";
-import type { ReviewAction, ReviewApplied, ReviewDraft, ReviewHandled, ReviewPreview } from "./types";
+import type { ReviewAction, ReviewActions, ReviewApplied, ReviewDraft, ReviewHandled } from "./types";
 import shared from "./machine.module.css";
 import styles from "./review.module.css";
 
@@ -25,11 +26,12 @@ const actions = {
 const actionOrder: ReviewAction[] = ["share", "use", "keep", "keepCurrent", "edit", "retire"];
 const editedActions: readonly ReviewAction[] = ["share", "keep"];
 
-export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onApplied, onHandled }: {
+export function ReviewFocus({ card, now, repo, review, titleRef, leaving, live, onApplied, onHandled }: {
   card: MachineReviewCard;
   now: number;
   repo: string;
-  review: ReviewPreview;
+  review: ReviewActions;
+  live: boolean;
   titleRef: RefObject<HTMLHeadingElement | null>;
   leaving: boolean;
   onApplied: (result: ReviewApplied) => void;
@@ -104,7 +106,9 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
         setHandled(result);
       }
     }, (error) => {
-      if (active.current) setError(knowledgeSaveError(error, "Couldn't save. Try again."));
+      if (!active.current) return;
+      if (reviewProblem(error, "STALE_PREVIEW")) setDialog(null);
+      setError(knowledgeSaveError(error, "Couldn't save. Try again."));
     });
   }
 
@@ -116,12 +120,14 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
     if (action === "edit") {
       const { claim, text, kind, scope } = card;
       setDraft({ claim, text, kind, scope });
-    } else if (action === "use" || action === "retire") {
+    } else if (action === "retire" || action === "use" && !live) {
       setReason("");
       showDialog({ type: action });
     } else {
       const edited = draft ? { ...draft, claim: draft.claim.trim(), text: draft.text.trim(), scope: scopePatterns(draft.scope) } : undefined;
-      submit({ action, expectedRevision: card.revision, edited });
+      const expectedRevision = card.revision;
+      if (edited && (action === "share" || action === "keep")) submit({ action: "edit", then: action, expectedRevision, edited });
+      else submit({ action, expectedRevision });
     }
   }
 

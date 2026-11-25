@@ -97,7 +97,7 @@ test("opens the machine Hub, keeps bookmarks signed in across restarts, and reje
   }
 });
 
-test("reads Home, Knowledge, and Jobs from a real empty MEX home with no accessibility violations", async ({ page }) => {
+test("reads Home, Review, Knowledge, and Jobs from a real empty MEX home with no accessibility violations", async ({ page }) => {
   const root = mkdtempSync(join(tmpdir(), "mex-empty-hub-e2e-"));
   const env = { ...process.env, MEX_HOME: join(root, "home"), MEX_BACKGROUND: "0", MEX_TELEMETRY: "0", MEX_OFF: "0", DO_NOT_TRACK: "1" };
   let hub: Awaited<ReturnType<typeof startHub>> | undefined;
@@ -118,6 +118,10 @@ test("reads Home, Knowledge, and Jobs from a real empty MEX home with no accessi
     await page.getByRole("link", { name: "Jobs", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Jobs", exact: true, level: 1 })).toBeVisible();
     await expect(page.getByText("No jobs to show.")).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByRole("link", { name: "Review", exact: true }).click();
+    await expect(page).toHaveURL(`${origin}/review`);
+    await expect(page.getByRole("heading", { name: "Nothing to review.", exact: true })).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     await page.getByRole("link", { name: "Knowledge", exact: true }).click();
     await expect(page).toHaveURL(`${origin}/knowledge`);

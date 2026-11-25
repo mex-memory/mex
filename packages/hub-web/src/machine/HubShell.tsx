@@ -8,7 +8,8 @@ import { NativeSelect, NativeSelectOption } from "../components/primitives/nativ
 import { Separator } from "../components/primitives/separator";
 import { cn } from "../lib/utils";
 import shell from "../styles/shell.module.css";
-import { useHome, useHubEvents, useJobActions, useJobs, type HubEventState } from "./data";
+import { useHome, useHubEvents, useJobActions, useJobs, useReviewCount, type HubEventState } from "./data";
+import type { ReviewConnection } from "./ReviewPage";
 import type { KnowledgeConnection } from "./KnowledgePage";
 import { UnknownRepoPage } from "./pages";
 import { reviewCount } from "./review-model";
@@ -46,6 +47,8 @@ interface HubData {
   jobs?: readonly HubJob[];
   knowledge?: KnowledgePreview;
   review?: ReviewPreview;
+  reviewCount?: ReturnType<typeof useReviewCount>["data"];
+  reviewLive?: ReviewConnection;
   knowledgeLive?: KnowledgeConnection;
   homeLoad?: PageLoad;
   jobsLoad?: PageLoad;
@@ -67,6 +70,7 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
   const events = useHubEvents(checkSession);
   const home = useHome(events);
   const jobs = useJobs(events);
+  const waiting = useReviewCount(events);
   const changeJob = useJobActions(props.session.csrfToken, reportDataError);
 
   useEffect(() => {
@@ -75,7 +79,8 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
   }, [home.error, jobs.error, reportDataError]);
 
   return <HubLayout {...props} events={events} data={{
-    overview: home.data, jobs: jobs.data, changeJob,
+    overview: home.data, jobs: jobs.data, changeJob, reviewCount: waiting.data,
+    reviewLive: { events, csrfToken: props.session.csrfToken, reportDataError },
     knowledgeLive: { events, csrfToken: props.session.csrfToken, reportDataError },
     homeLoad: { loading: home.isPending, error: home.isError, retry: () => void home.refetch() },
     jobsLoad: { loading: jobs.isPending, error: jobs.isError, retry: () => void jobs.refetch() },
@@ -105,8 +110,9 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const navigate = useNavigate();
   const terminal = session.mode === "terminal";
   const knowledgeProps = data.knowledge ? { knowledge: data.knowledge } : { live: data.knowledgeLive! };
-  const reviewProps = { review: data.review, overview: data.overview, load: data.homeLoad };
-  const waiting = reviewCount(data.overview, projectId);
+  const reviewProps = data.review ? { review: data.review } : { live: data.reviewLive! };
+  const waiting = fixture ? reviewCount(data.overview, projectId)
+    : (projectId ? data.reviewCount?.byRepo[projectId] : data.reviewCount?.total) ?? 0;
   const activePage = reviewRoute ? "review" : knowledgeRoute ? "knowledge" : machineJobs || repoJobs ? "jobs" : "home";
   const loadingPage = { home: "Home", knowledge: "Knowledge", review: "Review", jobs: "jobs" }[activePage];
 

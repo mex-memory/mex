@@ -414,3 +414,20 @@
     padding: 16px;
   }
 }
+
+.reviewAction::after {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  content: "";
+}
+
+.reviewAction:active {
+  /* Keep the stretched link anchored to the card during the press. */
+  translate: none;
+}
+
+.reviewAction:focus-visible::after {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}

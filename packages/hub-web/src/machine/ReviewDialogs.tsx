@@ -24,9 +24,10 @@ function ReviewChecks({ checks, id }: { checks: ReviewWritePreview["checks"]; id
   );
 }
 
-function UseProposalDialog({ open, current, pending, status, error, finalFocus, onCancel, onConfirm }: {
+function UseProposalDialog({ open, current, proposed, pending, status, error, finalFocus, onCancel, onConfirm }: {
   open: boolean;
   current: NonNullable<MachineReviewCard["contradiction"]>["current"];
+  proposed?: string;
   pending: boolean;
   status?: string;
   error?: string;
@@ -41,10 +42,10 @@ function UseProposalDialog({ open, current, pending, status, error, finalFocus, 
       <AlertDialogContent className={forms.dialog} finalFocus={finalFocus} initialFocus={cancel}>
         <AlertDialogHeader>
           <AlertDialogTitle>Use this proposal?</AlertDialogTitle>
-          <AlertDialogDescription>Saves the proposal as your note.</AlertDialogDescription>
+          <AlertDialogDescription>{proposed ? <>Saves “{proposed}” as your note.</> : "Saves the proposal as your note."}</AlertDialogDescription>
         </AlertDialogHeader>
         <div className={styles.effects}>
-          <p><strong>Retires:</strong> {current.map(({ claim }) => claim).join(", ")} ({current.length === 1 ? "it moves" : "they move"} to Forgotten).</p>
+          {current.length > 0 && <p><strong>Retires:</strong> {current.map(({ claim }) => claim).join(", ")} ({current.length === 1 ? "it moves" : "they move"} to Forgotten).</p>}
           <p className={forms.help}>Cost: free</p>
         </div>
         {status && <p className={forms.help} id={statusId} role="status">{status}</p>}
@@ -76,24 +77,28 @@ export default function ReviewDialogs({ card, dialog, error, pending, reason, st
   const checksId = useId();
   const preview = dialog?.type === "preview" ? dialog.preview : null;
   const blocked = preview?.checks.find(({ status }) => status === "blocked");
+  const effects = preview?.effects;
+  const using = dialog?.type === "preview" && dialog.request.action === "use";
+  const confirm = () => {
+    if (!blocked && dialog?.type === "preview") onSubmit({ ...dialog.request, apply: true, previewRevision: dialog.preview.revision });
+  };
   const retiring = dialog?.type === "preview" && dialog.request.action === "retire";
 
   return (
     <>
       {card.contradiction && (
-        <UseProposalDialog current={card.contradiction.current} error={dialog?.type === "use" ? error : undefined} finalFocus={finalFocus}
-          onCancel={onCancel} onConfirm={() => onSubmit({ action: "use", expectedRevision: card.revision })}
-          open={dialog?.type === "use"} pending={pending} status={status} />
+        <UseProposalDialog current={effects?.retire ?? card.contradiction.current} proposed={effects?.save.claim}
+          error={using || dialog?.type === "use" ? error : undefined} finalFocus={finalFocus}
+          onCancel={onCancel} onConfirm={using ? confirm : () => onSubmit({ action: "use", expectedRevision: card.revision })}
+          open={using || dialog?.type === "use"} pending={pending} status={status} />
       )}
       {card.retireTarget && (
         <KnowledgeForgetDialog audience={card.retireTarget.audience} error={dialog?.type === "retire" ? error : undefined} finalFocus={finalFocus}
           onCancel={onCancel} onConfirm={() => onSubmit({ action: "retire", expectedRevision: card.revision, reason: reason.trim() || undefined })}
           onReason={onReason} open={dialog?.type === "retire"} pending={pending} reason={reason} showCost status={status} />
       )}
-      <KnowledgeReviewDialog blockedBy={blocked && checksId + "-" + blocked.id} error={preview ? error : undefined} finalFocus={finalFocus}
-        onCancel={onCancel} onConfirm={() => {
-          if (!blocked && dialog?.type === "preview") onSubmit({ ...dialog.request, previewRevision: dialog.preview.revision });
-        }} pending={pending} preview={preview} retiring={retiring} status={status} title={retiring ? undefined : "Share with team"}>
+      <KnowledgeReviewDialog blockedBy={blocked && checksId + "-" + blocked.id} error={preview && !using ? error : undefined} finalFocus={finalFocus}
+        onCancel={onCancel} onConfirm={confirm} pending={pending} preview={using ? null : preview} retiring={retiring} status={status} title={retiring ? undefined : "Share with team"}>
         {preview && !retiring && <ReviewChecks checks={preview.checks} id={checksId} />}
         {preview && retiring && <p className={forms.help}>Cost: free</p>}
       </KnowledgeReviewDialog>

@@ -1,11 +1,12 @@
 import { ChevronRight, FolderGit2, ScanLine } from "lucide-react";
 import { Link } from "react-router-dom";
+import { Button } from "../components/primitives/button";
 import { Badge } from "../components/primitives/badge";
 import { kindLabels } from "./knowledge-labels";
 import { waitingAge, type ReviewRow } from "./review-model";
 import styles from "./review.module.css";
 
-export function ReviewQueue({ counts, repos, repoNames, selected, scoped, now, visible, total, href }: {
+export function ReviewQueue({ counts, repos, repoNames, selected, scoped, now, visible, total, href, showMore, loadingMore }: {
   counts?: Readonly<Record<string, number>>;
   repos: ReadonlyMap<string, readonly ReviewRow[]>;
   repoNames: ReadonlyMap<string, string>;
@@ -15,6 +16,8 @@ export function ReviewQueue({ counts, repos, repoNames, selected, scoped, now, v
   visible: number;
   total: number;
   href: (key: string) => string;
+  showMore?: () => void;
+  loadingMore?: boolean;
 }) {
   return (
     <section aria-keyshortcuts="ArrowUp ArrowDown" aria-label="Review queue" className={styles.queue}>
@@ -47,6 +50,9 @@ export function ReviewQueue({ counts, repos, repoNames, selected, scoped, now, v
         );
       })}
       {visible < total && <p className={styles.queueLimit}>Showing {visible} of {total} waiting</p>}
+      {showMore && <Button className={styles.more} disabled={loadingMore} onClick={showMore} size="sm" type="button" variant="outline">
+        {loadingMore ? "Loading…" : "Show more"}
+      </Button>}
     </section>
   );
 }

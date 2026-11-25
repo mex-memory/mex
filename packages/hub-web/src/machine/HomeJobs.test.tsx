@@ -412,6 +412,7 @@ function liveHub(path = "/", overview?: HomeOverview) {
   const getJobs = vi.fn(async () => Response.json(fixture.jobs));
   const postAction = vi.fn(async (_path: string, _init?: RequestInit) => problem(500));
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    if (url === "/api/v1/review?limit=1") return Response.json({ total: 0, byRepo: {} });
     if (url.startsWith("/api/v1/home?")) return getHome(url);
     if (url.includes("/actions")) return postAction(url, init);
     if (url === "/api/v1/jobs") return getJobs();

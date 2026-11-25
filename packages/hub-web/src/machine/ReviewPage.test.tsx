@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
-import { MachineReviewQueueSchema } from "@mex/hub-contracts/machine";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { MachineReviewQueueSchema, type MachineReviewCard } from "@mex/hub-contracts/machine";
 import { getFixture } from "./fixtures";
 import { MachineHub } from "./MachineHub";
 
@@ -328,4 +329,237 @@ describe("Review fixtures", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Repo switcher" }), "storefront");
     expect(badge()).toHaveAccessibleDescription("3 waiting");
   });
+});
+
+const problem = (status: number, code: string, extras: object = {}) => Response.json({
+  status, code, title: code, detail: "Review the current card and open the preview again.", requestId: "live-review", ...extras,
+}, { status });
+const liveFour = getFixture("home").review!.cards.slice(0, 4).sort((a, b) =>
+  Number(Boolean(b.contradiction)) - Number(Boolean(a.contradiction)) || a.createdAt.localeCompare(b.createdAt));
+const liveNormal = liveFour.find(({ claim }) => claim === normal)!;
+const liveConflict = liveFour.find(({ claim }) => claim === conflict)!;
+const teamPreview = {
+  preview: {
+    path: ".mex/learned/mx_typecheck.md", checkout: "/work/storefront", revision: "share-token",
+    diff: "diff --git a/.mex/learned/mx_typecheck.md b/.mex/learned/mx_typecheck.md\n--- /dev/null\n+++ b/.mex/learned/mx_typecheck.md\n@@ -0,0 +1 @@\n+Run the type check",
+    checks: [
+      { id: "secrets", status: "pass", label: "No secrets or private data found" },
+      { id: "repository", status: "pass", label: "Repository is private" },
+      { id: "checks", status: "pass", label: "Checks still hold" },
+    ],
+  },
+};
+const applied = (outcome = "shared") => Response.json({
+  type: "applied", outcome, toast: "Saved this decision", knowledgeKey: liveNormal.repoId + ":team:mx_typecheck",
+});
+
+function liveHub(selected?: MachineReviewCard) {
+  let cards = [...liveFour];
+  const fixture = getFixture("home");
+  const load = vi.fn(async (_cursor: string | null) => Response.json({
+    cards, byRepo: { storefront: cards.length }, oldest: cards[0]?.createdAt ?? null, total: cards.length, nextCursor: null,
+  }));
+  const write = vi.fn(async (_action: string, _init: RequestInit) => applied());
+  const fetch = vi.fn(async (input: string, init: RequestInit) => {
+    const { pathname, searchParams } = new URL(input, window.location.origin);
+    if (pathname === "/api/v1/review") {
+      if (searchParams.has("limit")) return Response.json({ total: cards.length, byRepo: { storefront: cards.length } });
+      return load(searchParams.get("cursor"));
+    }
+    if (pathname.startsWith("/api/v1/review/cards/")) {
+      const [encoded, action] = pathname.slice("/api/v1/review/cards/".length).split("/");
+      if (action) return write(action, init);
+      const item = cards.find(({ key }) => key === decodeURIComponent(encoded));
+      return item ? Response.json(item) : problem(404, "INVALID_REQUEST");
+    }
+    if (pathname === "/api/v1/session") return Response.json(fixture.session);
+    if (pathname === "/api/v1/projects") return Response.json({ projects: fixture.projects });
+    if (pathname === "/api/v1/home") return Response.json(getFixture("empty").overview);
+    if (pathname === "/api/v1/jobs") return Response.json([]);
+    throw new Error("Unexpected request " + input);
+  });
+  vi.stubGlobal("fetch", fetch);
+  const path = "/review" + (selected ? "/" + encodeURIComponent(selected.key) : "");
+  window.history.replaceState(null, "", path);
+  const user = userEvent.setup();
+  const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
+  render(<QueryClientProvider client={client}><BrowserRouter><MachineHub /></BrowserRouter></QueryClientProvider>);
+  return {
+    user, load, write, fetch,
+    remove: (key: string) => { cards = cards.filter((card) => card.key !== key); },
+    change: (card: MachineReviewCard) => { cards = cards.map((value) => value.key === card.key ? card : value); },
+  };
+}
+
+const payload = (init: RequestInit) => JSON.parse(String(init.body));
+
+describe("Live Review", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows loading, reports a queue error, and retries into the live card and count", async () => {
+    const app = liveHub(liveNormal);
+    let fail!: (value: Response) => void;
+    app.load.mockImplementationOnce(() => new Promise((resolve) => { fail = resolve; }));
+    expect(await screen.findByText("Loading Review…", { selector: "p" })).toBeVisible();
+    act(() => fail(problem(503, "REVIEW_UNAVAILABLE")));
+    expect(await screen.findByText("Couldn’t load Review.")).toBeVisible();
+    await app.user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("heading", { name: normal, level: 2 })).toBeVisible();
+    expect(badge()).toHaveAttribute("aria-description", "4 waiting");
+  });
+
+  it("previews and confirms Share with CSRF and separate request keys", async () => {
+    const app = liveHub(liveNormal);
+    app.write.mockResolvedValueOnce(Response.json(teamPreview)).mockImplementationOnce(async () => {
+      app.remove(liveNormal.key);
+      return applied();
+    });
+    await screen.findByRole("heading", { name: normal });
+    await app.user.click(action("Share with team"));
+    const dialog = await screen.findByRole("alertdialog", { name: "Share with team" });
+    expect(within(dialog).getByText("Repository is private")).toBeVisible();
+    const [firstAction, first] = app.write.mock.calls[0];
+    expect(firstAction).toBe("share");
+    expect(payload(first)).toEqual({ action: "share", expectedRevision: liveNormal.revision });
+    const headers = new Headers(first.headers);
+    expect(headers.get("x-mex-csrf")).toBe("fixture");
+    expect(headers.get("idempotency-key")).toBeTruthy();
+    await app.user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByText("Saved this decision")).toBeVisible();
+    const [secondAction, second] = app.write.mock.calls[1];
+    expect(secondAction).toBe("share");
+    expect(payload(second)).toEqual({ action: "share", expectedRevision: liveNormal.revision, apply: true, previewRevision: "share-token" });
+    expect(new Headers(second.headers).get("idempotency-key")).not.toBe(headers.get("idempotency-key"));
+    await waitFor(() => expect(badge()).toHaveAttribute("aria-description", "3 waiting"));
+  });
+
+  it("blocks Confirm when the repository check fails", async () => {
+    const app = liveHub(liveNormal);
+    app.write.mockResolvedValueOnce(Response.json({ preview: {
+      ...teamPreview.preview, diff: "", checks: [{ id: "repository", status: "fail", label: "Couldn't check the repository." }],
+    } }));
+    await screen.findByRole("heading", { name: normal });
+    await app.user.click(action("Share with team"));
+    const dialog = await screen.findByRole("alertdialog", { name: "Share with team" });
+    const confirm = within(dialog).getByRole("button", { name: "Confirm" });
+    expect(confirm).toBeDisabled();
+    expect(confirm).toHaveAccessibleDescription("Couldn't check the repository.");
+    expect(app.write).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the server's effects before asking for confirmation", async () => {
+    const app = liveHub(liveConflict);
+    const [retired, kept] = liveConflict.contradiction!.current;
+    app.write.mockResolvedValueOnce(Response.json({ preview: {
+      path: "personal/notes/mx_proposal.md", checkout: liveConflict.checkout, revision: "use-token", diff: "", checks: [],
+      effects: {
+        save: { key: "storefront:onlyYou:mx_proposal", claim: liveConflict.claim, audience: "onlyYou" },
+        retire: [retired], cost: 0,
+      },
+    } })).mockImplementationOnce(async () => {
+      app.remove(liveConflict.key);
+      return applied("used");
+    });
+    await screen.findByRole("heading", { name: conflict });
+    await app.user.click(action("Use proposal"));
+    const dialog = await screen.findByRole("alertdialog", { name: "Use this proposal?" });
+    expect(dialog).toHaveTextContent(liveConflict.claim);
+    expect(dialog).toHaveTextContent(retired.claim);
+    expect(dialog).not.toHaveTextContent(kept.claim);
+    expect(within(dialog).getByText("Cost: free")).toBeVisible();
+    expect(payload(app.write.mock.calls[0][1])).not.toHaveProperty("apply");
+    await app.user.click(within(dialog).getByRole("button", { name: "Use proposal" }));
+    expect(await screen.findByText("Saved this decision")).toBeVisible();
+    expect(payload(app.write.mock.calls[1][1])).toMatchObject({ apply: true, previewRevision: "use-token" });
+  });
+
+  it("shows a proven already handled outcome and advances without resubmitting", async () => {
+    const app = liveHub(liveNormal);
+    app.write.mockImplementationOnce(async () => {
+      app.remove(liveNormal.key);
+      return problem(409, "ALREADY_HANDLED", { outcome: "Kept" });
+    });
+    await screen.findByRole("heading", { name: normal });
+    await app.user.click(action("Keep for me"));
+    expect(await screen.findByText("Already handled elsewhere (Kept)")).toBeVisible();
+    expect(action("Next")).toHaveFocus();
+    await app.user.click(action("Next"));
+    await waitFor(() => expect(queue().queryByRole("link", { name: new RegExp("^" + normal) })).toBeNull());
+    expect(app.write).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a busy action using the same key", async () => {
+    const app = liveHub(liveNormal);
+    app.write.mockResolvedValueOnce(problem(503, "MEX_BUSY")).mockImplementationOnce(async () => {
+      app.remove(liveNormal.key);
+      return applied("kept");
+    });
+    await screen.findByRole("heading", { name: normal });
+    await app.user.click(action("Keep for me"));
+    expect(await screen.findByText("MEX is busy, retrying…")).toBeVisible();
+    expect(await screen.findByText("Saved this decision")).toBeVisible();
+    const keys = app.write.mock.calls.map(([, init]) => new Headers(init.headers).get("idempotency-key"));
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  it("closes a stale preview and displays the current version", async () => {
+    const app = liveHub(liveNormal);
+    const current = { ...liveNormal, claim: "Run the updated type checker", revision: "new-card" };
+    app.write.mockResolvedValueOnce(Response.json(teamPreview)).mockImplementationOnce(async () => {
+      app.change(current);
+      return problem(409, "STALE_PREVIEW", { current });
+    });
+    await screen.findByRole("heading", { name: normal });
+    await app.user.click(action("Share with team"));
+    const dialog = await screen.findByRole("alertdialog", { name: "Share with team" });
+    await app.user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Review the current card and open the preview again.");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(heading(current.claim)).toBeVisible();
+  });
+
+  it("restarts paging from the first page after the queue changes", async () => {
+    const app = liveHub(liveNormal);
+    const first = { cards: [liveNormal], byRepo: { storefront: 2 }, oldest: liveNormal.createdAt, total: 2, nextCursor: "old-page" };
+    app.load.mockResolvedValueOnce(Response.json(first)).mockResolvedValueOnce(problem(409, "REVIEW_CHANGED"));
+    const more = await screen.findByRole("button", { name: "Show more" });
+    await app.user.click(more);
+    await waitFor(() => expect(app.load.mock.calls.map(([cursor]) => cursor)).toEqual([null, "old-page", null]));
+    expect(await screen.findByRole("link", { name: new RegExp("^" + conflict) })).toBeVisible();
+  });
+});
+
+it("refreshes live Review on the stream and after ten seconds without it", async () => {
+  class Stream extends EventTarget {
+    static CLOSED = 2;
+    static stream: Stream;
+    onopen?: () => void;
+    onerror?: () => void;
+    readyState = 1;
+    close() { this.readyState = Stream.CLOSED; }
+    constructor() { super(); Stream.stream = this; }
+  }
+  vi.stubGlobal("EventSource", Stream);
+  try {
+    const app = liveHub();
+    await screen.findByRole("heading", { name: conflict });
+    const count = app.load.mock.calls.length;
+    act(() => { Stream.stream.onopen?.(); });
+    await waitFor(() => expect(app.load.mock.calls.length).toBeGreaterThan(count));
+    const refreshed = app.load.mock.calls.length;
+    act(() => {
+      Stream.stream.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ topics: ["knowledge"] }) }));
+    });
+    await waitFor(() => expect(app.load.mock.calls.length).toBeGreaterThan(refreshed));
+    const disconnected = app.load.mock.calls.length;
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    act(() => { Stream.stream.close(); Stream.stream.onerror?.(); });
+    expect(screen.getByText("Live updates are off. Refreshing every 10 s.")).toBeVisible();
+    await act(() => vi.advanceTimersByTimeAsync(9_999));
+    expect(app.load).toHaveBeenCalledTimes(disconnected);
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(app.load).toHaveBeenCalledTimes(disconnected + 1);
+  } finally { vi.unstubAllGlobals(); vi.useRealTimers(); }
 });

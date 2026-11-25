@@ -127,7 +127,7 @@ function NeedsYou({ rules, count, pending, folders, repoNames, now, search, scop
       )}
       {(!pending || count > 0) && (
         <div className={styles.cardActions}>
-          <Link className={buttonVariants({ size: "sm", variant: count ? "default" : "outline" }) + " " + styles.reviewAction} to={href()}>
+          <Link className={buttonVariants({ size: "sm", variant: count ? "default" : "outline" }) + " " + shared.reviewAction} to={href()}>
             Open Review <ArrowRight aria-hidden="true" />
           </Link>
           {more > 0 && <span>+{number.format(more)} more</span>}

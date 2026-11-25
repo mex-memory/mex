@@ -69,9 +69,11 @@ export function useFixtureReview(
     const previous = completed.current.get(key);
     if (!card || previous) return previous ?? { type: "alreadyHandled" };
 
-    const { action, expectedRevision, previewRevision, reason, edited } = MachineReviewActionRequestSchema.parse(draft);
+    const { action: requested, then, expectedRevision, previewRevision, reason, edited } = MachineReviewActionRequestSchema.parse(draft);
+    const action = requested === "edit" ? then : requested;
     if (expectedRevision !== card.revision) throw stale;
-    if (action === "edit" || !card.actions.includes(action) || card.disabled?.[action]) {
+    if (!action) throw new Error("Choose where to keep the edit.");
+    if (!card.actions.includes(action) || card.disabled?.[action]) {
       throw new Error(card.disabled?.[action] ?? "This action isn't available for this card.");
     }
     if (variant === "review-handled" || variant === "review-handled-unknown") {

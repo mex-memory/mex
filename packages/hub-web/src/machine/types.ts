@@ -59,10 +59,12 @@ export type ReviewHandled = Extract<MachineReviewActionResponse, { type: "alread
 
 export type FixtureReviewQueue = Omit<MachineReviewQueue, "cards"> & { cards: readonly MachineReviewCard[] };
 
-export interface ReviewPreview {
-  queue?: FixtureReviewQueue;
+export interface ReviewActions {
   act: (key: string, request: MachineReviewActionRequest, onRetry: () => void) => Promise<MachineReviewActionResponse>;
   removeCompleted: (key: string) => void;
+}
+export interface ReviewPreview extends ReviewActions {
+  queue?: FixtureReviewQueue;
 }
 
 export interface KnowledgeFilters {

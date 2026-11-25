@@ -807,3 +807,15 @@ main:has(.page) {
     bottom: calc(122px + env(safe-area-inset-bottom));
   }
 }
+
+.more {
+  margin-block: 0.5rem;
+  justify-self: start;
+}
+
+.partial {
+  margin-block: 0;
+  padding-inline-start: 1.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}
