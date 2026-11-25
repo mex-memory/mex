@@ -24,13 +24,14 @@ const forgetCopy = {
   },
 };
 
-export function KnowledgeForgetDialog({ open, audience, reason, error, pending, status, finalFocus, onReason, onCancel, onConfirm }: {
+export function KnowledgeForgetDialog({ open, audience, reason, error, pending, status, showCost, finalFocus, onReason, onCancel, onConfirm }: {
   open: boolean;
   audience: KnowledgeAudience;
   reason: string;
   error?: string;
   pending?: boolean;
   status?: string;
+  showCost?: boolean;
   finalFocus: () => HTMLElement | false;
   onReason: (reason: string) => void;
   onCancel: () => void;
@@ -38,6 +39,7 @@ export function KnowledgeForgetDialog({ open, audience, reason, error, pending, 
 }) {
   const cancel = useRef<HTMLButtonElement>(null);
   const reasonId = useId();
+  const statusId = useId();
   const { title, text } = forgetCopy[audience];
   return (
     <AlertDialog open={open} onOpenChange={(next) => { if (!next && !pending) onCancel(); }}>
@@ -46,16 +48,17 @@ export function KnowledgeForgetDialog({ open, audience, reason, error, pending, 
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{text}</AlertDialogDescription>
         </AlertDialogHeader>
-        <form className={styles.form} onSubmit={(event) => { event.preventDefault(); onConfirm(); }}>
+        <form className={styles.form} onSubmit={(event) => { event.preventDefault(); if (!pending) onConfirm(); }}>
           <div className={styles.field}>
             <label htmlFor={reasonId}>Reason <span>(optional)</span></label>
             <Input id={reasonId} maxLength={512} onChange={(event) => onReason(event.target.value)} value={reason} />
           </div>
-          {status && <p role="status">{status}</p>}
+          {showCost && <p className={styles.help}>Cost: free</p>}
+          {(status || pending) && <p className={styles.help} id={statusId} role="status">{status ?? "Saving…"}</p>}
           {error && <p className={styles.error} role="alert">{error}</p>}
           <AlertDialogFooter className={styles.dialogFooter}>
-            <AlertDialogCancel disabled={pending} ref={cancel}>Cancel</AlertDialogCancel>
-            <AlertDialogAction disabled={pending} className={audience === "team" ? undefined : styles.destructive} type="submit" variant={audience === "team" ? "default" : "destructive"}>
+            <AlertDialogCancel aria-describedby={pending ? statusId : undefined} disabled={pending} ref={cancel}>Cancel</AlertDialogCancel>
+            <AlertDialogAction aria-describedby={pending ? statusId : undefined} disabled={pending} className={audience === "team" ? undefined : styles.destructive} type="submit" variant={audience === "team" ? "default" : "destructive"}>
               {audience === "team" ? "Review changes" : "Forget"}
             </AlertDialogAction>
           </AlertDialogFooter>

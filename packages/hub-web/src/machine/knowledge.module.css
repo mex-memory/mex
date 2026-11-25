@@ -367,6 +367,11 @@ main:has(.page) {
   font-weight: 500;
 }
 
+.forgottenTable tr:target,
+.forgottenTable tr:focus {
+  background: color-mix(in oklch, var(--card), var(--brand) 7%);
+}
+
 .forgottenTable td {
   color: var(--text-secondary);
 }

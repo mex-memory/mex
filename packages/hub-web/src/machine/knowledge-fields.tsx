@@ -3,9 +3,39 @@ import { Plus, X } from "lucide-react";
 import { Button } from "../components/primitives/button";
 import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
+import { Textarea } from "../components/primitives/textarea";
 import { kindLabels } from "./knowledge-labels";
 import type { KnowledgeKind } from "./types";
 import styles from "./knowledge-forms.module.css";
+
+type EditableNote = { oneLine: string; text: string; kind: KnowledgeKind; scope: string[] };
+
+export function KnowledgeEditFields<T extends EditableNote>({ draft, onChange, summaryLabel = "One-line summary", rows = 6 }: {
+  draft: T;
+  onChange: (draft: T) => void;
+  summaryLabel?: string;
+  rows?: number;
+}) {
+  const summaryId = useId();
+  const textId = useId();
+  const summary = useRef<HTMLInputElement>(null);
+  useLayoutEffect(() => { summary.current?.focus(); }, []);
+
+  return (
+    <>
+      <div className={styles.field}>
+        <label htmlFor={summaryId}>{summaryLabel}</label>
+        <Input id={summaryId} maxLength={1024} onChange={(event) => onChange({ ...draft, oneLine: event.target.value })} ref={summary} required value={draft.oneLine} />
+      </div>
+      <div className={styles.field}>
+        <label htmlFor={textId}>Note text</label>
+        <Textarea id={textId} maxLength={8192} onChange={(event) => onChange({ ...draft, text: event.target.value })} required rows={rows} value={draft.text} />
+      </div>
+      <KindSelect kind={draft.kind} onChange={(kind) => onChange({ ...draft, kind })} />
+      <ScopeInputs onChange={(scope) => onChange({ ...draft, scope })} patterns={draft.scope} />
+    </>
+  );
+}
 
 export function KindSelect({ kind, onChange }: { kind: KnowledgeKind; onChange: (kind: KnowledgeKind) => void }) {
   const id = useId();

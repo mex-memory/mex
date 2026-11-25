@@ -58,13 +58,14 @@ function ReviewContent({ card }: { card: MachineReviewCard }) {
   );
 }
 
-export function ReviewCard({ row, card, repo, now, titleRef, children, footer, leaving }: {
+export function ReviewCard({ row, card, repo, now, titleRef, children, notice, footer, leaving }: {
   row: ReviewRow;
   card?: MachineReviewCard;
   repo: string;
   now: number;
   titleRef: Ref<HTMLHeadingElement>;
   children?: ReactNode;
+  notice?: ReactNode;
   footer?: ReactNode;
   leaving?: boolean;
 }) {
@@ -82,6 +83,7 @@ export function ReviewCard({ row, card, repo, now, titleRef, children, footer, l
           </div>
           <h2 id={title} ref={titleRef} tabIndex={-1}>{row.claim}</h2>
         </header>
+        {notice}
         {children ?? (card
           ? <ReviewContent card={card} />
           : <p className={styles.readOnly}>Run <code>mex review</code> in this repo to handle this rule.</p>)}

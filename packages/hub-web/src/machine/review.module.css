@@ -566,3 +566,236 @@ main:has(.page) {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.actions {
+  z-index: 1;
+  flex: none;
+  padding: 12px clamp(15px, 2.5vw, 32px);
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border-block-start: 1px solid var(--border);
+  border-end-start-radius: inherit;
+  border-end-end-radius: inherit;
+}
+
+.actionRow,
+.buttons,
+.queueKeys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.actionRow {
+  justify-content: space-between;
+  gap: 9px 12px;
+}
+
+.buttons {
+  gap: 5px 7px;
+}
+
+.buttons button {
+  height: 34px;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.key.key,
+.actionKey.actionKey {
+  min-width: 16px;
+  height: 17px;
+  padding-inline: 3px;
+  color: inherit;
+  background: color-mix(in oklch, currentColor 9%, transparent);
+  font-size: 10px;
+}
+
+.queueKeys {
+  gap: 3px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.queueKeys span {
+  margin-inline-start: 3px;
+}
+
+.actionNote,
+.actionError {
+  margin: 7px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.actionError {
+  color: var(--danger);
+}
+
+.editor {
+  margin: 21px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.editor textarea {
+  min-height: 112px;
+}
+
+.handled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 16px;
+  padding: 9px 11px;
+  color: var(--text-secondary);
+  background: var(--info-soft);
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.handled svg,
+.checklist svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  stroke-width: 1.8;
+}
+
+.checklist {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 11px 13px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  list-style: none;
+}
+
+.checklist li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.checklist svg {
+  margin-top: 2px;
+  color: var(--success);
+}
+
+.checklist [data-check="warning"] svg {
+  color: var(--warning);
+}
+
+.checklist [data-check="blocked"] svg {
+  color: var(--danger);
+}
+
+.effects p:first-child {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.effects strong {
+  color: var(--card-foreground);
+  font-weight: 600;
+}
+
+.toastRegion {
+  position: fixed;
+  z-index: 6;
+  inset: auto clamp(16px, 3vw, 40px) 24px auto;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+}
+
+.toast {
+  display: grid;
+  max-width: 370px;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  padding: 11px 10px 11px 13px;
+  color: var(--text-secondary);
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--overlay-shadow);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.toast > svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--success);
+  stroke-width: 1.8;
+}
+
+.toast p {
+  margin: 0;
+}
+
+.toast strong {
+  color: var(--card-foreground);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.toast a {
+  min-height: 24px;
+  margin-top: 2px;
+}
+
+.toast > button {
+  margin-block: -3px;
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .focused[data-leaving="true"] {
+    animation: review-out 150ms ease-in both;
+  }
+
+  @keyframes review-out {
+    to { opacity: 0; transform: translateY(-4px); }
+  }
+}
+
+@media (max-width: 1023px) {
+  .actions {
+    position: sticky;
+    bottom: 0;
+    padding-block: 9px max(9px, env(safe-area-inset-bottom));
+  }
+
+  .buttons button,
+  .toast button,
+  .toast a {
+    min-height: 44px;
+  }
+
+  .toast button {
+    min-width: 44px;
+  }
+
+  .actionKey.actionKey,
+  .queueKeys {
+    display: none;
+  }
+
+  .page[data-detail="true"] .toastRegion {
+    bottom: calc(122px + env(safe-area-inset-bottom));
+  }
+}
