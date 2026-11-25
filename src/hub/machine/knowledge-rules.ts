@@ -1,18 +1,22 @@
 import { lstatSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import {
   MachineKnowledgeRulesSchema, type MachineKnowledgeCheckout, type MachineKnowledgeRules,
 } from "@mex/hub-contracts/machine";
-import { KNOWLEDGE_LIMITS } from "../../knowledge/contract.js";
+import { KNOWLEDGE_LIMITS, KnowledgeError } from "../../knowledge/contract.js";
 import { containedDirectory, readBoundedTextFile } from "../../knowledge/files.js";
 import { LOCAL_MANIFEST, readNativeManifest, SHARED_MANIFEST } from "../../knowledge/native-write.js";
-import { readRuleFiles, type RuleCache } from "../../knowledge/rule-cache.js";
-import { MAX_RULE_FILE_BYTES } from "../../knowledge/rule-files.js";
+import { readRuleFiles, refreshRuleFiles, type RuleCache } from "../../knowledge/rule-cache.js";
+import { listRepositoryFilesAsync, MAX_RULE_FILE_BYTES } from "../../knowledge/rule-files.js";
 import { fileHash } from "../../knowledge/sections.js";
+import { openRecord } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
+import { machineBusy } from "./agent-repair.js";
 import { ControlSnapshot } from "./control-snapshot.js";
 import { registeredKnowledgeCheckout } from "./knowledge-checkout.js";
+import { knowledgeMissing } from "./knowledge-list.js";
+import { HubRequestError } from "./security.js";
 
 const SNAPSHOT_LIMIT = 8;
 const MANIFEST_FILE_LIMIT = 200;
@@ -64,7 +68,7 @@ function generatedRules(target: Target, sharing: Generated[number]["sharing"]): 
     ? containedDirectory(target.root, [".mex"])
     : containedDirectory(target.location.home, ["projects", target.projectId]);
   if (!directory) return [];
-  const { files } = readNativeManifest(join(directory, shared ? SHARED_MANIFEST.split("/").at(-1)! : LOCAL_MANIFEST));
+  const { files } = readNativeManifest(join(directory, shared ? basename(SHARED_MANIFEST) : LOCAL_MANIFEST));
   const paths = Object.keys(files).sort();
   if (paths.length > MANIFEST_FILE_LIMIT) throw new Error(UNAVAILABLE);
   // The local manifest is shared across worktrees. Prove each file in this checkout.
@@ -102,6 +106,8 @@ async function readRules(target: Target, signal: AbortSignal): Promise<MachineKn
 export class RuleFilesData {
   #snapshots = new Map<string, ControlSnapshot<MachineKnowledgeRules>>();
   #retiredVersion = 0;
+  #refreshing = new Set<string>();
+  #stop = new AbortController();
 
   constructor(private readonly location: LocationOptions, private readonly now: () => number) {}
 
@@ -111,7 +117,47 @@ export class RuleFilesData {
 
   get(scope: MachineKnowledgeCheckout): MachineKnowledgeRules {
     registeredKnowledgeCheckout(this.location, scope);
-    const key = JSON.stringify([scope.repoId, scope.checkout]);
+    return { ...EMPTY, ...this.#snapshot(scope).get() };
+  }
+
+  async refresh(scope: MachineKnowledgeCheckout): Promise<MachineKnowledgeRules> {
+    let target = registeredKnowledgeCheckout(this.location, scope);
+    if (this.#refreshing.has(scope.checkout)) {
+      throw new HubRequestError(503, "MEX_BUSY", "MEX is busy", "Rule files are already refreshing for this checkout.");
+    }
+    this.#refreshing.add(scope.checkout);
+    try {
+      const listed = await listRepositoryFilesAsync(scope.checkout);
+      this.#stop.signal.throwIfAborted();
+      target = registeredKnowledgeCheckout(this.location, scope);
+      const writer = openRecord({ ...this.location, create: false, busyTimeoutMs: 0 });
+      try {
+        // Keep registration stable through the cache publication, and fail before
+        // writing the cache when a different process holds the record writer.
+        writer.db.exec("BEGIN IMMEDIATE");
+        refreshRuleFiles({ ...this.location, projectPath: scope.checkout }, new Date(this.now()), listed, { writer, projectId: scope.repoId });
+        writer.db.exec("COMMIT");
+      } finally { writer.close(); }
+      const rules = await readRules(target, this.#stop.signal);
+      const selected = this.#snapshot(scope);
+      selected.replace(rules);
+      for (const [key, sample] of this.#snapshots) {
+        if (sample !== selected && key.startsWith(scope.repoId + ":")) sample.refresh();
+      }
+      return rules;
+    } catch (error) {
+      if (error instanceof HubRequestError) throw error;
+      const busy = machineBusy(error);
+      if (busy) throw busy;
+      if (error instanceof KnowledgeError && error.code === "RECORD_UNAVAILABLE") throw knowledgeMissing(error.message);
+      throw new HubRequestError(500, "RULE_FILES_UNAVAILABLE", "Rule files unavailable", "Couldn’t refresh rule files. Try again.");
+    } finally {
+      this.#refreshing.delete(scope.checkout);
+    }
+  }
+
+  #snapshot(scope: MachineKnowledgeCheckout) {
+    const key = `${scope.repoId}:${scope.checkout}`;
     let sample = this.#snapshots.get(key);
     if (sample) this.#snapshots.delete(key);
     else if (this.#snapshots.size >= SNAPSHOT_LIMIT) {
@@ -122,7 +168,7 @@ export class RuleFilesData {
     }
     sample ??= new ControlSnapshot(this.now, signal => readRules(registeredKnowledgeCheckout(this.location, scope), signal), UNAVAILABLE);
     this.#snapshots.set(key, sample);
-    return { ...EMPTY, ...sample.get() };
+    return sample;
   }
 
   touch() {
@@ -130,6 +176,7 @@ export class RuleFilesData {
   }
 
   close() {
+    this.#stop.abort();
     for (const sample of this.#snapshots.values()) sample.close();
     this.#snapshots.clear();
   }

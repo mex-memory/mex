@@ -181,6 +181,11 @@ export class HubEvents {
     this.#sendChange(topics);
   }
 
+  ruleFilesChanged() {
+    if (this.#controlsVersion && this.controls) this.#controlsVersion[4] = this.controls.ruleFiles.version;
+    this.#sendChange(["knowledge"]);
+  }
+
   #sendChange(topics: MachineChangeEvent["topics"]) {
     if (topics.length) this.#send(encoder.encode(`event: change\ndata: ${JSON.stringify({ topics })}\n\n`));
   }

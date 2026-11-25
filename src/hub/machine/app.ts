@@ -283,6 +283,12 @@ export function createMachineHubApp(options: MachineHubOptions) {
     return context.json(ruleFiles.get(parseKnowledgeCheckout({ repoId: repo, checkout })));
   });
 
+  app.post("/api/v1/knowledge/rules/refresh", (context) => machinePost(context, async (body) => {
+    const rules = await ruleFiles.refresh(parseKnowledgeCheckout(body));
+    events.ruleFilesChanged();
+    return rules;
+  }));
+
   app.post("/api/v1/knowledge/notes", (context) => knowledgePost(context, (body) => knowledgeWrites.create(body), 201));
   app.post("/api/v1/knowledge/items/:key/edit", (context) => knowledgePost(context, (body) => knowledgeWrites.edit(context.req.param("key"), body)));
   app.post("/api/v1/knowledge/items/:key/forget", (context) => knowledgePost(context, (body) => knowledgeWrites.forget(context.req.param("key"), body)));
