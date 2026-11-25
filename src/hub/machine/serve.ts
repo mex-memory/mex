@@ -90,6 +90,8 @@ export async function startMachineHub(options: StartMachineHubOptions): Promise<
       closed = true;
       app.close();
       try {
+        // Deleting the selected home while the listener is open should leave it absent.
+        if (!existsSync(home)) { await running.close(); return; }
         const cleanup = openRecord(location);
         try { clearBound(cleanup, bound.pid, bound.port); } finally { cleanup.close(); }
       } catch { /* the row is advisory: a reader checks the pid and the handshake */ }

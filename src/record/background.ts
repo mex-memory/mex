@@ -200,13 +200,14 @@ export interface RunOptions extends LocationOptions {
   memory?: () => number;
   clock?: () => number;
 }
-export type ExitReason = "lease-held" | "handover" | "idle" | "memory" | "lease-lost" | "disabled" | "error";
+export type ExitReason = "lease-held" | "handover" | "idle" | "memory" | "lease-lost" | "disabled" | "home-missing" | "error";
 
 /** The background process's main loop. Resolves with why it stopped. */
 export async function runBackground(options: RunOptions = {}): Promise<ExitReason> {
   if (process.env.MEX_OFF === "1") return "disabled";
   const home = options.home ?? process.env.MEX_RECORD_HOME;
   const writer = openRecord({ ...options, ...(home ? { home } : {}) });
+  const homeExists = () => existsSync(writer.location.home);
   const settings = { ...backgroundSettings(writer), ...options.settings };
   const clock = options.clock ?? Date.now;
   const memory = options.memory ?? (() => process.memoryUsage().rss);
@@ -240,7 +241,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
   };
   const release = () => {
     if (heartbeat) clearInterval(heartbeat);
-    if (held) {
+    if (held && homeExists()) {
       try { writer.db.prepare("UPDATE background SET owner=NULL,pid=NULL,heartbeat_at=NULL,request=NULL WHERE id=1 AND owner=?").run(self); } catch { /* lease expires */ }
       held = false;
     }
@@ -250,7 +251,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     try { graph?.stop(); } catch { /* closing */ }
     if (hubTimer) clearInterval(hubTimer);
     void hub.stop().catch(() => { /* the thread ends with the process */ });
-    try { clearBoundForPid(writer, process.pid); } catch { /* readers check the pid and the handshake */ }
+    try { if (homeExists()) clearBoundForPid(writer, process.pid); } catch { /* readers check the pid and the handshake */ }
     release();
     try { writer.close(); } catch { /* closing */ }
     return reason;
@@ -265,7 +266,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     }
     held = true;
     log(`started pid ${process.pid}, version ${VERSION}`);
-    heartbeat = setInterval(() => { try { if (!beat()) held = false; } catch { /* next beat */ } }, settings.heartbeatMs);
+    heartbeat = setInterval(() => { try { if (!homeExists() || !beat()) held = false; } catch { /* next beat */ } }, settings.heartbeatMs);
     heartbeat.unref();
     const recovered = recoverInterruptedJobs(writer, self);
     if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
@@ -280,6 +281,10 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     let lastTelemetry = -Infinity;
     let lastFreshness = -Infinity;
     for (;;) {
+      if (!homeExists()) {
+        await hub.stop();
+        return stop("home-missing");
+      }
       if (!backgroundEnabled(writer)) return stop("disabled");
       if (!held || !beat()) return stop("lease-lost");
       const row = lease(writer);
@@ -330,7 +335,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     }
   } catch (error) {
     log(`error: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
-    return stop("error");
+    return stop(homeExists() ? "error" : "home-missing");
   }
 }
 
