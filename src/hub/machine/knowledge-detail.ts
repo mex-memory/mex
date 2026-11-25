@@ -115,7 +115,7 @@ function sourceFor(entry: KnowledgeEntry, target: KnowledgeTarget, point: Return
 
 const judgmentLabels = { "still-true": "still true", rewritten: "needs attention", "cannot-tell": "couldn’t tell" } as const;
 
-function personalHistory(reader: RecordReader, target: KnowledgeTarget, entry: KnowledgeEntry) {
+function personalHistory(reader: RecordReader, target: KnowledgeTarget, entry: KnowledgeEntry, revision: string) {
   const history: History = [{ type: "added", at: midnight(entry.mex.created) }];
   const editDate = /^mex edit (\d{4}-\d{2}-\d{2})$/u.exec(entry.mex.source.ref)?.[1];
   if (day.safeParse(editDate).success) history.push({ type: "edited", at: midnight(editDate!) });
@@ -129,6 +129,14 @@ function personalHistory(reader: RecordReader, target: KnowledgeTarget, entry: K
         history.push({ type: "learned", at: learnedAt });
       }
     } catch { /* Ignore malformed learning metadata. */ }
+  }
+  const proof = boundedSetting(reader, target.repoId, "learning.deep.note." + entry.mex.id, 20_000);
+  if (proof) {
+    try {
+      const { hash, evidenceDay } = JSON.parse(proof);
+      const parsed = day.safeParse(evidenceDay);
+      if (hash === "sha256:" + revision && parsed.success) history.push({ type: "evidence", at: midnight(parsed.data) });
+    } catch { /* Ignore malformed or out-of-date evidence. */ }
   }
   const rows = reader.all<{ result: keyof typeof judgmentLabels; at: string }>(`
     SELECT result,at FROM (SELECT result,at FROM judgements WHERE project_id=? AND entry_id=? LIMIT 256)
@@ -168,7 +176,7 @@ export async function readKnowledgeItem(
   const sampled = readStore(openRecordReadOnly, location, (reader) => {
     const target = knowledgeTarget(reader, location, repoId, now, env, checkout);
     const point = readKnowledgeEntry(reader!, target, identity, now);
-    const history = audience === "onlyYou" ? personalHistory(reader!, target, point.entry)
+    const history = audience === "onlyYou" ? personalHistory(reader!, target, point.entry, point.revision)
       : { history: [{ type: "added", at: midnight(point.entry.mex.created) }] as History, learnedAt: undefined };
     return { target, point, ...history };
   });
@@ -198,6 +206,7 @@ export async function readKnowledgeItem(
     checkSummary: { status, checkedAt: checkedAt.success ? checkedAt.data : null },
     ...(use.items.get(useKey(identity)) ?? noUse),
     useNote: use.partial,
+    editBlocked: mex.status === "proposed" ? "This item is still proposed." : undefined,
     history,
   };
 }

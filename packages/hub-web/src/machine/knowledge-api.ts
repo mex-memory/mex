@@ -1,9 +1,8 @@
 import {
-  MachineForgottenItemSchema, MachineForgottenPageSchema, MachineKnowledgeConflictSchema, MachineKnowledgeDetailSchema,
-  MachineKnowledgeEditBodySchema, MachineKnowledgeForgetBodySchema, MachineKnowledgeLandingSchema, MachineKnowledgeNoteBodySchema,
-  MachineKnowledgePageSchema, MachineKnowledgePreviewReplySchema,
+  MachineForgottenPageSchema, MachineKnowledgeConflictSchema, MachineKnowledgeDetailSchema,
+  MachineKnowledgeCreateRequestSchema, MachineKnowledgeCreateResponseSchema, MachineKnowledgeEditRequestSchema, MachineKnowledgeEditResponseSchema,
+  MachineKnowledgeForgetRequestSchema, MachineKnowledgeForgetResponseSchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema,
 } from "@mex/hub-contracts/machine";
-import { z } from "zod";
 import { HubProblemError, requestJson } from "./api";
 import type { KnowledgeCreate, KnowledgeEdit, KnowledgeEditResult, KnowledgeFilters, KnowledgeForget, KnowledgeForgetResult } from "./types";
 
@@ -42,8 +41,8 @@ function write<T>(path: string, schema: { parse(value: unknown): T }, body: unkn
   });
 }
 
-export async function postNote({ expectedRevision: _new, ...input }: KnowledgeCreate, headers: WriteHeaders) {
-  const item = await write("/knowledge/notes", MachineKnowledgeDetailSchema, MachineKnowledgeNoteBodySchema.parse(input), headers);
+export async function postNote(input: KnowledgeCreate, headers: WriteHeaders) {
+  const item = await write("/knowledge/notes", MachineKnowledgeCreateResponseSchema, MachineKnowledgeCreateRequestSchema.parse(input), headers);
   return { type: "ok" as const, item };
 }
 
@@ -57,13 +56,10 @@ function applyFields(revision: string | undefined) {
   return revision ? { apply: true as const, previewRevision: revision } : {};
 }
 
-const editReply = z.union([MachineKnowledgeDetailSchema, MachineKnowledgePreviewReplySchema]);
-const forgetReply = z.union([MachineForgottenItemSchema, MachineKnowledgePreviewReplySchema]);
-
 export async function postKnowledgeEdit(input: KnowledgeEdit, headers: WriteHeaders): Promise<KnowledgeEditResult> {
   const { key, confirmRevision, ...fields } = input;
   try {
-    const reply = await write(itemPath(key) + "/edit", editReply, MachineKnowledgeEditBodySchema.parse({ ...fields, ...applyFields(confirmRevision) }), headers);
+    const reply = await write(itemPath(key) + "/edit", MachineKnowledgeEditResponseSchema, MachineKnowledgeEditRequestSchema.parse({ ...fields, ...applyFields(confirmRevision) }), headers);
     return "preview" in reply ? { type: "preview", ...reply.preview } : { type: "ok", item: reply };
   } catch (error) {
     const current = conflict(error);
@@ -75,7 +71,7 @@ export async function postKnowledgeEdit(input: KnowledgeEdit, headers: WriteHead
 export async function postKnowledgeForget(input: KnowledgeForget, headers: WriteHeaders): Promise<KnowledgeForgetResult> {
   const { key, confirmRevision, ...fields } = input;
   try {
-    const reply = await write(itemPath(key) + "/forget", forgetReply, MachineKnowledgeForgetBodySchema.parse({ ...fields, ...applyFields(confirmRevision) }), headers);
+    const reply = await write(itemPath(key) + "/forget", MachineKnowledgeForgetResponseSchema, MachineKnowledgeForgetRequestSchema.parse({ ...fields, ...applyFields(confirmRevision) }), headers);
     return "preview" in reply ? { type: "preview", ...reply.preview } : { type: "ok", item: reply };
   } catch (error) {
     const current = conflict(error);

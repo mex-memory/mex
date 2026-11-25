@@ -8,12 +8,9 @@ import type {
   MachineJobSchema,
   MachineKnowledgeAudienceSchema,
   MachineKnowledgeCreateRequestSchema,
-  MachineKnowledgeCreateResponseSchema,
   MachineKnowledgeDetailSchema,
   MachineKnowledgeEditRequestSchema,
-  MachineKnowledgeEditResponseSchema,
   MachineKnowledgeForgetRequestSchema,
-  MachineKnowledgeForgetResponseSchema,
   MachineKnowledgeItemSchema,
   MachineKnowledgeKindSchema,
   MachineKnowledgeLandingSchema,
@@ -35,15 +32,17 @@ export type KnowledgePageData = z.infer<typeof MachineKnowledgePageSchema>;
 export type KnowledgeLandingData = z.infer<typeof MachineKnowledgeLandingSchema>;
 export type ForgottenPageData = z.infer<typeof MachineForgottenPageSchema>;
 export type ForgottenItem = z.infer<typeof MachineForgottenItemSchema>;
-export type KnowledgeCreate = z.infer<typeof MachineKnowledgeCreateRequestSchema>;
-export type KnowledgeEdit = z.infer<typeof MachineKnowledgeEditRequestSchema> & { checkout?: string };
-export type KnowledgeForget = z.infer<typeof MachineKnowledgeForgetRequestSchema> & { checkout?: string };
-export type KnowledgeCreateResult = z.infer<typeof MachineKnowledgeCreateResponseSchema>;
-type FixtureEditResult = z.infer<typeof MachineKnowledgeEditResponseSchema>;
-export type KnowledgeEditResult = Exclude<FixtureEditResult, { type: "conflict" }>
-  | { type: "conflict"; current: KnowledgeDetail; attempted: KnowledgeEdit };
-export type KnowledgeForgetResult = z.infer<typeof MachineKnowledgeForgetResponseSchema>;
-export type KnowledgeWritePreview = z.infer<typeof MachineKnowledgeWritePreviewSchema>;
+export type KnowledgeCreate = z.infer<typeof MachineKnowledgeCreateRequestSchema> & { scope: string[] };
+type EditInput = z.infer<typeof MachineKnowledgeEditRequestSchema>;
+export type KnowledgeEdit = Omit<EditInput, "apply" | "previewRevision"> &
+  Required<Pick<EditInput, "kind" | "oneLine" | "scope">> & { key: string; confirmRevision?: string };
+export type KnowledgeForget = Omit<z.infer<typeof MachineKnowledgeForgetRequestSchema>, "apply" | "previewRevision"> &
+  { key: string; expectedRevision: string; confirmRevision?: string };
+export type KnowledgeCreateResult = { type: "ok"; item: KnowledgeDetail };
+type KnowledgeConflict<T> = { type: "conflict"; current: KnowledgeDetail; attempted: T };
+export type KnowledgeWritePreview = z.infer<typeof MachineKnowledgeWritePreviewSchema> & { type: "preview" };
+export type KnowledgeEditResult = KnowledgeCreateResult | KnowledgeWritePreview | KnowledgeConflict<KnowledgeEdit>;
+export type KnowledgeForgetResult = { type: "ok"; item: ForgottenItem } | KnowledgeWritePreview | KnowledgeConflict<KnowledgeForget>;
 export type DailyActivity = z.infer<typeof MachineDailyActivitySchema>;
 export type HomeOverview = z.infer<typeof MachineHomeSchema>;
 export type HubJob = z.infer<typeof MachineJobSchema>;

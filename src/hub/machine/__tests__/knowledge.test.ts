@@ -327,15 +327,18 @@ describe("Knowledge detail", () => {
     writer.db.prepare("INSERT INTO judgements VALUES(?,?,?,?,?)").run(repo.id, id, "inputs", "still-true", at(-2_000));
     writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(repo.id, "learning.note." + id, JSON.stringify({ at: at(-DAY), sessions: ["private-session-id"] }));
 
+    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(repo.id, "learning.deep.note." + id, JSON.stringify({
+      hash: hash(readFileSync(file, "utf8")), evidenceDay: "2026-11-20", sources: [{ link: "private-proof-link" }],
+    }));
     const result = await detail(repo, "onlyYou", id);
     expect(result).toMatchObject({
       oneLine: "A scoped note", text: PRIVATE, evidence: PRIVATE, checkSummary: { status: "upToDate", checkedAt: at(-DAY) },
       checks: [{ kind: "section", target: "Install in README.md", result: null }, { kind: "source", target: "docs/setup.md", result: null }],
       source: { type: "note", edited: true }, useCount30Days: 1,
-      history: [{ type: "added" }, { type: "edited" }, { type: "learned" }, { type: "model-check", outcome: "still true" }],
+      history: [{ type: "added" }, { type: "edited" }, { type: "learned" }, { type: "evidence", at: "2026-11-20T00:00:00.000Z" }, { type: "model-check", outcome: "still true" }],
       revision: hash(readFileSync(file, "utf8")).slice(7),
     });
-    expect(JSON.stringify(result)).not.toContain("private-session-id");
+    expect(JSON.stringify(result)).not.toMatch(/private-session-id|private-proof-link/u);
   });
 
   it("uses real git history through a rename, and still shows a team note when git fails", async () => {

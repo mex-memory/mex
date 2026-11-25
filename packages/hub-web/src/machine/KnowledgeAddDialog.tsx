@@ -38,7 +38,7 @@ export function KnowledgeAddDialog({ open, project, projects, preferredRepo, fin
       return;
     }
     setError("");
-    void write.run((retry) => onSave({ expectedRevision: "new", repoId, text: text.trim(), kind, scope: scopePatterns(patterns) }, retry),
+    void write.run((retry) => onSave({ repoId, text: text.trim(), kind, scope: scopePatterns(patterns) }, retry),
       () => {}, (error) => setError(knowledgeSaveError(error, "Couldn’t add this note. Try again.")));
   }
 

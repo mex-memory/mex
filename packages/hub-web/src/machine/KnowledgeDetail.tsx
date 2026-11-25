@@ -86,6 +86,7 @@ function HistoryEvent({ event }: { event: Detail["history"][number] }) {
     case "added": return <>Added <KnowledgeDate at={event.at} /></>;
     case "edited": return <>Edited <KnowledgeDate at={event.at} /></>;
     case "learned": return <>Learned <KnowledgeDate at={event.at} /></>;
+    case "evidence": return <>Evidence dated <KnowledgeDate at={event.at} /></>;
     case "model-check": return <>Checked by model: {event.outcome}, <KnowledgeDate at={event.at} /></>;
     case "git": return <>{event.action === "added" ? "Added" : "Edited"} by {event.actor} in <code>{event.sha}</code>, <KnowledgeDate at={event.at} /></>;
   }
@@ -116,9 +117,10 @@ function DetailSection({ title, narrow, inline, children }: { title: string; nar
   return <div className={styles.detailSection} data-inline={inline}><Heading>{title}</Heading>{children}</div>;
 }
 
-function DetailActions({ audience, canEditHint, onEdit, onForget, onShare, editRef, forgetRef, children }: {
+function DetailActions({ audience, canEditHint, editBlocked, onEdit, onForget, onShare, editRef, forgetRef, children }: {
   audience: Detail["audience"];
   canEditHint?: boolean;
+  editBlocked?: string;
   onEdit: () => void;
   onForget: (event: MouseEvent<HTMLButtonElement>) => void;
   onShare: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -128,11 +130,11 @@ function DetailActions({ audience, canEditHint, onEdit, onForget, onShare, editR
 }) {
   const reason = useId();
   const hint = audience === "hint";
-  const editDisabled = hint && !canEditHint;
+  const editDisabled = Boolean(editBlocked || (hint && !canEditHint));
   return (
     <>
       <div className={styles.actionLine}>
-        <Button aria-describedby={hint ? reason : undefined} disabled={editDisabled} onClick={onEdit} ref={editRef} size="sm" type="button" variant="outline">
+        <Button aria-describedby={hint || editBlocked ? reason : undefined} disabled={editDisabled} onClick={onEdit} ref={editRef} size="sm" type="button" variant="outline">
           <Pencil aria-hidden="true" /> Edit
         </Button>
         {audience === "onlyYou" && (
@@ -141,7 +143,9 @@ function DetailActions({ audience, canEditHint, onEdit, onForget, onShare, editR
         {children}
         <Button aria-haspopup="dialog" className={styles.forgetAction} onClick={onForget} ref={forgetRef} size="sm" type="button" variant="ghost"><Trash2 aria-hidden="true" /> Forget</Button>
       </div>
-      {hint && <p className={styles.actionReason} id={reason}>{canEditHint ? "Saving an edit turns this hint into a personal note." : "Edit this hint in your agent’s memory."}</p>}
+      {(hint || editBlocked) && <p className={styles.actionReason} id={reason}>{editBlocked ?? (
+        canEditHint ? "Saving an edit turns this hint into a personal note." : "Edit this hint in your agent’s memory."
+      )}</p>}
     </>
   );
 }
@@ -172,7 +176,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
 }) {
   const Heading = narrow ? "h1" : "h2";
   const titleId = useId();
-  const [draft, setDraft] = useState(() => item && initialAction === "edit" && (item.audience !== "hint" || canEditHint) ? editDraft(item) : null);
+  const [draft, setDraft] = useState(() => item && !item.editBlocked && initialAction === "edit" && (item.audience !== "hint" || canEditHint) ? editDraft(item) : null);
   const [review, setReview] = useState<EditReview | null>(null);
   const [forget, setForget] = useState(() => item && initialAction === "forget" ? forgetDraft(item) : null);
   const [sharing, setSharing] = useState(false);
@@ -334,7 +338,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
               </header>
               {narrow && item && !draft && (
                 <div className={styles.mobileActions}>
-                  <DetailActions audience={item.audience} canEditHint={canEditHint} editRef={topEdit} forgetRef={forgetTrigger} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
+                  <DetailActions audience={item.audience} canEditHint={canEditHint} editBlocked={item.editBlocked} editRef={topEdit} forgetRef={forgetTrigger} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
                 </div>
               )}
               {draft ? (
@@ -362,7 +366,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
         </div>
         {item && !draft && (
           <div className={styles.detailFooter}>
-            <DetailActions audience={item.audience} canEditHint={canEditHint} editRef={bottomEdit} forgetRef={narrow ? undefined : forgetTrigger} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
+            <DetailActions audience={item.audience} canEditHint={canEditHint} editBlocked={item.editBlocked} editRef={bottomEdit} forgetRef={narrow ? undefined : forgetTrigger} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
               <span className={styles.saved} role="status">{notice && <><Check aria-hidden="true" />{notice}</>}</span>
             </DetailActions>
             {actionError && <p className={styles.actionError} role="alert">{actionError}</p>}

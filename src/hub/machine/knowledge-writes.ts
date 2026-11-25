@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  MachineKnowledgeEditBodySchema, MachineKnowledgeForgetBodySchema, MachineKnowledgeNoteBodySchema,
+  MachineKnowledgeEditRequestSchema, MachineKnowledgeForgetRequestSchema, MachineKnowledgeCreateRequestSchema,
 } from "@mex/hub-contracts/machine";
 import type { z } from "zod";
 import { KNOWLEDGE_LIMITS, KnowledgeError } from "../../knowledge/entry.js";
@@ -19,8 +19,8 @@ import { knowledgeKey, midnight, PROJECT_ID } from "./knowledge-snapshot.js";
 import { readStore } from "./read.js";
 import { HubRequestError } from "./security.js";
 
-type EditBody = z.infer<typeof MachineKnowledgeEditBodySchema>;
-type ForgetBody = z.infer<typeof MachineKnowledgeForgetBodySchema>;
+type EditBody = z.infer<typeof MachineKnowledgeEditRequestSchema>;
+type ForgetBody = z.infer<typeof MachineKnowledgeForgetRequestSchema>;
 const KEYS = 200;
 const TTL = 10 * 60_000;
 const MAX_REPLY_BYTES = 8 << 20;
@@ -40,6 +40,7 @@ export function knowledgeWriteProblem(error: unknown): unknown {
   }
   if (error instanceof KnowledgeError) {
     if (error.code === "NOT_FOUND") return knowledgeMissing();
+    if (error.code === "PROPOSED_ENTRY") return badKnowledgeRequest(error.message);
     if (error.code === "RETIRED_ENTRY") {
       return new HubRequestError(409, "REVISION_CONFLICT", "This item can’t be changed", "It has already been forgotten or is a proposed decision.");
     }
@@ -165,7 +166,7 @@ export class KnowledgeWrites {
   }
 
   async create(body: unknown) {
-    const { repoId, ...fields } = input(MachineKnowledgeNoteBodySchema, body);
+    const { repoId, ...fields } = input(MachineKnowledgeCreateRequestSchema, body);
     if (!PROJECT_ID.test(repoId)) throw badKnowledgeRequest("Choose a registered repo.");
     const options = this.#options(repoId);
     const oneLine = fields.oneLine ?? fields.text.split(/\r?\n/u, 1)[0].slice(0, KNOWLEDGE_LIMITS.oneLineCharacters).trim();
@@ -177,7 +178,7 @@ export class KnowledgeWrites {
   async edit(key: string, body: unknown) {
     const identity = parseKnowledgeKey(key);
     const { repoId, audience, id } = identity;
-    const request = input(MachineKnowledgeEditBodySchema, body);
+    const request = input(MachineKnowledgeEditRequestSchema, body);
     const options = this.#actionOptions(identity, request);
     const { expectedRevision, apply, previewRevision, checkout: _checkout, ...fields } = request;
     const at = new Date(this.now());
@@ -201,7 +202,7 @@ export class KnowledgeWrites {
   async forget(key: string, body: unknown) {
     const identity = parseKnowledgeKey(key);
     const { repoId, audience, id } = identity;
-    const request = input(MachineKnowledgeForgetBodySchema, body);
+    const request = input(MachineKnowledgeForgetRequestSchema, body);
     const options = this.#actionOptions(identity, request);
     const { expectedRevision, apply, previewRevision, reason = DEFAULT_REASON } = request;
     const now = new Date(this.now());
@@ -236,7 +237,9 @@ export class KnowledgeWrites {
       return readStore(openRecordReadOnly, this.location, (reader) => {
         if (!reader) throw knowledgeMissing();
         const target = knowledgeTarget(reader, this.location, identity.repoId, this.now(), this.env, options.projectPath);
-        return readKnowledgeEntry(reader, target, identity, this.now()).entry;
+        const { entry } = readKnowledgeEntry(reader, target, identity, this.now());
+        if (entry.mex.status === "proposed") throw new KnowledgeError("PROPOSED_ENTRY", "This team item is still proposed.");
+        return entry;
       });
     } catch (error) {
       if (apply && error instanceof HubRequestError && error.status === 404) {

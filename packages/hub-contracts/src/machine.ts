@@ -132,6 +132,7 @@ const knowledgeHistorySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("added"), at: isoTimeSchema }),
   z.object({ type: z.literal("edited"), at: isoTimeSchema }),
   z.object({ type: z.literal("learned"), at: isoTimeSchema }),
+  z.object({ type: z.literal("evidence"), at: isoTimeSchema }),
   z.object({ type: z.literal("model-check"), at: isoTimeSchema, outcome: z.enum(["still true", "needs attention", "couldn’t tell"]) }),
   z.object({ type: z.literal("git"), at: isoTimeSchema, action: z.enum(["added", "edited"]), actor: z.string(), sha: z.string() }),
 ]);
@@ -149,6 +150,7 @@ export const MachineKnowledgeDetailSchema = MachineKnowledgeItemSchema.merge(kno
   checkSummary: z.object({ status: MachineKnowledgeStatusSchema, checkedAt: isoTimeSchema.nullable() }).optional(),
   useCount30Days: countSchema,
   useNote: z.string().min(1).optional(),
+  editBlocked: z.string().min(1).optional(),
   history: z.array(knowledgeHistorySchema).max(24),
 });
 
@@ -173,47 +175,35 @@ export const MachineForgottenPageSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 
-export const MachineKnowledgeCreateRequestSchema = knowledgeContentSchema.omit({ oneLine: true }).extend({
-  repoId: z.string().min(1),
-  // A create asserts that the note is new. The writer supplies its identity.
-  expectedRevision: z.literal("new"),
-}).strict();
-
-const knowledgeWriteSchema = z.object({
-  key: knowledgeKeySchema,
-  expectedRevision: knowledgeRevisionSchema,
-  confirmRevision: knowledgeRevisionSchema.optional(),
-});
-
-export const MachineKnowledgeEditRequestSchema = knowledgeContentSchema.merge(knowledgeWriteSchema).strict();
-export const MachineKnowledgeForgetRequestSchema = knowledgeWriteSchema.extend({
-  reason: z.string().trim().min(1).max(512).optional(),
-}).strict();
-
+const fileRevision = z.string().regex(/^[a-f0-9]{64}$/u);
+const teamApply = {
+  checkout: z.string().min(1).max(4_096).optional(),
+  apply: z.literal(true).optional(),
+  previewRevision: fileRevision.optional(),
+};
+export const MachineKnowledgeCreateRequestSchema = knowledgeContentSchema.partial({ oneLine: true, scope: true })
+  .extend({ repoId: z.string().min(1).max(64) }).strict();
+export const MachineKnowledgeEditRequestSchema = knowledgeContentSchema.partial({ oneLine: true, kind: true, scope: true })
+  .extend({ expectedRevision: fileRevision, ...teamApply }).strict()
+  .refine(({ apply, previewRevision }) => Boolean(apply) === Boolean(previewRevision));
+export const MachineKnowledgeForgetRequestSchema = z.object({
+  reason: z.string().trim().min(1).max(512).optional(), expectedRevision: fileRevision.optional(), ...teamApply,
+}).strict()
+  .refine(({ apply, previewRevision }) => Boolean(apply) === Boolean(previewRevision));
 export const MachineKnowledgeWritePreviewSchema = z.object({
-  type: z.literal("preview"),
   diff: z.string(),
   path: z.string(),
   checkout: z.string(),
-  revision: knowledgeRevisionSchema,
+  revision: fileRevision,
 });
-
-export const MachineKnowledgeCreateResponseSchema = z.object({
-  type: z.literal("ok"),
-  item: MachineKnowledgeDetailSchema,
+export const MachineKnowledgePreviewReplySchema = z.object({ preview: MachineKnowledgeWritePreviewSchema });
+export const MachineKnowledgeCreateResponseSchema = MachineKnowledgeDetailSchema;
+export const MachineKnowledgeEditResponseSchema = z.union([MachineKnowledgeDetailSchema, MachineKnowledgePreviewReplySchema]);
+export const MachineKnowledgeForgetResponseSchema = z.union([MachineForgottenItemSchema, MachineKnowledgePreviewReplySchema]);
+export const MachineKnowledgeConflictSchema = MachineProblemSchema.extend({
+  current: MachineKnowledgeDetailSchema,
+  attempted: z.union([MachineKnowledgeEditRequestSchema, MachineKnowledgeForgetRequestSchema]),
 });
-
-export const MachineKnowledgeEditResponseSchema = z.discriminatedUnion("type", [
-  MachineKnowledgeCreateResponseSchema,
-  MachineKnowledgeWritePreviewSchema,
-  z.object({ type: z.literal("conflict"), current: MachineKnowledgeDetailSchema, attempted: MachineKnowledgeEditRequestSchema }),
-]);
-
-export const MachineKnowledgeForgetResponseSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("ok"), item: MachineForgottenItemSchema }),
-  MachineKnowledgeWritePreviewSchema,
-  z.object({ type: z.literal("conflict"), current: MachineKnowledgeDetailSchema, attempted: MachineKnowledgeForgetRequestSchema }),
-]);
 
 export const MachineDailyActivitySchema = z.object({
   day: z.string().date(),
@@ -287,24 +277,3 @@ export type MachineHome = z.infer<typeof MachineHomeSchema>;
 export type MachineJob = z.infer<typeof MachineJobSchema>;
 export type MachineJobActionRequest = z.infer<typeof MachineJobActionRequestSchema>;
 export type MachineChangeEvent = z.infer<typeof MachineChangeEventSchema>;
-
-// Knowledge write bodies use the item in the route and the preview in the reply.
-const fileRevision = z.string().regex(/^[a-f0-9]{64}$/u);
-const teamApply = {
-  checkout: z.string().min(1).max(4_096).optional(),
-  apply: z.literal(true).optional(),
-  previewRevision: fileRevision.optional(),
-};
-export const MachineKnowledgeNoteBodySchema = knowledgeContentSchema.partial({ oneLine: true, scope: true })
-  .extend({ repoId: z.string().min(1).max(64) }).strict();
-export const MachineKnowledgeEditBodySchema = knowledgeContentSchema.partial({ oneLine: true, kind: true, scope: true })
-  .extend({ expectedRevision: fileRevision, ...teamApply }).strict()
-  .refine(({ apply, previewRevision }) => Boolean(apply) === Boolean(previewRevision));
-export const MachineKnowledgeForgetBodySchema = MachineKnowledgeForgetRequestSchema.pick({ reason: true })
-  .extend({ expectedRevision: fileRevision.optional(), ...teamApply }).strict()
-  .refine(({ apply, previewRevision }) => Boolean(apply) === Boolean(previewRevision));
-export const MachineKnowledgePreviewReplySchema = z.object({ preview: MachineKnowledgeWritePreviewSchema.omit({ type: true }) });
-export const MachineKnowledgeConflictSchema = MachineProblemSchema.extend({
-  current: MachineKnowledgeDetailSchema,
-  attempted: z.union([MachineKnowledgeEditBodySchema, MachineKnowledgeForgetBodySchema]),
-});
