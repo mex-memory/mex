@@ -396,6 +396,7 @@ it("pages across dated retirement markers and retired team files, with metadata 
   const observed = hint(repo);
   saveTombstone(writer, repo.id, observed, retirement);
   save(repo, "team", entry("mx_zzzzteam", "A retired team claim", { status: "retired", retired: retirement }));
+  saveTombstone(writer, repo.id, entry("mx_zzzzteam", "A personal copy of the team claim"), retirement);
   for (let i = 0; i < 51; i++) {
     saveTombstone(writer, repo.id, entry("mx_retired" + String(i).padStart(2, "0"), "A retired personal claim"), retirement);
   }
@@ -410,8 +411,11 @@ it("pages across dated retirement markers and retired team files, with metadata 
   });
   const response = await get(firstQuery + "&cursor=" + first.nextCursor);
   const second = MachineForgottenPageSchema.parse(await response.json());
-  expect(second.items).toHaveLength(3);
-  expect(second.items.at(-1)).toEqual({ id: "mx_zzzzteam", repoId: repo.id, audience: "team", at: "2026-11-22T00:00:00.000Z" });
+  expect(second.items).toHaveLength(4);
+  expect(second.items.slice(-2)).toEqual([
+    { id: "mx_zzzzteam", repoId: repo.id, audience: "onlyYou", at: "2026-11-22T00:00:00.000Z" },
+    { id: "mx_zzzzteam", repoId: repo.id, audience: "team", at: "2026-11-22T00:00:00.000Z" },
+  ]);
   expect(second.nextCursor).toBeNull();
   expect(JSON.stringify([first, second])).not.toMatch(/Private reason|retired (?:team|personal) claim|claim_hash|revision/u);
 });

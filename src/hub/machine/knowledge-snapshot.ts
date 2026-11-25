@@ -153,7 +153,7 @@ async function projectKnowledge(
           let entry = parseEntry(found.content);
           if (entry.mex.id !== id) { partial ??= READ_NOTE; continue; }
           if (entry.mex.status === "retired") {
-            if (audience !== "hint" && !isRetired(reader, repoId, id)) {
+            if (audience === "team" || (audience === "onlyYou" && !isRetired(reader, repoId, id))) {
               if (consumed + 256 > available) throw new KnowledgeError("STORE_LIMIT", SCAN_NOTE);
               retired.set(key, { id, repoId, audience, at: midnight(entry.mex.retired!.at) });
               consumed += 256;
