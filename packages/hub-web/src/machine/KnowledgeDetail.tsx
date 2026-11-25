@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import { ArrowLeft, Check, ChevronDown, Pencil, Share2, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
@@ -187,6 +187,23 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
   const save = useRef<HTMLButtonElement>(null);
   const dialogTrigger = useRef<HTMLButtonElement | null>(null);
   const forgetTrigger = useRef<HTMLButtonElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const [moreBelow, setMoreBelow] = useState(false);
+  const measureScroll = useCallback(() => {
+    const element = scroller.current;
+    setMoreBelow(!narrow && !!element && element.scrollHeight - element.clientHeight - element.scrollTop > 1);
+  }, [narrow]);
+
+  useLayoutEffect(() => {
+    measureScroll();
+    if (narrow || typeof ResizeObserver === "undefined" || !scroller.current || !content.current) return;
+    const observer = new ResizeObserver(measureScroll);
+    observer.observe(scroller.current);
+    observer.observe(content.current);
+    return () => observer.disconnect();
+  }, [measureScroll, narrow]);
+
   const returnToTrigger = () => {
     const trigger = dialogTrigger.current ?? forgetTrigger.current;
     return trigger?.isConnected ? trigger : false;
@@ -282,50 +299,54 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
     <div className={styles.detailColumn}>
       {narrow && <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>}
       <section aria-labelledby={titleId} className={styles.detailCard}>
-        <div aria-label="Read item" className={styles.detailScroll} role="group" tabIndex={narrow ? undefined : 0}>
-          <header>
-            <div className={styles.detailHeader}>
-              <Heading id={titleId} ref={titleRef} tabIndex={-1}>{item?.oneLine ?? "Item unavailable"}</Heading>
-              {!narrow && (
-                <Link aria-label="Close item" className={`${buttonVariants({ size: "icon-sm", variant: "ghost" })} ${styles.closeItem}`} to={backHref}>
-                  <X aria-hidden="true" />
-                </Link>
+        <div className={styles.detailBody} data-more-below={moreBelow}>
+          <div aria-label="Read item" className={styles.detailScroll} onScroll={measureScroll} ref={scroller} role="group" tabIndex={narrow ? undefined : 0}>
+            <div ref={content}>
+              <header>
+                <div className={styles.detailHeader}>
+                  <Heading id={titleId} ref={titleRef} tabIndex={-1}>{item?.oneLine ?? "Item unavailable"}</Heading>
+                  {!narrow && (
+                    <Link aria-label="Close item" className={`${buttonVariants({ size: "icon-sm", variant: "ghost" })} ${styles.closeItem}`} to={backHref}>
+                      <X aria-hidden="true" />
+                    </Link>
+                  )}
+                </div>
+                {item && (
+                  <ul aria-label="Item details" className={styles.chips} role="list">
+                    <li><Badge variant="outline">{kindLabels[item.kind]}</Badge></li>
+                    <li><Badge variant="outline">{audienceLabels[item.audience]}</Badge></li>
+                    <li><Badge variant="outline"><KnowledgeStatusLabel className={styles.status} status={item.status} /></Badge></li>
+                    <li><Badge variant="outline"><span>Applies to</span> {scopeLabel(item.scope)}</Badge></li>
+                  </ul>
+                )}
+              </header>
+              {narrow && item && !draft && (
+                <div className={styles.mobileActions}>
+                  <DetailActions audience={item.audience} canEditHint={canEditHint} editRef={topEdit} forgetRef={forgetTrigger} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
+                </div>
+              )}
+              {draft ? (
+                <KnowledgeEditor draft={draft} error={error} pending={write.pending} status={review ? undefined : write.status} onCancel={() => closeEditor()} onChange={setDraft} onSave={saveDraft} saveRef={save} />
+              ) : item ? (
+                <>
+                  <div className={styles.detailText}>
+                    {item.text.split(/\r?\n[\t ]*\r?\n/u).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+                  </div>
+                  <div className={styles.detailSections}>
+                    <DetailSection narrow={narrow} title="Why MEX knows this">
+                      <p><SourceDescription source={item.source} /></p>
+                      {item.evidence && <blockquote>{item.evidence}</blockquote>}
+                    </DetailSection>
+                    <DetailSection narrow={narrow} title="Checks"><Checks checks={item.checks} now={now} summary={item.checkSummary} /></DetailSection>
+                    <DetailSection inline narrow={narrow} title="Use"><UseSummary item={item} now={now} /></DetailSection>
+                    <DetailSection narrow={narrow} title="History"><History events={item.history} /></DetailSection>
+                  </div>
+                </>
+              ) : (
+                <p className={styles.detailText}>This item may have been forgotten or moved to another repo.</p>
               )}
             </div>
-            {item && (
-              <ul aria-label="Item details" className={styles.chips} role="list">
-                <li><Badge variant="outline">{kindLabels[item.kind]}</Badge></li>
-                <li><Badge variant="outline">{audienceLabels[item.audience]}</Badge></li>
-                <li><Badge variant="outline"><KnowledgeStatusLabel className={styles.status} status={item.status} /></Badge></li>
-                <li><Badge variant="outline"><span>Applies to</span> {scopeLabel(item.scope)}</Badge></li>
-              </ul>
-            )}
-          </header>
-          {narrow && item && !draft && (
-            <div className={styles.mobileActions}>
-              <DetailActions audience={item.audience} canEditHint={canEditHint} editRef={topEdit} forgetRef={forgetTrigger} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
-            </div>
-          )}
-          {draft ? (
-            <KnowledgeEditor draft={draft} error={error} pending={write.pending} status={review ? undefined : write.status} onCancel={() => closeEditor()} onChange={setDraft} onSave={saveDraft} saveRef={save} />
-          ) : item ? (
-            <>
-              <div className={styles.detailText}>
-                {item.text.split(/\r?\n[\t ]*\r?\n/u).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
-              </div>
-              <div className={styles.detailSections}>
-                <DetailSection narrow={narrow} title="Why MEX knows this">
-                  <p><SourceDescription source={item.source} /></p>
-                  {item.evidence && <blockquote>{item.evidence}</blockquote>}
-                </DetailSection>
-                <DetailSection narrow={narrow} title="Checks"><Checks checks={item.checks} now={now} summary={item.checkSummary} /></DetailSection>
-                <DetailSection inline narrow={narrow} title="Use"><UseSummary item={item} now={now} /></DetailSection>
-                <DetailSection narrow={narrow} title="History"><History events={item.history} /></DetailSection>
-              </div>
-            </>
-          ) : (
-            <p className={styles.detailText}>This item may have been forgotten or moved to another repo.</p>
-          )}
+          </div>
         </div>
         {item && !draft && (
           <div className={styles.detailFooter}>

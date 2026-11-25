@@ -805,12 +805,35 @@ main:has(.page) {
   }
 
   .detailColumn {
+    --detail-top: 68px;
+    --detail-gap: 16px;
     position: sticky;
-    top: 68px;
+    top: var(--detail-top);
   }
 
   .detailCard {
-    max-height: min(calc(100dvh - 84px), max(410px, calc(100dvh - 352px)));
+    max-height: calc(100vh - var(--detail-top) - var(--detail-gap));
+    max-height: calc(100dvh - var(--detail-top) - var(--detail-gap));
+  }
+
+  .detailBody {
+    position: relative;
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .detailBody[data-more-below="true"]::after {
+    position: absolute;
+    inset: auto 0 0;
+    height: 18px;
+    background: linear-gradient(to bottom, transparent, var(--card));
+    pointer-events: none;
+    content: "";
+  }
+
+  .detailFooter {
+    flex-shrink: 0;
   }
 
   .detailScroll {
