@@ -293,8 +293,8 @@ function executableFile(path: string, platform: NodeJS.Platform): boolean {
 }
 
 /** A browser repair may use only an existing native shim with its intact launcher. */
-export function existingRepairCommand(home: string, platform: NodeJS.Platform, entry: string | undefined): HookCommand | undefined {
-  if (!entry?.endsWith(".js") || fromNpxCache(entry)) return undefined;
+export function existingRepairCommand(home: string, platform: NodeJS.Platform, entry?: string): HookCommand | undefined {
+  if (entry !== undefined && !entry.endsWith(".js")) return undefined;
   try {
     const launcher = snapshotBytes(readSnapshot(launcherFile(home), 4096));
     const value = JSON.parse(launcher?.toString("utf8") ?? "null") as { version?: unknown; entry?: unknown; node?: unknown } | null;
@@ -302,7 +302,8 @@ export function existingRepairCommand(home: string, platform: NodeJS.Platform, e
     const shim = lstatSync(command.path);
     if (!shim.isFile() || shim.isSymbolicLink() || shim.nlink !== 1 || !samePath(installPath(command.path), command.path)
       || !executableFile(command.path, platform) || !value || value.version !== 1
-      || typeof value.entry !== "string" || !isAbsolute(value.entry) || !samePath(value.entry, entry) || !statSync(entry).isFile()
+      || typeof value.entry !== "string" || !isAbsolute(value.entry) || !value.entry.endsWith(".js") || fromNpxCache(value.entry)
+      || (entry !== undefined && !samePath(value.entry, entry)) || !statSync(value.entry).isFile()
       || typeof value.node !== "string" || !isAbsolute(value.node) || !executableFile(value.node, platform)) return undefined;
     return command;
   } catch { return undefined; }
@@ -354,7 +355,7 @@ async function repairAgent(options: InstallOptions, repair: NonNullable<InstallO
   if (expected && !samePath(path, expected.path)) throw new InstallRevisionConflict("The configuration path changed.");
   const plan = async (writer?: RecordWriter): Promise<InstallResult> => {
     if (await installationTracking(path) === "tracked") throw new Error("This configuration is tracked by Git.");
-    const command = existingRepairCommand(home, platform, options.entry);
+    const command = options.entry && existingRepairCommand(home, platform, options.entry);
     if (!command || !(options.selfTest ? options.selfTest(command.path).ok : await repairSelfTest(command.path))) {
       throw new Error("The installed MEX hook or launcher could not be verified.");
     }

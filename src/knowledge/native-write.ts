@@ -29,7 +29,7 @@ export interface NativeWrite {
 
 const hash = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 
-function readManifest(path: string): NativeManifest {
+export function readNativeManifest(path: string): NativeManifest {
   const text = readText(path);
   if (text === undefined) return { version: 1, files: {} };
   try {
@@ -88,6 +88,14 @@ export function excludeFile(root: string): string | undefined {
   } catch { return undefined; }
 }
 
+/** The literal paths in the generated personal rules block. */
+export function localRuleExcludePaths(text: string): Set<string> {
+  const lines = text.split(/\r?\n/u);
+  const start = lines.indexOf(EXCLUDE_START);
+  const end = lines.indexOf(EXCLUDE_END, start + 1);
+  return new Set(start < 0 || end < 0 ? [] : lines.slice(start + 1, end));
+}
+
 /** Keep MEX's block in the exclude file listing exactly these paths. */
 export function setExcluded(root: string, paths: string[]): boolean {
   const file = excludeFile(root);
@@ -129,7 +137,7 @@ export function writeNative(plan: NativePlan, options: WriteOptions): NativeWrit
       if (files.length) result.notes.push("Local rule files need MEX set up on this machine; skipped.");
       continue;
     }
-    const before: NativeManifest = sharing === "shared" && !existingParent(root, SHARED_MANIFEST) ? { version: 1, files: {} } : readManifest(manifestFile);
+    const before: NativeManifest = sharing === "shared" && !existingParent(root, SHARED_MANIFEST) ? { version: 1, files: {} } : readNativeManifest(manifestFile);
     // Preflight both planned output and old cleanup paths. A manifest never
     // authorizes following a link, traversing outside, or touching other files.
     for (const path of new Set([...Object.keys(before.files), ...files.map(f => f.path)])) {
