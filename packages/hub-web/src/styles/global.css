@@ -131,6 +131,12 @@
   --success: oklch(0.5 0.13 150);
   --warning: oklch(0.56 0.13 70);
   --info: oklch(0.45 0 0);
+  --chart-given: #2a78d6;
+  --chart-held-back: #eb6834;
+  --chart-up-to-date: #0ca30c;
+  --chart-code-changed: #fab219;
+  --chart-out-of-date: #d03b3b;
+  --chart-not-checked: #c9c8c3;
   --overlay-shadow: 0 16px 40px rgb(0 0 0 / 14%);
 }
 
@@ -174,6 +180,12 @@
     --success: oklch(0.76 0.12 150);
     --warning: oklch(0.82 0.13 80);
     --info: oklch(0.78 0 0);
+    --chart-given: #3987e5;
+    --chart-held-back: #d95926;
+    --chart-up-to-date: #0ca30c;
+    --chart-code-changed: #fab219;
+    --chart-out-of-date: #d03b3b;
+    --chart-not-checked: #4a4a46;
     --overlay-shadow: 0 20px 52px rgb(0 0 0 / 40%);
   }
 }
@@ -216,6 +228,12 @@
   --success: oklch(0.76 0.12 150);
   --warning: oklch(0.82 0.13 80);
   --info: oklch(0.78 0 0);
+  --chart-given: #3987e5;
+  --chart-held-back: #d95926;
+  --chart-up-to-date: #0ca30c;
+  --chart-code-changed: #fab219;
+  --chart-out-of-date: #d03b3b;
+  --chart-not-checked: #4a4a46;
   --overlay-shadow: 0 20px 52px rgb(0 0 0 / 40%);
 }
 
