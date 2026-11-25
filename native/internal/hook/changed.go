@@ -129,11 +129,13 @@ func sessionChanged(ev contract.Event, recordDirectory string) changeState {
 	return changeState{}
 }
 
-// pruneChanged removes week-old session files at a new session's start.
+// pruneChanged removes week-old session files at a new session's start,
+// and turn cursors past the journal's age.
 func pruneChanged(ev contract.Event, recordDirectory string, now time.Time) {
 	if ev.Kind != contract.SessionStart || (ev.Source != "" && ev.Source != "startup") || recordDirectory == "" {
 		return
 	}
+	delivery.PruneStopCursors(recordDirectory, now)
 	dir := filepath.Dir(changedPath(recordDirectory, ev))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
