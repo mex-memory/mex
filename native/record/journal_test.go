@@ -260,3 +260,37 @@ func TestJournalSizeFollowsUpdatesAndCallIDs(t *testing.T) {
 		t.Fatalf("counted %d, rows hold %d", counted, actual)
 	}
 }
+
+func TestJournalAfterReadsPastACursor(t *testing.T) {
+	h, err := openHooks(testLocation(t), testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	zero := 0
+	s := Session{SessionID: "s1", Agent: "codex", ProjectID: "g-aaaaaaaaaaaaaaaaaaaaaaaa", Checkout: "/r"}
+	other := Session{SessionID: "s2", Agent: "codex", ProjectID: s.ProjectID, Checkout: "/r"}
+	if err := h.AppendJournal(s, "2026-11-25T00:00:00Z", []JournalRow{{Kind: "edit", Text: "a.ts"}, {Kind: "command", Text: "npm test", ExitCode: &zero}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AppendJournal(other, "2026-11-25T00:00:01Z", []JournalRow{{Kind: "edit", Text: "b.ts"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.AppendJournal(s, "2026-11-25T00:00:02Z", []JournalRow{{Kind: "edit", Text: "c.ts"}, {Kind: "command", Text: strings.Repeat("x", 9000)}}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := h.JournalAfter("s1", 0, 10)
+	if err != nil || len(all) != 4 || all[0].Text != "a.ts" || all[1].ExitCode == nil || *all[1].ExitCode != 0 || all[3].ExitCode != nil {
+		t.Fatalf("%+v %v", all, err)
+	}
+	if len(all[3].Text) != 8192 {
+		t.Fatalf("text not cut: %d", len(all[3].Text))
+	}
+	after, err := h.JournalAfter("s1", all[1].ID, 10)
+	if err != nil || len(after) != 2 || after[0].Text != "c.ts" {
+		t.Fatalf("%+v %v", after, err)
+	}
+	if limited, _ := h.JournalAfter("s1", 0, 1); len(limited) != 1 {
+		t.Fatalf("limit ignored: %+v", limited)
+	}
+}

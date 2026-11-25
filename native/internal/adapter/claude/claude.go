@@ -95,6 +95,7 @@ type payload struct {
 	Error          string          `json:"error"`
 	IsInterrupt    bool            `json:"is_interrupt"`
 	CompactSummary string          `json:"compact_summary"`
+	StopHookActive bool            `json:"stop_hook_active"`
 	ToolCalls      []batchCall     `json:"tool_calls"`
 }
 
@@ -126,6 +127,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 	switch kind {
 	case contract.PostCompact:
 		ev.Summary = p.CompactSummary
+	case contract.Stop:
+		ev.StopActive = p.StopHookActive
 	case contract.SessionStart:
 		ev.Source = p.Source
 	case contract.Prompt:
