@@ -17,10 +17,11 @@ const lineMark: Record<DiffLine["kind"], string> = {
   header: "header", removed: "-", added: "+", context: " ", fold: "header",
 };
 
-export function AgentRepairDialog({ preview, name, pending, error, finalFocus, onClose, onConfirm }: {
+export function AgentRepairDialog({ preview, name, pending, progress, error, finalFocus, onClose, onConfirm }: {
   preview: AgentRepairPreview | null;
   name?: string;
   pending: boolean;
+  progress?: string;
   error: string;
   finalFocus: () => HTMLElement | false;
   onClose: () => void;
@@ -53,7 +54,7 @@ export function AgentRepairDialog({ preview, name, pending, error, finalFocus, o
           )}
           {error && <p className={forms.error} role="alert">{error}</p>}
           <AlertDialogFooter className={forms.dialogFooter}>
-            <span className={styles.repairStatus} role="status">{pending ? "Repairing…" : ""}</span>
+            <span className={styles.repairStatus} role="status">{pending ? progress ?? "Repairing…" : ""}</span>
             <AlertDialogCancel disabled={pending} ref={cancel}>Cancel</AlertDialogCancel>
             <AlertDialogAction disabled={pending} onClick={onConfirm} type="button">Confirm</AlertDialogAction>
           </AlertDialogFooter>

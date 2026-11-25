@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MachineChangeEventSchema, type MachineJobActionRequest } from "@mex/hub-contracts/machine";
 import { getHome, getJobs, getReviewCounts, HubProblemError, postJobAction } from "./api";
-import type { HubJob, JobAction } from "./types";
+import type { SettingsChange } from "./control-api";
+import { retryKnowledgeBusy } from "./knowledge-write-state";
+import type { BrowserAgentRepair, HubJob, JobAction, MachineAgent } from "./types";
 
 const JOBS_KEY = ["jobs"];
 const POLL_MS = 10_000;
@@ -31,6 +33,95 @@ export function useJobs(events: HubEventState) {
   return useQuery({ queryKey: JOBS_KEY, queryFn: getJobs, ...queryOptions(events) });
 }
 
+const agentsKey = ["agents"] as const;
+const agentKey = (agent: string | undefined) => ["agents", agent] as const;
+const settingsKey = ["settings"] as const;
+
+export interface ControlConnection {
+  events: HubEventState;
+  csrfToken: string;
+  reportDataError: (error: unknown) => void;
+}
+
+export function useAgents(events: HubEventState, enabled = true) {
+  return useQuery({ queryKey: agentsKey, queryFn: ({ signal }) => import("./control-api").then(api => api.getAgents(signal)),
+    ...queryOptions(events), placeholderData: undefined, enabled });
+}
+
+export function useAgent(events: HubEventState, agent: string | undefined) {
+  return useQuery({ queryKey: agentKey(agent), queryFn: ({ signal }) => import("./control-api").then(api => api.getAgent(agent!, signal)),
+    ...queryOptions(events), placeholderData: undefined, enabled: agent !== undefined });
+}
+
+export function useSettings(events: HubEventState) {
+  return useQuery({
+    queryKey: settingsKey, queryFn: ({ signal }) => import("./control-api").then(api => api.getSettings(signal)),
+    ...queryOptions(events), placeholderData: undefined,
+  });
+}
+
+export function useUninstallPreview(events: HubEventState) {
+  return useQuery({
+    queryKey: ["settings", "uninstall"], queryFn: ({ signal }) => import("./control-api").then(api => api.getUninstallPreview(signal)),
+    ...queryOptions(events), placeholderData: undefined,
+  });
+}
+
+export function useAgentRepair({ csrfToken, reportDataError }: ControlConnection) {
+  const client = useQueryClient();
+  const prepare = useMutation({
+    networkMode: "always", retry: false,
+    mutationFn: async ({ id, onRetry }: { id: MachineAgent["id"]; onRetry: () => void }) => {
+      const api = await import("./control-api");
+      const credentials = { csrfToken, idempotencyKey: crypto.randomUUID() };
+      return retryKnowledgeBusy(() => api.previewAgentRepair(id, credentials), onRetry);
+    },
+    onError: (error) => {
+      reportDataError(error);
+      void client.invalidateQueries({ queryKey: agentsKey });
+    },
+  });
+  const repair = useMutation({
+    networkMode: "always", retry: false,
+    mutationFn: async ({ preview, onRetry }: { preview: BrowserAgentRepair; onRetry: () => void }) => {
+      const api = await import("./control-api");
+      const credentials = { csrfToken, idempotencyKey: crypto.randomUUID() };
+      return retryKnowledgeBusy(() => api.repairAgent(preview, credentials), onRetry);
+    },
+    onSuccess: ({ agent }) => {
+      client.setQueryData<Awaited<ReturnType<typeof import("./control-api").getAgents>>>(agentsKey, current => current
+        ? { ...current, agents: current.agents?.map(item => item.id === agent.id ? agent : item) } : undefined);
+      client.setQueryData(agentKey(agent.id), { agent });
+      void client.invalidateQueries({ queryKey: agentsKey });
+      void client.invalidateQueries({ queryKey: ["settings", "uninstall"] });
+    },
+    onError: (error) => {
+      reportDataError(error);
+      if (error instanceof HubProblemError && error.status === 409) void client.invalidateQueries({ queryKey: agentsKey });
+    },
+  });
+  return { prepare: prepare.mutateAsync, repair: repair.mutateAsync };
+}
+
+export function useSettingChange({ csrfToken, reportDataError }: ControlConnection) {
+  const client = useQueryClient();
+  return useMutation({
+    networkMode: "always", retry: false,
+    mutationFn: async ({ change, revision, onRetry }: { change: SettingsChange; revision: string; onRetry: () => void }) => {
+      const api = await import("./control-api");
+      const credentials = { csrfToken, idempotencyKey: crypto.randomUUID() };
+      return retryKnowledgeBusy(() => api.changeSetting(change, revision, credentials), onRetry);
+    },
+    onSuccess: () => {
+      for (const queryKey of [settingsKey, ["home"], ["machine", "projects"]]) void client.invalidateQueries({ queryKey });
+    },
+    onError: (error) => {
+      reportDataError(error);
+      if (error instanceof HubProblemError && error.status === 409) void client.invalidateQueries({ queryKey: settingsKey });
+    },
+  }).mutateAsync;
+}
+
 export function useHubEvents(checkSession: () => void): HubEventState {
   const client = useQueryClient();
   const [state, setState] = useState<HubEventState>("connecting");
@@ -50,6 +141,8 @@ export function useHubEvents(checkSession: () => void): HubEventState {
       refresh("jobs");
       refresh("knowledge");
       refresh("review");
+      refresh("agents");
+      refresh("settings");
     };
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) {
@@ -76,6 +169,7 @@ export function useHubEvents(checkSession: () => void): HubEventState {
         const topics = new Set(parsed.data.topics);
         if (topics.has("home") || topics.has("knowledge")) topics.add("review");
         for (const topic of topics) refresh(topic);
+        if (topics.has("settings")) void client.invalidateQueries({ queryKey: ["machine", "projects"] }, { cancelRefetch: false });
       }
     };
     source.addEventListener("change", onChange);

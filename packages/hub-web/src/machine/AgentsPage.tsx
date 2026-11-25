@@ -1,14 +1,17 @@
-import { useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { ArrowRight, Bot, CircleCheck, CircleMinus, Code2, Plug, ShieldAlert, Sparkle, Terminal, TriangleAlert, X } from "lucide-react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
 import { Button } from "../components/primitives/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/primitives/tooltip";
+import { HubProblemError } from "./api";
+import { useAgents, useAgent, useAgentRepair, type ControlConnection } from "./data";
+import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
 import { AgentDetail } from "./AgentDetail";
 import { AgentRepairDialog } from "./AgentRepairDialog";
 import { localDateTime, relativeTime } from "./local-time";
 import type { AgentRepairPreview, AgentsPreview, MachineAgent } from "./types";
-import { HubPageHeader } from "./ui";
+import { CommandCard, HubPageHeader, PageRequestState, type PageLoad } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./agents.module.css";
 
@@ -57,7 +60,7 @@ function AgentFacts({ agent }: { agent: MachineAgent }) {
     ["Hooks", hooks],
     ["Trusted", trust],
     ["Last fired", agent.lastFiredAt ? <AgentTime at={agent.lastFiredAt} /> : "—"],
-    ["Last error", error ? <>{error.message} <span className={styles.errorTime}>· <AgentTime at={error.at} /></span></> : "None"],
+    ["Last error", error ? <>{error.message} <span className={styles.errorTime}>· <AgentTime at={error.at} /></span></> : agent.detected === undefined ? "None" : "None recorded"],
   ];
   return (
     <dl className={styles.facts}>
@@ -92,6 +95,7 @@ function AgentCard({ agent, search, onRepair }: { agent: MachineAgent; search: s
         <AgentBadge state={agent.state} />
       </header>
       <AgentFacts agent={agent} />
+      {agent.statusNote && <p className={styles.panelNote}>{agent.statusNote}</p>}
       <footer className={styles.cardFooter}>
         <Link aria-label={"Details for " + agent.name} className={styles.detailsLink} ref={details} to={"/agents/" + agent.id + search}>
           Details <ArrowRight aria-hidden="true" />
@@ -102,12 +106,40 @@ function AgentCard({ agent, search, onRepair }: { agent: MachineAgent; search: s
   );
 }
 
-export default function AgentsPage({ preview }: { preview?: AgentsPreview }) {
+export default function AgentsPage({ preview, live }: { preview?: AgentsPreview; live?: ControlConnection }) {
+  return live ? <ConnectedAgents live={live} /> : <AgentsView preview={preview} />;
+}
+
+function ConnectedAgents({ live }: { live: ControlConnection }) {
+  const { agent: id } = useParams();
+  const overview = useAgents(live.events, !id);
+  const detail = useAgent(live.events, id);
+  const { prepare, repair } = useAgentRepair(live);
+  const query = id ? detail : overview;
+  const missing = detail.error instanceof HubProblemError && detail.error.status === 404;
+  const agents = id ? detail.data?.agent ? [detail.data.agent] : missing ? [] : undefined : overview.data?.agents;
+
+  useEffect(() => {
+    if (query.error) live.reportDataError(query.error);
+  }, [query.error, live.reportDataError]);
+
+  return <AgentsView
+    preview={agents ? { agents, getRepairPreview: (id, onRetry) => prepare({ id, onRetry }), repair: (preview, onRetry) => repair({ preview, onRetry }) } : undefined}
+    load={{ loading: !agents && !query.error && !query.data?.issue, error: !agents && query.isError, retry: () => void query.refetch() }}
+    issue={query.data?.issue} pathWarning={query.data?.pathWarning} updating={!!agents && !!query.data?.updatingSince}
+  />;
+}
+
+function AgentsView({ preview, load, issue, pathWarning, updating }: {
+  preview?: AgentsPreview; load?: PageLoad; issue?: string; pathWarning?: string[]; updating?: boolean;
+}) {
   const { search } = useLocation();
   const { agent: agentId } = useParams();
   const agent = preview?.agents.find(({ id }) => id === agentId);
   const [review, setReview] = useState<{ preview: AgentRepairPreview; name: string } | null>(null);
-  const [pending, setPending] = useState(false);
+  const preparing = useKnowledgeWrite();
+  const applying = useKnowledgeWrite();
+  const [previewError, setPreviewError] = useState("");
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const focusAfterDialog = useRef<() => HTMLElement | false>(() => false);
@@ -115,27 +147,24 @@ export default function AgentsPage({ preview }: { preview?: AgentsPreview }) {
   const overviewHref = "/agents" + search;
 
   const openRepair: OpenRepair = (target, trigger, fallback) => {
-    const repair = preview?.getRepairPreview(target.id);
-    if (!repair) return;
+    if (!preview || applying.pending) return;
     focusAfterDialog.current = () => trigger.isConnected ? trigger : fallback() ?? false;
     setError("");
+    setPreviewError("");
     setToast("");
-    setReview({ preview: repair, name: target.name });
+    void preparing.run(retry => preview.getRepairPreview(target.id, retry), (next) => {
+      if (next) setReview({ preview: next, name: target.name });
+    }, error => setPreviewError(knowledgeSaveError(error, "Couldn’t prepare the repair. Try again.")));
   };
 
-  async function confirmRepair() {
-    if (!preview || review?.preview.type !== "browser" || pending) return;
-    setPending(true);
+  function confirmRepair() {
+    if (!preview || review?.preview.type !== "browser") return;
     setError("");
-    try {
-      const result = await preview.repair(review.preview);
+    const approved = review.preview;
+    void applying.run(retry => preview.repair(approved, retry), ({ agent }) => {
       setReview(null);
-      setToast(result.agent.name + " is working again");
-    } catch {
-      setError("Couldn’t repair the hooks. Open the preview again to retry.");
-    } finally {
-      setPending(false);
-    }
+      setToast(agent.state === "working" ? agent.name + " is working again" : agent.name + " hooks updated");
+    }, error => setError(knowledgeSaveError(error, "Couldn’t repair the hooks. Open the preview again to retry.")));
   }
 
   if (agentId && !agent && preview) {
@@ -166,8 +195,23 @@ export default function AgentsPage({ preview }: { preview?: AgentsPreview }) {
                 {preview.agents.map((item) => <AgentCard agent={item} key={item.id} onRepair={openRepair} search={search} />)}
               </div>
             </TooltipProvider>
-          ) : <p className={shared.muted} role="status">Agent details aren’t available in this Hub yet.</p>}
+          ) : <PageRequestState name="Agents" {...load} />}
         </>
+      )}
+      {preparing.pending && <p className={shared.muted} role="status">{preparing.status ?? "Preparing repair…"}</p>}
+      {previewError && <p role="alert">{previewError}</p>}
+      {updating && <p className={shared.muted} role="status">Updating agent status…</p>}
+      {issue && <p className={shared.muted} role="status">{issue}</p>}
+      {pathWarning && (
+        <aside aria-label="MEX on PATH" className={styles.approval}>
+          <TriangleAlert aria-hidden="true" />
+          <div>
+            <h2>Another mex is first on PATH</h2>
+            <p>Your terminal finds these paths in order. This Hub runs from <code>{pathWarning.at(-1)}</code>.</p>
+            <ol>{pathWarning.slice(0, -1).map(path => <li key={path}><code>{path}</code></li>)}</ol>
+            <CommandCard command="mex hub" compact />
+          </div>
+        </aside>
       )}
       <AgentRepairDialog
         error={error}
@@ -175,7 +219,8 @@ export default function AgentsPage({ preview }: { preview?: AgentsPreview }) {
         name={review?.name}
         onClose={() => setReview(null)}
         onConfirm={() => void confirmRepair()}
-        pending={pending}
+        pending={applying.pending}
+        progress={applying.status}
         preview={review?.preview ?? null}
       />
       <div aria-live="polite" className={styles.toastRegion}>

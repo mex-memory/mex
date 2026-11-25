@@ -8,7 +8,7 @@ import { NativeSelect, NativeSelectOption } from "../components/primitives/nativ
 import { Separator } from "../components/primitives/separator";
 import { cn } from "../lib/utils";
 import shell from "../styles/shell.module.css";
-import { useHome, useHubEvents, useJobActions, useJobs, useReviewCount, type HubEventState } from "./data";
+import { useAgents, useHome, useHubEvents, useJobActions, useJobs, useReviewCount, type ControlConnection, type HubEventState } from "./data";
 import type { ReviewConnection } from "./ReviewPage";
 import type { KnowledgeConnection } from "./KnowledgePage";
 import { UnknownRepoPage } from "./pages";
@@ -49,6 +49,8 @@ type HubShellProps = ShellProps & (
 interface HubData {
   agents?: AgentsPreview;
   settings?: SettingsPreview;
+  controlsLive?: ControlConnection;
+  agentsNeedAttention?: boolean;
   overview?: HomeOverview;
   jobs?: readonly HubJob[];
   knowledge?: KnowledgePreview;
@@ -77,6 +79,7 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
   const home = useHome(events);
   const jobs = useJobs(events);
   const waiting = useReviewCount(events);
+  const agents = useAgents(events);
   const changeJob = useJobActions(props.session.csrfToken, reportDataError);
 
   useEffect(() => {
@@ -86,6 +89,8 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
 
   return <HubLayout {...props} events={events} data={{
     overview: home.data, jobs: jobs.data, changeJob, reviewCount: waiting.data,
+    controlsLive: { events, csrfToken: props.session.csrfToken, reportDataError },
+    agentsNeedAttention: agents.data?.agents?.some(({ state }) => state === "needsRepair" || state === "needsApproval"),
     reviewLive: { events, csrfToken: props.session.csrfToken, reportDataError },
     knowledgeLive: { events, csrfToken: props.session.csrfToken, reportDataError },
     homeLoad: { loading: home.isPending, error: home.isError, retry: () => void home.refetch() },
@@ -123,7 +128,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const waiting = fixture ? reviewCount(data.overview, projectId)
     : (projectId ? data.reviewCount?.byRepo[projectId] : data.reviewCount?.total) ?? 0;
   const activePage = reviewRoute ? "review" : knowledgeRoute ? "knowledge" : machineJobs || repoJobs ? "jobs" : "home";
-  const agentsNeedAttention = data.agents?.agents.some(({ state }) => state === "needsRepair" || state === "needsApproval");
+  const agentsNeedAttention = data.agentsNeedAttention ?? data.agents?.agents.some(({ state }) => state === "needsRepair" || state === "needsApproval");
   const loadingPage = { home: "Home", knowledge: "Knowledge", review: "Review", jobs: "jobs" }[activePage];
 
   function pagePath(page: NavPage, id?: string) {
@@ -247,7 +252,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
           {machineRoute ? (
             <Suspense fallback={<p className={styles.pageState} role="status">Loading {settingsRoute ? "Settings" : "Agents"}…</p>}>
               <Routes>
-                <Route element={<AgentsPage preview={data.agents} />} path="/agents/:agent?" />
+                <Route element={<AgentsPage live={data.controlsLive} preview={data.agents} />} path="/agents/:agent?" />
                 <Route element={<SettingsPage preview={data.settings} />} path="/settings" />
                 <Route element={<Navigate replace to={pagePath("agents")} />} path="*" />
               </Routes>

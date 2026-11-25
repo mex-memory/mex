@@ -124,8 +124,8 @@ export type MachineUninstallPreview = z.infer<typeof MachineUninstallPreviewSche
 
 export interface AgentsPreview {
   agents: readonly MachineAgent[];
-  getRepairPreview: (id: MachineAgent["id"]) => AgentRepairPreview | undefined;
-  repair: (preview: BrowserAgentRepair) => Promise<AgentRepairResult>;
+  getRepairPreview: (id: MachineAgent["id"], onRetry: () => void) => AgentRepairPreview | undefined | Promise<AgentRepairPreview>;
+  repair: (preview: BrowserAgentRepair, onRetry: () => void) => Promise<AgentRepairResult>;
 }
 
 export interface SettingsPreview {

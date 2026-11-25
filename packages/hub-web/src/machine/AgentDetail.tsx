@@ -75,6 +75,7 @@ function AgentFiles({ files }: Pick<MachineAgent, "files">) {
                     {hiddenFromGit && <span><EyeOff aria-hidden="true" />Hidden from git</span>}
                   </div>
                 </div>
+                {hiddenFromGit === null && <span>Git visibility unknown</span>}
                 <CopyButton path text={path} />
               </li>
             ))}
@@ -85,7 +86,7 @@ function AgentFiles({ files }: Pick<MachineAgent, "files">) {
   );
 }
 
-function AgentErrors({ errors }: Pick<MachineAgent, "errors">) {
+function AgentErrors({ errors, detected }: Pick<MachineAgent, "errors" | "detected">) {
   return (
     <section aria-labelledby="agent-errors" className={styles.panel}>
       <header className={styles.panelHeader}><h2 id="agent-errors">Recent errors</h2></header>
@@ -95,7 +96,7 @@ function AgentErrors({ errors }: Pick<MachineAgent, "errors">) {
             <li key={at + message}><span>{message}</span><time dateTime={at}>{localDateTime.format(new Date(at))}</time></li>
           ))}
         </ul>
-      ) : <p className={styles.panelNote}>No recent errors.</p>}
+      ) : <p className={styles.panelNote}>{detected === undefined ? "No recent errors." : "No hook error history is recorded."}</p>}
     </section>
   );
 }
@@ -119,6 +120,7 @@ export function AgentDetail({ agent, overviewHref, status, action, titleRef }: {
           {action}
         </div>
       </header>
+      {agent.statusNote && <p className={styles.panelNote}>{agent.statusNote}</p>}
       {agent.trust === "needsApproval" && (
         <aside aria-label="Codex approval" className={styles.approval}>
           <TriangleAlert aria-hidden="true" />
@@ -132,7 +134,7 @@ export function AgentDetail({ agent, overviewHref, status, action, titleRef }: {
         <Hooks hooks={agent.hooks} />
         <div className={styles.detailSide}>
           <AgentFiles files={agent.files} />
-          <AgentErrors errors={agent.errors} />
+          <AgentErrors detected={agent.detected} errors={agent.errors} />
         </div>
       </div>
     </>
