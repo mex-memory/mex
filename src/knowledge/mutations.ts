@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { openRecord, type RecordWriter } from "../record/index.js";
 import { assertPersonQuote, EntryIdSchema, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
-import { containedDirectory, readEntryFile, replaceEntryFile } from "./files.js";
+import { containedDirectory, readEntryFile, readEntryRevision, replaceEntryFile } from "./files.js";
 import { personalSnapshot, type KnowledgeOptions, type NoteInput, type PersonalEntry } from "./store.js";
 import { references } from "./references.js";
 import { gateEntry, sanitizeText, stripHidden, hasSecret } from "./gates.js";
@@ -12,13 +12,18 @@ import { entryLabel } from "./labels.js";
 function assertId(id: string): void {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
 }
-function current(writer: RecordWriter, options: KnowledgeOptions, id: string, statuses: readonly string[] = ["active"]) {
+function current(writer: RecordWriter, options: KnowledgeOptions, id: string, statuses: readonly string[] = ["active"], expectedRevision?: string) {
   const projectId = writer.checkout(options.projectPath)?.project_id;
   if (!projectId) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
   if (tombstone(writer, projectId, id)) throw new KnowledgeError("RETIRED_ENTRY", "The entry was retired and cannot be restored by editing.");
   const directory = containedDirectory(writer.location.home, ["projects", projectId, "notes"]);
-  const content = directory && readEntryFile(join(directory, `${id}.md`));
+  const path = directory && join(directory, id + ".md");
+  const stored = path ? (expectedRevision === undefined ? { content: readEntryFile(path), revision: undefined } : readEntryRevision(path)) : undefined;
+  const content = stored ? stored.content : undefined;
   if (!directory || !content) throw new KnowledgeError("NOT_FOUND", "No active personal note has that id in this project.");
+  if (expectedRevision !== undefined && stored?.revision !== expectedRevision) {
+    throw new KnowledgeError("REVISION_CONFLICT", "The entry changed since it was opened.");
+  }
   const entry = parseEntry(content);
   if (entry.mex.id !== id) throw new KnowledgeError("INVALID_ENTRY", "Entry id does not match its filename.");
   if (!statuses.includes(entry.mex.status)) throw new KnowledgeError("RETIRED_ENTRY", "The entry is retired and cannot be edited.");
@@ -64,7 +69,7 @@ export function editedEntry(entry: KnowledgeEntry, input: NoteInput, now: Date):
   return changed;
 }
 
-export function edit(id: string, input: NoteInput, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+export function edit(id: string, input: NoteInput, options: KnowledgeOptions, now = new Date(), expectedRevision?: string): PersonalEntry {
   assertId(id);
   const before = personalSnapshot(id, options);
   const context = references(knowledgeProject(options).root);
@@ -73,9 +78,9 @@ export function edit(id: string, input: NoteInput, options: KnowledgeOptions, no
   const writer = openRecord(options);
   try {
     writer.db.exec("BEGIN IMMEDIATE");
-    const found = current(writer, options, id);
+    const found = current(writer, options, id, undefined, expectedRevision);
     if (found.content !== before.content) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
-    replaceEntryFile(found.directory, id, found.content, serializeEntry(changed));
+    replaceEntryFile(found.directory, id, found.content, serializeEntry(changed), expectedRevision);
     return { level: "personal", label: before.label, entry: changed };
   } finally {
     // Only a lock is held here; the filesystem publication is the edit's commit.

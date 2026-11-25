@@ -118,7 +118,7 @@ export function createEntryFile(directory: string, id: string, content: string):
 }
 
 /** Caller holds the local record's write transaction to serialize MEX editors. */
-export function replaceEntryFile(directory: string, id: string, expected: string, content: string): void {
+export function replaceEntryFile(directory: string, id: string, expected: string, content: string, expectedRevision?: string): void {
   personalReadGuard(directory)();
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Invalid entry id.");
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
@@ -146,7 +146,12 @@ export function replaceEntryFile(directory: string, id: string, expected: string
     if (currentDirectory.dev !== originalDirectory.dev || currentDirectory.ino !== originalDirectory.ino || realPath(directory) !== absolutePath(directory)) {
       throw new KnowledgeError("STORE_CHANGED", "The entry directory changed; retry the command.");
     }
-    if (readEntryFile(target) !== expected) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
+    if (expectedRevision !== undefined && readEntryRevision(target)?.revision !== expectedRevision) {
+      throw new KnowledgeError("REVISION_CONFLICT", "The entry changed since it was opened.");
+    }
+    if (expectedRevision === undefined && readEntryFile(target) !== expected) {
+      throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again before editing.");
+    }
     renameSync(temporary, target);
   } finally {
     if (fd !== undefined) { try { closeSync(fd); } catch { /* preserve publication outcome */ } }
