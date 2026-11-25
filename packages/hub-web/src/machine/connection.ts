@@ -51,6 +51,8 @@ export function useMachineConnection() {
         queryClient.removeQueries({ queryKey: ["review"] });
         queryClient.removeQueries({ queryKey: ["agents"] });
         queryClient.removeQueries({ queryKey: ["settings"] });
+        queryClient.removeQueries({ queryKey: ["setup"] });
+        queryClient.removeQueries({ queryKey: ["setup-quote"] });
       }
       return { current: rejectedLink.current ? null : current, rejectedLink: rejectedLink.current };
     },

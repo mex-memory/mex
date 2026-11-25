@@ -56,6 +56,7 @@
   border: 0;
   border-radius: var(--radius-md);
   cursor: pointer;
+  scroll-margin-top: 60px;
   text-align: start;
 }
 

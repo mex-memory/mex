@@ -27,6 +27,10 @@ import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes
 import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { rotateHubSecret } from "./secret.js";
+import { answerHubSetup } from "./setup-question-actions.js";
+import { SetupLearning } from "./setup-learning.js";
+import { changeSetupStep } from "./setup-step-actions.js";
+import { SetupData, setupRepoId } from "./setup-data.js";
 import { takeSettingsSnapshot } from "./settings-snapshot.js";
 import { applyRecordSetting, applyTelemetrySetting, refreshCheckoutRules } from "./settings-writes.js";
 import { takeUninstallSnapshot } from "./uninstall-snapshot.js";
@@ -83,10 +87,12 @@ export function createMachineHubApp(options: MachineHubOptions) {
     "The machine settings couldn’t be read. Try again or run mex doctor.");
   const uninstallRead = new ControlSnapshot(now, async signal => ({ ...await takeUninstallSnapshot(location, signal), issue: undefined }),
     "The install record couldn’t be read. Run mex uninstall --dry-run in your terminal.");
+  const setup = new SetupData(location, now, options.env ?? process.env);
+  const setupLearning = new SetupLearning(location, now, options.env ?? process.env, options.agentEntry);
   const repair = new AgentRepair(agentOptions, now);
   const followUps = new Set<NodeJS.Immediate>();
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
-  const events = new HubEvents(location, home, knowledge, now, keepOpen, { agents: agentRead, settings: settingsRead, uninstall: uninstallRead });
+  const events = new HubEvents(location, home, knowledge, now, keepOpen, { agents: agentRead, settings: settingsRead, uninstall: uninstallRead, setup });
   const changed = async (repoId: string, notesChanged: boolean) => {
     await home.refreshProject(repoId);
     if (notesChanged) await knowledge.refreshProject(repoId);
@@ -174,10 +180,12 @@ export function createMachineHubApp(options: MachineHubOptions) {
       checkWrite(context.req.raw.headers, context.get("address"), session);
     }
     context.set("session", session);
-    home.touch();
-    agentRead.touch();
-    settingsRead.touch();
-    uninstallRead.touch();
+    if (context.req.path !== "/api/v1/setup" && !(context.req.path === "/api/v1/jobs" && context.req.query("job") !== undefined)) {
+      home.touch();
+      agentRead.touch();
+      settingsRead.touch();
+      uninstallRead.touch();
+    }
     await next();
   });
 
@@ -343,7 +351,58 @@ export function createMachineHubApp(options: MachineHubOptions) {
     return { saved: true, notice };
   }));
 
-  app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
+  app.get("/api/v1/setup", (context) => {
+    const { repo } = readStrictQuery(context.req.raw, ["repo"]);
+    return context.json(setup.get(repo));
+  });
+
+  app.post("/api/v1/setup/:repo/quote", (context) => machinePost(context, body =>
+    setupLearning.quote(setupRepoId(context.req.param("repo")), context.get("session").id, body)));
+
+  app.post("/api/v1/setup/:repo/learn", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const step = await setupLearning.start(repoId, context.get("session").id, body);
+    setup.change(repoId, repo => ({ ...repo, steps: [...repo.steps, step], offerRevision: undefined, learnDeeper: undefined }));
+    events.controlsChanged("setup", "jobs");
+    return step;
+  }));
+
+  app.post("/api/v1/setup/:repo/skip-learning", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const saved = await setupLearning.skip(repoId, context.get("session").id, body);
+    setup.change(repoId, repo => ({ ...repo, offerRevision: undefined, learnDeeper: { state: "skipped" } }));
+    events.controlsChanged("setup");
+    return saved;
+  }));
+
+  app.post("/api/v1/setup/:repo/questions", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const result = await answerHubSetup(location, now, options.env ?? process.env, options.agentEntry, repoId, body);
+    const answered = new Set(result.questions.map(({ id }) => id));
+    setup.change(repoId, repo => ({ ...repo, questions: repo.questions.filter(({ id }) => !answered.has(id)) }));
+    events.controlsChanged("setup");
+    if (result.questions.some(({ outcome }) => outcome?.status !== "skipped")) {
+      events.controlsChanged("jobs");
+      void changed(repoId, true).catch(() => { /* The next snapshot picks up the durable answer. */ });
+    }
+    return result;
+  }));
+
+  app.post("/api/v1/setup/:repo/steps/:id", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const step = await changeSetupStep(location, options.env, options.agentEntry, repoId, context.req.param("id"), body);
+    setup.change(repoId, repo => ({ ...repo, steps: repo.steps.map(current => current.jobId === step.jobId ? step : current) }));
+    events.controlsChanged("setup", "jobs");
+    return step;
+  }));
+
+  app.get("/api/v1/jobs", (context) => {
+    const { job } = readStrictQuery(context.req.raw, ["job"]);
+    if (job !== undefined && !/^[A-Za-z0-9._-]{1,128}$/u.test(job)) {
+      throw new HubRequestError(400, "INVALID_REQUEST", "Invalid job", "Open a job from the Hub.");
+    }
+    return context.json(readHubJobs(location, job));
+  });
 
   app.post("/api/v1/jobs/:id/actions", async (context) => {
     const parsed = MachineJobActionRequestSchema.safeParse(await readBoundedJson(context.req.raw, 1_024));
@@ -384,6 +443,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
     agentRead.close();
     settingsRead.close();
     uninstallRead.close();
+    setup.close();
     for (const followUp of followUps) clearImmediate(followUp);
   } });
 }

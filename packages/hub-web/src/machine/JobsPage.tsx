@@ -1,7 +1,7 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
 import { ArrowRight, ChevronRight } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,6 +14,7 @@ import {
 } from "../components/primitives/alert-dialog";
 import { Button } from "../components/primitives/button";
 import { JobProgress, JobStatus, jobIsActive, jobResultAmount } from "./JobStatus";
+import { jobHash } from "./job-links";
 import { localDateTime } from "./local-time";
 import type { HubJob, JobAction } from "./types";
 import { HubPageHeader, PageRequestState, type PageLoad } from "./ui";
@@ -48,6 +49,7 @@ interface JobControls {
   changeJob: ChangeJob;
   confirmStop: (job: HubJob, trigger: HTMLButtonElement) => void;
   states: ReadonlyMap<string, ActionState>;
+  focusLinkedJob: (toggle: HTMLButtonElement) => void;
 }
 
 function actionProgress(action: JobAction) {
@@ -103,13 +105,21 @@ function JobNextAction({ job, actionState, changeJob }: { job: HubJob; actionSta
   );
 }
 
-function JobRow({ job, repoName, position, controls }: {
+function JobRow({ job, repoName, position, controls, linked }: {
   job: HubJob;
   repoName?: string;
   position?: number;
   controls: JobControls;
+  linked: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(linked);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const { focusLinkedJob } = controls;
+  useLayoutEffect(() => {
+    if (!linked) return;
+    setExpanded(true);
+    if (toggle.current) focusLinkedJob(toggle.current);
+  }, [focusLinkedJob, linked]);
   const detailsId = useId();
   const stopStatusId = useId();
   const actionState = controls.states.get(job.id);
@@ -127,6 +137,7 @@ function JobRow({ job, repoName, position, controls }: {
           aria-expanded={expanded}
           className={styles.jobToggle}
           onClick={() => setExpanded(!expanded)}
+          ref={toggle}
           type="button"
         >
           <ChevronRight aria-hidden="true" className={styles.chevron} />
@@ -174,10 +185,11 @@ interface JobListProps {
   jobs: readonly HubJob[];
   repoNames?: ReadonlyMap<string, string>;
   positions?: ReadonlyMap<string, number>;
+  linkedJob?: string;
   controls: JobControls;
 }
 
-function JobList({ jobs, repoNames, positions, controls }: JobListProps) {
+function JobList({ jobs, repoNames, positions, controls, linkedJob }: JobListProps) {
   return (
     <ul className={styles.jobs} role="list">
       {jobs.map((job) => (
@@ -185,6 +197,7 @@ function JobList({ jobs, repoNames, positions, controls }: JobListProps) {
           controls={controls}
           job={job}
           key={job.id}
+          linked={job.id === linkedJob}
           position={positions?.get(job.id)}
           repoName={repoNames && job.repoId ? repoNames.get(job.repoId) ?? "Unknown repo" : undefined}
         />
@@ -209,7 +222,7 @@ function FinishedJobs(list: JobListProps) {
   if (list.jobs.length === 0) return null;
 
   return (
-    <details className={styles.finished}>
+    <details className={styles.finished} open={list.jobs.some(({ id }) => id === list.linkedJob) || undefined}>
       <summary className={styles.finishedToggle}>
         <h2>
           <ChevronRight aria-hidden="true" className={styles.chevron} />
@@ -231,6 +244,7 @@ interface JobsPageProps {
 }
 
 export default function JobsPage({ project, projects, jobs, load, changeJob, allJobsHref }: JobsPageProps) {
+  const { hash, key: locationKey } = useLocation();
   const [stopTarget, setStopTarget] = useState<HubJob | null>(null);
   const [actionStates, setActionStates] = useState(new Map<string, ActionState>());
   const inFlight = useRef(new Set<string>());
@@ -238,6 +252,13 @@ export default function JobsPage({ project, projects, jobs, load, changeJob, all
   const keepRunning = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLButtonElement | null>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
+  const lastJobLink = useRef<string | undefined>(undefined);
+  const focusLinkedJob = useCallback((toggle: HTMLButtonElement) => {
+    if (lastJobLink.current === locationKey) return;
+    lastJobLink.current = locationKey;
+    toggle.focus({ preventScroll: true });
+    toggle.scrollIntoView?.({ block: "nearest" });
+  }, [locationKey]);
 
   useLayoutEffect(() => {
     if (focusedControl.current && !focusedControl.current.isConnected && document.activeElement === document.body) {
@@ -251,8 +272,10 @@ export default function JobsPage({ project, projects, jobs, load, changeJob, all
   const retained = stopTarget && jobResultAmount(stopTarget);
   const listProps = {
     repoNames,
+    linkedJob: scopedJobs.find(({ id }) => jobHash(id) === hash)?.id,
     controls: {
       changeJob: submit,
+      focusLinkedJob,
       states: actionStates,
       confirmStop: (job: HubJob, trigger: HTMLButtonElement) => {
         returnFocus.current = trigger;

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Check, CirclePause, CirclePlay, CircleStop, CircleX, Clock3, ListOrdered, TriangleAlert } from "lucide-react";
 import { Badge } from "../components/primitives/badge";
 import type { HubJob } from "./types";
@@ -47,14 +48,18 @@ function statusLabel(job: HubJob): string {
   }
 }
 
-export function JobStatus({ job }: { job: HubJob }) {
-  const Icon = statusIcons[job.state.phase];
+export function JobStateBadge({ phase, children }: { phase: HubJob["state"]["phase"]; children: ReactNode }) {
+  const Icon = statusIcons[phase];
   return (
-    <Badge className={styles.jobStatus} data-phase={job.state.phase} variant="outline">
+    <Badge className={styles.jobStatus} data-phase={phase} variant="outline">
       <Icon aria-hidden="true" />
-      <span>{statusLabel(job)}</span>
+      <span>{children}</span>
     </Badge>
   );
+}
+
+export function JobStatus({ job }: { job: HubJob }) {
+  return <JobStateBadge phase={job.state.phase}>{statusLabel(job)}</JobStateBadge>;
 }
 
 export function JobProgress({ job }: { job: HubJob }) {

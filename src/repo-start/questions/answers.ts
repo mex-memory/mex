@@ -5,6 +5,8 @@
  * Entries made from answers live in the knowledge store; this file only remembers the
  * answer itself, including "skip" and answers that make no entry.
  */
+import { containedDirectory } from "../../knowledge/files.js";
+import type { RecordWriter } from "../../record/index.js";
 import type { RecordLocation } from "../../record/location.js";
 import { readFactFile, writeFactFile } from "../facts.js";
 
@@ -32,14 +34,30 @@ export function readAnswers(location: RecordLocation, projectId: string): Answer
   return file?.version === 1 && file.answers && typeof file.answers === "object" ? file : { version: 1, answers: {} };
 }
 
-export function saveAnswer(location: RecordLocation, projectId: string, id: string, answer: StoredAnswer): void {
-  const file = readAnswers(location, projectId);
-  file.answers[id] = answer;
-  const ids = Object.keys(file.answers);
-  if (ids.length > MAX_ANSWERS) {
-    for (const old of ids.sort((a, b) => file.answers[a]!.at.localeCompare(file.answers[b]!.at)).slice(0, ids.length - MAX_ANSWERS)) delete file.answers[old];
+/** Serialize terminal and Hub decisions without holding a lock during checks or prompts. */
+export function saveAnswers(
+  writer: RecordWriter, projectId: string, answers: ReadonlyArray<readonly [string, StoredAnswer]>, onlyNew: boolean,
+): boolean {
+  const { location, db } = writer;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    containedDirectory(location.home, ["projects", projectId], true);
+    const file = readAnswers(location, projectId);
+    const changed = !onlyNew || !answers.some(([id]) => Object.hasOwn(file.answers, id));
+    if (changed) {
+      for (const [id, answer] of answers) file.answers[id] = answer;
+      const ids = Object.keys(file.answers);
+      if (ids.length > MAX_ANSWERS) {
+        for (const old of ids.sort((a, b) => file.answers[a]!.at.localeCompare(file.answers[b]!.at)).slice(0, ids.length - MAX_ANSWERS)) delete file.answers[old];
+      }
+      writeFactFile(location, projectId, FILE, file);
+    }
+    db.exec("COMMIT");
+    return changed;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
   }
-  writeFactFile(location, projectId, FILE, file);
 }
 
 /** Generated files the person said are fine to edit by hand: code facts keeps no pitfall for them. */

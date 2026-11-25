@@ -50,7 +50,10 @@ export function fixtureReviewQueue(now: number, notes: readonly KnowledgeDetail[
       }),
     card("design-kit", "spacing", 5, "Use the shared spacing scale in new components",
       "Use the spacing tokens for padding and gaps. Start with the smallest token that gives each control enough room, and keep the same spacing at each density.",
-      "public-session", { scope: ["packages/ui/**"] }),
+      "public-session", {
+        scope: ["packages/ui/**"],
+        ...(variant === "setup" && { sources: { count: 2, producer: "Learn deeper", checkouts: ["/work/design-kit"] } }),
+      }),
     card("docs-site", "links", 4, "Check links when moving a page",
       "Run the link checker after moving a page. If a published guide points to its old address, add a redirect and check that it lands on the new page.",
       "repository-policy-changed", { kind: "procedure", scope: ["docs/**"] }),

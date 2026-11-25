@@ -8,7 +8,7 @@ const FORBIDDEN_PRODUCTION_HINTS = [
   "src/pages/",
   "src/dev/",
   "fixture-api",
-  "setuppage",
+  "src/machine/fixture",
   "hub-contracts/dist/setup",
   "mermaid",
   "statechart",

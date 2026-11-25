@@ -87,6 +87,8 @@ export interface JobKind<P = unknown, C = unknown> {
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
   ready?(job: JobRow, writer: RecordWriter): boolean;
+  /** A queued prerequisite that must finish before this job can be claimed. */
+  blockedBy?(job: JobRow, reader: Pick<RecordReader, "all">): string | undefined;
   /** Optional owned recovery metadata for a batch whose runner died. */
   interrupted?(job: JobRow, writer: RecordWriter): Pick<Partial<JobRow>, "checkpoint" | "progress">;
   display?(job: JobRow, reader: Pick<RecordReader, "all">): { used?: number; ceiling?: number; summary?: string };
@@ -132,12 +134,14 @@ function setState(db: DatabaseSync, job: JobRow, to: JobState, fields: Partial<J
 
 export interface EnqueueOptions { kind: string; projectId?: string | null; params?: unknown; tokensEstimate?: number; }
 export type EnqueueResult = { job: JobRow; existing: boolean };
+/** Store approval for a new job in the same transaction as its row. */
+export type BeforeJobInsert = (jobId: string) => void;
 /**
  * Queue a job. A project job whose kind already has an unfinished job for that project
  * returns that job instead of a second one ("Already running in another window"),
  * unless the kind's `joins` says that job does not serve this request.
  */
-export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): EnqueueResult {
+export function enqueueJob(writer: RecordWriter, options: EnqueueOptions, beforeInsert?: BeforeJobInsert): EnqueueResult {
   const kind = kinds.get(options.kind);
   if (!kind) throw new Error(`Unknown job kind: ${options.kind}`);
   if (kind.reserved) throw new Error(kind.reserved);
@@ -150,6 +154,7 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
     if (open) return { job: open, existing: true };
     const ts = now();
     const id = randomUUID();
+    beforeInsert?.(id);
     writer.db.prepare(`INSERT INTO jobs(id,project_id,kind,state,progress,checkpoint,tokens_used,tokens_estimate,created_at,updated_at,params)
       VALUES(?,?,?,'queued',NULL,NULL,0,?,?,?,?)`).run(id, projectId, kind.name, options.tokensEstimate ?? null, ts, ts,
       JSON.stringify(options.params ?? {}));
@@ -157,12 +162,15 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
   });
 }
 
-/** Pause, cancel or resume. Automatic replacements can require an unchanged snapshot. */
-export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: Pick<JobRow, "state" | "params"> & Partial<Pick<JobRow, "reason">>, approvedParams?: string): JobRow {
+type JobExpectation = Pick<JobRow, "state" | "params"> & Partial<Pick<JobRow, "reason">>;
+
+/** Pause, cancel or resume. A view can also check its revision under the write lock. */
+export function requestJob(writer: RecordWriter, id: string, action: "pause" | "cancel" | "resume", expected?: JobExpectation | ((job: JobRow) => void), approvedParams?: string): JobRow {
   return inTransaction(writer.db, () => {
     const job = getJob(writer.db, id);
     if (!job) throw new Error("That job no longer exists.");
-    if (expected && (job.state !== expected.state || job.params !== expected.params || "reason" in expected && job.reason !== expected.reason)) return job;
+    if (typeof expected === "function") expected(job);
+    else if (expected && (job.state !== expected.state || job.params !== expected.params || "reason" in expected && job.reason !== expected.reason)) return job;
     if (action === "resume") {
       if (job.state === "paused" || job.state === "waiting" || job.state === "failed") {
         // Resuming a failed job starts its failure count again; learned results and position stay.
@@ -243,6 +251,7 @@ export function requeueReadyJobs(writer: RecordWriter): number {
 function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): JobRow | undefined {
   return inTransaction(writer.db, () => {
     const queued = writer.db.prepare("SELECT * FROM jobs WHERE state='queued' ORDER BY updated_at,created_at").all() as unknown as JobRow[];
+    const reader: Pick<RecordReader, "all"> = { all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never };
     for (const job of queued) {
       if (only && !only.has(job.id)) continue;
       const kind = kinds.get(job.kind);
@@ -256,6 +265,7 @@ function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): 
         const busy = writer.db.prepare("SELECT 1 FROM jobs WHERE state='running' AND kind=? AND id!=?").get(job.kind, job.id);
         if (busy) continue;
       }
+      if (kind.blockedBy?.(job, reader)) continue;
       return setState(writer.db, job, "running", { owner: self });
     }
     return undefined;
@@ -265,6 +275,8 @@ function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): 
 /** Why a queued job isn't running, in plain words, for callers that queue work. */
 export function blockedReason(reader: Pick<RecordReader, "all">, job: JobRow): string | undefined {
   const kind = kinds.get(job.kind);
+  const prerequisite = kind?.blockedBy?.(job, reader);
+  if (prerequisite) return prerequisite;
   if (job.project_id) {
     const other = reader.all<JobRow & { root_path: string | null }>(`SELECT jobs.*,projects.root_path FROM jobs LEFT JOIN projects ON projects.id=jobs.project_id
       WHERE jobs.state='running' AND jobs.project_id=? AND jobs.id!=? LIMIT 1`, job.project_id, job.id)[0];

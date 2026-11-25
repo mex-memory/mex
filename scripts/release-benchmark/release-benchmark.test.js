@@ -68,7 +68,7 @@ describe("release benchmark contract", () => {
     }
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       const cap = Math.min(...Object.values(previous.apiLatencyMs[profile]));
-      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail, agents, agentDetail, settings, uninstallPreview } = budgets.runtime.apiLatencyMs[profile];
+      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail, agents, agentDetail, settings, uninstallPreview, setup: setupIndex, setupDetail } = budgets.runtime.apiLatencyMs[profile];
       expect({ session, projects }).toEqual({ session: cap, projects: cap });
       expect(home).toBeGreaterThan(0);
       expect(jobs).toBeGreaterThan(0);
@@ -76,7 +76,7 @@ describe("release benchmark contract", () => {
       expect(knowledgeLanding).toBeGreaterThan(0);
       expect(review).toBeGreaterThan(0);
       expect(reviewDetail).toBeGreaterThan(0);
-      expect([agents, agentDetail, settings, uninstallPreview]).toEqual([review, review, review, review]);
+      expect([agents, agentDetail, settings, uninstallPreview, setupIndex, setupDetail]).toEqual(Array(6).fill(review));
       expect(budgets.runtime.browserHeapBytes[profile]).toEqual({
         home: previous.browserHeapBytes[profile].home,
         repo: Math.min(...Object.values(previous.browserHeapBytes[profile])),
@@ -92,12 +92,13 @@ describe("release benchmark contract", () => {
     const review = { jsBytes: 103715, cssBytes: 17786, fontBytes: 0 };
     const agents = { jsBytes: 132824, cssBytes: 13137, fontBytes: 0 };
     const settings = { jsBytes: 113560, cssBytes: 32363, fontBytes: 0 };
+    const setup = { jsBytes: 84069, cssBytes: 7299, fontBytes: 0 };
     expect(budgets.assets).toEqual({
       maxJsChunkBytes: assetBudgetCandidate(measuredInitial.jsBytes),
       initial: assetGroup(measuredInitial),
       routes: {
         home: assetGroup(home), repo: assetGroup(home), jobs: assetGroup(jobs), knowledge: assetGroup(knowledge),
-        review: assetGroup(review), agents: assetGroup(agents), settings: assetGroup(settings),
+        review: assetGroup(review), agents: assetGroup(agents), settings: assetGroup(settings), setup: assetGroup(setup),
       },
     });
   });
@@ -110,7 +111,7 @@ describe("release benchmark contract", () => {
       medium: { sourceFiles: 16, wikiEntities: 16, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 16 },
       large: { sourceFiles: 48, wikiEntities: 48, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 48 },
     });
-    expect(Object.keys(budgets.assets.routes)).toEqual([...RELEASE_ROUTE_KEYS, "jobs", "knowledge", "review", "agents", "settings"]);
+    expect(Object.keys(budgets.assets.routes)).toEqual([...RELEASE_ROUTE_KEYS, "jobs", "knowledge", "review", "agents", "settings", "setup"]);
     const projectId = "g-0123456789abcdef01234567";
     expect(releaseWorkbenchPaths({ projectId })).toEqual({ home: "/", repo: "/repos/" + projectId });
     expect(() => releaseWorkbenchPaths({ projectId: "../outside" })).toThrow(/machine project ID/u);
@@ -121,7 +122,8 @@ describe("release benchmark contract", () => {
     expect(patterns).toEqual([
       "/agents/:agent?", "/settings", "*",
       "/", "/review/:cardKey?", "/repos/:projectId/review/:cardKey?", "/knowledge/:entryKey?",
-      "/repos/:projectId/knowledge/:entryKey?", "/repos/:projectId", "/jobs", "/repos/:projectId/jobs", "*",
+      "/repos/:projectId/knowledge/:entryKey?", "/repos/:projectId", "/setup", "/repos/:projectId/setup",
+      "/jobs", "/repos/:projectId/jobs", "*",
     ]);
     expect(routes).toContain('<Route element={<Navigate replace to={homeHref} />} path="*" />');
     expect(RELEASE_COMMON_READ_PATHS).toEqual({
@@ -130,6 +132,7 @@ describe("release benchmark contract", () => {
       review: "/api/v1/review", reviewDetail: "/api/v1/review/cards/:key",
       agents: "/api/v1/agents", agentDetail: "/api/v1/agents/claude-code",
       settings: "/api/v1/settings", uninstallPreview: "/api/v1/settings/uninstall",
+      setup: "/api/v1/setup", setupDetail: "/api/v1/setup?repo=:repo",
     });
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile])).toEqual(RELEASE_ROUTE_KEYS);
@@ -287,6 +290,7 @@ describe("release benchmark contract", () => {
     expect(validate(legacyReport), JSON.stringify(validate.errors)).toBe(true);
 
     const machineReport = representativeReleaseReport({ runtimeViolations: [], passed: true });
+    machineReport.assets.routes.setup = { jsBytes: 3, cssBytes: 3, fontBytes: 0, files: [] };
     const memory = summarize([1, 1, 1, 1, 1], 5);
     const database = { databaseBytes: 1, inputBytes: 1, ratio: 1 };
     machineReport.profiles.small = {
@@ -434,24 +438,30 @@ describe("release benchmark contract", () => {
     }
   });
 
-  it("charges a lazy Repo chunk and its nested imports only to the Repo route", () => {
+  it("charges lazy workbenches and their nested imports to their own routes", () => {
     const output = mkdtempSync(join(tmpdir(), "mex-release-assets-"));
     try {
       const manifest = writeAssetFixture(output);
-      manifest["index.html"].dynamicImports = ["repo-chunk", "jobs-chunk"];
+      manifest["index.html"].dynamicImports = ["repo-chunk", "jobs-chunk", "setup-chunk"];
       manifest["repo-chunk"] = {
         src: "src/machine/RepoPage.tsx", file: "assets/repo.js", isDynamicEntry: true,
         imports: ["index.html"], dynamicImports: ["repo-detail"],
       };
       manifest["repo-detail"] = { file: "assets/detail.js", css: ["assets/detail.css"], isDynamicEntry: true };
       manifest["jobs-chunk"] = { src: "src/machine/JobsPage.tsx", file: "assets/jobs.js", isDynamicEntry: true, imports: ["index.html"] };
-      for (const file of ["repo.js", "detail.js", "detail.css", "jobs.js"]) writeFileSync(join(output, "assets", file), "123");
+      manifest["setup-chunk"] = {
+        src: "src/machine/SetupPage.tsx", file: "assets/setup.js", css: ["assets/setup.css"], isDynamicEntry: true, imports: ["index.html"],
+      };
+      for (const file of ["repo.js", "detail.js", "detail.css", "jobs.js", "setup.js", "setup.css"]) {
+        writeFileSync(join(output, "assets", file), "123");
+      }
       writeAssetManifest(output, manifest);
       const measured = measureBuiltAssets(output, budgets.assets);
       expect(measured.initial.jsBytes).toBe(10);
       expect(measured.routes.home.jsBytes).toBe(0);
       expect(measured.routes.repo).toMatchObject({ jsBytes: 6, cssBytes: 3, fontBytes: 0 });
       expect(measured.routes.jobs).toMatchObject({ jsBytes: 3, cssBytes: 0, fontBytes: 0 });
+      expect(measured.routes.setup).toMatchObject({ jsBytes: 3, cssBytes: 3, fontBytes: 0 });
       expect(measured.violations).toEqual([]);
     } finally {
       rmSync(output, { recursive: true, force: true });
@@ -641,7 +651,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(75);
+    expect(exactMetrics).toHaveLength(81);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);

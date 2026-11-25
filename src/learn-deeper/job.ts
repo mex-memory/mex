@@ -494,6 +494,18 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
         return { checkpoint: JSON.stringify({ ...state, recovered: (state.recovered ?? 0) + 1 }), progress: "Resuming from the last finished batch" };
       } catch { return {}; }
     },
+    blockedBy(job, reader) {
+      // A Hub approval can arrive while free setup is still running. Keep its
+      // place even if an earlier step is paused and later requeued.
+      if (weeklyMode) return;
+      let waitsForSetup: boolean;
+      try { waitsForSetup = JSON.parse(job.params)?.waitForSetup === true; } catch { return; }
+      if (waitsForSetup && reader.all(`SELECT 1 FROM jobs WHERE project_id=? AND created_at<=?
+          AND kind IN ('file-index','code-facts','graph-build')
+          AND state IN ('queued','running','paused','waiting') LIMIT 1`, job.project_id, job.created_at).length) {
+        return "Starts after the code map.";
+      }
+    },
     ready(job, writer) {
       if (job.reason === CEILING_WAIT) return false;
       const state = checkpoint(job);

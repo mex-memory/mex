@@ -34,7 +34,8 @@
       "knowledge": { "jsBytes": 132258, "cssBytes": 26868, "fontBytes": 0 },
       "review": { "jsBytes": 108901, "cssBytes": 18676, "fontBytes": 0 },
       "agents": { "jsBytes": 139466, "cssBytes": 13794, "fontBytes": 0 },
-      "settings": { "jsBytes": 119238, "cssBytes": 33982, "fontBytes": 0 }
+      "settings": { "jsBytes": 119238, "cssBytes": 33982, "fontBytes": 0 },
+      "setup": { "jsBytes": 88273, "cssBytes": 7664, "fontBytes": 0 }
     }
   },
   "runtime": {
@@ -42,9 +43,9 @@
     "idleRssBytes": { "small": 129418240, "medium": 131980698, "large": 133963776 },
     "idleCpuMs": { "small": 0, "medium": 0, "large": 0 },
     "apiLatencyMs": {
-      "small": { "session": 5, "projects": 5, "home": 25, "jobs": 15, "knowledge": 25, "knowledgeLanding": 25, "review": 25, "reviewDetail": 50, "agents": 25, "agentDetail": 25, "settings": 25, "uninstallPreview": 25 },
-      "medium": { "session": 9, "projects": 9, "home": 40, "jobs": 20, "knowledge": 40, "knowledgeLanding": 40, "review": 40, "reviewDetail": 80, "agents": 40, "agentDetail": 40, "settings": 40, "uninstallPreview": 40 },
-      "large": { "session": 9, "projects": 9, "home": 75, "jobs": 30, "knowledge": 75, "knowledgeLanding": 75, "review": 75, "reviewDetail": 150, "agents": 75, "agentDetail": 75, "settings": 75, "uninstallPreview": 75 }
+      "small": { "session": 5, "projects": 5, "home": 25, "jobs": 15, "knowledge": 25, "knowledgeLanding": 25, "review": 25, "reviewDetail": 50, "agents": 25, "agentDetail": 25, "settings": 25, "uninstallPreview": 25, "setup": 25, "setupDetail": 25 },
+      "medium": { "session": 9, "projects": 9, "home": 40, "jobs": 20, "knowledge": 40, "knowledgeLanding": 40, "review": 40, "reviewDetail": 80, "agents": 40, "agentDetail": 40, "settings": 40, "uninstallPreview": 40, "setup": 40, "setupDetail": 40 },
+      "large": { "session": 9, "projects": 9, "home": 75, "jobs": 30, "knowledge": 75, "knowledgeLanding": 75, "review": 75, "reviewDetail": 150, "agents": 75, "agentDetail": 75, "settings": 75, "uninstallPreview": 75, "setup": 75, "setupDetail": 75 }
     },
     "maintenanceMs": {
       "small": { "graph_refresh": 1977, "graph_rebuild": 1709, "wiki_refresh": 206, "wiki_rebuild": 244 },

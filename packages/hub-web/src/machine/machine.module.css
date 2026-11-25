@@ -261,7 +261,7 @@
 
 .jobStatus[data-phase="waiting"],
 .jobStatus[data-phase="doneWithGaps"] {
-  color: var(--warning);
+  color: var(--text-secondary);
   background: var(--warning-soft);
   border-color: var(--warning-border);
 }

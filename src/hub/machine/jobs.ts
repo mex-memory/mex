@@ -73,7 +73,7 @@ function toHubJob(job: JobProjection, details: JobDetails | undefined): MachineJ
   };
 }
 
-export function readHubJobs(location: LocationOptions): MachineJob[] {
+export function readHubJobs(location: LocationOptions, focusedId?: string): MachineJob[] {
   return readStore(openRecordReadOnly, location, (reader) => {
     if (!reader) return [];
     const jobs = listJobs(reader, JOB_LIMIT);
@@ -81,7 +81,12 @@ export function readHubJobs(location: LocationOptions): MachineJob[] {
     const details = reader.all<JobDetails>(`SELECT id,project_id,failures,params FROM jobs
       WHERE id IN (SELECT value FROM json_each(?)) LIMIT ?`, JSON.stringify(jobs.map(({ id }) => id)), JOB_LIMIT);
     const byId = new Map(details.map((row) => [row.id, row]));
-    return jobs.map((job) => toHubJob(job, byId.get(job.id)));
+    const list = jobs.map((job) => toHubJob(job, byId.get(job.id)));
+    if (focusedId && !byId.has(focusedId)) {
+      const focused = reader.get<JobWithProject>(jobById, focusedId);
+      if (focused) return [...list.slice(0, JOB_LIMIT - 1), projectCurrent(reader, focused)];
+    }
+    return list;
   });
 }
 

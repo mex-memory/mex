@@ -39,6 +39,7 @@ export const Plan = z.object({
   docs: z.array(z.string().refine(repoPath)).max(MAX_DOCS),
   sessions: z.array(ImportFile).max(MAX_SESSIONS).default([]),
   refresh: z.boolean().default(false),
+  waitForSetup: z.literal(true).optional(),
   gaps: z.array(z.string().max(180)).max(12),
   estimate: z.number().int().positive(), ceiling: z.number().int().positive(),
 }).strict();

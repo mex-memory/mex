@@ -1,0 +1,488 @@
+.page {
+  display: grid;
+  min-width: 0;
+  width: min(100%, 940px);
+  gap: 20px;
+  overflow-wrap: anywhere;
+}
+
+.page h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.page p {
+  margin-block: 0;
+}
+
+.page code {
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 0.91em;
+  overflow-wrap: anywhere;
+}
+
+.repoList,
+.freeFindings,
+.empty,
+.summary {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.repoList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repoList li {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px 16px;
+  padding: 14px 18px;
+}
+
+.repoList li + li {
+  border-top: 1px solid var(--border);
+}
+
+.repoIdentity {
+  display: grid;
+  min-width: 0;
+  justify-items: start;
+  gap: 3px;
+}
+
+.repoIdentity a {
+  font-size: 14px;
+}
+
+.repoIdentity code,
+.sectionHeader code,
+.repoStatus {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.freeFindings {
+  background: var(--surface-subtle);
+}
+
+.sectionHeader {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 3px 16px;
+  padding: 12px 18px;
+}
+
+.findings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 10px 20px;
+  margin: 0;
+  padding: 0 18px 14px;
+  font-size: 13px;
+}
+
+.findings dt {
+  font-weight: 550;
+}
+
+.findings dd {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.summary,
+.empty {
+  padding: 16px 18px;
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px 24px;
+}
+
+.empty {
+  display: grid;
+  max-width: 500px;
+  justify-items: start;
+  gap: 7px;
+}
+
+.summary p,
+.empty p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.summary h2 + p {
+  margin-top: 5px;
+}
+
+.rerun {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+
+@media (max-width: 600px) {
+  .page { gap: 16px; }
+  .findings { grid-template-columns: 1fr; }
+  .summary { align-items: start; flex-direction: column; }
+  .repoIdentity a { min-height: 28px; }
+}
+
+.section {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.steps {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  list-style: none;
+}
+
+.step {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 22px;
+  padding: 13px 18px;
+}
+
+.step + .step {
+  border-top: 1px solid var(--border);
+}
+
+.stepMain,
+.stepAside {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  justify-items: start;
+}
+
+/* Step controls and links share one line, so "View job" lines up across rows. */
+.stepAside {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px 14px;
+}
+
+.stepTitle,
+.actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+}
+
+.stepTitle h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.stepMain p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.stepMain progress {
+  display: block;
+  width: min(240px, 100%);
+  height: 4px;
+  overflow: hidden;
+  appearance: none;
+  color: var(--text-secondary);
+  background: var(--muted);
+  border: 0;
+  border-radius: 999px;
+}
+
+.stepMain progress::-webkit-progress-bar {
+  background: var(--muted);
+}
+
+.stepMain progress::-webkit-progress-value {
+  background: var(--text-secondary);
+}
+
+.stepMain progress::-moz-progress-bar {
+  background: var(--text-secondary);
+}
+
+.progressText {
+  font-variant-numeric: tabular-nums;
+}
+
+.progressText:empty {
+  position: absolute;
+}
+
+.actions [data-slot="button"],
+.questionsHeader [data-slot="button"] {
+  font-size: 13px;
+}
+
+.actions button[aria-disabled="true"] {
+  opacity: 0.65;
+}
+
+.confirmation.confirmation {
+  width: min(calc(100% - 32px), 420px);
+  max-width: none;
+  overflow-y: auto;
+  max-height: calc(100dvh - 32px);
+  box-shadow: var(--overlay-shadow);
+}
+
+.confirmation [data-slot="alert-dialog-title"],
+.confirmation [data-slot="alert-dialog-description"] {
+  margin: 0;
+}
+
+.confirmation [data-slot="alert-dialog-footer"] {
+  border-color: var(--border);
+}
+
+@media (max-width: 600px) {
+  .step { grid-template-columns: minmax(0, 1fr); }
+  .stepAside { justify-content: flex-start; }
+  .actions [data-slot="button"] { min-height: 44px; }
+  .stepAside a { min-height: 28px; }
+}
+
+.estimate {
+  display: grid;
+  width: fit-content;
+  max-width: 100%;
+  gap: 8px;
+  margin-block: 3px;
+}
+
+.estimate dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 9px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.estimate dt {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.estimate dd {
+  margin: 2px 0 0;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.confirmationHeader.confirmationHeader {
+  justify-items: start;
+  text-align: start;
+}
+
+.confirmationBody {
+  display: grid;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.confirmationBody p {
+  margin: 0;
+}
+
+.confirmationBody code {
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 0.95em;
+}
+
+@media (max-width: 600px) {
+  .confirmation [data-slot="alert-dialog-footer"] {
+    flex-direction: column;
+  }
+
+  .confirmation [data-slot="button"] {
+    min-height: 44px;
+  }
+}
+
+.questionsHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px 16px;
+}
+
+.questionsHeader p {
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.questions {
+  margin: 0;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  list-style: none;
+}
+
+.question {
+  display: grid;
+  gap: 8px;
+  padding: 12px 18px;
+}
+
+.question + .question {
+  border-top: 1px solid var(--border);
+}
+
+.question h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+
+.question p,
+.outcome {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.question [data-slot="button"] {
+  height: auto;
+  min-width: 0;
+  min-height: 28px;
+  flex-wrap: wrap;
+  padding-block: 4px;
+  text-align: start;
+  white-space: normal;
+}
+
+.suggestion {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.outcome {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.outcome:empty {
+  position: absolute;
+}
+
+.outcome svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+@media (max-width: 600px) {
+  .question [data-slot="button"],
+  .questionsHeader [data-slot="button"] { min-height: 44px; }
+}
+
+/* Learn deeper is the one optional step worth recommending: show what it adds first, the cost after. */
+.step[data-offer] {
+  padding-block: 16px;
+  background: var(--surface-subtle);
+}
+
+.step[data-offer] .stepMain {
+  gap: 10px;
+}
+
+.recommended.recommended {
+  gap: 4px;
+  color: var(--foreground);
+  font-weight: 550;
+}
+
+.recommended svg {
+  width: 12px;
+  height: 12px;
+}
+
+.stepMain .offerLead {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.gains {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.gains li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+}
+
+.gains svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.stepMain .offerCost {
+  font-size: 12px;
+}
+
+.stepMain .offerCost {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}

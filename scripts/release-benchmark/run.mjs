@@ -141,7 +141,7 @@ try {
       activeServer = await startHub({ projectRoot, cliPath, environment: hubEnvironment });
       const auth = await authenticateHub(activeServer);
       const registered = await hubJson(activeServer, RELEASE_COMMON_READ_PATHS.projects, auth);
-      seedKnowledgeFixture(join(hubEnvironment.MEX_HOME, ".mex"), registered.projects[0], RELEASE_FIXTURE_PROFILES[profileName].sourceFiles);
+      seedHubReadFixture(join(hubEnvironment.MEX_HOME, ".mex"), registered.projects[0], RELEASE_FIXTURE_PROFILES[profileName].sourceFiles);
       const { timings: apiLatency, project } = await measureCommonReads(activeServer, auth, budgets.samples.timing);
       if (project.name !== basename(projectRoot)) throw new Error("The machine Hub returned the wrong release fixture.");
       const browser = await measureWorkbenchHeap({
@@ -185,7 +185,7 @@ try {
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 if (!report.budgetEvaluation.passed) process.exitCode = 1;
 
-function seedKnowledgeFixture(home, { id: projectId, checkouts: [{ path: checkout }] }, count) {
+function seedHubReadFixture(home, { id: projectId, checkouts: [{ path: checkout }] }, count) {
   const notes = join(home, "projects", projectId, "notes");
   mkdirSync(notes, { recursive: true });
   // Review checks that the stored source path is under the canonical note directory.
@@ -199,6 +199,10 @@ function seedKnowledgeFixture(home, { id: projectId, checkouts: [{ path: checkou
     const setting = record.prepare("INSERT INTO settings VALUES(?,?,?)");
     const row = record.prepare("INSERT INTO review VALUES(?,?,?,'checks','pending',?)");
     const now = Date.now();
+    const at = new Date(now).toISOString();
+    record.prepare(`INSERT INTO jobs(id,project_id,kind,state,params,created_at,updated_at,finished_at)
+      VALUES('benchmark-setup-map',?,'graph-build','done',?,?,?,?)`).run(projectId, JSON.stringify({ checkout }), at, at, at);
+    record.prepare("INSERT INTO job_results VALUES('benchmark-setup-map',0,?)").run("Code map built for the fixture");
     for (let index = 0; index < count; index += 1) {
       const id = "mx_bench" + String(index).padStart(4, "0");
       const oneLine = `keep fixture ${index} reproducible`;

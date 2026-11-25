@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { VERSION } from "../version.js";
 import { openRecord, type RecordWriter } from "./index.js";
 import { recordLocation, type LocationOptions } from "./location.js";
-import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
+import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type BeforeJobInsert, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queueBehindHead, queuePendingRefreshes } from "../file-index/pending.js";
@@ -107,8 +107,8 @@ function clearPending(writer: RecordWriter): void {
 }
 
 /** Queue a job and leave the marker, so the next `mex` command or session start runs it. */
-export function queueJob(writer: RecordWriter, options: EnqueueOptions): EnqueueResult {
-  const result = enqueueJob(writer, options);
+export function queueJob(writer: RecordWriter, options: EnqueueOptions, beforeInsert?: BeforeJobInsert): EnqueueResult {
+  const result = enqueueJob(writer, options, beforeInsert);
   markPending(writer);
   return result;
 }
