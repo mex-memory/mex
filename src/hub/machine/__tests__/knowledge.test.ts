@@ -1,11 +1,11 @@
-import { MachineForgottenPageSchema, MachineKnowledgeConflictSchema, MachineKnowledgeDetailSchema, MachineKnowledgePreviewReplySchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
+import { MachineChangeEventSchema, MachineForgottenPageSchema, MachineKnowledgeConflictSchema, MachineKnowledgeDetailSchema, MachineKnowledgePreviewReplySchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
 import { setImmediate } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hash } from "../../../judge/evidence.js";
 import { ruleChangeKey } from "../../../judge/rule-change.js";
 import { KNOWLEDGE_LIMITS, serializeEntry, type KnowledgeEntry } from "../../../knowledge/entry.js";
@@ -533,4 +533,29 @@ describe("Knowledge writes", () => {
     expect((await post("/notes", { ...body, text: "A".repeat(70_000) })).status).toBe(400);
     expect((await post(itemPath(repo, "onlyYou", "../outside") + "/forget", {})).status).toBe(400);
   });
+});
+
+it("publishes knowledge after a snapshot and a write to every open tab", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const repo = project("repo");
+  const open = () => app.request(ORIGIN + "/api/v1/events", { headers: { host: new URL(ORIGIN).host, cookie } });
+  const a = (await open()).body!.getReader();
+  const b = (await open()).body!.getReader();
+  const read = async (reader: ReadableStreamDefaultReader<Uint8Array>) => new TextDecoder().decode((await reader.read()).value);
+  const nextChange = async (reader: ReadableStreamDefaultReader<Uint8Array>) => {
+    const message = (await read(reader)).split("\n").find((line) => line.startsWith("data: "));
+    return MachineChangeEventSchema.parse(JSON.parse(message!.slice(6))).topics;
+  };
+  try {
+    for (const tab of [a, b]) expect(await read(tab)).toContain(": connected");
+    await page();
+    await vi.advanceTimersByTimeAsync(2_000);
+    for (const tab of [a, b]) expect(await nextChange(tab)).toContain("knowledge");
+    expect((await post("/notes", { repoId: repo.id, text: "Keep fixture inputs small.", kind: "rule" }, "stream-write")).status).toBe(201);
+    for (const tab of [a, b]) expect(await nextChange(tab)).toEqual(["knowledge"]);
+    expect((await page()).total).toBe(1);
+  } finally {
+    await Promise.all([a.cancel(), b.cancel()]);
+    vi.useRealTimers();
+  }
 });

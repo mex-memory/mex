@@ -34,7 +34,7 @@ export class KnowledgeData {
 
   constructor(readonly location: LocationOptions, private readonly now: () => number, private readonly env?: NodeJS.ProcessEnv) {}
 
-  get generation() { return this.#generation; }
+  get eventVersion() { return `${this.#generation}:${this.#updatingSince ?? ""}`; }
 
   get() {
     this.touch();
@@ -101,9 +101,12 @@ export class KnowledgeData {
         this.#generation++;
         this.#watch();
       } catch {
-        if (!this.#snapshot) this.#snapshot = {
-          generatedAt: new Date(this.now()).toISOString(), projects: new Map(), partial: "Knowledge couldn’t be read. Try refreshing.",
-        };
+        if (!this.#snapshot) {
+          this.#generation++;
+          this.#snapshot = {
+            generatedAt: new Date(this.now()).toISOString(), projects: new Map(), partial: "Knowledge couldn’t be read. Try refreshing.",
+          };
+        }
       } finally {
         this.#updatingSince = undefined;
         this.#refreshing = undefined;

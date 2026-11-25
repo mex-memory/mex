@@ -8,7 +8,7 @@ const JOBS_KEY = ["jobs"];
 const POLL_MS = 10_000;
 export type HubEventState = "connecting" | "open" | "reconnecting" | "polling";
 
-function queryOptions(events: HubEventState) {
+export function queryOptions(events: HubEventState) {
   return {
     placeholderData: keepPreviousData,
     refetchInterval: events === "open" ? false as const : POLL_MS,
@@ -44,6 +44,7 @@ export function useHubEvents(checkSession: () => void): HubEventState {
       // Re-read after a disconnect, since the stream carries only change signals.
       refresh("home");
       refresh("jobs");
+      refresh("knowledge");
     };
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) {

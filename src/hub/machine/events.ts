@@ -1,6 +1,7 @@
 import type { MachineChangeEvent } from "@mex/hub-contracts/machine";
 import type { LocationOptions } from "../../record/location.js";
 import { homeActivityFingerprint, type HomeData } from "./home.js";
+import type { KnowledgeData } from "./knowledge.js";
 import { jobsFingerprint } from "./jobs.js";
 import { HubRequestError } from "./security.js";
 
@@ -29,11 +30,13 @@ export class HubEvents {
   #jobs: string | undefined;
   #activity: string | undefined;
   #generation: number | undefined;
+  #knowledge: string | undefined;
   #closed = false;
 
   constructor(
     private readonly location: LocationOptions,
     private readonly home: HomeData,
+    private readonly knowledge: KnowledgeData,
     private readonly now: () => number,
     private readonly keepOpen: () => void,
   ) {}
@@ -71,6 +74,7 @@ export class HubEvents {
         signal.addEventListener("abort", close, { once: true });
         this.#clients.add(client);
         this.home.touch();
+        this.knowledge.touch();
         if (!this.#poll) this.#startTimers();
         client.send(connected);
       },
@@ -99,7 +103,7 @@ export class HubEvents {
     clearInterval(this.#poll);
     clearInterval(this.#ping);
     this.#poll = this.#ping = undefined;
-    this.#jobs = this.#activity = this.#generation = undefined;
+    this.#jobs = this.#activity = this.#generation = this.#knowledge = undefined;
   }
 
   #tick() {
@@ -110,6 +114,7 @@ export class HubEvents {
     if (!this.#clients.size) return;
 
     this.home.touch();
+    this.knowledge.touch();
     const now = this.now();
     if (now - this.#lastKeepOpen! >= KEEP_OPEN_MS) {
       this.#lastKeepOpen = now;
@@ -137,6 +142,19 @@ export class HubEvents {
       this.#activity = activity;
     } catch { /* Try again on the next tick. */ }
     if (homeChanged) topics.push("home");
+    const knowledge = this.knowledge.eventVersion;
+    if (this.#knowledge !== undefined && this.#knowledge !== knowledge) topics.push("knowledge");
+    this.#knowledge = knowledge;
+    this.#sendChange(topics);
+  }
+
+  knowledgeChanged() {
+    if (!this.#clients.size) return;
+    this.#knowledge = this.knowledge.eventVersion;
+    this.#sendChange(["knowledge"]);
+  }
+
+  #sendChange(topics: MachineChangeEvent["topics"]) {
     if (topics.length) this.#send(encoder.encode(`event: change\ndata: ${JSON.stringify({ topics })}\n\n`));
   }
 

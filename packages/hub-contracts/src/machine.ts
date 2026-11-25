@@ -281,7 +281,7 @@ export const MachineJobActionRequestSchema = z.object({
 export const MachineJobActionResponseSchema = MachineJobSchema;
 export const MachineJobConflictSchema = MachineProblemSchema.extend({ job: MachineJobSchema });
 
-export const MachineChangeEventSchema = z.object({ topics: z.array(z.enum(["jobs", "home"])).min(1).max(2) });
+export const MachineChangeEventSchema = z.object({ topics: z.array(z.enum(["jobs", "home", "knowledge"])).min(1).max(3) });
 
 export type MachineHome = z.infer<typeof MachineHomeSchema>;
 export type MachineJob = z.infer<typeof MachineJobSchema>;
