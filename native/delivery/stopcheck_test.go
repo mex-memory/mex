@@ -3,12 +3,15 @@ package delivery
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
@@ -17,13 +20,31 @@ import (
 
 // apiObligation is knowledge-08's CI path obligation for packages/api.
 func apiObligation(f *fixture) {
-	f.entry(spec{id: "mx_factapi", kind: "procedure", scope: "packages/api/**", evidence: "mined", source: "ci", ref: ".github/workflows/api.yml",
-		oneLine: "After changes in `packages/api/**`, run `npm run -w packages/api test` (CI runs it in `.github/workflows/api.yml`).",
-		checks: []string{
-			"    - kind: key\n      role: complete\n      target: {file: .github/workflows/api.yml, pointer: /on/pull_request/paths}\n      saw: {value: [\"packages/api/**\"]}\n      files: {}\n",
-			"    - kind: command\n      role: supporting\n      target: {run: \"npm run -w packages/api test\", file: packages/api/package.json, pointer: /scripts/test}\n      saw: {exists: true}\n      files: {}\n",
-		}})
+	f.entry(ciObligationSpec("mx_factapi", "packages/api", ".github/workflows/api.yml"))
 	f.verdict("mx_factapi", held)
+}
+
+func ciObligationSpec(id, folder, workflow string) spec {
+	scope := folder + "/**"
+	command := "npm run -w " + folder + " test"
+	return spec{
+		id: id, kind: "procedure", scope: scope, evidence: "mined", source: "ci", ref: workflow,
+		oneLine: fmt.Sprintf("After changes in `%s`, run `%s` (CI runs it in `%s`).", scope, command, workflow),
+		checks: []string{
+			fmt.Sprintf(`    - kind: key
+      role: complete
+      target: {file: %q, pointer: /on/pull_request/paths}
+      saw: {value: [%q]}
+      files: {}
+`, workflow, scope),
+			fmt.Sprintf(`    - kind: command
+      role: supporting
+      target: {run: %q, file: %q, pointer: /scripts/test}
+      saw: {exists: true}
+      files: {}
+`, command, folder+"/package.json"),
+		},
+	}
 }
 
 // journal appends capture rows for the fixture's session.
@@ -349,6 +370,86 @@ func TestStopDirectTestsSpendOneBudgetPerEpoch(t *testing.T) {
 	f.journal(editRow(stopSourceFile))
 	if r := stopWithChangedFile(f, stopSourceFile); r != (contract.Reply{}) {
 		t.Fatalf("second turn in the same epoch should be silent: %+v", r)
+	}
+}
+
+func TestStopChecksTiming(t *testing.T) {
+	const (
+		obligationCount = 64
+		rowCount        = 2000
+		runCount        = 5
+	)
+	f := rescueFixture(t)
+	f.start("startup")
+	verdicts := make([]record.Verdict, 0, obligationCount)
+	for i := range obligationCount {
+		id := fmt.Sprintf("mx_stop%02d", i)
+		folder := fmt.Sprintf("packages/ci-%02d", i)
+		workflow := fmt.Sprintf(".github/workflows/ci-%02d.yml", i)
+		f.entry(ciObligationSpec(id, folder, workflow))
+		verdicts = append(verdicts, record.Verdict{EntryID: id, Verdict: held, InputsHash: "x", CheckedAt: f.now.UTC().Format(time.RFC3339Nano)})
+	}
+
+	rows := make([]record.JournalRow, 0, rowCount)
+	command := commandRow("git status --short", 0)
+	for i := range rowCount / 2 {
+		rel := fmt.Sprintf("packages/unrelated/file-%04d.ts", i)
+		rows = append(rows, editRow(rel), command)
+	}
+	f.journal(rows...)
+
+	h, err := record.OpenHooks(record.Location{Directory: f.dir, Hooks: filepath.Join(f.dir, "hooks.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.PutVerdicts(f.project, f.root, verdicts); err != nil {
+		h.Close()
+		t.Fatal(err)
+	}
+	journal, err := h.JournalAfter(f.session, 0, rowCount+1)
+	if closeErr := h.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil || len(journal) != rowCount {
+		t.Fatalf("journal fixture has %d rows, want %d (read error: %v)", len(journal), rowCount, err)
+	}
+	lastRow := journal[len(journal)-1].ID
+
+	file := f.file(rows[0].Text, "export const route = '/orders';\n")
+	ev, env := f.event(contract.Stop), f.env()
+	env.Changed = ChangedLines{file: {{From: 1, To: 1}}}
+	cursor := stopCursorPath(f.dir, ev)
+	timings := make([]time.Duration, runCount)
+	for i := range timings {
+		if i > 0 {
+			// Reread the full turn on every sample.
+			if err := os.Remove(cursor); err != nil {
+				t.Fatal(err)
+			}
+		}
+		start := time.Now()
+		r := StopChecks(ev, env)
+		timings[i] = time.Since(start)
+		if r != (contract.Reply{}) {
+			t.Fatalf("run %d: want an empty reply, got %+v", i+1, r)
+		}
+		if got := loadStopCursor(cursor); got != lastRow {
+			t.Fatalf("run %d: stopped reading at journal row %d, want %d", i+1, got, lastRow)
+		}
+	}
+
+	snap, err := entries.LoadLight(f.dir, f.home, f.project, f.root)
+	if err != nil || len(snap.Items) != obligationCount {
+		t.Fatalf("entry fixture has %d obligations, want %d (load error: %v)", len(snap.Items), obligationCount, err)
+	}
+	slices.Sort(timings)
+	median, slowest := timings[runCount/2], timings[runCount-1]
+	t.Logf("StopChecks median %v, slowest %v (%d runs)", median, slowest, runCount)
+	if median >= 250*time.Millisecond {
+		t.Errorf("median %v, want under 250ms", median)
+	}
+	if slowest >= time.Second {
+		t.Errorf("slowest run %v, want under 1s", slowest)
 	}
 }
 
