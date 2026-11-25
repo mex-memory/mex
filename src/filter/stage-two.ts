@@ -126,7 +126,7 @@ export async function runStageTwo(writer: RecordWriter, project: string, params:
   let tokens = 0;
   const call = async (prompt: string) => {
     assertNoSecrets(prompt);
-    const result = await deps.model({ agent: params.agent, role: deps.stageTwo?.role ?? "cheap", projectRoot: checkout,
+    const result = await deps.model({ agent: params.agent, role: deps.stageTwo?.role ?? "cheap", projectRoot: checkout, allowNonGit: project.startsWith("f-"),
       purpose: "filter-stage-two", prompt,
       automatic: { estimate: { input: Buffer.byteLength(prompt), cache_read: 0, cache_write: 0, output: 8192 } } });
     const usage = result.usage;

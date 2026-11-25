@@ -31,6 +31,7 @@ var caps = adapter.Capabilities{
 	Agent: Agent,
 	Kinds: []adapter.KindSupport{
 		{Kind: contract.SessionStart, NativeEvent: "session.created", Context: adapter.ChannelNone, TimeoutSeconds: 10},
+		{Kind: contract.Prompt, NativeEvent: "chat.message", Context: adapter.ChannelNone, TimeoutSeconds: 10},
 		{Kind: contract.PreTool, NativeEvent: "tool.execute.before", Context: adapter.ChannelNone, Deny: true, TimeoutSeconds: 10},
 		{Kind: contract.PostTool, NativeEvent: "tool.execute.after", Context: adapter.ChannelToolResult, ReplaceOutput: true, TimeoutSeconds: 10},
 		{Kind: contract.PostToolFailure, NativeEvent: "tool.execute.after", Context: adapter.ChannelToolResult, TimeoutSeconds: 10},
@@ -56,6 +57,8 @@ type payload struct {
 	SessionID       string          `json:"session_id"`
 	ParentSessionID string          `json:"parent_session_id"`
 	Cwd             string          `json:"cwd"`
+	Prompt          *string         `json:"prompt"`
+	FinalReply      *string         `json:"final_reply"`
 	Tool            string          `json:"tool"`
 	Args            json.RawMessage `json:"args"`
 	Output          *string         `json:"output"`
@@ -80,6 +83,13 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		ev.SessionID, ev.AgentID = p.ParentSessionID, p.SessionID
 	}
 	switch kind {
+	case contract.Prompt:
+		if p.Prompt == nil {
+			return contract.Event{}, adapter.ErrSkip
+		}
+		ev.Prompt = &contract.PromptIn{Text: *p.Prompt, Typed: true}
+	case contract.Stop:
+		ev.FinalReply = p.FinalReply
 	case contract.PreTool:
 		t := parseTool(p.Tool, p.Args, p.Cwd)
 		ev.Tool = &t

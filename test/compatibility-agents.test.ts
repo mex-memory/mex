@@ -12,12 +12,12 @@ const rows = (heading: string) => {
 describe("COMPATIBILITY.md agent tables", () => {
   const agents = ["Claude Code", "Codex", "Cursor", "Antigravity", "Gemini CLI", "Copilot CLI", "OpenCode", "Devin", "Kiro"];
 
-  it("has a capability row with seven cells for every agent", () => {
+  it("has a capability row with a session-learning column for every agent", () => {
     const table = rows("## Agents in 0.9");
-    for (const agent of agents) {
+    for (const agent of [...agents, "Cline", "Amp", "Aider"]) {
       const row = table.find((l) => l.startsWith(`| ${agent}`));
       expect(row, agent).toBeDefined();
-      expect(row!.split(" | ").length, agent).toBe(7);
+      expect(row!.split(" | ").length, agent).toBe(8);
     }
   });
 

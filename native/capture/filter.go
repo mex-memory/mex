@@ -6,14 +6,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
+	"github.com/mex-memory/mex/native/internal/captureprofile"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record/place"
 )
 
-// FilterSession is metadata only. Replies remain in the host transcript;
-// neither replies nor model requests belong in the capture journal.
+const filterFileBytes = 16 << 10
+
+// FilterSession is metadata only. Reply text and model requests do not belong
+// in the capture journal.
 type FilterSession struct {
 	Version    int    `json:"version"`
 	Project    string `json:"project_id"`
@@ -26,23 +30,32 @@ type FilterSession struct {
 	Branch     string `json:"branch,omitempty"`
 	Head       string `json:"head,omitempty"`
 	PositionAt string `json:"position_at,omitempty"`
+	Idle       bool   `json:"idle,omitempty"`
+	PromptAt   string `json:"prompt_at,omitempty"`
+	OutsideAt  string `json:"outside_at,omitempty"`
 }
 
 // filterMetadata records activity even on hooks that have no journal row.
-// SessionEnd is the only finish signal; Stop fires after ordinary replies.
+// On hosts without SessionEnd, a completed turn plus inactivity can finish a batch.
 func filterMetadata(ev contract.Event, env Env) error {
-	if ev.AgentID != "" || (ev.Agent != "claude-code" && ev.Agent != "codex") {
+	profile := captureprofile.For(ev.Agent)
+	legacy := ev.Agent == "claude-code" || ev.Agent == "codex"
+	if ev.AgentID != "" || ev.CaptureOnly || !profile.CapturesTyped() || (!legacy && !env.SessionLearning) {
 		return nil
 	}
+	idle := env.SessionLearning && profile.Finish == "idle" && ev.Kind == contract.Stop && !ev.IncompleteTurn
 	// The hook already touches its heartbeat on every call. Do not add file
 	// replacement to the no-op tool path merely to record the same activity.
 	switch ev.Kind {
 	case contract.SessionStart, contract.Prompt, contract.PreCompact, contract.SessionEnd:
 	default:
-		return nil
+		if !idle {
+			return nil
+		}
 	}
+	stamp := now(env).UTC()
 	s := FilterSession{Version: 1, Project: ev.ProjectID, Checkout: ev.Checkout, Agent: ev.Agent, Session: ev.SessionID,
-		Seen: now(env).UTC().Format(time.RFC3339Nano), Finished: ev.Kind == contract.SessionEnd, Transcript: ev.Transcript}
+		Seen: stamp.Format(time.RFC3339Nano), Finished: ev.Kind == contract.SessionEnd, Transcript: ev.Transcript, Idle: idle}
 	s.Branch = Branch(ev.Checkout)
 	if s.Branch != "" {
 		s.Head = Head(ev.Checkout, s.Branch)
@@ -51,24 +64,40 @@ func filterMetadata(ev contract.Event, env Env) error {
 	name := place.ShortHash(ev.ProjectID + "\x00" + ev.SessionID)
 	var prior FilterSession
 	if readJSON(filepath.Join(env.RecordDirectory, "filter-sessions", name+".json"), &prior) == nil && prior.Version == 1 && prior.Project == s.Project && prior.Checkout == s.Checkout && prior.Session == s.Session && prior.Agent == s.Agent {
-		if s.Transcript == "" {
+		if s.Transcript == "" && !ev.TranscriptDisabled {
 			s.Transcript = prior.Transcript
 		}
 		if prior.Branch == s.Branch && prior.Head == s.Head && prior.PositionAt != "" {
 			s.PositionAt = prior.PositionAt
 		}
+		if env.SessionLearning && ev.Kind != contract.Prompt && (ev.Kind != contract.SessionStart || ev.Source == "compact") {
+			s.PromptAt, s.OutsideAt = prior.PromptAt, prior.OutsideAt
+		}
+	}
+	if env.SessionLearning && profile.Cache && ev.Kind == contract.Prompt {
+		s.PromptAt = s.Seen
 	}
 	if err := filterFile(env.RecordDirectory, "filter-sessions", name, s); err != nil {
 		return err
 	}
-	if ev.Kind != contract.SessionStart && ev.Kind != contract.PreCompact {
+	finishedRequest := env.SessionLearning && (s.Finished || idle)
+	if !finishedRequest && ev.Kind != contract.SessionStart && ev.Kind != contract.PreCompact {
 		return nil
 	}
-	return filterFile(env.RecordDirectory, "filter-pending", place.ShortHash(ev.Checkout), map[string]any{
+	request := map[string]any{
 		"version": 1, "project_id": ev.ProjectID, "checkout": ev.Checkout,
-		"agent": ev.Agent, "generation": now(env).UTC().Format(time.RFC3339Nano),
+		"agent": ev.Agent, "generation": s.Seen,
 		"session_id": ev.SessionID,
-	})
+	}
+	name = place.ShortHash(ev.Checkout)
+	if finishedRequest {
+		name += "." + place.ShortHash(ev.Agent+"\x00"+ev.SessionID) + "." + strconv.FormatInt(stamp.UnixNano(), 10)
+		request["session_learning"] = true
+	}
+	if idle {
+		request["ready_at"] = stamp.Add(10 * time.Minute).Format(time.RFC3339Nano)
+	}
+	return writeFilterFile(env.RecordDirectory, "filter-pending", name, request, finishedRequest)
 }
 
 // Root-relative atomic replacement refuses symlinks and never writes Node tables.
@@ -78,7 +107,7 @@ func filterFile(directory, folder, name string, value any) error {
 
 func writeFilterFile(directory, folder, name string, value any, keepExisting bool) error {
 	data, err := json.Marshal(value)
-	if err != nil || len(data) > 16<<10 {
+	if err != nil || len(data) > filterFileBytes {
 		return errRedirected
 	}
 	root, err := os.OpenRoot(directory)

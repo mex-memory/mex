@@ -61,6 +61,31 @@ func workWaiting(h home, recordDirectory string) bool {
 			watchingCompaction(recordDirectory) || waitingCompactOffers(recordDirectory)))
 }
 
+// Every registered hook can wake the same scheduler. Throttle checks for an
+// unchanged request directory, including a deferred idle-session request.
+func filterWakeDue(directory string, now time.Time) bool {
+	pending, err := os.Lstat(filepath.Join(directory, "filter-pending"))
+	if err != nil || !pending.IsDir() || pending.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	const name = "filter-wake"
+	prior, err := root.Lstat(name)
+	if err == nil && (!prior.Mode().IsRegular() || (!pending.ModTime().After(prior.ModTime()) && now.Sub(prior.ModTime()) < 30*time.Second)) {
+		return false
+	}
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return root.Chtimes(name, now, now) == nil
+}
+
 func watchingCompaction(recordDirectory string) bool {
 	return recordDirectory != "" && exists(filepath.Join(recordDirectory, "compaction-watch"))
 }

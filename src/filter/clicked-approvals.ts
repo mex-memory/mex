@@ -5,7 +5,7 @@ import { checkoutOn } from "../controls/index.js";
 import { knowledgeProject, type KnowledgeOptions } from "../knowledge/context.js";
 import { containedDirectory, readBoundedTextFile } from "../knowledge/files.js";
 import { hasSecret, stripHidden } from "../knowledge/gates.js";
-import { clickedApprovalsOn } from "../knowledge/session-learning.js";
+import { ongoingLearningOn } from "../knowledge/session-learning.js";
 import { openRecordReadOnly } from "../record/index.js";
 import { shortHash } from "../record/project.js";
 
@@ -38,7 +38,7 @@ export function clickedApprovals(options: KnowledgeOptions, now = Date.now()): C
   if (!reader) return [];
   try {
     const checkout = reader.checkout(project.root), scope = project.projectId;
-    if (reader.diagnostic || !clickedApprovalsOn(reader) || process.env.MEX_OFF === "1"
+    if (reader.diagnostic || !ongoingLearningOn(reader) || process.env.MEX_OFF === "1"
       || reader.setting("global", "enabled") === "false" || !checkoutOn(checkout ?? {}, now)
       || reader.setting("global", "capture.enabled") === "false" || reader.setting(scope, "capture.enabled") === "false") return [];
     const folder = containedDirectory(project.location.directory, ["filter-approvals", shortHash(scope + "\0" + project.root)]);

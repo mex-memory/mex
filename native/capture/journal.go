@@ -43,6 +43,7 @@ type Env struct {
 	Now              time.Time
 	Getenv           func(string) string
 	ClickedApprovals bool
+	SessionLearning  bool
 }
 
 func (e Env) getenv(k string) string {
@@ -408,12 +409,23 @@ func Hook(ev contract.Event, env Env) {
 	if ev.Kind == contract.SessionStart {
 		_ = SessionStart(ev, env)
 		prunePending(env)
+		if env.SessionLearning {
+			pruneReplyCaches(env)
+		}
 		if ev.Source != "compact" {
 			pruneCompactionRecovery(env)
 		}
 	}
 	_ = Save(ev, env)
 	_ = filterMetadata(ev, env)
+	if env.SessionLearning {
+		if ev.Kind == contract.Prompt {
+			_ = bindFinalReply(ev, env)
+		}
+		if ev.FinalReply != nil {
+			_ = saveFinalReply(ev, env)
+		}
+	}
 	if env.ClickedApprovals {
 		_ = saveClickedApproval(ev, env)
 	}

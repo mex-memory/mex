@@ -39,17 +39,55 @@ function call(hook, payload) {
   });
 }
 
-export const MexPlugin = async ({ directory }) => {
+export const MexPlugin = async ({ directory, client }) => {
   const base = (sessionID) => ({ session_id: typeof sessionID === "string" ? sessionID : "", cwd: directory });
+  async function localRead(request) {
+    let timer;
+    try { return await Promise.race([request, new Promise(resolve => { timer = setTimeout(resolve, 1000); })]); }
+    catch { return undefined; }
+    finally { clearTimeout(timer); }
+  }
+  async function sessionInfo(id) {
+    return (await localRead(client?.session?.get?.({ path: { id } })))?.data;
+  }
   return {
+    "chat.message": async (input, output) => {
+      try {
+        const id = input.sessionID;
+        const parts = output.parts;
+        if (output.message?.role !== "user" || !Array.isArray(parts) || parts.length !== 1) return;
+        const part = parts[0];
+        if (part.type !== "text" || part.synthetic || part.ignored || typeof part.text !== "string" || part.text.length > 8192) return;
+        const info = await sessionInfo(id);
+        if (info?.id !== id || info.parentID) return;
+        await call("chat.message", { ...base(id), prompt: part.text });
+      } catch {}
+    },
     event: async ({ event }) => {
       try {
         const type = event && event.type;
         if (type === "session.created") {
           const info = (event.properties && event.properties.info) || {};
           await call(type, { ...base(info.id), parent_session_id: info.parentID || "" });
-        } else if (type === "session.compacted" || type === "session.idle") {
+        } else if (type === "session.compacted") {
           await call(type, base(event.properties && event.properties.sessionID));
+        } else if (type === "session.idle") {
+          const id = event.properties?.sessionID;
+          if (typeof id !== "string") return;
+          const info = await sessionInfo(id);
+          if (info?.parentID) return;
+          let final_reply = "";
+          if (info?.id === id) {
+            const result = await localRead(client?.session?.messages?.({ path: { id }, query: { limit: 2 } }));
+            const latest = Array.isArray(result?.data) && result.data.slice(0, 2)
+              .sort((a, b) => (b?.info?.time?.created ?? 0) - (a?.info?.time?.created ?? 0))[0];
+            if (latest?.info?.role === "assistant" && latest.info.time?.completed && !latest.info.error && latest.info.finish === "stop" && Array.isArray(latest.parts)) {
+              final_reply = latest.parts.filter((part) => part.type === "text" && !part.synthetic && !part.ignored && typeof part.text === "string")
+                .map((part) => part.text).join("\\n");
+              if (final_reply.length > 64 * 1024) final_reply = "";
+            }
+          }
+          await call(type, { ...base(id), final_reply });
         }
       } catch {}
     },

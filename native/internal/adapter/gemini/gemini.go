@@ -69,6 +69,7 @@ type payload struct {
 	Cwd            string          `json:"cwd"`
 	Source         string          `json:"source"`
 	Prompt         string          `json:"prompt"`
+	FinalReply     *string         `json:"prompt_response"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
 	ToolResponse   *toolResponse   `json:"tool_response"`
@@ -92,6 +93,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		ev.Source = p.Source
 	case contract.Prompt:
 		ev.Prompt = &contract.PromptIn{Text: p.Prompt, Typed: true}
+	case contract.Stop:
+		ev.FinalReply = p.FinalReply
 	case contract.PreTool:
 		t := parseTool(p.ToolName, p.ToolInput)
 		ev.Tool = &t

@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/mex-memory/mex/native/internal/captureprofile"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record/place"
 )
@@ -190,7 +191,7 @@ func codexQuestionChoices(input json.RawMessage, output string) []clickedChoice 
 // tool input and its completed result to the same host tool-use ID.
 func saveClickedApproval(ev contract.Event, env Env) error {
 	t := ev.Tool
-	if ev.Kind != contract.PostTool || ev.AgentID != "" || t == nil || t.Output == nil || !t.Output.OK || t.Output.Interrupted ||
+	if ev.Kind != contract.PostTool || !captureprofile.For(ev.Agent).Choices || ev.AgentID != "" || t == nil || t.Output == nil || !t.Output.OK || t.Output.Interrupted ||
 		!approvalID.MatchString(t.UseID) || !approvalID.MatchString(ev.SessionID) || len(t.RawInput) > maxChoicePayload || len(t.Output.Text) > maxChoicePayload {
 		return nil
 	}

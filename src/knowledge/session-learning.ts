@@ -28,6 +28,6 @@ export function sessionLearningOn(store: { setting(scope: string, key: string): 
   return sessionLearningAvailable() && store.setting("global", SESSION_LEARNING_SETTING) === "on";
 }
 
-export function clickedApprovalsOn(store: Parameters<typeof sessionLearningOn>[0]): boolean {
+export function ongoingLearningOn(store: Parameters<typeof sessionLearningOn>[0]): boolean {
   return producer("session-ongoing").active && sessionLearningOn(store) && store.setting("global", "learning.statements") === "on";
 }

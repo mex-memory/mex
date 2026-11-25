@@ -62,6 +62,11 @@ type Event struct {
 	// Summary is the compaction summary on post_compact, where the agent gives it.
 	Summary    string `json:"summary,omitempty"`
 	Background bool   `json:"background"`
+	// Learning hooks use these adapter-private fields. The normalized wire contract is unchanged.
+	FinalReply         *string `json:"-"`
+	CaptureOnly        bool    `json:"-"`
+	IncompleteTurn     bool    `json:"-"`
+	TranscriptDisabled bool    `json:"-"`
 }
 
 type PromptIn struct {

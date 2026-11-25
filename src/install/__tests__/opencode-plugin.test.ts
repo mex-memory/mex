@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,14 +9,14 @@ const temps: string[] = [];
 afterEach(() => { for (const path of temps.splice(0)) rmSync(path, { recursive: true, force: true }); });
 
 /** Loads the generated plugin with a fake hook that answers `reply` and records its input. */
-async function load(hookScript: string) {
+async function load(hookScript: string, client?: unknown) {
   const dir = mkdtempSync(join(tmpdir(), "mex-opencode-")); temps.push(dir);
   const hook = join(dir, "hook.cjs");
   writeFileSync(hook, hookScript);
   const plugin = join(dir, "mex.mjs");
   writeFileSync(plugin, opencodePlugin({ path: process.execPath, args: [hook] }));
-  const module = await import(pathToFileURL(plugin).href) as { MexPlugin: (ctx: { directory: string }) => Promise<Record<string, (...args: any[]) => Promise<void>>> };
-  return { dir, hooks: await module.MexPlugin({ directory: "/home/dev/shop" }) };
+  const module = await import(pathToFileURL(plugin).href) as { MexPlugin: (ctx: { directory: string; client?: unknown }) => Promise<Record<string, (...args: any[]) => Promise<void>>> };
+  return { dir, hooks: await module.MexPlugin({ directory: "/home/dev/shop", client }) };
 }
 const answer = (reply: unknown) => `let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{require("fs").writeFileSync(__dirname+"/in-"+process.argv[3]+".json",JSON.stringify({argv:process.argv.slice(2),payload:JSON.parse(s)}));process.stdout.write(${JSON.stringify(JSON.stringify(reply))})})`;
 
@@ -41,6 +41,31 @@ describe("OpenCode plugin", () => {
     const output = { context: [] as string[] };
     await hooks["experimental.session.compacting"]!({ sessionID: "ses_1" }, output);
     expect(output.context).toEqual(["[mex keep]\nids"]);
+  });
+
+  it("passes only a plain root user message and the last completed text to the learning hooks", async () => {
+    const client = { session: {
+      get: async ({ path }: { path: { id: string } }) => ({ data: { id: path.id, ...(path.id === "child" ? { parentID: "root" } : {}) } }),
+      messages: async () => ({ data: [
+        { info: { role: "assistant", finish: "stop", time: { created: 10, completed: 20 } }, parts: [{ type: "text", text: "Older text" }] },
+        { info: { role: "assistant", finish: "stop", time: { created: 30, completed: 40 } }, parts: [
+          { type: "reasoning", text: "Internal thoughts" }, { type: "text", text: "Visible reply" },
+        ] },
+      ] }),
+    } };
+    const { dir, hooks } = await load(answer({}), client);
+    const captured = (name: string) => join(dir, `in-${name}.json`);
+    const input = (id: string) => ({ sessionID: id });
+    const output = (synthetic = false) => ({ message: { role: "user" }, parts: [{ type: "text", text: "Use local storage", synthetic }] });
+    await hooks["chat.message"]!(input("child"), output());
+    await hooks["chat.message"]!(input("root"), output(true));
+    expect(existsSync(captured("chat.message"))).toBe(false);
+    await hooks["chat.message"]!(input("root"), output());
+    expect(JSON.parse(readFileSync(captured("chat.message"), "utf8")).payload.prompt).toBe("Use local storage");
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "child" } } });
+    expect(existsSync(captured("session.idle"))).toBe(false);
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "root" } } });
+    expect(JSON.parse(readFileSync(captured("session.idle"), "utf8")).payload.final_reply).toBe("Visible reply");
   });
 
   it("lets OpenCode keep working when the hook is missing, crashes or answers garbage", async () => {

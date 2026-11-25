@@ -1,0 +1,14 @@
+{
+  "claude-code": { "typed": "hook", "transcript": "claude", "cache": false, "outside": "transcript", "choices": true, "memory": true, "finish": "session-end" },
+  "codex": { "typed": "hook", "transcript": "codex", "cache": false, "outside": "transcript", "choices": true, "memory": true, "finish": "session-end" },
+  "copilot": { "typed": "hook", "transcript": "copilot", "cache": false, "outside": "transcript", "choices": false, "memory": false, "finish": "session-end" },
+  "cursor": { "typed": "hook", "transcript": "cursor", "cache": true, "outside": "transcript-and-hook", "choices": false, "memory": false, "finish": "session-end" },
+  "gemini": { "typed": "hook", "transcript": "gemini", "cache": true, "outside": "transcript-and-hook", "choices": false, "memory": false, "finish": "session-end" },
+  "opencode": { "typed": "plugin", "transcript": null, "cache": true, "outside": "hook", "choices": false, "memory": false, "finish": "idle" },
+  "devin": { "typed": "hook", "transcript": "devin", "cache": false, "outside": "transcript", "choices": false, "memory": false, "finish": "idle" },
+  "kiro": { "typed": "hook", "transcript": null, "cache": false, "outside": "none", "choices": false, "memory": false, "finish": "idle" },
+  "antigravity": { "typed": "hook", "transcript": null, "cache": false, "outside": "none", "choices": false, "memory": false, "finish": "idle" },
+  "cline": { "typed": "none", "transcript": null, "cache": false, "outside": "none", "choices": false, "memory": false, "finish": "none" },
+  "amp": { "typed": "none", "transcript": null, "cache": false, "outside": "none", "choices": false, "memory": false, "finish": "none" },
+  "aider": { "typed": "none", "transcript": null, "cache": false, "outside": "none", "choices": false, "memory": false, "finish": "none" }
+}

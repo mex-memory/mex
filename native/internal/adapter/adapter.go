@@ -6,6 +6,7 @@ package adapter
 import (
 	"errors"
 
+	"github.com/mex-memory/mex/native/internal/captureprofile"
 	"github.com/mex-memory/mex/native/internal/contract"
 )
 
@@ -110,6 +111,8 @@ var ErrUnknownEvent = errors.New("unknown event")
 var ErrSkip = errors.New("event skipped")
 
 var registry = map[string]Profile{}
+
+func (c Capabilities) Learning() captureprofile.Profile { return captureprofile.For(c.Agent) }
 
 // Register adds a profile. Profiles register themselves in init.
 func Register(p Profile) { registry[p.Capabilities().Agent] = p }

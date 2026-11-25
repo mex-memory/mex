@@ -5,21 +5,8 @@ import type { Message } from "./input.js";
 import { hash } from "../judge/evidence.js";
 import { object } from "../record/usage.js";
 import { maskReply, outsideTool } from "./reply-privacy.js";
-
-/** Identify simple file reads without running or interpreting shell programs. */
-export function codexRead(call: Record<string, unknown>): { path: string; cwd?: string } | undefined {
-  if (typeof call.arguments !== "string" || call.arguments.length > 8192) return undefined;
-  let args;
-  try { args = object(JSON.parse(call.arguments)); } catch { return undefined; }
-  const cwd = typeof args?.workdir === "string" ? args.workdir : undefined;
-  const path = args?.file_path ?? args?.path;
-  if (call.name === "read_file" && typeof path === "string") return { path };
-  if (call.name === "exec_command" && typeof args?.cmd === "string") {
-    const read = /^(?:cat(?: --)?|sed -n ['"]\d+(?:,\d+)?p['"]) ([A-Za-z0-9_./-]+)$/u.exec(args.cmd.trim());
-    if (read) return { path: read[1]!, cwd: cwd ?? "" };
-  }
-  return undefined;
-}
+import type { TranscriptAgent } from "./profiles.js";
+export { codexRead } from "./reply-privacy.js";
 
 const TAIL_BYTES = 1024 * 1024;
 const SESSION_BYTES = 32 << 20;
@@ -29,7 +16,6 @@ const SHORT_MESSAGE = 300;
 const REPLY_TAIL = 600;
 const SHORT_MESSAGE_CONTEXT = 12_000;
 
-type TranscriptAgent = "claude" | "codex";
 export type ReplyContextMode = "design" | "tail600" | "full" | "none";
 export type TranscriptIssue = "unavailable" | "too-large" | "changed" | "invalid-format" | "delivered-notes";
 export interface ReplyOption { row: number; option: number; text: string; }
@@ -55,30 +41,63 @@ function parseRow(line: string): TranscriptRow | "invalid-format" | undefined {
 
 function messageRow(row: TranscriptRow, agent: TranscriptAgent): TranscriptMessage | "invalid-format" | undefined {
   if (row.isCompactSummary === true || row.isMeta === true) return;
+  if (agent === "copilot") {
+    const data = object(row.data);
+    if (!data || data.parentToolCallId || data.agentId) return;
+    const role = row.type === "user.message" ? "user" : row.type === "assistant.message" ? "assistant" : undefined;
+    if (role && typeof data.content === "string" && !(role === "assistant" && Array.isArray(data.toolRequests) && data.toolRequests.length))
+      return { role, text: data.content };
+    return;
+  }
+  if (agent === "gemini") {
+    const role = row.type === "user" ? "user" : row.type === "gemini" ? "assistant" : undefined;
+    const body = typeof row.content === "string" ? row.content : Array.isArray(row.content)
+      ? row.content.flatMap(part => typeof object(part)?.text === "string" ? [part.text] : []).join("\n") : undefined;
+    if (role && body !== undefined) return { role, text: body };
+    return;
+  }
+  if (row.isSidechain === true || row.agentId) return;
   const payload = object(row.type === "response_item" ? row.payload : row.message);
   if (agent === "codex" && row.type === "response_item"
     && payload?.type !== undefined && payload.type !== "message") return;
-  const role = agent === "claude" ? row.type : payload?.role;
+  const role = agent === "codex" ? payload?.role : row.role ?? row.type;
   if (role !== "user" && role !== "assistant") {
     if (agent === "codex" && row.type === "response_item" && payload?.type === "message" && typeof role !== "string") return "invalid-format";
     return;
   }
-  const blocks = payload?.content;
-  if (agent === "claude" && role === "user" && Array.isArray(blocks)
+  const blocks = payload?.content ?? (agent === "cursor" ? row.content : undefined);
+  if (agent !== "codex" && role === "user" && Array.isArray(blocks)
     && blocks.some(block => ["tool_result", "mcp_tool_result", "web_search_tool_result", "web_fetch_tool_result"].some(type => object(block)?.type === type))) return;
   const content = text(blocks);
   return content === undefined ? "invalid-format" : { role, text: content };
+}
+
+function transcriptRoots(agent: TranscriptAgent): string[] {
+  const home = homedir();
+  const claude = join(process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude"), "projects");
+  switch (agent) {
+    case "claude": return [claude];
+    case "codex": return [join(process.env.CODEX_HOME ?? join(home, ".codex"), "sessions")];
+    case "copilot": return [join(process.env.COPILOT_HOME ?? join(home, ".copilot"), "session-state")];
+    case "cursor": return [join(home, ".cursor", "projects")];
+    case "gemini": return [join(home, ".gemini", "tmp")];
+    case "devin": return [join(home, ".devin", "sessions"), claude];
+  }
 }
 
 /** Read only a regular, contained host file, and validate its snapshot before returning data. */
 function readTranscript<T>(path: string, agent: TranscriptAgent, read: (fd: number, size: bigint) => TranscriptRead<T>, appending = false): TranscriptRead<T> {
   let fd: number | undefined;
   try {
-    const root = realpathSync(agent === "claude" ? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects")
-      : join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "sessions"));
-    const actual = realpathSync(path), within = relative(root, actual), expected = lstatSync(path, { bigint: true });
-    if (!path.endsWith(".jsonl") || !within || within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within)
-      || !expected.isFile() || expected.isSymbolicLink()) return { issue: "unavailable" };
+    const actual = realpathSync(path), expected = lstatSync(path, { bigint: true });
+    if (!isAbsolute(path) || !path.endsWith(agent === "gemini" ? ".json" : ".jsonl") || !expected.isFile() || expected.isSymbolicLink()) return { issue: "unavailable" };
+    const contained = transcriptRoots(agent).some(root => {
+      try {
+        const within = relative(realpathSync(root), actual);
+        return !!within && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
+      } catch { return false; }
+    });
+    if (!contained) return { issue: "unavailable" };
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const before = fstatSync(fd, { bigint: true });
     if (!before.isFile() || before.dev !== expected.dev || before.ino !== expected.ino) return { issue: "unavailable" };
@@ -166,14 +185,27 @@ function scanSession(path: string, agent: TranscriptAgent, visit: VisitRow): Tra
   const result = readTranscript(path, agent, (fd, size) => {
     if (size > BigInt(SESSION_BYTES)) return { issue: "too-large" };
     let sawMessage = false;
-    const issue = scanLines(fd, Number(size), (line, offset) => {
-      const row = parseRow(line);
+    const accept = (row: ReturnType<typeof parseRow>, offset: number) => {
       if (!row || row === "invalid-format") return row;
       const message = messageRow(row, agent);
       if (message === "invalid-format") return message;
       sawMessage ||= !!message?.text;
       visit(row, message, offset);
-    });
+    };
+    let issue: TranscriptIssue | undefined;
+    if (agent === "gemini") {
+      const bytes = Buffer.alloc(Number(size));
+      for (let offset = 0; offset < bytes.length;) {
+        const n = readSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (!n) return { issue: "changed" };
+        offset += n;
+      }
+      try {
+        const rows = object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)))?.messages;
+        if (!Array.isArray(rows)) return { issue: "invalid-format" };
+        for (const [index, row] of rows.entries()) if (accept(object(row), index)) return { issue: "invalid-format" };
+      } catch { return { issue: "invalid-format" }; }
+    } else issue = scanLines(fd, Number(size), (line, offset) => accept(parseRow(line), offset));
     if (issue) return { issue };
     return sawMessage ? { value: undefined } : { issue: "invalid-format" };
   });
@@ -228,6 +260,15 @@ function replyOptions(text: string, row: number, offset: number, limit: number):
     if (options.length > OPTION_LIMIT) options.shift();
   }
   return options;
+}
+
+/** A cached response is context from a completed turn, with no transcript source row. */
+export function cachedReplyContext(message: Message, body: string, mode: ReplyContextMode, notes: readonly string[]): void {
+  if (!body || mode === "none") return;
+  const limit = mode === "full" || (mode === "design" && Array.from(message.text).length <= SHORT_MESSAGE) ? SHORT_MESSAGE_CONTEXT : REPLY_TAIL;
+  const text = tail(maskReply(body, body, notes), limit);
+  message.previous_reply = text || null;
+  message.previous_options = replyOptions(text, 0, 0, text.length).map(({ offset: _offset, ...option }) => option);
 }
 
 /** Only an exact, unambiguous user-message match associates reply context with journal text. */
@@ -304,7 +345,7 @@ export function replyContexts(path: string, agent: TranscriptAgent, messages: Me
     withheld = false;
   };
   // A tail starting midway through a turn cannot establish what tools ran before that turn's reply.
-  const issue = mode === "tail600" ? scanTail(path, agent, visit, () => { withheld = true; }) : scanSession(path, agent, visit);
+  const issue = mode === "tail600" && agent !== "gemini" ? scanTail(path, agent, visit, () => { withheld = true; }) : scanSession(path, agent, visit);
   for (const message of messages) {
     const reply = contexts.get(message.text);
     if (!issue && reply === WITHHELD) context.withheld?.add(message.row);

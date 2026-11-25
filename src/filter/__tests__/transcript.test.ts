@@ -42,6 +42,50 @@ function toolRows(agent: Agent): unknown[] {
 const jsonl = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join("\n");
 const captured = (text: string, row = 1): Message => ({ id: `m${row}`, row, session: "s", at: "2000-01-01T00:00:00Z", text, marks: "", previous_reply: null, delivered: [] });
 
+it.each(["copilot", "cursor", "gemini", "devin"] as const)("reads the %s transcript dialect with host-specific containment", agent => {
+  vi.stubEnv("HOME", base); vi.stubEnv("USERPROFILE", base); vi.stubEnv("COPILOT_HOME", join(base, ".copilot"));
+  const root = {
+    copilot: [".copilot", "session-state", "s"], cursor: [".cursor", "projects", "project", "agent-transcripts"],
+    gemini: [".gemini", "tmp", "project", "chats"], devin: [".devin", "sessions"],
+  }[agent];
+  const directory = join(base, ...root); mkdirSync(directory, { recursive: true });
+  const path = join(directory, agent === "gemini" ? "session.json" : "session.jsonl");
+  const reply = "1. Keep the data in this checkout.", message = captured("Use the first one.");
+  const row = (role: Role, body: string) => {
+    if (agent === "copilot") return { type: role + ".message", data: { content: body } };
+    if (agent === "gemini") return { type: role === "assistant" ? "gemini" : role, content: [{ text: body }] };
+    return turn("claude", role, body);
+  };
+  const rows = [row("assistant", reply), row("user", message.text)];
+  const bytes = agent === "gemini" ? JSON.stringify({ sessionId: "s", messages: rows }) : jsonl(rows);
+  writeFileSync(path, bytes);
+  expect(replyContexts(path, agent, [message], "design", { includeOptions: true })).toBeUndefined();
+  expect(message.previous_reply).toBe(reply);
+  expect(typedQuote(path, agent, message.text, hash(message.text))).toBe(true);
+  expect(typedQuote(path, agent, reply, hash(reply))).toBe(false);
+  const external = join(base, agent === "gemini" ? "other.json" : "other.jsonl"); writeFileSync(external, bytes);
+  expect(replyContexts(external, agent, [message])).toBe("unavailable");
+});
+
+it("withholds a Codex reply after a parsable shell read outside the checkout", () => {
+  const path = transcript("codex"), checkout = join(base, "repo"); mkdirSync(checkout);
+  const message = captured("Use that option.");
+  const rows = (target: string) => [
+    turn("codex", "user", "Show the options."),
+    { type: "response_item", payload: { type: "function_call", name: "exec_command", arguments: JSON.stringify({ cmd: `cat -- ${target.replaceAll("\\", "/")}`, workdir: checkout }) } },
+    turn("codex", "assistant", "1. Change the stored rule."),
+    turn("codex", "user", message.text),
+  ];
+  writeFileSync(path, jsonl(rows(join(base, "outside.txt"))));
+  const withheld = new Set<number>();
+  expect(replyContexts(path, "codex", [message], "design", { checkout, withheld })).toBeUndefined();
+  expect(message.previous_reply).toBeNull();
+  expect(withheld.has(message.row)).toBe(true);
+  writeFileSync(path, jsonl(rows("inside.txt")));
+  expect(replyContexts(path, "codex", [message], "design", { checkout })).toBeUndefined();
+  expect(message.previous_reply).toBe("1. Change the stored rule.");
+});
+
 it.each(["design", "tail600", "full"] as const)("returns only visible numbered options from actual reply rows in %s mode", mode => {
   const path = transcript("codex");
   const message = captured("yes, 2");

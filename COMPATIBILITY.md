@@ -16,17 +16,27 @@ state what that ticket specifies and are confirmed there.
 Every hook profile answers in its agent's own format, exits 0, and sends the
 agent's "do nothing" reply on any error, so a MEX failure never stops the agent.
 
-| Agent | Brief and moments | After compaction | Edit check | Subagents | Control before the model | A line for the person |
-| --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | Session start, prompt, after a batch of tools | SessionStart `compact` | Pre-tool deny, reason to the model | `agent_id`; a brief at SubagentStart | Prompt hook block | `systemMessage` |
-| Codex | Session start, prompt, after a tool | SessionStart `compact` | `apply_patch` deny, reason to the model | SubagentStart brief | Prompt hook block | `systemMessage` |
-| Cursor | Session start, after a tool (added to the tool result). No prompt moment | No post-compaction event: next tool result | `preToolUse` deny, `agent_message` to the model | Allow or deny only; no brief | `beforeSubmitPrompt` block | `user_message` on a block and before compaction |
-| Antigravity | Session start and the first model call of each turn, as an ephemeral system step (never a user message) | No compaction events | `PreToolUse` deny with reason | None: no subagent ids | `PreInvocation` terminate | None: `errorMessage` would fail a `-p` run |
-| Gemini CLI (API key, Vertex AI, Code Assist) | Session start, prompt (this turn only), after a tool | `PreCompress` shows a line; nothing reaches the model | `BeforeTool` deny with reason | No subagent event | `BeforeAgent` stops the turn | `systemMessage` |
-| Copilot CLI *(pending OSS-48)* | Session start; after a tool, added to the tool result | No post event: next tool result | Pre-tool deny with reason; a crash also denies, so MEX registers it only after a self-test | `agentId` on events | None: hooks can't block a prompt | Progress lines |
-| OpenCode *(pending OSS-48)* | Plugin events; no prompt hook | Compaction hook can add context | `tool.execute.before` throws | Child sessions | None | To check |
-| Devin (CLI and Desktop) *(pending OSS-48)* | Session start, prompt, after a tool | Next tool result | Pre-tool block, reason to the model | To check | To check | None documented |
-| Kiro *(pending OSS-48)* | Session start, prompt | PreCompact adds context | Pre-tool exit 2, reason to the model | To check | To check | Stop confirm dialog |
+| Agent | Brief and moments | After compaction | Edit check | Subagents | Control before the model | A line for the person | Learns from your sessions |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | Session start, prompt, after a batch of tools | SessionStart `compact` | Pre-tool deny, reason to the model | `agent_id`; a brief at SubagentStart | Prompt hook block | `systemMessage` | Full |
+| Codex | Session start, prompt, after a tool | SessionStart `compact` | `apply_patch` deny, reason to the model | SubagentStart brief | Prompt hook block | `systemMessage` | Full |
+| Cursor | Session start, after a tool (added to the tool result). No prompt moment | No post-compaction event: next tool result | `preToolUse` deny, `agent_message` to the model | Allow or deny only; no brief | `beforeSubmitPrompt` block | `user_message` on a block and before compaction | Good with hooks wired. Transcript or response hook |
+| Antigravity | Session start and the first model call of each turn, as an ephemeral system step (never a user message) | No compaction events | `PreToolUse` deny with reason | None: no subagent ids | `PreInvocation` terminate | None: `errorMessage` would fail a `-p` run | Basic with hooks wired |
+| Gemini CLI (API key, Vertex AI, Code Assist) | Session start, prompt (this turn only), after a tool | `PreCompress` shows a line; nothing reaches the model | `BeforeTool` deny with reason | No subagent event | `BeforeAgent` stops the turn | `systemMessage` | Good with hooks wired. Transcript or response hook |
+| Copilot CLI *(pending OSS-48)* | Session start; after a tool, added to the tool result | No post event: next tool result | Pre-tool deny with reason; a crash also denies, so MEX registers it only after a self-test | `agentId` on events | None: hooks can't block a prompt | Progress lines | Good when a readable transcript is available |
+| OpenCode *(pending OSS-48)* | Plugin events; no prompt injection | Compaction hook can add context | `tool.execute.before` throws | Child sessions | None | To check | Good through the plugin's response cache |
+| Devin (CLI and Desktop) *(pending OSS-48)* | Session start, prompt, after a tool | Next tool result | Pre-tool block, reason to the model | To check | To check | None documented | Good with a readable compatible transcript |
+| Kiro *(pending OSS-48)* | Session start, prompt | PreCompact adds context | Pre-tool exit 2, reason to the model | To check | To check | Stop confirm dialog | Basic with custom-agent hooks |
+| Cline | Rule files only | — | — | — | — | — | — |
+| Amp | Rule files only | — | — | — | — | — | — |
+| Aider | Rule files only | — | — | — | — | — | — |
+
+Full includes typed prompts, reply context, outside-content signals, clicked
+choices, and host memory. Good includes typed prompts and reply context. Basic
+uses typed prompts. These capabilities require session learning to be enabled
+after evaluation. Reply context can explain a typed statement. The person's
+typed text is the quote source. Content planted in the repository can still
+influence agent suggestions.
 
 Stop proof checks (continue the turn with a reason the model reads) work on
 Claude Code, Codex, Cursor (`followup_message`), Antigravity (`decision:

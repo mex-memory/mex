@@ -25,6 +25,7 @@ import { NOTE_ATTEMPT_LIMIT, settleNoteAttempts } from "./note-attempts.js";
 import { formatFilterBatch, saveFilterBatchReport, type FilterBatchReport } from "./report.js";
 import { runStageOne, stageOneEnabled, stageOneRoom, STAGE_ONE_WAIT } from "./stage-one.js";
 import { runStageTwo, stageTwoDue, stageTwoPending, type StageTwoPorts } from "./stage-two.js";
+import { filterRunner, FILTER_RUNNER_WAIT } from "./runner.js";
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
   source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string; reply_context_hash?: string };
@@ -34,7 +35,7 @@ interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: str
   dropped?: DropCounts; notes_deferred?: number; notes_waiting_for_sync?: number; }
 interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; verdictGaps?: boolean; }
 export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; aids?: AidRanker;
-  contextMode?: ReplyContextMode; stageOne?: boolean; stageTwo?: StageTwoPorts; }
+  contextMode?: ReplyContextMode; stageOne?: boolean; stageTwo?: StageTwoPorts; runner?: typeof filterRunner; }
 const dependencies: FilterDependencies = { model: runModel, recordChecks, clock: Date.now };
 const BATCH_BYTES = 512 << 10, STORE_BYTES = 8 << 20;
 const CONTEXT_PAUSED = "Reply context paused";
@@ -147,10 +148,19 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       const stageOne = stagesEnabled();
       try {
         if (!filterAllowed(writer, project, params)) return { checkpoint: state, wait: "Waiting: capture or MEX is off here" };
+        if (stageOne && (params.sourceAgent || deps.runner || deps === dependencies)) {
+          const sourceAgent = params.sourceAgent ?? (params.agent === "claude" ? "claude-code" : "codex");
+          const agent = (deps.runner ?? filterRunner)(sourceAgent);
+          if (!agent) return { checkpoint: state, wait: FILTER_RUNNER_WAIT };
+          params = { ...params, agent, sourceAgent };
+        }
         if (project.startsWith("g-") && !at.head) return { checkpoint: state, wait: "Waiting: Git checkout identity is unavailable" };
         // Statement learning off: typed text is handled by not reading it.
         if (!statementsOn(writer)) acknowledgeTyped(writer, project, params.checkout);
-        if (!samePosition(state.position, at)) { finishRequest(writer, params); return { checkpoint: state, done: true, gaps: true, summary: "Checkout changed; filter candidates remain local" }; }
+        if (!samePosition(state.position, at)) {
+          if (!params.request) finishRequest(writer, params);
+          return { checkpoint: state, done: true, gaps: true, summary: "Checkout changed; filter candidates remain local" };
+        }
         const publication = await publishNext(writer, project, params, job, deps.publication);
         if (publication) return { checkpoint: state, ...publication };
         const consolidated = await consolidateNext(writer, project, params, job, deps, at);
@@ -298,6 +308,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
     ready(job, writer) {
       const params = JSON.parse(job.params) as FilterParams;
       if (!filterAllowed(writer, job.project_id!, params)) return false;
+      if (job.reason === FILTER_RUNNER_WAIT) return !!(deps.runner ?? filterRunner)(params.sourceAgent ?? (params.agent === "claude" ? "claude-code" : "codex"));
       if (job.reason === PUBLICATION_WAIT) return publicationReady(writer, job);
       if (job.reason === "Sign in to the selected agent CLI before retrying." || job.reason === "The selected agent reached its usage limit.") return false;
       if (job.reason === "Waiting: local filter candidates need consolidation") return candidateRoom(writer, job.project_id!);

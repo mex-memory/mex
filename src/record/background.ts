@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION } from "../version.js";
-import { openRecord, type RecordWriter } from "./index.js";
+import { openRecord, openRecordReadOnly, type RecordWriter } from "./index.js";
+import { RECORD_SCHEMA_VERSION } from "./schema.js";
 import { recordLocation, type LocationOptions } from "./location.js";
 import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
 import "./job-kinds.js";
@@ -20,6 +21,7 @@ import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/cont
 import { compactOffersPending, publishCompactOffers } from "../compaction/notices.js";
 import { ledgerPending, settlePendingLedger } from "../ledger/background.js";
 import { queueDueWeekly, weeklyWakeDue } from "../learn-deeper/weekly-schedule.js";
+import { ongoingLearningOn } from "../knowledge/session-learning.js";
 
 /**
  * The background process: started on demand, one per user, runs jobs batch by batch.
@@ -349,12 +351,22 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
   return batches;
 }
 
-/** The marker check the CLI runs after a command: no database open unless the marker exists. */
+/** The marker check the CLI runs after a command: no database open unless work could be waiting. */
 export function restartIfPending(options: EnsureOptions = {}): EnsureResult | undefined {
   if (insideBackground()) return undefined;
   try {
     const marker = pendingMarker(options);
-    if (!existsSync(marker) && !weeklyWakeDue(dirname(marker))) return undefined;
+    if (!existsSync(marker) && !weeklyWakeDue(dirname(marker))) return restartSessionLearningIfPending(options);
   } catch { return undefined; }
+  return ensureBackground(options);
+}
+
+/** A read-only command can wake an already configured learner without initializing or migrating its record. */
+export function restartSessionLearningIfPending(options: EnsureOptions = {}): EnsureResult | undefined {
+  if (insideBackground() || !filterPending(recordLocation({ ...options, create: false }).directory)) return;
+  const reader = openRecordReadOnly(options);
+  try {
+    if (!reader || reader.diagnostic || reader.version !== RECORD_SCHEMA_VERSION || !ongoingLearningOn(reader)) return;
+  } finally { reader?.close(); }
   return ensureBackground(options);
 }
