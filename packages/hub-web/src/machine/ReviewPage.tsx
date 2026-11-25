@@ -112,6 +112,7 @@ function ReviewView({ project, projects, review, queue, fixtureCards, card: live
   const oldest = repoId && fixtureCards ? rows.map(({ createdAt }) => createdAt).sort()[0] : queue?.oldest;
   const loading = load?.loading ?? !queue;
   const updating = Boolean(queue?.updatingSince);
+  const partial = queue?.partial;
   const href = (key?: string) => reviewHref(repoId, key, location.search);
   const knowledgeHref = repoPrefix(repoId) + "/knowledge" + location.search;
   const back = <Link className={shared.textLink + " " + styles.back} to={href()}><ArrowLeft aria-hidden="true" /> Review</Link>;
@@ -188,13 +189,13 @@ function ReviewView({ project, projects, review, queue, fixtureCards, card: live
         </div>
         <div className={styles.headerMeta}>
           {updating && <span role="status">Updating…</span>}
-          {!loading && <span>{total} waiting{oldest && <> · oldest <time dateTime={oldest}>{waitingAge(oldest, now)}</time></>}</span>}
+          {!loading && <span>{total} {partial ? "shown" : "waiting"}{oldest && <> · oldest <time dateTime={oldest}>{waitingAge(oldest, now)}</time></>}</span>}
         </div>
       </header>
       {cardKey && <div className={styles.mobileBack}>{back}</div>}
       {loading || load?.error ? <PageRequestState name="Review" {...load} loading={loading} /> : null}
-      {queue?.partial && <ul className={styles.partial} aria-label="Review reading limits">
-        {queue.partial.map(({ note, repoId: id }) => <li key={id ?? "all"}>{id && repoNames.has(id) ? repoNames.get(id) + " · " : ""}{note}</li>)}
+      {partial && <ul className={styles.partial} aria-label="Review reading limits">
+        {partial.map(({ note, repoId: id }) => <li key={id ?? "all"}>{id && repoNames.has(id) ? repoNames.get(id) + " · " : ""}{note}</li>)}
       </ul>}
       {(ordered.length > 0 || leaving || cardKey && !loading && !load?.error) && (
         <div className={styles.workspace}>
@@ -216,7 +217,7 @@ function ReviewView({ project, projects, review, queue, fixtureCards, card: live
           )}
         </div>
       )}
-      {!loading && !load?.error && !ordered.length && !leaving && !cardKey && (
+      {!loading && !load?.error && !ordered.length && !leaving && !cardKey && !partial && (
         <section aria-labelledby="review-empty-title" className={styles.empty}>
           <h2 id="review-empty-title">Nothing to review.</h2>
           <p>MEX will ask when it learns something worth sharing.</p>

@@ -55,8 +55,8 @@ export function reviewPoint(
   const target = judge?.item.source;
   const audience = target?.level === "team" ? "team" : "onlyYou";
   const retireTarget: MachineReviewRow["retireTarget"] = judge && { key: knowledgeKey(repoId, audience, judge.row.entry_id), audience };
-  const producer = entryProducer(mex);
-  const source = producers.get(producer === "unknown" ? judge ? "judge" : "session-ongoing" : producer);
+  const producer = group.members[0]?.item.source.producer === "judge" ? "judge" : entryProducer(mex);
+  const source = producers.get(producer === "unknown" ? "session-ongoing" : producer);
   const shareBlocked = !mex.checks.length || mex.checks.some(({ kind }) => kind === "legacy-grounding");
   let reason = conflict ? "contradiction" : reviewReason(group.reason);
   try { assertNoSecrets(reason); } catch { reason = "this rule needs your decision"; }

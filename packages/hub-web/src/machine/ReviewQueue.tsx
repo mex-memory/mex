@@ -1,4 +1,5 @@
 import { ChevronRight, FolderGit2, ScanLine } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import { Badge } from "../components/primitives/badge";
@@ -19,8 +20,32 @@ export function ReviewQueue({ counts, repos, repoNames, selected, scoped, now, v
   showMore?: () => void;
   loadingMore?: boolean;
 }) {
+  const list = useRef<HTMLElement>(null);
+  const more = useRef<HTMLButtonElement>(null);
+  const requested = useRef<{ prior: Set<string>; trigger: HTMLButtonElement; fetching: boolean } | null>(null);
+  useLayoutEffect(() => {
+    const pending = requested.current;
+    if (!pending) return;
+    if (loadingMore) {
+      pending.fetching = true;
+      return;
+    }
+    const added = Array.from(list.current?.querySelectorAll<HTMLElement>("[data-review-key]") ?? [])
+      .find((row) => !pending.prior.has(row.dataset.reviewKey!));
+    if (!pending.fetching && !added) return;
+    requested.current = null;
+    if (document.activeElement === pending.trigger || document.activeElement === document.body) added?.focus();
+  }, [repos, loadingMore]);
+
+  function loadMore() {
+    if (!more.current || !showMore) return;
+    const prior = new Set([...repos.values()].flatMap((rows) => rows.map(({ key }) => key)));
+    requested.current = { prior, trigger: more.current, fetching: false };
+    showMore();
+  }
+
   return (
-    <section aria-keyshortcuts="ArrowUp ArrowDown" aria-label="Review queue" className={styles.queue}>
+    <section aria-keyshortcuts="ArrowUp ArrowDown" aria-label="Review queue" className={styles.queue} ref={list}>
       {[...repos].map(([repoId, cards]) => {
         const name = repoNames.get(repoId) ?? "Unknown repo";
         return (
@@ -50,7 +75,7 @@ export function ReviewQueue({ counts, repos, repoNames, selected, scoped, now, v
         );
       })}
       {visible < total && <p className={styles.queueLimit}>Showing {visible} of {total} waiting</p>}
-      {showMore && <Button className={styles.more} disabled={loadingMore} onClick={showMore} size="sm" type="button" variant="outline">
+      {showMore && <Button className={styles.more} disabled={loadingMore} onClick={loadMore} ref={more} size="sm" type="button" variant="outline">
         {loadingMore ? "Loading…" : "Show more"}
       </Button>}
     </section>

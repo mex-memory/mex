@@ -537,7 +537,9 @@ it("retires a judged personal note through Knowledge and refreshes Review", asyn
   const repo = project("tools");
   const { key, file, raw, id } = stageJudged(repo, "personal");
   const card = await detail(key);
-  expect(card).toMatchObject({ checkedByModel: true, retireTarget: { audience: "onlyYou", key: repo.id + ":onlyYou:" + id } });
+  expect(card).toMatchObject({
+    checkedByModel: true, sources: { producer: "Judge" }, retireTarget: { audience: "onlyYou", key: repo.id + ":onlyYou:" + id },
+  });
   const retired = await post(key, "retire", { expectedRevision: card.revision, reason: "Use the lint command now" });
   expect(retired.status).toBe(200);
   expect(await retired.json()).toMatchObject({ outcome: "retired", knowledgeKey: card.retireTarget!.key });

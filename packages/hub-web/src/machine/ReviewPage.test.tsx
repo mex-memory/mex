@@ -408,6 +408,17 @@ describe("Live Review", () => {
     expect(badge()).toHaveAttribute("aria-description", "4 waiting");
   });
 
+  it("explains a partial empty page without declaring the queue empty", async () => {
+    const app = liveHub();
+    app.load.mockResolvedValueOnce(Response.json({
+      cards: [], total: 0, byRepo: {}, oldest: null, nextCursor: null,
+      partial: [{ note: "Some cards are missing because Review reached its reading limit." }],
+    }));
+    expect(await screen.findByText("Some cards are missing because Review reached its reading limit.")).toBeVisible();
+    expect(screen.getByText("0 shown")).toBeVisible();
+    expect(screen.queryByText("Nothing to review.")).toBeNull();
+  });
+
   it("previews and confirms Share with CSRF and separate request keys", async () => {
     const app = liveHub(liveNormal);
     app.write.mockResolvedValueOnce(Response.json(teamPreview)).mockImplementationOnce(async () => {
@@ -518,6 +529,16 @@ describe("Live Review", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Review the current card and open the preview again.");
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(heading(current.claim)).toBeVisible();
+  });
+
+  it("focuses the first appended card when the last page loads", async () => {
+    const app = liveHub();
+    const first = { byRepo: { storefront: 2 }, oldest: liveNormal.createdAt, total: 2 };
+    app.load.mockResolvedValueOnce(Response.json({ ...first, cards: [liveConflict], nextCursor: "next-page" }))
+      .mockResolvedValueOnce(Response.json({ ...first, cards: [liveNormal], nextCursor: null }));
+    await app.user.click(await screen.findByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(row(normal)).toHaveFocus());
+    expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
   });
 
   it("restarts paging from the first page after the queue changes", async () => {
