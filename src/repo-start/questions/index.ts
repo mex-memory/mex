@@ -4,9 +4,11 @@
  * through the producer gate as a "you said" entry with checks (producer `setup-question`);
  * answers that need no entry are still kept, so nothing is asked twice.
  */
+import { dirname } from "node:path";
+import { openRecord, type RecordWriter } from "../../record/index.js";
 import type { RecordLocation } from "../../record/location.js";
 import type { GateResult } from "../../knowledge/gate.js";
-import { HAND_EDITS_FINE, readAnswers, saveAnswer, type GapType } from "./answers.js";
+import { HAND_EDITS_FINE, readAnswers, saveAnswers, type GapType, type StoredAnswer } from "./answers.js";
 import { findGaps, type Gap, type GapInput } from "./gaps.js";
 
 export type QuestionReply = string | "skip" | "skip-all";
@@ -18,16 +20,18 @@ export type QuestionOutcome =
   | { gap: Gap; status: "not saved"; line: string }
   | { gap: Gap; status: "skipped" };
 
-export interface QuestionsInput extends GapInput {
+interface AnswerInput extends GapInput {
   projectId: string;
   location: RecordLocation;
   env?: NodeJS.ProcessEnv;
-  ask: AskQuestion;
-  /** Called once per answered question, so the screen shows each result as it comes. */
-  onOutcome?: (outcome: QuestionOutcome, index: number) => void;
   /** Tests: stand-ins for the native evaluator. */
   observeChecks?: import("../../knowledge/gate.js").GateContext["observeChecks"];
   now?: Date;
+}
+export interface QuestionsInput extends AnswerInput {
+  ask: AskQuestion;
+  /** Called once per answered question, so the screen shows each result as it comes. */
+  onOutcome?: (outcome: QuestionOutcome, index: number) => void;
 }
 export interface QuestionsResult { asked: number; outcomes: QuestionOutcome[]; }
 
@@ -60,59 +64,81 @@ function line(results: readonly GateResult[]): { saved: string[]; why?: string }
   return { saved, why: dropped?.status === "dropped" ? DROPPED[dropped.reason] ?? dropped.reason : review ? "it contradicts another entry; see `mex rules`" : undefined };
 }
 
+function recordOptions({ location }: AnswerInput) {
+  return { home: location.home, ...(location.directory !== location.home ? { cache: dirname(location.directory) } : {}) };
+}
+
+/** Apply only the selected gaps. Callers resolve their IDs against current pending questions first. */
+export async function applySetupAnswers(
+  input: AnswerInput, replies: ReadonlyArray<{ gap: Gap; reply: string }>, useWriter?: RecordWriter,
+): Promise<QuestionOutcome[] | undefined> {
+  const now = input.now ?? new Date();
+  const at = now.toISOString(), date = at.slice(0, 10);
+  const prepared = replies.map(({ gap, reply }) => {
+    const resolution = gap.choices.some(choice => choice.key === reply) ? gap.resolve(reply, date) : undefined;
+    const answer: StoredAnswer = { type: gap.type, choice: resolution ? reply : "skip", subject: resolution?.subject ?? gap.subject, at };
+    return { gap, resolution, answer };
+  });
+  const options = recordOptions(input);
+  const writer = useWriter ?? openRecord(options);
+  try {
+    // Remember before checking. Setup recipes and code facts read this to step aside.
+    if (!saveAnswers(writer, input.projectId, prepared.map(({ gap, answer }) => [gap.id, answer]), true)) return;
+    const outcomes: QuestionOutcome[] = [];
+    for (const { gap, resolution, answer } of prepared) {
+      if (!resolution) { outcomes.push({ gap, status: "skipped" }); continue; }
+      if (gap.type === "test-command") await refreshRecipes(input);
+      if (gap.type === "hand-edited" && answer.choice === HAND_EDITS_FINE) await requeueCodeFacts(input);
+      if (!resolution.proposals.length) { outcomes.push({ gap, status: "noted", line: NOTED[gap.type] }); continue; }
+
+      const { propose } = await import("../../knowledge/gate.js");
+      let results: GateResult[];
+      try {
+        results = await propose(resolution.proposals, { ...options, projectPath: input.root, env: input.env, now: input.now, observeChecks: input.observeChecks });
+      } catch { results = [{ status: "dropped", reason: "checks-unavailable" }]; }
+      const { saved, why } = line(results);
+      if (saved.length) {
+        saveAnswers(writer, input.projectId, [[gap.id, { ...answer, entries: saved }]], false);
+        outcomes.push({ gap, status: "saved", entries: saved, line: 'Saved: your agents get it as "you said"' });
+      } else {
+        outcomes.push({ gap, status: "not saved", line: `Not saved: ${why ?? "the gate kept it out"}` });
+      }
+    }
+    return outcomes;
+  } finally { if (!useWriter) writer.close(); }
+}
+
 export async function runSetupQuestions(input: QuestionsInput): Promise<QuestionsResult> {
   const gaps = pendingGaps(input);
   const outcomes: QuestionOutcome[] = [];
-  const date = (input.now ?? new Date()).toISOString().slice(0, 10);
-  const at = (input.now ?? new Date()).toISOString();
+  const now = input.now ?? new Date();
   let skipRest = false;
   for (const [index, gap] of gaps.entries()) {
     const reply = skipRest ? "skip" : await input.ask(gap, index, gaps.length);
     if (reply === "skip-all") skipRest = true;
-    let outcome: QuestionOutcome;
-    if (reply === "skip" || reply === "skip-all" || !gap.choices.some(choice => choice.key === reply)) {
-      saveAnswer(input.location, input.projectId, gap.id, { type: gap.type, choice: "skip", subject: gap.subject, at });
-      outcome = { gap, status: "skipped" };
-    } else {
-      const resolution = gap.resolve(reply, date);
-      // Keep the answer first: setup recipes and code facts read it to step aside.
-      saveAnswer(input.location, input.projectId, gap.id, { type: gap.type, choice: reply, subject: resolution.subject, at });
-      if (gap.type === "test-command") await refreshRecipes(input);
-      if (gap.type === "hand-edited" && reply === HAND_EDITS_FINE) await requeueCodeFacts(input);
-      if (!resolution.proposals.length) outcome = { gap, status: "noted", line: NOTED[gap.type] };
-      else {
-        const { propose } = await import("../../knowledge/gate.js");
-        let results: GateResult[];
-        try {
-          results = await propose(resolution.proposals, { projectPath: input.root, home: input.location.home, env: input.env, now: input.now, observeChecks: input.observeChecks });
-        } catch { results = [{ status: "dropped", reason: "checks-unavailable" }]; }
-        const { saved, why } = line(results);
-        if (saved.length) {
-          saveAnswer(input.location, input.projectId, gap.id, { type: gap.type, choice: reply, subject: resolution.subject, at, entries: saved });
-          outcome = { gap, status: "saved", entries: saved, line: `Saved: your agents get it as "you said"` };
-        } else outcome = { gap, status: "not saved", line: `Not saved: ${why ?? "the gate kept it out"}` };
-      }
+    const [outcome] = await applySetupAnswers({ ...input, now }, [{ gap, reply }]) ?? [];
+    if (outcome) {
+      outcomes.push(outcome);
+      input.onOutcome?.(outcome, index);
     }
-    outcomes.push(outcome);
-    input.onOutcome?.(outcome, index);
   }
   return { asked: gaps.length, outcomes };
 }
 
 /** A chosen test command replaces the setup recipe that picked one for the package. */
-async function refreshRecipes(input: QuestionsInput): Promise<void> {
+async function refreshRecipes(input: AnswerInput): Promise<void> {
   if (!input.recipes) return;
   try {
     const { saveSetupRecipes } = await import("../recipe-entries.js");
-    saveSetupRecipes(input.recipes, { projectPath: input.root, home: input.location.home, env: input.env });
+    saveSetupRecipes(input.recipes, { ...recordOptions(input), projectPath: input.root, env: input.env });
   } catch { /* the next `mex` or session-start refresh applies it */ }
 }
 
 /** Code facts drops its pitfall for a file the person edits by hand; a cheap free job. */
-async function requeueCodeFacts(input: QuestionsInput): Promise<void> {
+async function requeueCodeFacts(input: AnswerInput): Promise<void> {
   try {
     const [{ openRecord }, { queueJob }] = await Promise.all([import("../../record/index.js"), import("../../record/background.js")]);
-    const writer = openRecord({ home: input.location.home });
+    const writer = openRecord(recordOptions(input));
     try { queueJob(writer, { kind: "code-facts", projectId: input.projectId, params: { checkout: input.root } }); }
     finally { writer.close(); }
   } catch { /* the weekly re-count applies it */ }

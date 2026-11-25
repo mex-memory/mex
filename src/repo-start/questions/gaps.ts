@@ -31,6 +31,8 @@ export interface Gap {
   id: string;
   type: GapType;
   subject: string;
+  /** Files the answer was based on, for preview revision checks. */
+  evidencePaths: string[];
   /** One line, in plain words. */
   question: string;
   /** The evidence, a line or two. */
@@ -48,6 +50,8 @@ export interface GapInput {
   facts?: CodeFactsFile;
   /** Ids already answered or skipped. */
   answered?: ReadonlySet<string>;
+  /** A read-only surface can omit recency hints that need Git. */
+  ruleHistory?: boolean;
 }
 
 const code = (text: string) => `\`${text}\``;
@@ -94,7 +98,8 @@ function ruleConflicts(input: GapInput): Gap[] {
     if (!onlyA.length || !onlyB.length) continue;
     const checkA = a.entry.mex.checks.map(checkOf).find(Boolean), checkB = b.entry.mex.checks.map(checkOf).find(Boolean);
     if (!checkA || !checkB) continue;
-    const timeA = lastChanged(input.root, a.path), timeB = lastChanged(input.root, b.path);
+    const timeA = input.ruleHistory === false ? 0 : lastChanged(input.root, a.path);
+    const timeB = input.ruleHistory === false ? 0 : lastChanged(input.root, b.path);
     const question = `${code(a.path)} says ${code(onlyA[0]!)}, ${code(b.path)} says ${code(onlyB[0]!)} (under "${item.heading}"). Which is right?`;
     const side = (winner: typeof a, lose: string[], win: string[], loser: typeof b, checks: ProposedCheck[], date: string, answer: string): Proposal => proposal({
       key: `conflict\n${item.heading}\n${winner.path}\n${loser.path}`, kind: "decision",
@@ -106,7 +111,7 @@ function ruleConflicts(input: GapInput): Gap[] {
     });
     out.push({
       id: id("rule-conflict", item.heading, a.path, b.path, onlyA.join("\n"), onlyB.join("\n")), type: "rule-conflict", subject: `${a.path}\n${b.path}\n${item.heading}`,
-      question, details: [],
+      question, details: [], evidencePaths: [a.path, b.path],
       choices: [{ key: "1", label: `${a.path} is right` }, { key: "2", label: `${b.path} is right` }],
       ...(timeA !== timeB ? { suggested: timeA > timeB ? "1" : "2" } : {}),
       resolve: (choice, date) => {
@@ -141,7 +146,7 @@ function testCommands(input: GapInput): Gap[] {
     });
     const ci = [one, two].filter(inCi);
     out.push({
-      id: id("test-command", pkg, one.command, two.command), type: "test-command", subject: pkg, question, details: [],
+      id: id("test-command", pkg, one.command, two.command), type: "test-command", subject: pkg, question, details: [], evidencePaths: [where(one), where(two)],
       choices: [{ key: "1", label: code(one.command) }, { key: "2", label: code(two.command) }, { key: "3", label: "both" }],
       ...(ci.length === 1 ? { suggested: ci[0] === one ? "1" : "2" } : {}),
       resolve: (choice, date) => ({
@@ -168,6 +173,7 @@ function layerExceptions(input: GapInput): Gap[] {
     const question = `${code(rule.from)} imports ${code(name)} in ${plural(rule.back, "place")}${where}, while ${plural(rule.imports, "import")} go the other way. Is that allowed?`;
     out.push({
       id: id("layer-exception", rule.from, rule.to, String(rule.back)), type: "layer-exception", subject: `${rule.from}\n${rule.to}`, question, details: [],
+      evidencePaths: [`${rule.to}/package.json`, ...rule.files.slice(0, 2)],
       choices: [{ key: "1", label: "no, keep it one-way" }, { key: "2", label: "yes, it's allowed" }],
       suggested: "1",
       resolve: (choice, date) => ({
@@ -194,7 +200,7 @@ function handEdited(input: GapInput): Gap[] {
   return facts.hand_edited.filter(item => markers.has(item.path)).map(item => {
     const question = `${code(item.path)} has a generated header, but ${plural(item.commits, "commit")} changed only that file. Should changes go through its generator?`;
     return {
-      id: id("hand-edited", item.path), type: "hand-edited" as const, subject: item.path, question, details: [],
+      id: id("hand-edited", item.path), type: "hand-edited" as const, subject: item.path, question, details: [], evidencePaths: [item.path],
       choices: [{ key: "1", label: "yes, change the generator" }, { key: HAND_EDITS_FINE, label: "no, hand edits are fine" }],
       suggested: "1",
       // A yes confirms the pitfall code facts already keeps for the header; a no makes code facts drop it.

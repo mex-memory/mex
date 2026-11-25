@@ -12,6 +12,7 @@ import type { CodeFactsFile } from "../../repo-start/history/job.js";
 import { readSetupSteps, readSetupStepRows, setupStepCheckout, type SetupStep } from "../../repo-start/steps.js";
 import { machineCheckouts, machinePath, machineProjects, machineTime } from "./machine-projects.js";
 import { mostRecentCheckout } from "./read.js";
+import { readSetupQuestions } from "./setup-questions.js";
 
 type SetupReader = Pick<RecordReader, "all" | "get" | "setting">;
 type StepGuard = Pick<JobRow, "id" | "project_id" | "kind" | "state" | "params">;
@@ -114,7 +115,6 @@ function plural(count: number, unit: string) {
 function setupSummary(run: SetupRun | undefined): MachineRepoSetup["summary"] {
   const findings: MachineRepoSetup["summary"]["findings"] = [];
   const found = run?.found;
-  if (found?.recipes === 0) findings.push({ label: "Commands", text: "No commands found in config." });
   if (Number.isSafeInteger(found?.recipes) && found!.recipes > 0) {
     const packages = Number.isSafeInteger(found!.packages) && found!.packages > 1 ? ` across ${plural(found!.packages, "package")}` : "";
     findings.push({ label: "Commands", text: `Found ${plural(found!.recipes, "command")}${packages} in config.` });
@@ -158,6 +158,10 @@ export function readRepoSetup(
   if (target.missing) return repo;
   const codeFacts = steps.find(({ kind }) => kind === "code-facts");
   const facts = readSetupFacts(location, target, codeFacts?.scope);
+  if (target.enabled && env.MEX_OFF !== "1") {
+    const { questions } = readSetupQuestions(location, repoId, target.checkout.path, setupOfferRevision(target), facts);
+    repo.questions = questions.map(({ view }) => view);
+  }
   if (!codeFacts) {
     if (target.checkout.provisional === "shallow" || facts?.skipped === "shallow clone") {
       repo.unavailableSteps = [{ kind: "code-facts", reason: "Git history skipped. This is a shallow clone." }];

@@ -27,6 +27,7 @@ import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes
 import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { rotateHubSecret } from "./secret.js";
+import { answerHubSetup } from "./setup-question-actions.js";
 import { SetupLearning } from "./setup-learning.js";
 import { changeSetupStep } from "./setup-step-actions.js";
 import { SetupData, setupRepoId } from "./setup-data.js";
@@ -364,6 +365,15 @@ export function createMachineHubApp(options: MachineHubOptions) {
     setup.refresh(repoId);
     events.controlsChanged("setup", "jobs");
     return step;
+  }));
+
+  app.post("/api/v1/setup/:repo/questions", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const result = await answerHubSetup(location, now, options.env ?? process.env, options.agentEntry, repoId, body);
+    setup.refresh(repoId);
+    events.controlsChanged("setup");
+    if (result.questions.some(({ outcome }) => outcome?.status !== "skipped")) await changed(repoId, true);
+    return result;
   }));
 
   app.post("/api/v1/setup/:repo/steps/:id", (context) => machinePost(context, async (body) => {
