@@ -14,6 +14,7 @@ export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   review: Object.freeze(["ReviewPage", "src/machine/ReviewPage.tsx"]),
   agents: Object.freeze(["AgentsPage", "src/machine/AgentsPage.tsx"]),
   settings: Object.freeze(["SettingsPage", "src/machine/SettingsPage.tsx"]),
+  setup: Object.freeze(["SetupPage", "src/machine/SetupPage.tsx"]),
 });
 
 export function releaseWorkbenchPaths({ projectId }) {

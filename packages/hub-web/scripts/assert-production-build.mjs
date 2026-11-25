@@ -22,6 +22,7 @@ if (Object.keys(manifest).some((source) => /(?:^|\/)src\/(?:app|pages)\//u.test(
 }
 
 const forbiddenFixtureData = [
+  "storefront-checkout-rules",
   "job_01K36WVM6H7JK8M9NPQRSTVVWX",
   "Three knowledge pages lost grounding",
   "scf_mex",

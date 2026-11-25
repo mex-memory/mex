@@ -116,7 +116,8 @@
                 "knowledge": { "$ref": "#/$defs/assetGroup" },
                 "review": { "$ref": "#/$defs/assetGroup" },
                 "agents": { "$ref": "#/$defs/assetGroup" },
-                "settings": { "$ref": "#/$defs/assetGroup" }
+                "settings": { "$ref": "#/$defs/assetGroup" },
+                "setup": { "$ref": "#/$defs/assetGroup" }
               }
             }
           ]
