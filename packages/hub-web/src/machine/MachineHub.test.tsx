@@ -143,6 +143,7 @@ describe("machine Hub", () => {
     expect(within(switcher).getAllByRole("option").map((option) => option.textContent)).toEqual(["All repos", "Alder", "Birch"]);
     expect(within(screen.getByRole("navigation", { name: "Primary" })).getAllByRole("link")).toEqual([
       screen.getByRole("link", { name: "Home" }),
+      screen.getByRole("link", { name: "Review" }),
       screen.getByRole("link", { name: "Knowledge" }),
       screen.getByRole("link", { name: "Jobs" }),
     ]);

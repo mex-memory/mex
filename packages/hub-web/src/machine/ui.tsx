@@ -129,7 +129,7 @@ export interface PageLoad {
   retry?: () => void;
 }
 
-export function PageRequestState({ name, loading, error, retry }: PageLoad & { name: "Home" | "jobs" }) {
+export function PageRequestState({ name, loading, error, retry }: PageLoad & { name: "Home" | "Review" | "jobs" }) {
   if (!loading && !error) return null;
   return (
     <div className={styles.pageState}>
