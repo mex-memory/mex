@@ -22,6 +22,7 @@ import { compactSettingFiles, undoManagedCompaction } from "../compaction/contro
 
 const PREFIX = "file-v1:";
 const MAX_CHANGES = 512;
+const MAX_RECOVERY_BYTES = 8 << 20;
 export interface InstallRow { id: number; agent: string; path: string; key: string; old_value: string; new_value: string; ts: string; }
 export interface InstallChange { path: string; agent: string; kind: "settings" | "runtime"; before: Snapshot; after: Snapshot; }
 export interface InstallOptions {
@@ -61,25 +62,29 @@ export function activeRows(writer: RecordWriter): InstallRow[] {
 
 export function recoveryFile(home: string): string { return join(home, "install-recovery.json"); }
 
-function writeRecovery(writer: RecordWriter): void {
+function writeRecovery(writer: RecordWriter, trackingChecked = false): void {
   // The shim's surviving Node fallback can undo settings if npm has removed
   // the CLI. It never opens or writes either database.
-  const rows = activeRows(writer).filter(row => row.key === `${PREFIX}settings` && row.agent !== "legacy");
+  const rows = trackingChecked
+    ? writer.db.prepare("SELECT * FROM installs WHERE key=? AND agent!='legacy' ORDER BY id DESC").all(PREFIX + "settings") as unknown as InstallRow[]
+    : activeRows(writer).filter(row => row.key === `${PREFIX}settings` && row.agent !== "legacy");
   const data = Buffer.from(`${JSON.stringify({ version: 1, home: writer.location.home, rows })}\n`);
-  if (data.length > 8 << 20) throw new Error("Installation recovery data exceeds its bound.");
+  if (data.length > MAX_RECOVERY_BYTES) throw new Error("Installation recovery data exceeds its bound.");
   const path = recoveryFile(writer.location.home);
-  assertUntracked(path);
-  const before = readSnapshot(path);
+  if (!trackingChecked) assertUntracked(path);
+  const before = readSnapshot(path, trackingChecked ? MAX_RECOVERY_BYTES : MAX_RUNTIME_BYTES);
   replaceFile(path, before, { data: data.toString("base64"), mode: 0o600 });
 }
 
-function recordChange(writer: RecordWriter, change: InstallChange, options: InstallOptions): void {
+function recordChange(writer: RecordWriter, change: InstallChange, options: InstallOptions, trackingChecked = false): void {
   if (equalSnapshot(change.before, change.after)) return;
-  if (activeRows(writer).length >= MAX_CHANGES) throw new Error("Installation history is full; uninstall before reinstalling.");
+  const count = trackingChecked ? Number(writer.db.prepare("SELECT count(*) n FROM installs WHERE key LIKE 'file-v1:%'").get()?.n)
+    : activeRows(writer).length;
+  if (count >= MAX_CHANGES) throw new Error("Installation history is full; uninstall before reinstalling.");
   const intent = writer.db.prepare("INSERT INTO installs(agent,path,key,old_value,new_value,ts) VALUES(?,?,?,?,?,?)")
     .run(change.agent, change.path, `${PREFIX}${change.kind}`, JSON.stringify(change.before), JSON.stringify(change.after), new Date().toISOString());
   // Commit the record and its recovery mirror before touching settings.
-  writeRecovery(writer);
+  writeRecovery(writer, trackingChecked);
   options.beforeWrite?.(change);
   try {
     replaceFile(change.path, change.before, change.after);
@@ -88,7 +93,7 @@ function recordChange(writer: RecordWriter, change: InstallChange, options: Inst
     // audit bytes, but don't let a later undo treat a concurrent user edit as
     // an installation we actually published.
     writer.db.prepare("UPDATE installs SET key=? WHERE id=?").run(`cancelled:${PREFIX}${change.kind}`, intent.lastInsertRowid);
-    try { writeRecovery(writer); } catch { /* Preserve the original failure. */ }
+    try { writeRecovery(writer, trackingChecked); } catch { /* Preserve the original failure. */ }
     throw error;
   }
 }
@@ -349,6 +354,24 @@ function repairJournalSnapshot(writer: RecordWriter | undefined, location: Locat
   } finally { reader?.close(); }
 }
 
+async function checkRepairRecovery(home: string, location: LocationOptions, change: InstallChange) {
+  const path = recoveryFile(home);
+  if (await installationTracking(path) === "tracked") throw new Error("Git tracks the installation recovery file.");
+  readSnapshot(path, MAX_RECOVERY_BYTES);
+  const reader = openRecordReadOnly(location);
+  try {
+    if (reader?.diagnostic) throw new Error(reader.diagnostic);
+    const existing = reader?.get<{ n: number; bytes: number }>(`SELECT count(*) n,
+      coalesce(sum(CASE WHEN key='file-v1:settings' AND agent!='legacy' THEN
+        length(CAST(old_value AS BLOB))+length(CAST(new_value AS BLOB)) + length(CAST(path AS BLOB)) + 256 ELSE 0 END),0) bytes
+      FROM installs WHERE key LIKE 'file-v1:%'`);
+    const extra = change.kind === "settings" ? (change.before.data?.length ?? 0) + (change.after.data?.length ?? 0) + Buffer.byteLength(change.path) + 256 : 0;
+    if (existing && (existing.n >= MAX_CHANGES || existing.bytes + extra > MAX_RECOVERY_BYTES)) {
+      throw new Error("The install record is too large to repair here.");
+    }
+  } finally { reader?.close(); }
+}
+
 async function repairAgent(options: InstallOptions, repair: NonNullable<InstallOptions["repair"]>): Promise<InstallResult> {
   const { agent, expected } = repair;
   const platform = options.platform ?? process.platform;
@@ -389,9 +412,10 @@ async function repairAgent(options: InstallOptions, repair: NonNullable<InstallO
     const planRevision = createHash("sha256").update(JSON.stringify([path, before, change.after])).digest("hex");
     if (expected && planRevision !== expected.planRevision) throw new InstallRevisionConflict("The repair plan changed.");
     if (different) {
+      if (!journaled) await checkRepairRecovery(home, location, change);
       try {
         if (writer && journaled) replaceFile(path, before, change.after);
-        else if (writer) recordChange(writer, change, options);
+        else if (writer) recordChange(writer, change, options, true);
       }
       catch (error) {
         if (error instanceof Error && /^File changed (?:before|during) installation/u.test(error.message)) {
