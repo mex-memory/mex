@@ -49,6 +49,7 @@ export class HomeData {
   #lastSignal: string | undefined;
   #timer: NodeJS.Timeout | undefined;
   #generation = 0;
+  #snapshotGeneration = 0;
 
   constructor(private readonly location: LocationOptions, private readonly now: () => number) {}
 
@@ -67,7 +68,7 @@ export class HomeData {
     const now = this.now();
     if (!this.#refreshing && now - this.#lastFullStart >= REFRESH_MS) void this.#refresh(now);
     return {
-      snapshot: this.#snapshot, updatingSince: this.#updatingSince, generation: `${this.#instance}:${this.#generation}`,
+      snapshot: this.#snapshot, updatingSince: this.#updatingSince, generation: `${this.#instance}:${this.#snapshotGeneration}`,
       ready: this.#refreshing,
     };
   }
@@ -138,6 +139,7 @@ export class HomeData {
         }
         if (!only) this.#lastSignal = signal ?? this.#lastSignal;
         this.#snapshot = await takeHomeSnapshot(this.location, this.#snapshot, this.now, this.#stop.signal, only);
+        this.#snapshotGeneration++;
         this.clearMetrics();
       } catch { /* Keep the last good in-memory snapshot. */ }
       finally {

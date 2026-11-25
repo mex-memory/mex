@@ -101,7 +101,7 @@ export async function readReviewCard(
   if (!point) throw reviewMissing();
   await setImmediate();
   const { home } = recordLocation({ ...location, create: false });
-  const { checkout } = point;
+  const { checkout } = point.row;
   return readStore(openRecordReadOnly, location, (reader) => {
     if (!reader?.project(repoId) || !registeredCheckout(reader, repoId, checkout)) throw reviewMissing();
     const active = new Set(activeCheckouts(reader, repoId, now));

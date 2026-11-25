@@ -24,9 +24,8 @@ const producers = new Map(listProducers().map(({ id, name }) => [id, name]));
 export type ReviewRow = MachineReviewRow;
 
 export interface ReviewPoint {
+  /** The row carries the action checkout selected from active registrations. */
   row: ReviewRow;
-  /** From the active registered checkouts. Never supplied by the browser. */
-  checkout: string;
   bytes: number;
 }
 
@@ -59,7 +58,8 @@ export function reviewPoint(
   const producer = entryProducer(mex);
   const source = producers.get(producer === "unknown" ? judge ? "judge" : "session-ongoing" : producer);
   const shareBlocked = !mex.checks.length || mex.checks.some(({ kind }) => kind === "legacy-grounding");
-  const reason = conflict ? "contradiction" : reviewReason(group.reason);
+  let reason = conflict ? "contradiction" : reviewReason(group.reason);
+  try { assertNoSecrets(reason); } catch { reason = "this rule needs your decision"; }
   const row: ReviewRow = {
     key: repoId + ":" + id, repoId, cardId: id, checkout, claim: stripHidden(mex.one_line).trim() || "Rule for Review",
     kind: mex.kind, scope: mex.scope,
@@ -75,7 +75,7 @@ export function reviewPoint(
       ...(target?.level === "team" && !active.has(target.checkout) ? { retire: "Turn on MEX in the checkout with this note before retiring it." } : {}),
     },
   };
-  return { checkout, row, bytes: JSON.stringify(row).length * 2 + 512 };
+  return { row, bytes: JSON.stringify(row).length * 2 + 512 };
 }
 
 export const emptyReview = (partial?: string): ProjectReview => ({ cards: new Map(), bytes: 0, partial });

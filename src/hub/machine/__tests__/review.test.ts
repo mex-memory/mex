@@ -212,6 +212,9 @@ it("pages one generation and rejects a stale cursor after a terminal change", as
   writer.db.prepare("UPDATE settings SET value=json_set(value,'$.state','applied') WHERE scope=? AND key=?").run(repo.id, first.producerKey);
   clock += 15_000;
   vi.advanceTimersByTime(15_000);
+  const stillCurrent = await queue("?limit=1&cursor=" + cursor);
+  expect(stillCurrent.updatingSince).toBeTruthy();
+  expect(stillCurrent.cards.map(({ key }) => key)).toEqual([second.key]);
   await settled();
   const stale = await request("/review?cursor=" + cursor);
   expect(stale.status).toBe(409);
