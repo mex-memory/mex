@@ -234,6 +234,8 @@ export const MachineKnowledgeRulesSchema = z.object({
     }),
   ]),
   generated: z.array(z.object({ path: knowledgePathSchema, sharing: z.enum(["shared", "local"]) })),
+  updatingSince: isoTimeSchema.optional(),
+  issue: z.string().optional(),
 });
 
 export const MachineKnowledgeBriefRequestSchema = MachineKnowledgeCheckoutSchema.extend({
