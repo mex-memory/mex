@@ -1,0 +1,149 @@
+.page {
+  max-width: 920px;
+}
+
+.page h1:focus {
+  outline: none;
+}
+
+.checkoutBar {
+  display: flex;
+  min-width: 0;
+  align-items: end;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.checkoutBar > div {
+  width: min(288px, 100%);
+}
+
+.checkoutBar p {
+  padding-block: 8px;
+  overflow-wrap: anywhere;
+}
+
+.notice,
+.empty {
+  margin: 0;
+  padding: 12px 16px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.empty {
+  padding: 24px 16px;
+  background: var(--card);
+}
+
+.files,
+.findings {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.files {
+  color: var(--card-foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.files > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.file {
+  padding: 14px 16px;
+}
+
+.fileRow {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 6px 14px;
+}
+
+.file code,
+.checkoutBar code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.file code {
+  font-weight: 500;
+}
+
+.fileInfo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px 7px;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.fileInfo,
+.entryCount {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.findings {
+  display: grid;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.findings li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 9px;
+  padding: 7px 10px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border-inline-start: 2px solid var(--border-strong);
+  border-radius: 0 6px 6px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.findings strong,
+.generated h2 {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.generated h2 {
+  margin: 3px 0 9px;
+  font-size: 14px;
+}
+
+.repoLink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--link);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.repoLink:hover {
+  text-decoration: underline;
+}
+
+.repoLink svg {
+  width: 14px;
+  height: 14px;
+}

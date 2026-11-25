@@ -12,6 +12,7 @@ import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
 import { KnowledgeDate, KnowledgeDetailPanel, type KnowledgeItemAction } from "./KnowledgeDetail";
 import { KnowledgeAreaGrid, KnowledgeGrouping, KnowledgeKindGrid } from "./KnowledgeGroups";
 import { KnowledgeNeedsLook } from "./KnowledgeNeedsLook";
+import { KnowledgeRules } from "./KnowledgeRules";
 import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
@@ -319,7 +320,7 @@ type KnowledgeRoute = ReturnType<typeof useKnowledgeRoute>;
 function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: KnowledgeScope & {
   route: KnowledgeRoute;
   view: KnowledgeView;
-  knowledge: KnowledgeActions;
+  knowledge: KnowledgeActions | KnowledgePreview;
   live?: boolean;
 }) {
   const { entryKey, params, showList, filters, statusFilter, q } = route;
@@ -333,6 +334,8 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
   filterNames.forEach((name) => landingParams.delete(name));
   landingParams.delete("view");
   const allKnowledgeHref = linkTo(basePath, landingParams);
+  const rulesParams = new URLSearchParams(landingParams);
+  rulesParams.set("view", "rules");
   const browseParams = new URLSearchParams(landingParams);
   browseParams.set("view", "list");
   const browseHref = linkTo(basePath, browseParams);
@@ -485,9 +488,12 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
             else next.delete("view");
             navigate(linkTo(basePath, next));
           }} value={grouping} />}
-          <Link className={`${shared.textLink} ${styles.forgottenLink}`} to={linkTo(`${basePath}/forgotten`)}>
-            Forgotten{view.forgottenCount !== undefined && ` (${number.format(view.forgottenCount)})`}
-          </Link>
+          <div className={styles.relatedLinks}>
+            {"tools" in knowledge && <Link className={shared.textLink} to={linkTo(basePath, rulesParams)}>Rules</Link>}
+            <Link className={shared.textLink} to={linkTo(`${basePath}/forgotten`)}>
+              Forgotten{view.forgottenCount !== undefined && ` (${number.format(view.forgottenCount)})`}
+            </Link>
+          </div>
         </div>
         {showList && (
           <Link className={`${shared.textLink} ${styles.back}`} to={allKnowledgeHref}><ArrowLeft aria-hidden="true" /> All knowledge</Link>
@@ -673,5 +679,7 @@ function LiveKnowledgePage({ live, ...scope }: KnowledgeScope & { live: Knowledg
 }
 
 export default function KnowledgePage({ knowledge, live, ...scope }: KnowledgePageProps) {
+  const [params] = useSearchParams();
+  if (knowledge && params.get("view") === "rules") return <KnowledgeRules {...scope} tools={knowledge.tools} />;
   return knowledge ? <FixtureKnowledgePage {...scope} knowledge={knowledge} /> : <LiveKnowledgePage {...scope} live={live} />;
 }
