@@ -23,6 +23,7 @@ import { replyContextDigest, type ReplyContextMode, type TranscriptIssue } from 
 import { Item, DropCounts, countDrop, itemIdentity, parseItems, type Answer } from "./items.js";
 import { NOTE_ATTEMPT_LIMIT, settleNoteAttempts } from "./note-attempts.js";
 import { formatFilterBatch, saveFilterBatchReport, type FilterBatchReport } from "./report.js";
+import { runStageOne, stageOneEnabled, stageOneRoom, STAGE_ONE_WAIT } from "./stage-one.js";
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
   source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string; reply_context_hash?: string };
@@ -30,9 +31,9 @@ export interface FilterCandidate extends Omit<Answer, "checks"> {
 interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: string; position: Position;
   answers: Answer[]; repair_attempted?: boolean; repair?: Answer[]; candidates?: FilterCandidate[]; model: string; tokens: number;
   dropped?: DropCounts; notes_deferred?: number; notes_waiting_for_sync?: number; }
-interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; }
+interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; verdictGaps?: boolean; }
 export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; aids?: AidRanker;
-  contextMode?: ReplyContextMode; }
+  contextMode?: ReplyContextMode; stageOne?: boolean; }
 const dependencies: FilterDependencies = { model: runModel, recordChecks, clock: Date.now };
 const BATCH_BYTES = 512 << 10, STORE_BYTES = 8 << 20;
 const CONTEXT_PAUSED = "Reply context paused";
@@ -140,6 +141,8 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
   return { name: "filter", label: "Memory filter", scope: "project", machineExclusive: true, sideEffects: "idempotent",
     async runBatch({ writer, job, params, checkpoint }) {
       const project = job.project_id!, at = await position(params.checkout), state = checkpoint ?? { position: at };
+      const stagesEnabled = () => deps.stageOne ?? stageOneEnabled(writer);
+      const stageOne = stagesEnabled();
       try {
         if (!filterAllowed(writer, project, params)) return { checkpoint: state, wait: "Waiting: capture or MEX is off here" };
         if (project.startsWith("g-") && !at.head) return { checkpoint: state, wait: "Waiting: Git checkout identity is unavailable" };
@@ -152,12 +155,20 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         if (consolidated) return { checkpoint: state, ...consolidated };
         const cheap = deps.cheap ?? (!!DEFAULT_MODELS[params.agent].cheap && selectModel(params.agent, { role: "cheap" }) !== selectModel(params.agent, { role: "best" }));
         const scan: ScanWindow = { after: state.scanAfter ?? 0, carry: state.carry };
-        const input = filterInput(writer, project, params, cheap, deps.clock(), scan, deps.contextMode);
+        const input = filterInput(writer, project, params, cheap, deps.clock(), scan, deps.contextMode, stageOne);
         if (!input) {
+          if (stageOne && statementsOn(writer)) {
+            const verdicts = await runStageOne(writer, project, params, job, at, state.scanAfter ?? 0, { ...deps, enabled: stagesEnabled });
+            if (verdicts) {
+              const { after, gaps, contextIssues, ...result } = verdicts;
+              return { ...result, checkpoint: { ...state, scanAfter: after, verdictGaps: state.verdictGaps || gaps },
+                summary: contextSummary(result.summary, contextIssues) };
+            }
+          }
           advanceConsumed(writer, project);
           if (scan.more) return { checkpoint: { ...state, scanAfter: scan.through, carry: scan.deferred }, summary: "Scanning later captured messages; earlier active sessions remain unread" };
           finishRequest(writer, params);
-          return { checkpoint: state, done: true, summary: "Memory filter caught up; active sessions were left unread" };
+          return { checkpoint: state, done: true, gaps: state.verdictGaps, summary: "Memory filter caught up; active sessions were left unread" };
         }
         if (deps === dependencies && !nativeBinary()) return { checkpoint: state, wait: "Waiting: the filter needs the installed check evaluator" };
         const key = hash(JSON.stringify({ input: stableInput(input), position: at })).slice(7);
@@ -247,7 +258,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
           const current = readSource(params.checkout, path);
           if (current === null || hash(current) !== baseline) return { checkpoint: state, summary: "Filter check inputs changed; checking again" };
         }
-        const fresh = filterInput(writer, project, params, cheap, deps.clock(), { after: state.scanAfter ?? 0, carry: state.carry }, deps.contextMode);
+        const fresh = filterInput(writer, project, params, cheap, deps.clock(), { after: state.scanAfter ?? 0, carry: state.carry }, deps.contextMode, stageOne);
         if (!fresh || hash(JSON.stringify(stableInput(fresh))) !== hash(JSON.stringify(stableInput(input))) || !await unchanged(writer, project, params, input, at))
           return { checkpoint: state, summary: "Filter response discarded: session activity or source changed" };
         const failed = input.notes.filter(note => !accepted.has(note.id));
@@ -271,7 +282,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       }
     },
     display(job, reader) {
-      const batch = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? AND (summary LIKE 'Filter batch % kept %' OR summary LIKE ?) ORDER BY batch DESC LIMIT 1",
+      const batch = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? AND (summary LIKE 'Filter batch % kept %' OR summary LIKE 'Session verdicts batch %' OR summary LIKE ?) ORDER BY batch DESC LIMIT 1",
         job.id, `%${CONTEXT_PAUSED}%`)[0];
       return batch ? { summary: batch.summary } : {};
     },
@@ -281,6 +292,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       if (job.reason === PUBLICATION_WAIT) return publicationReady(writer, job);
       if (job.reason === "Sign in to the selected agent CLI before retrying." || job.reason === "The selected agent reached its usage limit.") return false;
       if (job.reason === "Waiting: local filter candidates need consolidation") return candidateRoom(writer, job.project_id!);
+      if (job.reason === STAGE_ONE_WAIT) return !(deps.stageOne ?? stageOneEnabled(writer)) || !statementsOn(writer) || stageOneRoom(writer, job.project_id!);
       if (job.reason === "Waiting: the filter needs the installed check evaluator") return !!nativeBinary();
       return true;
     },

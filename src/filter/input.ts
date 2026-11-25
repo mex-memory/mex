@@ -9,7 +9,7 @@ import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { repoFile } from "../knowledge/references.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
 import { hash } from "../judge/evidence.js";
-import { replyContexts, type ReplyContextMode, type TranscriptIssue } from "./transcript.js";
+import { replyContexts, type ReplyContextMode, type ReplyOption, type TranscriptIssue } from "./transcript.js";
 import { deliveredContext, deliveredNoteLookup } from "./delivered.js";
 import { sessionWorkEnabled } from "../judge/session.js";
 import { NOTE_ATTEMPT_LIMIT, noteAttempt, type NoteAttempt } from "./note-attempts.js";
@@ -18,13 +18,16 @@ export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1
   files: 16, fileBytes: 16 << 10, idleMs: 10 * 60_000, ageMs: 24 * 60 * 60_000 } as const;
 export interface FilterParams { checkout: string; agent: "claude" | "codex"; generation?: string; sessionId?: string; }
 export interface Message { id: string; row: number; session: string; at: string; text: string; marks: string;
-  previous_reply: string | null; delivered: string[]; }
+  previous_reply: string | null; previous_options?: ReplyOption[]; delivered: string[]; }
 export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; attempt?: NoteAttempt; }
 export interface FilterInput { messages: Message[]; notes: NoteInput[]; files: Array<{ path: string; text: string; hash: string }>;
   delivered_notes: Array<{ id: string; text: string | null }>; }
 export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean;
   contextIssues?: TranscriptIssue[]; messagesWithheld?: number; }
 interface Journal { id: number; session_id: string; ts: string; text: string; marks: string; last_seen_at: string; paused: number; agent: string; }
+type CaptureSession = Pick<Journal, "session_id" | "last_seen_at" | "paused" | "agent">;
+type Transcript = { path: string; agent: "claude" | "codex" };
+type Hooks = ReturnType<typeof openHooksReadOnly>;
 const Metadata = z.object({ version: z.literal(1), project_id: z.string(), checkout: z.string(), agent: z.string(),
   session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096),
   branch: z.string().min(1).max(1024).optional(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).optional(), position_at: z.string().datetime({ offset: true }).optional() }).strict();
@@ -70,6 +73,17 @@ function heartbeat(writer: RecordWriter, agent: string, session: string): bigint
     if (value.session_id !== session || value.agent !== agent) return undefined;
     return lstatSync(path, { bigint: true }).mtimeNs;
   } catch { return undefined; }
+}
+function sessionActivity(writer: RecordWriter, project: string, checkout: string, row: CaptureSession) {
+  if (row.paused) return;
+  const meta = filterSession(writer, project, checkout, row.session_id);
+  const lastSeen = timestampNs(row.last_seen_at), beat = heartbeat(writer, row.agent, row.session_id);
+  if (lastSeen === undefined || beat === undefined) return;
+  const activity = lastSeen > beat ? lastSeen : beat, recorded = meta ? timestampNs(meta.seen_at) : undefined;
+  const agent: Transcript["agent"] = row.agent === "claude-code" ? "claude" : "codex";
+  const transcript: Transcript | undefined = meta?.transcript ? { path: meta.transcript, agent: meta.agent === "claude-code" ? "claude" : "codex" } : undefined;
+  return { seen: recorded !== undefined && recorded > activity ? recorded : activity,
+    finished: meta?.finished && recorded !== undefined && recorded >= activity, agent, transcript };
 }
 function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
   const check = personalReadGuard(join(writer.location.home, "projects", project, "notes"));
@@ -117,12 +131,20 @@ function contextFiles(checkout: string, messages: Message[], notes: NoteInput[])
   }
   return files;
 }
+function capturedMessage(row: Pick<Journal, "id" | "ts" | "session_id" | "text" | "marks">, typed: boolean): Message {
+  return { id: "m" + row.id, row: row.id, session: row.session_id, at: row.ts,
+    text: typed ? Array.from(row.text).slice(0, FILTER_LIMITS.characters).join("") : "", marks: row.marks,
+    previous_reply: null, delivered: [] };
+}
+
 export function filterInput(writer: RecordWriter, project: string, params: FilterParams, cheap: boolean, now = Date.now(), scan?: ScanWindow,
-  contextMode: ReplyContextMode = "design"): FilterInput | undefined {
+  contextMode: ReplyContextMode = "design", notesOnly = false): FilterInput | undefined {
+  if (notesOnly) {
+    const notes = personalNotes(writer, project);
+    return notes.length ? completeInput(writer, project, params.checkout, undefined, [], notes, new Map(), contextMode, scan) : undefined;
+  }
   const hooks = openHooksReadOnly({ home: writer.location.home });
-  const messages: Message[] = [];
-  const transcripts = new Map<string, { path: string; agent: "claude" | "codex" }>();
-  const delivered = new Set<string>();
+  const transcripts = new Map<string, Transcript>();
   try {
     if (hooks?.diagnostic) throw new Error("The filter needs a compatible capture journal.");
     const after = Math.max(scan?.after ?? 0, Number(writer.setting(project, "journal.consumed") ?? 0));
@@ -135,15 +157,10 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
       scan.through = page.at(-1)?.id ?? scan.after; scan.more = page.length >= FILTER_LIMITS.rows;
     }
     const eligible = rows.filter(row => {
-      if (row.paused || row.id <= acknowledged(writer, project, row.session_id)) return false;
-      const meta = filterSession(writer, project, params.checkout, row.session_id);
-      const lastSeen = timestampNs(row.last_seen_at), beat = heartbeat(writer, row.agent, row.session_id);
-      if (lastSeen === undefined || beat === undefined) return false;
-      const activity = lastSeen > beat ? lastSeen : beat, recorded = meta ? timestampNs(meta.seen_at) : undefined;
-      const seen = recorded !== undefined && recorded > activity ? recorded : activity;
-      const finished = meta?.finished && recorded !== undefined && recorded >= activity;
-      if (!finished && seen > BigInt(Math.trunc(now - FILTER_LIMITS.idleMs)) * 1_000_000n) return false;
-      if (meta?.transcript) transcripts.set(row.session_id, { path: meta.transcript, agent: meta.agent === "claude-code" ? "claude" : "codex" });
+      if (row.id <= acknowledged(writer, project, row.session_id)) return false;
+      const activity = sessionActivity(writer, project, params.checkout, row);
+      if (!activity || (!activity.finished && activity.seen > BigInt(Math.trunc(now - FILTER_LIMITS.idleMs)) * 1_000_000n)) return false;
+      if (activity.transcript) transcripts.set(row.session_id, activity.transcript);
       return true;
     });
     // Learning from typed statements is opt-in: while it is off the filter
@@ -153,66 +170,126 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
     const notes = personalNotes(writer, project);
     if (!notes.length && (!eligible.length || (!cheap && eligible.length < 20 && Date.parse(eligible[0]!.ts) > now - FILTER_LIMITS.ageMs))) return undefined;
     const readyMessages = cheap || eligible.length >= 20 || (eligible.length > 0 && Date.parse(eligible[0]!.ts) <= now - FILTER_LIMITS.ageMs);
-    for (const row of (readyMessages ? eligible : []).slice(0, FILTER_LIMITS.messages)) {
-      messages.push({ id: `m${row.id}`, row: row.id, session: row.session_id, at: row.ts,
-        text: Array.from(row.text).slice(0, FILTER_LIMITS.characters).join(""), marks: row.marks,
-        previous_reply: null, delivered: [] });
-    }
-    // Read each selected session once. Reply context is transient and never supplies a saved quote.
-    const bySession = new Map<string, Message[]>();
-    for (const message of messages) {
-      const group = bySession.get(message.session) ?? [];
-      group.push(message);
-      bySession.set(message.session, group);
-    }
-    const lookup = deliveredNoteLookup(writer.location.home, project, params.checkout);
-    const contextIssues = new Map<string, TranscriptIssue>();
-    const withheld = new Set<number>();
-    for (const [session, group] of bySession) {
-      const { ids, masks } = deliveredContext(hooks!, session, lookup);
-      ids.forEach(id => delivered.add(id));
-      for (const message of group) message.delivered = ids;
-      if (contextMode === "none") continue;
-      const transcript = transcripts.get(session);
-      const issue = masks === null ? "delivered-notes" : transcript
-        ? replyContexts(transcript.path, transcript.agent, group, contextMode,
-          { checkout: params.checkout, notes: masks, withheld, maxFullReplyBytes: FILTER_LIMITS.inputBytes }) : "unavailable";
-      if (issue) {
-        contextIssues.set(session, issue);
-        for (const message of group) withheld.add(message.row);
-      }
-    }
-    let deliveredBytes = 0;
-    const input = { messages, notes, files: contextFiles(params.checkout, messages, notes),
-      delivered_notes: [...delivered].sort().map(id => {
-        const text = lookup(id)[0]?.text, bounded = text ? Array.from(text).slice(0, 1200).join("") : null;
-        deliveredBytes += bounded ? Buffer.byteLength(bounded) : 0;
-        return { id, text: deliveredBytes <= 16 << 10 ? bounded : null };
-      }) };
-    if (contextMode === "full") {
-      // Keep the typed message if its full reply cannot fit even as the only input.
-      const overhead = Buffer.byteLength(JSON.stringify({ ...input, messages: [], notes: [], files: [] }));
-      for (const message of input.messages) {
-        if (message.previous_reply === null || overhead + Buffer.byteLength(JSON.stringify(message)) <= FILTER_LIMITS.inputBytes) continue;
-        message.previous_reply = null;
-        withheld.add(message.row);
-      }
-    }
-    // Split the batch deterministically, leaving omitted inputs unacknowledged.
-    while (Buffer.byteLength(JSON.stringify(input)) > FILTER_LIMITS.inputBytes) {
-      if (input.files.length) input.files.pop();
-      else if (input.notes.length > 1) input.notes.pop();
-      else if (input.messages.length) input.messages.pop();
-      else throw new Error("One filter input exceeds the batch limit.");
-    }
-    if (scan) {
-      const retained = new Set(input.messages.map(message => message.session));
-      scan.contextIssues = [...contextIssues].filter(([session]) => retained.has(session)).map(([, issue]) => issue);
-      scan.messagesWithheld = input.messages.filter(message => withheld.has(message.row)).length;
-    }
-    assertNoSecrets(input);
-    return input;
+    const messages = (readyMessages ? eligible : []).slice(0, FILTER_LIMITS.messages).map(row => capturedMessage(row, true));
+    return completeInput(writer, project, params.checkout, hooks, messages, notes, transcripts, contextMode, scan);
   } finally { hooks?.close(); }
+}
+
+interface SessionSelection { session: string; retryRows?: readonly number[]; }
+/** Select one finished session, with a bounded page for unusually long sessions. */
+export function stageOneInput(writer: RecordWriter, project: string, checkout: string, scan: ScanWindow, contextMode: ReplyContextMode,
+  selection?: SessionSelection): { session: string; input: FilterInput } | undefined {
+  const hooks = openHooksReadOnly({ home: writer.location.home });
+  try {
+    if (hooks?.diagnostic) throw new Error("The filter needs a compatible capture journal.");
+    if (!hooks) return;
+    const consumed = Number(writer.setting(project, "journal.consumed") ?? 0);
+    const after = Math.max(scan.after, consumed);
+    const select = (session: string) => hooks.get<CaptureSession>(
+      "SELECT session_id,agent,last_seen_at,paused FROM sessions WHERE project_id=? AND checkout=? AND session_id=?", project, checkout, session);
+    const retryRows = selection?.retryRows;
+    let session = selection?.session, activity: ReturnType<typeof sessionActivity>;
+    if (session) {
+      const row = select(session);
+      if (!row && !retryRows) return;
+      activity = row && sessionActivity(writer, project, checkout, row);
+      if (row && (!activity?.finished || !sessionWorkEnabled(writer, activity.agent, session))) return;
+    } else {
+      const rows = hooks.all<CaptureSession & { id: number }>("SELECT j.id,s.session_id,s.agent,s.last_seen_at,s.paused FROM journal j JOIN sessions s ON s.session_id=j.session_id WHERE s.project_id=? AND s.checkout=? AND j.kind='typed' AND j.id>? ORDER BY j.id LIMIT ?",
+        project, checkout, after, FILTER_LIMITS.rows);
+      scan.through = rows.at(-1)?.id ?? after;
+      scan.more = rows.length === FILTER_LIMITS.rows;
+      const visited = new Set<string>();
+      for (const row of rows) {
+        if (visited.has(row.session_id) || row.id <= acknowledged(writer, project, row.session_id)) continue;
+        visited.add(row.session_id);
+        activity = sessionActivity(writer, project, checkout, row);
+        if (activity?.finished && sessionWorkEnabled(writer, activity.agent, row.session_id)) { session = row.session_id; break; }
+      }
+    }
+    if (!session) return;
+    const minRow = Math.max(consumed, acknowledged(writer, project, session));
+    const rows = hooks.all<Pick<Journal, "id" | "ts" | "session_id" | "text" | "marks">>(
+      "SELECT j.id,j.ts,j.session_id,CASE WHEN j.marks='' THEN j.text ELSE '' END text,j.marks FROM journal j JOIN sessions s ON s.session_id=j.session_id "
+      + "WHERE s.project_id=? AND s.checkout=? AND s.paused=0 AND j.session_id=? AND j.kind='typed' AND j.id>?"
+      + (retryRows ? " AND j.id IN (" + retryRows.map(() => "?").join(",") + ")" : "") + " ORDER BY j.id LIMIT ?",
+      project, checkout, session, minRow, ...(retryRows ?? []), FILTER_LIMITS.messages);
+    if (!rows.length && !retryRows) return;
+    const transcripts = new Map<string, Transcript>();
+    if (activity?.transcript) transcripts.set(session, activity.transcript);
+    const input = completeInput(writer, project, checkout, hooks, rows.map(row => capturedMessage(row, !row.marks)), [], transcripts, contextMode, scan,
+      retryRows ? "retry" : "page");
+    return { session, input };
+  } finally { hooks?.close(); }
+}
+
+function completeInput(writer: RecordWriter, project: string, checkout: string, hooks: Hooks, messages: Message[], notes: NoteInput[],
+  transcripts: ReadonlyMap<string, Transcript>, contextMode: ReplyContextMode, scan?: ScanWindow, stageOne?: "page" | "retry"): FilterInput {
+  const delivered = new Set<string>();
+  // Read each selected session once. Reply context is transient and never supplies a saved quote.
+  const bySession = new Map<string, Message[]>();
+  for (const message of messages) {
+    if (stageOne && message.marks) continue;
+    const group = bySession.get(message.session) ?? [];
+    group.push(message);
+    bySession.set(message.session, group);
+  }
+  const lookup = deliveredNoteLookup(writer.location.home, project, checkout);
+  const contextIssues = new Map<string, TranscriptIssue>();
+  const withheld = new Set<number>();
+  for (const [session, group] of bySession) {
+    const { ids, masks } = deliveredContext(hooks!, session, lookup);
+    ids.forEach(id => delivered.add(id));
+    for (const message of group) message.delivered = ids;
+    if (contextMode === "none") continue;
+    const transcript = transcripts.get(session);
+    const issue = masks === null ? "delivered-notes" : transcript
+      ? replyContexts(transcript.path, transcript.agent, group, contextMode,
+        { checkout, notes: masks, withheld, maxFullReplyBytes: FILTER_LIMITS.inputBytes, includeOptions: !!stageOne }) : "unavailable";
+    if (issue) {
+      contextIssues.set(session, issue);
+      for (const message of group) withheld.add(message.row);
+    }
+  }
+  let deliveredBytes = 0;
+  const input = { messages, notes, files: stageOne ? [] : contextFiles(checkout, messages, notes),
+    delivered_notes: [...delivered].sort().map(id => {
+      const text = lookup(id)[0]?.text, bounded = text ? Array.from(text).slice(0, 1200).join("") : null;
+      deliveredBytes += bounded ? Buffer.byteLength(bounded) : 0;
+      return { id, text: deliveredBytes <= 16 << 10 ? bounded : null };
+    }) };
+  const withhold = (message: Message) => {
+    message.previous_reply = null;
+    if (message.previous_options) message.previous_options = [];
+    withheld.add(message.row);
+  };
+  if (contextMode === "full" || stageOne) {
+    // Keep the typed message if its full reply cannot fit even as the only input.
+    const overhead = Buffer.byteLength(JSON.stringify({ ...input, messages: [], notes: [], files: [] }));
+    for (const message of input.messages) {
+      if (message.previous_reply === null || overhead + Buffer.byteLength(JSON.stringify(message)) <= FILTER_LIMITS.inputBytes) continue;
+      withhold(message);
+    }
+  }
+  // Split the batch deterministically, leaving omitted inputs unacknowledged.
+  while (Buffer.byteLength(JSON.stringify(input)) > FILTER_LIMITS.inputBytes) {
+    if (input.files.length) input.files.pop();
+    else if (input.notes.length > 1) input.notes.pop();
+    else if (stageOne === "retry") {
+      const message = input.messages.slice().reverse().find(message => message.previous_reply !== null);
+      if (!message) throw new Error("The filter's retry inputs exceed the batch limit.");
+      withhold(message);
+    }
+    else if (input.messages.length) input.messages.pop();
+    else throw new Error("One filter input exceeds the batch limit.");
+  }
+  if (scan) {
+    const retained = new Set(input.messages.map(message => message.session));
+    scan.contextIssues = [...contextIssues].filter(([session]) => retained.has(session)).map(([, issue]) => issue);
+    scan.messagesWithheld = input.messages.filter(message => withheld.has(message.row)).length;
+  }
+  assertNoSecrets(input);
+  return input;
 }
 /** Learning from what people type runs only when they turn it on (`mex config set learning.statements on`). */
 export function statementsOn(writer: Pick<RecordWriter, "setting">): boolean {
