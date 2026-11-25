@@ -7,8 +7,12 @@ import { MachineHub } from "./MachineHub";
 const personal = "Validate checkout inputs at the API boundary";
 const team = "Keep the checkout total in integer cents";
 const hint = "Try the compact menu story when checking keyboard focus";
+const outdated = "Avoid reusing checkout fixtures after a schema change";
+const changedMenu = "Keep the keyboard focus ring on menu items";
+const changedCart = "Use the checkout seed when testing the guest cart";
+const landingPath = "/knowledge?fixture=home";
 
-function renderFixture(path = "/knowledge?fixture=home&view=list") {
+function renderFixture(path = landingPath + "&view=list") {
   window.history.replaceState(null, "", path);
   render(<BrowserRouter><MachineHub /></BrowserRouter>);
   return userEvent.setup();
@@ -18,12 +22,158 @@ const params = () => new URLSearchParams(window.location.search);
 const list = () => within(screen.getByRole("list", { name: "Items" }));
 const row = (claim: string) => list().getByRole("link", { name: new RegExp(`^${claim}`) });
 const detail = (claim: string) => within(screen.getByRole("region", { name: claim }));
+const card = (name: string) => within(screen.getByRole("region", { name }));
 
 async function openItem(user: ReturnType<typeof userEvent.setup>, claim: string) {
   await screen.findByRole("list", { name: "Items" });
   await user.click(row(claim));
   return await screen.findByRole("heading", { level: 2, name: claim });
 }
+
+describe("Knowledge landing", () => {
+  it("opens by kind with the status summary and the three most recently used rules", async () => {
+    renderFixture(landingPath);
+    expect(await screen.findByRole("radio", { name: "By kind" })).toBeChecked();
+    expect(screen.getAllByRole("heading", { level: 2 }).map(({ textContent }) => textContent)).toEqual([
+      "Needs a look (4)", "Rules", "Decisions", "Recipes", "Pitfalls", "Procedures", "Facts", "Hints from your agent",
+    ]);
+    expect(card("Knowledge status totals").getByText("40")).toBeVisible();
+    expect(card("Rules").getByRole("img", { name: "12 up to date, 2 code changed, 0 out of date, 2 not checked" })).toBeVisible();
+    expect(card("Rules").getByRole("list")).toBeVisible();
+    expect(within(card("Rules").getByRole("list")).getAllByRole("link").map(({ textContent }) => textContent)).toEqual([
+      personal, "Use the shared spacing scale in new components", "Check links when moving a page",
+    ]);
+    expect(screen.queryByRole("list", { name: "Items" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Kind" })).toBeNull();
+  });
+
+  it("sees all rules in a filtered list and returns to the landing", async () => {
+    const user = renderFixture(landingPath);
+    await screen.findByRole("heading", { name: "Rules" });
+    await user.click(card("Rules").getByRole("link", { name: "See all 16 in Rules" }));
+    expect(params().get("kind")).toBe("rule");
+    expect(list().getAllByRole("link")).toHaveLength(16);
+    expect(row(personal)).toBeVisible();
+    expect(card("Knowledge status totals").getByText("40")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Kind" })).toHaveValue("rule");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Who sees it" }), "team");
+    await user.click(screen.getByRole("link", { name: "All knowledge" }));
+    expect(window.location.pathname + window.location.search).toBe(landingPath);
+    expect(screen.getByRole("radio", { name: "By kind" })).toBeChecked();
+  });
+
+  it("opens the full list and selects a note directly from a kind card", async () => {
+    const user = renderFixture(landingPath);
+    await user.click(await screen.findByRole("link", { name: "View all items" }));
+    expect(params().get("view")).toBe("list");
+    expect(screen.getByText("Showing 20 of 40")).toBeVisible();
+    await user.click(screen.getByRole("link", { name: "All knowledge" }));
+
+    await user.click(card("Rules").getByRole("link", { name: personal }));
+    expect(await screen.findByRole("heading", { level: 2, name: personal })).toHaveFocus();
+    expect(params().get("kind")).toBe("rule");
+    expect(row(personal)).toHaveAttribute("aria-current", "page");
+    await user.click(screen.getByRole("link", { name: "Close item" }));
+    expect(row(personal)).toHaveFocus();
+  });
+
+  it("groups multi-pattern notes under each area and filters to the area and repo", async () => {
+    const user = renderFixture(landingPath);
+    const group = within(await screen.findByRole("radiogroup", { name: "Group knowledge by" }));
+    await user.click(group.getByText("By area"));
+    expect(params().get("view")).toBe("area");
+    expect(group.getByRole("radio", { name: "By area" })).toBeChecked();
+    expect(screen.getAllByRole("heading", { level: 2 }).slice(1, 5).map(({ textContent }) => textContent)).toEqual([
+      "Whole repo", "Storefront · apps/api", "Design kit · packages/ui", "Storefront · apps/web",
+    ]);
+    expect(card("Storefront · apps/api").getByRole("link", { name: team + " Rule" })).toBeVisible();
+    expect(card("Storefront · packages/money").getByRole("link", { name: team + " Rule" })).toBeVisible();
+    expect(screen.getByText(/Most items apply to the whole repo/)).toBeVisible();
+
+    await user.click(card("Storefront · apps/api").getByRole("link", { name: /^See all / }));
+    expect(params().get("area")).toBe("apps/api/**");
+    expect(params().get("repo")).toBe("storefront");
+    expect(screen.getByRole("combobox", { name: "Area" })).toHaveValue("apps/api/**");
+    expect(list().getAllByRole("link")).toHaveLength(4);
+    expect(row(team)).toBeVisible();
+    expect(list().queryByRole("link", { name: new RegExp(`^${changedCart}`) })).toBeNull();
+  });
+
+  it("keeps the area view in a repo and matches an exact path", async () => {
+    const user = renderFixture(landingPath + "&view=area");
+    await screen.findByRole("heading", { name: "Storefront · apps/api" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Repo switcher" }), "storefront");
+    expect(window.location.pathname).toBe("/repos/storefront/knowledge");
+    expect(params().get("view")).toBe("area");
+    expect(screen.getByRole("heading", { name: "apps/api" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Design kit · packages/ui" })).toBeNull();
+
+    await user.click(card("apps/api/src/checkout.ts").getByRole("link", { name: changedCart + " Recipe" }));
+    expect(params().get("area")).toBe("apps/api/src/checkout.ts");
+    expect(params().has("repo")).toBe(false);
+    expect(list().getAllByRole("link")).toHaveLength(1);
+    expect(row(changedCart)).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("heading", { name: changedCart })).toHaveFocus();
+    await user.click(screen.getByRole("link", { name: "All knowledge" }));
+    expect(window.location.pathname).toBe("/repos/storefront/knowledge");
+    expect(window.location.search).toBe("?fixture=home");
+    expect(screen.getByRole("radio", { name: "By kind" })).toBeChecked();
+  });
+
+  it("shows three review items with out of date first and older changes ahead of newer ones", async () => {
+    const user = renderFixture(landingPath);
+    await screen.findByRole("heading", { name: "Needs a look (4)" });
+    const review = card("Needs a look (4)");
+    const items = review.getAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveTextContent(outdated);
+    expect(items[0]).toHaveTextContent("A check no longer holds");
+    expect(items[1]).toHaveTextContent(team);
+    expect(items[1]).toHaveTextContent("Code changed in packages/money/src/totals.ts");
+    expect(items[2]).toHaveTextContent(changedMenu);
+    expect(items[2]).toHaveTextContent("Rule · Design kit · Your team");
+
+    await user.click(review.getByRole("link", { name: "Show all 4" }));
+    expect(params().get("status")).toBe("needs-look");
+    expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("needs-look");
+    expect(list().getAllByRole("link")).toHaveLength(4);
+    expect(row(outdated)).toBeVisible();
+    expect(row(changedCart)).toBeVisible();
+  });
+
+  it("keeps a compact calm state when every checked note holds", async () => {
+    renderFixture("/knowledge?fixture=calm");
+    const review = await screen.findByRole("region", { name: "Needs a look" });
+    expect(review).toHaveTextContent("Nothing needs a look. Every checked item still holds.");
+    expect(within(review).queryByRole("link")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Rules" })).toBeVisible();
+  });
+
+  it("starts the editor from a review row and uses the team diff flow", async () => {
+    const user = renderFixture(landingPath);
+    await user.click(await screen.findByRole("button", { name: `Edit ${team}` }));
+    expect(params().get("status")).toBe("needs-look");
+    const summary = await screen.findByRole("textbox", { name: "One-line summary" });
+    expect(summary).toHaveValue(team);
+    expect(summary).toHaveFocus();
+    fireEvent.change(screen.getByRole("textbox", { name: "Note text" }), { target: { value: "Send the total as whole cents." } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alertdialog", { name: "Review changes to team note" })).toBeVisible();
+  });
+
+  it("starts the forget flow from a review row and updates the landing after confirmation", async () => {
+    const user = renderFixture(landingPath);
+    await user.click(await screen.findByRole("button", { name: `Forget ${outdated}` }));
+    const dialog = within(await screen.findByRole("alertdialog", { name: "Forget this note?" }));
+    await user.click(dialog.getByRole("button", { name: "Forget" }));
+    expect(screen.getByText("Showing 3 of 3")).toBeVisible();
+    await user.click(screen.getByRole("link", { name: "All knowledge" }));
+    expect(screen.getByRole("heading", { name: "Needs a look (3)" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Forgotten (4)" })).toBeVisible();
+    expect(card("Needs a look (3)").getByText(changedCart)).toBeVisible();
+  });
+});
 
 describe("Knowledge fixtures", () => {
   it("reads every filter from the URL and writes selection changes back", async () => {
@@ -79,13 +229,15 @@ describe("Knowledge fixtures", () => {
   });
 
   it("debounces search, matches note text, and preserves the fixture in the URL", async () => {
-    const user = renderFixture("/knowledge?fixture=home");
+    const user = renderFixture(landingPath);
     const search = await screen.findByRole("searchbox", { name: "Search knowledge" });
+    expect(screen.queryByRole("list", { name: "Items" })).toBeNull();
     await user.type(search, "declined-card");
     expect(params().has("q")).toBe(false);
     await waitFor(() => expect(params().get("q")).toBe("declined-card"));
     expect(list().getAllByRole("link")).toHaveLength(1);
     expect(row("Reproduce a checkout failure with the payment sandbox")).toBeVisible();
+    expect(search).toHaveFocus();
     expect(params().get("fixture")).toBe("home");
   });
 
