@@ -147,6 +147,7 @@ describe("machine Hub", () => {
       screen.getByRole("link", { name: "Home" }),
       screen.getByRole("link", { name: "Review" }),
       screen.getByRole("link", { name: "Knowledge" }),
+      screen.getByRole("link", { name: "Setup" }),
       screen.getByRole("link", { name: "Jobs" }),
       screen.getByRole("link", { name: "Agents" }),
       screen.getByRole("link", { name: "Settings" }),

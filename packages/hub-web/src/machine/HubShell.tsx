@@ -198,7 +198,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
         <div className={shell.navScroller}>
           <nav aria-label="Primary" className={cn(shell.nav, styles.machineNav)}>
             <ul className={shell.navList}>
-              {navPages.filter(({ page }) => page !== "setup" || data.setup).map(({ page, label, icon: Icon }) => (
+              {navPages.map(({ page, label, icon: Icon }) => (
                 <li className={page === "settings" ? styles.settingsNavItem : undefined} key={page}>
                   <NavLink
                     aria-description={page === "review" && waiting > 0 ? `${waiting} waiting`
@@ -310,13 +310,11 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                   ) : unknownRepo}
                   path="/repos/:projectId"
                 />
-                {data.setup && <Route element={<SetupPage projects={projects} setup={data.setup} />} path="/setup" />}
-                {data.setup && (
-                  <Route
-                    element={project ? <SetupPage project={project} projects={projects} setup={data.setup} /> : unknownRepo}
-                    path="/repos/:projectId/setup"
-                  />
-                )}
+                <Route element={<SetupPage live={data.controlsLive} projects={projects} setup={data.setup} />} path="/setup" />
+                <Route
+                  element={project ? <SetupPage live={data.controlsLive} project={project} projects={projects} setup={data.setup} /> : unknownRepo}
+                  path="/repos/:projectId/setup"
+                />
                 <Route element={<JobsPage allJobsHref={allJobsHref} changeJob={data.changeJob} jobs={data.jobs} load={data.jobsLoad} projects={projects} />} path="/jobs" />
                 <Route
                   element={project ? (

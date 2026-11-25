@@ -150,6 +150,7 @@ export function useHubEvents(checkSession: () => void): HubEventState {
       refresh("review");
       refresh("agents");
       refresh("settings");
+      refresh("setup");
     };
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) {
