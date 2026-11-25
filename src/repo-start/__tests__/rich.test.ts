@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { labelled, Rich } from "../rich.js";
+import { LEARNING_BACKGROUND_NOTICE } from "../../filter/background-notice.js";
 
 const plain = (lines: string[]) => lines.map(line => line.replace(/\x1b\[[0-9;]*m/gu, "").trimEnd());
 
@@ -77,6 +78,7 @@ describe("setup v2 on the rich screen", () => {
     expect(plain(rich.question({ index: 1, total: 2, text: "Which?", choices: [{ key: "1", label: "a" }] }))[1]).toContain("Enter skips");
     expect(plain(rich.next({ agents: ["Claude Code", "Codex", "Gemini CLI"] })).join("\n"))
       .toContain("Notes you save reach every new Claude Code, Codex and Gemini CLI session.");
+    expect(plain(rich.next({})).join("\n")).toContain(LEARNING_BACKGROUND_NOTICE);
     const summary = plain(rich.summary({ name: "repo", ms: 1200, commandsSaved: true, findings: [], answers: 2, learning: "running" }));
     expect(summary).toContain('Your 2 answers reach them as "you said".');
     expect(summary).toContain("Learn deeper is running in the background · mex jobs");

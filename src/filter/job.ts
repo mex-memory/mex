@@ -22,6 +22,7 @@ import { publishNext, publicationReady, PUBLICATION_WAIT, type PublicationDepend
 import { replyContextDigest, type ReplyContextMode, type TranscriptIssue } from "./transcript.js";
 import { Item, DropCounts, countDrop, itemIdentity, parseItems, type Answer } from "./items.js";
 import { NOTE_ATTEMPT_LIMIT, settleNoteAttempts } from "./note-attempts.js";
+import { formatFilterBatch, saveFilterBatchReport, type FilterBatchReport } from "./report.js";
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
   source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string; reply_context_hash?: string };
@@ -49,13 +50,10 @@ function contextSummary(summary: string, issues?: readonly TranscriptIssue[]): s
   return `${summary}. ${CONTEXT_PAUSED} for ${issues.length} session${issues.length === 1 ? "" : "s"} (${reasons}). Used typed text only for those sessions.`;
 }
 
-function batchSummary(batch: CachedBatch, summary: string): string {
-  const parts = [summary];
-  const dropped = Object.entries(batch.dropped ?? {}).sort(([a], [b]) => a.localeCompare(b));
-  if (dropped.length) parts.push(`Items dropped (${dropped.map(([reason, count]) => `${reason} ${count}`).join(", ")})`);
-  if (batch.notes_deferred) parts.push(`${batch.notes_deferred} explicit ${batch.notes_deferred === 1 ? "note" : "notes"} deferred`);
-  if (batch.notes_waiting_for_sync) parts.push(`${batch.notes_waiting_for_sync} explicit ${batch.notes_waiting_for_sync === 1 ? "note" : "notes"} waiting for mex sync`);
-  return parts.join(". ");
+function batchReport(batch: CachedBatch, index: number, scan: ScanWindow): FilterBatchReport {
+  return { batch: index + 1, itemsKept: batch.candidates?.length ?? 0, itemsDropped: batch.dropped ?? {},
+    notesDeferred: batch.notes_deferred ?? 0, notesWaitingForSync: batch.notes_waiting_for_sync ?? 0,
+    messagesWithheld: scan.messagesWithheld ?? 0 };
 }
 
 export const candidateSchema = Item.omit({ checks: true }).extend({ checks: z.array(CheckSchema).max(32), needs_checks: z.boolean(), source: sourceSchema }).strict();
@@ -180,7 +178,10 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
             tokens: result.usage.input + result.usage.output + result.usage.cache_write + result.usage.cache_read };
           save(writer, project, cached, job);
         }
-        if (cached.phase === "complete") return { checkpoint: state, done: true, summary: contextSummary(batchSummary(cached, "Filter batch already saved"), scan.contextIssues) };
+        if (cached.phase === "complete") {
+          const summary = `${formatFilterBatch(batchReport(cached, job.batch, scan))}. Already saved`;
+          return { checkpoint: state, done: true, summary: contextSummary(summary, scan.contextIssues) };
+        }
         const request = { checkout: params.checkout, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory };
         async function checked(answers: Answer[]) {
           const out = new Map<Answer, EntryCheck[] | undefined>();
@@ -252,14 +253,16 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         const failed = input.notes.filter(note => !accepted.has(note.id));
         const waiting = failed.filter(note => (note.attempt?.failures ?? 0) + 1 >= NOTE_ATTEMPT_LIMIT).length;
         cached = { ...cached, phase: "complete", candidates, dropped, notes_deferred: failed.length - waiting, notes_waiting_for_sync: waiting };
+        const report = batchReport(cached, job.batch, scan);
         save(writer, project, cached, job, () => {
           for (const m of input.messages) writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
             .run(project, ackKey(m.session), String(Math.max(m.row, acknowledged(writer, project, m.session))));
           settleNoteAttempts(writer, project, input.notes, accepted);
           advanceConsumed(writer, project);
+          saveFilterBatchReport(writer, project, params.checkout, report);
         });
         return { checkpoint: state, results: candidates.length, tokens: cached.tokens,
-          summary: contextSummary(batchSummary(cached, `${candidates.length} local filter candidates saved`), scan.contextIssues) };
+          summary: contextSummary(formatFilterBatch(report), scan.contextIssues) };
       } catch (error) {
         // Preserve the original checkout position even when the very first call waits.
         if (error instanceof ModelWaitError || (error instanceof ModelRunError && ["authentication", "usage_limit"].includes(error.category)))
@@ -268,7 +271,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
       }
     },
     display(job, reader) {
-      const batch = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? AND summary LIKE ? ORDER BY batch DESC LIMIT 1",
+      const batch = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? AND (summary LIKE 'Filter batch % kept %' OR summary LIKE ?) ORDER BY batch DESC LIMIT 1",
         job.id, `%${CONTEXT_PAUSED}%`)[0];
       return batch ? { summary: batch.summary } : {};
     },

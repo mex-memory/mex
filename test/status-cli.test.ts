@@ -14,10 +14,12 @@ it("status and doctor share a read-only JSON view without a legacy scaffold", ()
   expect(doctor.status, doctor.stderr).toBe(1);
   const { problems, ...view } = JSON.parse(doctor.stdout);
   expect(view).toEqual(JSON.parse(status.stdout));
+  expect(view.learning).toEqual({ backgroundNotice: "Background learning uses your agent CLI's cheap model on your plan. Stop with mex capture off.", latestBatch: null });
   expect(problems).toContain("Hook binary missing: run mex install");
   expect(existsSync(join(env.MEX_HOME, ".mex"))).toBe(false);
   const outside = spawnSync(process.execPath, [resolve("dist/cli.js"), "status"], { cwd: base, env, encoding: "utf8", timeout: 15_000 });
   expect(outside.status, outside.stderr).toBe(0);
   expect(outside.stdout).not.toContain("Knowledge here");
+  expect(outside.stdout).toContain(view.learning.backgroundNotice);
   expect(outside.stdout.trimEnd()).toMatch(/Next: run mex in a repo to turn MEX on there$/u);
 });

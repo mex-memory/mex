@@ -40,7 +40,7 @@ function toolRows(agent: Agent): unknown[] {
 }
 
 const jsonl = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join("\n");
-const captured = (text: string): Message => ({ id: "m1", row: 1, session: "s", at: "2000-01-01T00:00:00Z", text, marks: "", previous_reply: null, delivered: [] });
+const captured = (text: string, row = 1): Message => ({ id: `m${row}`, row, session: "s", at: "2000-01-01T00:00:00Z", text, marks: "", previous_reply: null, delivered: [] });
 
 it.each(["claude", "codex"] as const)("finds an early reply and verifies its typed quote in a 6 MiB %s transcript", agent => {
   const path = transcript(agent);
@@ -74,6 +74,37 @@ it.each([{ length: 300, limit: 12_000 }, { length: 301, limit: 600 }])("keeps $l
   writeFileSync(path, jsonl([turn("codex", "assistant", first), turn("codex", "assistant", last), turn("codex", "user", message.text)]));
   expect(replyContexts(path, "codex", [message])).toBeUndefined();
   expect(message.previous_reply).toBe(Array.from(`${first}\n${last}`).slice(-limit).join(""));
+});
+
+it.each(["claude", "codex"] as const)("builds all four context modes on %s", agent => {
+  const path = transcript(agent), short = captured("yes, 2"), long = captured("x".repeat(301), 2);
+  const note = "Remember the established parser rules.", early = "Earlier option. ".repeat(900), end = "t".repeat(700) + note;
+  const reply = `${early}\n${end}`;
+  writeFileSync(path, jsonl([
+    turn(agent, "assistant", "A different turn"), turn(agent, "user", "Show my options"),
+    turn(agent, "assistant", early), ...toolRows(agent), turn(agent, "assistant", end), turn(agent, "user", short.text),
+    turn(agent, "assistant", early), turn(agent, "assistant", end), turn(agent, "user", long.text),
+  ]));
+  const masked = reply.replace(note, "[MEX note]"), tail = "t".repeat(600 - note.length) + "[MEX note]";
+  const cases = [
+    ["design", tail],
+    ["tail600", tail],
+    ["full", masked],
+    ["none", null],
+  ] as const;
+  for (const [mode, expectedLong] of cases) {
+    expect(replyContexts(path, agent, [short, long], mode, { notes: [note] })).toBeUndefined();
+    expect(long.previous_reply).toBe(expectedLong);
+    expect(short.previous_reply).toBe(mode === "design" ? reply.slice(-12_000).replace(note, "[MEX note]") : expectedLong);
+  }
+});
+
+it("does not open a missing transcript in typed-only mode", () => {
+  const message = captured("yes"); message.previous_reply = "old context";
+  const withheld = new Set<number>();
+  expect(replyContexts(join(base, "missing.jsonl"), "codex", [message], "none", { withheld })).toBeUndefined();
+  expect(message.previous_reply).toBeNull();
+  expect(withheld.size).toBe(0);
 });
 
 it("decodes a multi-byte character across a read boundary", () => {
@@ -175,16 +206,34 @@ it.each([
 ] satisfies Array<{ agent: Agent; tool: string; call: () => unknown }>)
 ("withholds only the affected turn for $agent $tool", ({ agent, call }) => {
   const path = transcript(agent), checkout = join(base, "repo"); mkdirSync(checkout);
-  const first = captured("yes, 2"), next = captured("keep 1");
+  const first = captured("yes, 2"), next = captured("keep 1", 2);
   writeFileSync(path, jsonl([
     turn(agent, "assistant", "Text before the outside call"), call(), ...toolRows(agent),
     turn(agent, "assistant", "Text after the outside call"), turn(agent, "user", first.text),
     turn(agent, "assistant", "Fresh local options"), turn(agent, "user", next.text),
   ]));
-  expect(replyContexts(path, agent, [first, next], "design", { checkout })).toBeUndefined();
-  expect(first.previous_reply).toBeNull();
-  expect(next.previous_reply).toBe("Fresh local options");
+  for (const mode of ["design", "tail600", "full"] as const) {
+    const withheld = new Set<number>();
+    expect(replyContexts(path, agent, [first, next], mode, { checkout, withheld })).toBeUndefined();
+    expect(first.previous_reply).toBeNull();
+    expect(next.previous_reply).toBe("Fresh local options");
+    expect([...withheld]).toEqual([first.row]);
+  }
   expect(typedQuote(path, agent, first.text, hash(first.text))).toBe(true);
+});
+
+it("withholds a legacy tail turn whose earlier tools cannot be verified", () => {
+  const path = transcript("codex"), first = captured("try that"), next = captured("keep this", 2);
+  writeFileSync(path, jsonl([
+    codexTool("mcp__docs__search"), { type: "progress", padding: "x".repeat(1 << 20) },
+    turn("codex", "assistant", "The first option"), turn("codex", "user", first.text),
+    turn("codex", "assistant", "The fresh option"), turn("codex", "user", next.text),
+  ]));
+  const withheld = new Set<number>();
+  expect(replyContexts(path, "codex", [first, next], "tail600", { withheld })).toBeUndefined();
+  expect(first.previous_reply).toBeNull();
+  expect(next.previous_reply).toBe("The fresh option");
+  expect([...withheld]).toEqual([first.row]);
 });
 
 it("keeps reply context for an in-checkout read and unknown tool shapes", () => {

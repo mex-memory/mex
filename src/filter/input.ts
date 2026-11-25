@@ -14,7 +14,7 @@ import { deliveredContext, deliveredNoteLookup } from "./delivered.js";
 import { sessionWorkEnabled } from "../judge/session.js";
 import { NOTE_ATTEMPT_LIMIT, noteAttempt, type NoteAttempt } from "./note-attempts.js";
 
-export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, promptBytes: 256 << 10,
+export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, inputBytes: 200 << 10, promptBytes: 256 << 10,
   files: 16, fileBytes: 16 << 10, idleMs: 10 * 60_000, ageMs: 24 * 60 * 60_000 } as const;
 export interface FilterParams { checkout: string; agent: "claude" | "codex"; generation?: string; sessionId?: string; }
 export interface Message { id: string; row: number; session: string; at: string; text: string; marks: string;
@@ -22,7 +22,8 @@ export interface Message { id: string; row: number; session: string; at: string;
 export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; attempt?: NoteAttempt; }
 export interface FilterInput { messages: Message[]; notes: NoteInput[]; files: Array<{ path: string; text: string; hash: string }>;
   delivered_notes: Array<{ id: string; text: string | null }>; }
-export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean; contextIssues?: TranscriptIssue[]; }
+export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean;
+  contextIssues?: TranscriptIssue[]; messagesWithheld?: number; }
 interface Journal { id: number; session_id: string; ts: string; text: string; marks: string; last_seen_at: string; paused: number; agent: string; }
 const Metadata = z.object({ version: z.literal(1), project_id: z.string(), checkout: z.string(), agent: z.string(),
   session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096),
@@ -166,14 +167,20 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
     }
     const lookup = deliveredNoteLookup(writer.location.home, project, params.checkout);
     const contextIssues = new Map<string, TranscriptIssue>();
+    const withheld = new Set<number>();
     for (const [session, group] of bySession) {
       const { ids, masks } = deliveredContext(hooks!, session, lookup);
       ids.forEach(id => delivered.add(id));
       for (const message of group) message.delivered = ids;
+      if (contextMode === "none") continue;
       const transcript = transcripts.get(session);
       const issue = masks === null ? "delivered-notes" : transcript
-        ? replyContexts(transcript.path, transcript.agent, group, contextMode, { checkout: params.checkout, notes: masks }) : "unavailable";
-      if (issue) contextIssues.set(session, issue);
+        ? replyContexts(transcript.path, transcript.agent, group, contextMode,
+          { checkout: params.checkout, notes: masks, withheld, maxFullReplyBytes: FILTER_LIMITS.inputBytes }) : "unavailable";
+      if (issue) {
+        contextIssues.set(session, issue);
+        for (const message of group) withheld.add(message.row);
+      }
     }
     let deliveredBytes = 0;
     const input = { messages, notes, files: contextFiles(params.checkout, messages, notes),
@@ -182,16 +189,26 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
         deliveredBytes += bounded ? Buffer.byteLength(bounded) : 0;
         return { id, text: deliveredBytes <= 16 << 10 ? bounded : null };
       }) };
+    if (contextMode === "full") {
+      // Keep the typed message if its full reply cannot fit even as the only input.
+      const overhead = Buffer.byteLength(JSON.stringify({ ...input, messages: [], notes: [], files: [] }));
+      for (const message of input.messages) {
+        if (message.previous_reply === null || overhead + Buffer.byteLength(JSON.stringify(message)) <= FILTER_LIMITS.inputBytes) continue;
+        message.previous_reply = null;
+        withheld.add(message.row);
+      }
+    }
     // Split the batch deterministically, leaving omitted inputs unacknowledged.
-    while (Buffer.byteLength(JSON.stringify(input)) > 200 << 10) {
+    while (Buffer.byteLength(JSON.stringify(input)) > FILTER_LIMITS.inputBytes) {
       if (input.files.length) input.files.pop();
       else if (input.notes.length > 1) input.notes.pop();
       else if (input.messages.length) input.messages.pop();
       else throw new Error("One filter input exceeds the batch limit.");
     }
-    if (scan && contextIssues.size) {
+    if (scan) {
       const retained = new Set(input.messages.map(message => message.session));
       scan.contextIssues = [...contextIssues].filter(([session]) => retained.has(session)).map(([, issue]) => issue);
+      scan.messagesWithheld = input.messages.filter(message => withheld.has(message.row)).length;
     }
     assertNoSecrets(input);
     return input;

@@ -3,6 +3,7 @@ import { formatSeconds, LiveLine, progressLine, renderDone, renderScreen, render
 import { resultFindings } from "../finish.js";
 import type { JobRow } from "../../record/jobs.js";
 import { detectCaller, isAgentCaller } from "../caller.js";
+import { LEARNING_BACKGROUND_NOTICE } from "../../filter/background-notice.js";
 
 const model: ScreenModel = {
   name: "novu", ms: 2412, costUsd: 0, hidden: true,
@@ -146,16 +147,20 @@ describe("caller", () => {
 describe("what happens next", () => {
   const plain = screenMode({ stdoutTTY: false, env: {} });
   it("keeps agent and piped output short", () => {
-    expect(renderNext({ short: true }, plain)).toEqual(['Saved notes reach new sessions; mex note "<fact>" adds one.']);
+    expect(renderNext({ short: true }, plain)).toEqual(['Saved notes reach new sessions; mex note "<fact>" adds one.', LEARNING_BACKGROUND_NOTICE]);
   });
   it("defaults learning to off and explains how to turn it on and how to undo", () => {
     const text = renderNext({ short: false }, plain).join("\n");
     expect(text).toContain("Learning from everything you type is off until you turn it on: mex config set learning.statements on");
+    expect(text).toContain(LEARNING_BACKGROUND_NOTICE);
     expect(text).toContain("Undo: mex off (this repo) - mex uninstall (everything)");
     expect(renderNext({ short: false, learning: "off" }, plain).join("\n")).toBe(text);
   });
   it("discloses the background model and its cap once learning is on", () => {
-    expect(renderNext({ short: false, learning: "on" }, plain).join("\n")).toContain("at most 3% of your usage. Off: mex config set learning.statements off");
+    const text = renderNext({ short: false, learning: "on" }, plain).join("\n");
+    expect(text).toContain("at most 3% of your usage");
+    expect(text).toContain("mex config set learning.statements off");
+    expect(text).toContain(LEARNING_BACKGROUND_NOTICE);
   });
   it.each([40, 80])("wraps instructions and inline details at %i columns", columns => {
     const mode = screenMode({ stdoutTTY: true, columns, env: {}, platform: "darwin" });

@@ -17,6 +17,7 @@ Knowledge here
 Background
   No jobs waiting · last run: memory-filter, 2 h ago
   Model use for MEX this week: 0 runs, share of your usage unknown (cap 3%)
+  Background learning uses your agent CLI's cheap model on your plan. Stop with mex capture off.
 
 Next: mex note "<fact>" adds a note · mex off turns MEX off here"
 `;
