@@ -375,6 +375,15 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			reply = mergeReplies(reply, delivery.SpeedBump(ev, denv))
 		}
 	}
+	// Proof checks at Stop, on every agent that can send the agent back.
+	// They read the session's changed lines, which other stops don't load.
+	if ev.Kind == contract.Stop && !h.levers.raw && !h.levers.noStop && !failed && reply.Decision != contract.Deny {
+		if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.Deny {
+			senv := denv
+			senv.Changed = loadChanged(changedPath(recordDirectory, ev)).Lines
+			reply = mergeReplies(reply, delivery.StopChecks(ev, senv))
+		}
+	}
 	leverStart := time.Now()
 	leverReply, measured := levers(ev, h, recordDirectory, now, captureOn)
 	leverTime := time.Since(leverStart)

@@ -60,6 +60,7 @@ type leverOptions struct {
 	raw       bool   // MEX_RAW=1: show everything as it is
 	noOutline bool   // MEX_OUTLINE=0: no outlines
 	noBump    bool   // MEX_SPEED_BUMP=0: no speed bump
+	noStop    bool   // MEX_STOP_CHECKS=0: no proof checks at Stop
 	shell     string // SHELL: the shell Codex runs commands through, outside Windows
 	binary    string // this program, for the Codex wrapper; "" finds it
 }
