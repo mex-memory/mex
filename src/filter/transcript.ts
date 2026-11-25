@@ -30,7 +30,7 @@ const REPLY_TAIL = 600;
 const SHORT_MESSAGE_CONTEXT = 12_000;
 
 type TranscriptAgent = "claude" | "codex";
-export type ReplyContextMode = "design" | "tail600";
+export type ReplyContextMode = "design" | "tail600" | "full" | "none";
 export type TranscriptIssue = "unavailable" | "too-large" | "changed" | "invalid-format" | "delivered-notes";
 type TranscriptRead<T> = { value: T } | { issue: TranscriptIssue };
 type TranscriptMessage = { role: "user" | "assistant"; text: string };
@@ -52,10 +52,10 @@ function parseRow(line: string): TranscriptRow | "invalid-format" | undefined {
   try { return object(JSON.parse(line)); } catch { return "invalid-format"; }
 }
 
-function messageRow(row: TranscriptRow, agent: TranscriptAgent, wholeSession: boolean): TranscriptMessage | "invalid-format" | undefined {
-  if (wholeSession && (row.isCompactSummary === true || row.isMeta === true)) return;
+function messageRow(row: TranscriptRow, agent: TranscriptAgent): TranscriptMessage | "invalid-format" | undefined {
+  if (row.isCompactSummary === true || row.isMeta === true) return;
   const payload = object(row.type === "response_item" ? row.payload : row.message);
-  if (wholeSession && agent === "codex" && row.type === "response_item"
+  if (agent === "codex" && row.type === "response_item"
     && payload?.type !== undefined && payload.type !== "message") return;
   const role = agent === "claude" ? row.type : payload?.role;
   if (role !== "user" && role !== "assistant") {
@@ -63,7 +63,7 @@ function messageRow(row: TranscriptRow, agent: TranscriptAgent, wholeSession: bo
     return;
   }
   const blocks = payload?.content;
-  if (wholeSession && agent === "claude" && role === "user" && Array.isArray(blocks)
+  if (agent === "claude" && role === "user" && Array.isArray(blocks)
     && blocks.some(block => ["tool_result", "mcp_tool_result", "web_search_tool_result", "web_fetch_tool_result"].some(type => object(block)?.type === type))) return;
   const content = text(blocks);
   return content === undefined ? "invalid-format" : { role, text: content };
@@ -93,8 +93,8 @@ function readTranscript<T>(path: string, agent: TranscriptAgent, read: (fd: numb
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
-function readTail(path: string, agent: TranscriptAgent, maxBytes = TAIL_BYTES, requireFull = false, appending = false): TranscriptRead<string> {
-  return readTranscript<string>(path, agent, (fd, size) => {
+function readTail(path: string, agent: TranscriptAgent, maxBytes = TAIL_BYTES, requireFull = false, appending = false): TranscriptRead<{ body: string; truncated: boolean }> {
+  return readTranscript<{ body: string; truncated: boolean }>(path, agent, (fd, size) => {
     if (requireFull && size > BigInt(maxBytes)) return { issue: "too-large" };
     const offset = Math.max(0, Number(size) - maxBytes), bytes = Buffer.alloc(Math.min(Number(size), maxBytes));
     let n = 0;
@@ -104,14 +104,15 @@ function readTail(path: string, agent: TranscriptAgent, maxBytes = TAIL_BYTES, r
       n += got;
     }
     const body = bytes.toString("utf8");
-    return { value: offset ? body.slice(body.indexOf("\n") + 1) : body };
+    const boundary = offset ? body.indexOf("\n") : -1;
+    return { value: { body: offset ? boundary < 0 ? "" : body.slice(boundary + 1) : body, truncated: offset > 0 } };
   }, appending);
 }
 
 /** Appending callers take a prefix of the initial size and handle a torn final line themselves. */
 export function transcriptTail(path: string, agent: TranscriptAgent, maxBytes = TAIL_BYTES, requireFull = false, appending = false): string | undefined {
   const result = readTail(path, agent, maxBytes, requireFull, appending);
-  return "value" in result ? result.value : undefined;
+  return "value" in result ? result.value.body : undefined;
 }
 
 function scanLines(fd: number, size: number, visit: (line: string) => TranscriptIssue | undefined): TranscriptIssue | undefined {
@@ -151,7 +152,7 @@ function scanSession(path: string, agent: TranscriptAgent, visit: VisitRow): Tra
     const issue = scanLines(fd, Number(size), line => {
       const row = parseRow(line);
       if (!row || row === "invalid-format") return row;
-      const message = messageRow(row, agent, true);
+      const message = messageRow(row, agent);
       if (message === "invalid-format") return message;
       sawMessage ||= !!message?.text;
       visit(row, message);
@@ -174,54 +175,84 @@ export function typedQuote(path: string, agent: TranscriptAgent, quote: string, 
   return !issue && matches === 1;
 }
 
-function scanTail(path: string, agent: TranscriptAgent, visit: VisitRow): TranscriptIssue | undefined {
+function scanTail(path: string, agent: TranscriptAgent, visit: VisitRow, truncated: () => void): TranscriptIssue | undefined {
   const result = readTail(path, agent);
   if ("issue" in result) return result.issue;
+  if (result.value.truncated) truncated();
   let sawMessage = false;
-  for (const line of result.value.split("\n")) {
+  for (const line of result.value.body.split("\n")) {
     const row = parseRow(line);
-    if (!row || row === "invalid-format") continue;
-    const message = messageRow(row, agent, false);
-    if (message === "invalid-format") continue;
+    if (row === "invalid-format") return row;
+    if (!row) continue;
+    const message = messageRow(row, agent);
+    if (message === "invalid-format") return message;
     sawMessage ||= !!message?.text;
     visit(row, message);
   }
   if (!sawMessage) return "invalid-format";
 }
 
+const WITHHELD = Symbol("withheld reply");
+
 /** Only an exact, unambiguous user-message match associates reply context with journal text. */
 export function replyContexts(path: string, agent: TranscriptAgent, messages: Message[], mode: ReplyContextMode = "design",
-  context: { checkout?: string; notes?: readonly string[] } = {}): TranscriptIssue | undefined {
+  context: { checkout?: string; notes?: readonly string[]; withheld?: Set<number>; maxFullReplyBytes?: number } = {}): TranscriptIssue | undefined {
   if (!messages.length) return;
+  if (mode === "none") {
+    for (const message of messages) message.previous_reply = null;
+    return;
+  }
   const targets = new Set(messages.map(message => message.text));
-  const contexts = new Map<string, string | null>();
+  const contexts = new Map<string, string | typeof WITHHELD | null>();
   let previous = "";
   let withheld = false;
-  const wholeSession = mode === "design";
+  const fullReply: string[] = [];
+  let fullBytes = 0;
+  const fullLimit = context.maxFullReplyBytes ?? SESSION_BYTES;
   const notes = context.notes ?? [];
   // Keep enough leading text to recognize a note that overlaps the retained tail.
-  const contextUnits = (wholeSession ? SHORT_MESSAGE_CONTEXT : REPLY_TAIL) * 2 + notes.reduce((longest, note) => Math.max(longest, note.length), 0);
+  const contextUnits = (mode === "design" ? SHORT_MESSAGE_CONTEXT : REPLY_TAIL) * 2 + notes.reduce((longest, note) => Math.max(longest, note.length), 0);
   const outside = outsideTool(agent, context.checkout);
   const visit: VisitRow = (row, message) => {
-    if (outside(row)) { withheld = true; previous = ""; }
+    if (outside(row)) { withheld = true; previous = ""; fullReply.length = 0; }
     if (!message?.text) return;
     if (message.role === "assistant") {
       if (withheld) return;
-      const next = message.text.replaceAll("\r\n", "\n").slice(-contextUnits);
-      previous = (wholeSession && previous ? `${previous}\n${next}` : next).slice(-contextUnits);
+      const text = message.text.replaceAll("\r\n", "\n");
+      if (mode === "full") {
+        fullBytes += Buffer.byteLength(text) + (fullReply.length ? 1 : 0);
+        if (fullBytes > fullLimit) { withheld = true; fullReply.length = 0; }
+        else fullReply.push(text);
+      } else {
+        const next = text.slice(-contextUnits);
+        previous = (mode === "design" && previous ? `${previous}\n${next}` : next).slice(-contextUnits);
+      }
       return;
     }
     const key = typedPrefix(message.text);
     if (targets.has(key)) {
-      const limit = wholeSession && Array.from(key).length <= SHORT_MESSAGE ? SHORT_MESSAGE_CONTEXT : REPLY_TAIL;
-      const excerpt = withheld || contexts.has(key) || !previous ? null : tail(maskReply(previous, tail(previous, limit), notes), limit);
-      contexts.set(key, excerpt);
+      if (contexts.has(key)) contexts.set(key, null);
+      else if (withheld) contexts.set(key, WITHHELD);
+      else if (mode === "full") {
+        const body = fullReply.join("\n");
+        contexts.set(key, maskReply(body, body, notes) || null);
+      } else {
+        const limit = mode === "design" && Array.from(key).length <= SHORT_MESSAGE ? SHORT_MESSAGE_CONTEXT : REPLY_TAIL;
+        contexts.set(key, previous ? tail(maskReply(previous, tail(previous, limit), notes), limit) : null);
+      }
     }
     previous = "";
+    fullReply.length = 0;
+    fullBytes = 0;
     withheld = false;
   };
-  const issue = wholeSession ? scanSession(path, agent, visit) : scanTail(path, agent, visit);
-  for (const message of messages) message.previous_reply = issue ? null : contexts.get(message.text) ?? null;
+  // A tail starting midway through a turn cannot establish what tools ran before that turn's reply.
+  const issue = mode === "tail600" ? scanTail(path, agent, visit, () => { withheld = true; }) : scanSession(path, agent, visit);
+  for (const message of messages) {
+    const reply = contexts.get(message.text);
+    if (!issue && reply === WITHHELD) context.withheld?.add(message.row);
+    message.previous_reply = !issue && typeof reply === "string" ? reply : null;
+  }
   return issue;
 }
 

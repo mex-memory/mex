@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { openRecord, openRecordReadOnly, type RecordWriter } from "../../record/index.js";
 import { enqueueJob, listJobs, registerJobKind, runOneBatch, requeueReadyJobs, type JobRow } from "../../record/jobs.js";
 import { shortHash } from "../../record/project.js";
+import { formatStatus, readStatus } from "../../status.js";
 import { ModelWaitError, runModel, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
 import { recordChecks } from "../../judge/native.js";
 import { runJudgeSync } from "../../judge/sync.js";
@@ -16,7 +17,7 @@ import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
 import { note } from "../../knowledge/store.js";
 import { serializeEntry } from "../../knowledge/entry.js";
 import { createFilterKind, readFilterBatch, type FilterDependencies } from "../job.js";
-import { acknowledgeTyped, filterInput, type FilterInput, type FilterParams } from "../input.js";
+import { acknowledgeTyped, filterInput, type FilterInput, type FilterParams, type ScanWindow } from "../input.js";
 import { filterPending, queuePendingFilters } from "../pending.js";
 import { replyContexts } from "../transcript.js";
 
@@ -374,13 +375,15 @@ describe("filter batches and provenance", () => {
       const result = answer(request);
       return { ...result, text: JSON.stringify({ items: JSON.parse(result.text).items.slice(0, 1) }) };
     });
-    writer.db.exec("CREATE TRIGGER reject_ack BEFORE INSERT ON settings WHEN new.key='journal.consumed' BEGIN SELECT RAISE(ABORT,'injected failure'); END");
+    writer.db.exec("CREATE TRIGGER reject_ack BEFORE INSERT ON settings WHEN new.key LIKE 'filter.latest-batch.%' BEGIN SELECT RAISE(ABORT,'injected failure'); END");
     const id = queue(); await run(id);
     expect(batches()[0].phase).toBe("draft"); expect(writer.setting(project, "journal.consumed")).toBeUndefined();
     expect(writer.setting(project, attemptKey)).toBeUndefined();
+    expect(readStatus({ cwd: root, home, now }).learning.latestBatch).toBeNull();
     writer.db.exec("DROP TRIGGER reject_ack"); await run(id);
     expect(batches()[0].phase).toBe("complete"); expect(calls).toHaveLength(1);
     expect(JSON.parse(writer.setting(project, attemptKey)!).failures).toBe(1);
+    expect(readStatus({ cwd: root, home, now }).learning.latestBatch).toMatchObject({ itemsKept: 1, notesDeferred: 1 });
   });
   it("does not repeat a malformed check-repair call after recovery", async () => {
     add("s", "Tests use vitest because the project chose it."); deps.recordChecks = vi.fn(async () => undefined);
@@ -529,6 +532,47 @@ function codexTranscript(session: string, content: string): string {
 }
 
 const codexRow = (role: "user" | "assistant", content: string) => JSON.stringify({ type: "response_item", payload: { type: "message", role, content } });
+
+it("records completed filter counts in the job summary and checkout status", async () => {
+  const first = "Use the other option.", next = "Tests use vitest.", outside = JSON.stringify({ type: "response_item", payload: { type: "web_search_call" } });
+  add("outside", first, { finished: true, transcript: codexTranscript("outside", [outside, codexRow("assistant", "A result from outside"), codexRow("user", first)].join("\n")) });
+  add("clean", next, { finished: true, transcript: codexTranscript("clean", codexRow("user", next)) });
+  const held = note({ text: "Keep the current test command." }, { projectPath: root, home }).entry;
+  deps.model = vi.fn(async request => {
+    const result = answer(request), [outside, valid] = JSON.parse(result.text).items;
+    return { ...result, text: JSON.stringify({ items: [{ ...outside, kind: "unknown" }, valid] }) };
+  });
+  const id = queue(); await run(id);
+  const status = { cwd: root, home, now };
+  const expected = { batch: 1, itemsKept: 1, itemsDropped: { "invalid kind": 1 }, notesDeferred: 1, notesWaitingForSync: 0, messagesWithheld: 1 };
+  const summary = writer.db.prepare("SELECT summary FROM job_results WHERE job_id=? AND batch=0").get(id)?.summary;
+  expect(summary).toBe("Filter batch 1 kept 1 item · dropped 1 item (invalid kind 1) · deferred 1 explicit note · withheld context for 1 message");
+  const reader = openRecordReadOnly({ home })!;
+  try { expect(listJobs(reader).find(job => job.id === id)?.summary).toBe(summary); }
+  finally { reader.close(); }
+
+  // The filter's output cache can be released after consolidation.
+  writer.db.prepare("DELETE FROM settings WHERE scope=? AND key LIKE 'filter.batch.%'").run(project);
+  const firstStatus = readStatus(status);
+  expect(firstStatus.learning.latestBatch).toEqual(expected);
+  expect(formatStatus(firstStatus)).toContain(`Latest filter batch${String(summary).slice("Filter batch".length)}`);
+
+  deps.model = vi.fn(async request => answer(request));
+  await run(id);
+  expect(readStatus(status).learning.latestBatch).toEqual({ batch: 2, itemsKept: 1, itemsDropped: {}, notesDeferred: 0, notesWaitingForSync: 0, messagesWithheld: 0 });
+  expect(writer.setting(project, `filter.note.${held.mex.id}`)).toBeDefined();
+});
+
+it.each(["x".repeat(205 << 10), "\\".repeat(110 << 10)])("keeps typed text when a full reply exceeds the input budget %#", reply => {
+  const typed = "Use the second option.", scan: ScanWindow = { after: 0 };
+  add("large", typed, { finished: true, transcript: codexTranscript("large", [codexRow("assistant", reply), codexRow("user", typed)].join("\n")) });
+  const input = filterInput(writer, project, params(), true, now, scan, "full");
+  expect(input?.messages).toMatchObject([{ text: typed, previous_reply: null }]);
+  expect(scan.messagesWithheld).toBe(1);
+  expect(filterInput(writer, project, params(), true, now, scan, "none")?.messages).toMatchObject([{ text: typed, previous_reply: null }]);
+  expect(scan.messagesWithheld).toBe(0);
+  expect(scan.contextIssues).toEqual([]);
+});
 
 it("masks delivered note text and one-line forms in the session that received the note", async () => {
   const noteText = "This is the longer body of the note.", noteLine = "Use the team's test runner.", originalLine = "Previously delivered headline.";

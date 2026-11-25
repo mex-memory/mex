@@ -7,6 +7,7 @@
  */
 import type { Finding } from "./screen.js";
 import { formatSeconds, NOTE_EXAMPLE } from "./screen.js";
+import { LEARNING_BACKGROUND_NOTICE } from "../filter/background-notice.js";
 
 export const RICH_MIN_COLUMNS = 72;
 
@@ -153,7 +154,7 @@ export class Rich {
 
   next(options: { learning?: string; agents?: readonly string[]; hooksOff?: boolean }): string[] {
     const learning = options.learning === "on"
-      ? `${this.dim("Learning from what you type is on: your agent's smallest model, at most 3% of your usage · off: ")}${this.cmd("mex config set learning.statements off")}`
+      ? `${this.dim("Learning from what you type is on · 3% cap · turn off with ")}${this.cmd("mex config set learning.statements off")}`
       : `${this.dim("Learning from what you type is off · ")}${this.cmd("mex config set learning.statements on")}`;
     const agents = options.agents?.length ? options.agents : ["Claude Code", "Codex"];
     return [
@@ -164,6 +165,7 @@ export class Rich {
         : `${MARGIN}Notes you save reach every new ${listNames(agents)} session.`,
       `${MARGIN}A note the code has made false is held back, never sent.`,
       `${MARGIN}${learning}`,
+      ...this.text([LEARNING_BACKGROUND_NOTICE], true),
       "", this.pill("TRY IT", "paper"), "",
       `${MARGIN}${this.paint("orange", "1")}  ${this.cmd(NOTE_EXAMPLE)}`,
       `${MARGIN}${this.paint("orange", "2")}  Open ${listNames(agents, "or")} and ask about it`,

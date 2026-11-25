@@ -20,6 +20,8 @@ import { knowledgeProject, type KnowledgeOptions } from "./knowledge/context.js"
 import { KNOWLEDGE_LIMITS, parseEntry } from "./knowledge/entry.js";
 import { containedDirectory, readEntryFile } from "./knowledge/files.js";
 import { hintStatus } from "./knowledge/hints.js";
+import { LEARNING_BACKGROUND_NOTICE } from "./filter/background-notice.js";
+import { formatFilterBatch, readFilterBatchReport, type FilterBatchReport } from "./filter/report.js";
 
 type Switch = "on" | "off" | "unknown";
 export interface AgentStatus { agent: Agent; installed: boolean | null; events: number | null; lastCall?: string; }
@@ -32,6 +34,7 @@ export interface StatusView {
   binary: { state: "native" | "missing" | "unknown"; version?: string };
   knowledge: KnowledgeStatus | null;
   background: { waiting: number; running: number; lastRun?: { name: string; at: string } } | null;
+  learning: { backgroundNotice: string; latestBatch: FilterBatchReport | null };
   modelUse: { runs: number; percent: number | null; capPercent: number; estimated: true } | null;
 }
 export interface StatusOptions extends LocationOptions { cwd?: string; env?: NodeJS.ProcessEnv; now?: number; }
@@ -111,7 +114,8 @@ export function readStatus(options: StatusOptions = {}): StatusView {
   const reader = attempt(() => checkedReader(openRecordReadOnly(options))) ?? undefined;
   const root = attempt(() => checkoutRoot(options.cwd ?? process.cwd(), reader));
   const view: StatusView = { version: VERSION, repository: root ? { state: "unknown", capture: "unknown" } : null,
-    agents: [], binary: { state: "unknown" }, knowledge: null, background: null, modelUse: null };
+    agents: [], binary: { state: "unknown" }, knowledge: null, background: null,
+    learning: { backgroundNotice: LEARNING_BACKGROUND_NOTICE, latestBatch: null }, modelUse: null };
   try {
     view.outputLevers = (env.MEX_LEVERS === "on" || env.MEX_LEVERS !== "off" && reader?.setting("global", "levers.output") === "on") ? "on" : "off";
     const rows = attempt(() => installationChanges(options));
@@ -135,6 +139,8 @@ export function readStatus(options: StatusOptions = {}): StatusView {
         return { state: on && globalOn ? "on" : "off", capture: capture ? "on" : "off" };
       }) ?? { state: "unknown", capture: "unknown" };
       view.knowledge = attempt(() => knowledge({ ...options, projectPath: root.root }));
+      const row = root.row;
+      if (reader && row) view.learning.latestBatch = attempt(() => readFilterBatchReport(reader, row.project_id, root.root));
     }
     const hooks = attempt(() => checkedReader(openHooksReadOnly(options)));
     try {
@@ -204,6 +210,8 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   const b = view.background, u = view.modelUse;
   lines.push(b ? `  ${b.waiting ? `${b.waiting} jobs waiting` : "No jobs waiting"}${b.running ? ` · ${b.running} running` : ""} · last run: ${b.lastRun ? `${b.lastRun.name}, ${ago(b.lastRun.at, now)}` : "none recorded"}` : "  Jobs: unknown");
   lines.push(u ? `  Model use for MEX this week: ${u.runs} runs, ${u.percent === null ? "share of your usage unknown" : `${u.percent.toFixed(1)}% of your usage (estimate)`} (cap ${u.capPercent}%)` : "  Model use: unknown");
+  lines.push(`  ${view.learning.backgroundNotice}`);
+  if (view.learning.latestBatch) lines.push(`  ${formatFilterBatch(view.learning.latestBatch, "Latest filter batch")}`);
   if (options.doctor) {
     const problems = statusProblems(view);
     lines.push("", "Problems", ...(problems.length ? problems.map(problem => `  ✗ ${problem}`) : ["  No recorded problems."]));
