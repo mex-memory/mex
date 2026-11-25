@@ -8,7 +8,7 @@ import { revisionOf } from "../team/artifacts/revision.js";
 import { canonicalFileDiff } from "../team/artifacts/unified-diff.js";
 import type { RepoRelativePath } from "../team/contracts/shared.js";
 import { ENTRY_KINDS, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, assertPersonQuote, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
-import { containedDirectory, readEntryFile } from "./files.js";
+import { containedDirectory, readEntryFile, readEntryRevision } from "./files.js";
 import { gateEntry, sanitizeText, assertNoSecrets } from "./gates.js";
 import { entryLabel } from "./labels.js";
 import { references, repoFile, type References } from "./references.js";
@@ -88,12 +88,15 @@ function verifyEvidence(entry: KnowledgeEntry, root: string, typedText?: string)
   throw new KnowledgeError("TEAM_EVIDENCE", "Unconfirmed observations cannot become team entries; use person or repository evidence.");
 }
 
-function readAt(root: string, item: { id: string; path: string }): { entry: KnowledgeEntry; content: string } | undefined {
-  const content = readEntryFile(join(root, item.path));
+function readAt(root: string, item: { id: string; path: string }, exact = false): { entry: KnowledgeEntry; content: string } | undefined {
+  const path = join(root, item.path);
+  const stored = exact ? readEntryRevision(path) : undefined;
+  const content = exact ? stored?.content : readEntryFile(path);
   if (content === undefined) return undefined;
   const entry = parseEntry(content);
   if (entry.mex.id !== item.id) throw new KnowledgeError("INVALID_ENTRY", "Team entry id does not match its filename.");
-  return { entry, content };
+  // The safe decoder consumes a BOM; the preview and atomic replacement bind the original bytes.
+  return { entry, content: stored && stored.size > Buffer.byteLength(content) ? "\ufeff" + content : content };
 }
 /** Active claims as written, for save-time comparison. An unreadable file is skipped and counted. */
 export function teamClaims(root: string): { entries: KnowledgeEntry[]; invalid: number } {
@@ -164,9 +167,10 @@ export function prepareTeamWrite(input: KnowledgeEntry, options: KnowledgeOption
   verifyEvidence(entry, root, typedText === undefined ? undefined : sanitizeText(typedText, context));
   const existing = teamFiles(root).find(item => item.id === entry.mex.id);
   const path = existing?.path ?? `${ROOT}/${entry.mex.id}.md`;
-  const before = existing ? readAt(root, existing)?.content ?? null : null;
-  if (before) assertNoSecrets(parseEntry(before));
-  if (before && parseEntry(before).mex.status === "retired") throw new KnowledgeError("RETIRED_ENTRY", "A retired team entry cannot be restored.");
+  const original = existing && readAt(root, existing, true);
+  const before = original?.content ?? null;
+  if (original) assertNoSecrets(original.entry);
+  if (original?.entry.mex.status === "retired") throw new KnowledgeError("RETIRED_ENTRY", "A retired team entry cannot be restored.");
   if (!before && entry.mex.source.type === "person" && typedText === undefined) throw new KnowledgeError("UNVERIFIED_SOURCE", "A new person-sourced team entry requires the actual typed text.");
   const after = serializeEntry(entry);
   const revision = hash(JSON.stringify({ root, path, before, after }));

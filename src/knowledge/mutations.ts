@@ -90,7 +90,7 @@ export function edit(id: string, input: NoteInput, options: KnowledgeOptions, no
 }
 
 /** Retire locally in one durable transaction; restored old Markdown stays hidden. */
-export function forget(id: string, reason: string, options: KnowledgeOptions, now = new Date(), action: "forget" | "wrong" = "forget"): Tombstone {
+export function forget(id: string, reason: string, options: KnowledgeOptions, now = new Date(), action: "forget" | "wrong" = "forget", expectedRevision?: string): Tombstone {
   assertId(id);
   const before = personalSnapshot(id, options, knowledgeProject(options), undefined, false, true);
   reason = stripHidden(reason);
@@ -100,7 +100,7 @@ export function forget(id: string, reason: string, options: KnowledgeOptions, no
   const writer = openRecord(options);
   try {
     writer.db.exec("BEGIN IMMEDIATE");
-    const found = current(writer, options, id, ["active", "proposed"]);
+    const found = current(writer, options, id, ["active", "proposed"], expectedRevision);
     const marker = saveTombstone(writer, found.projectId, found.entry, retired);
     writer.db.exec("COMMIT");
     return marker;
