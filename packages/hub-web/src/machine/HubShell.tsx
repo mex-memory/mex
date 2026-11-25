@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
-import { BookOpen, ClipboardCheck, FolderGit2, House, ListTodo, Menu, Terminal, X } from "lucide-react";
+import { BookOpen, Bot, ClipboardCheck, FolderGit2, House, ListTodo, Menu, Monitor, Terminal, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import { Badge } from "../components/primitives/badge";
@@ -13,10 +13,11 @@ import type { ReviewConnection } from "./ReviewPage";
 import type { KnowledgeConnection } from "./KnowledgePage";
 import { UnknownRepoPage } from "./pages";
 import { reviewCount } from "./review-model";
-import type { HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview, ReviewPreview } from "./types";
+import type { AgentsPreview, HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview, ReviewPreview } from "./types";
 import { HubBanners, HubBrand, ThemeToggle, type PageLoad } from "./ui";
 import styles from "./machine.module.css";
 
+const AgentsPage = lazy(() => import("./AgentsPage"));
 const HomePage = lazy(() => import("./HomePage"));
 const JobsPage = lazy(() => import("./JobsPage"));
 const KnowledgePage = lazy(() => import("./KnowledgePage"));
@@ -26,6 +27,7 @@ const navPages = [
   { page: "review", label: "Review", icon: ClipboardCheck },
   { page: "knowledge", label: "Knowledge", icon: BookOpen },
   { page: "jobs", label: "Jobs", icon: ListTodo },
+  { page: "agents", label: "Agents", icon: Bot },
 ] as const;
 type NavPage = typeof navPages[number]["page"];
 
@@ -43,6 +45,7 @@ type HubShellProps = ShellProps & (
 );
 
 interface HubData {
+  agents?: AgentsPreview;
   overview?: HomeOverview;
   jobs?: readonly HubJob[];
   knowledge?: KnowledgePreview;
@@ -57,8 +60,8 @@ interface HubData {
 
 export function HubShell(props: HubShellProps) {
   if (props.preview) {
-    const { jobs, overview, knowledge, review, changeJob } = props.preview;
-    return <HubLayout {...props} data={{ jobs, overview, knowledge, review, changeJob: (job, action) => changeJob(job.id, action) }} fixture />;
+    const { agents, jobs, overview, knowledge, review, changeJob } = props.preview;
+    return <HubLayout {...props} data={{ agents, jobs, overview, knowledge, review, changeJob: (job, action) => changeJob(job.id, action) }} fixture />;
   }
   return <LiveHubShell {...props} />;
 }
@@ -98,6 +101,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const { pathname, search } = useLocation();
   const previousPath = useRef(pathname);
   const projectId = useMatch("/repos/:projectId/*")?.params.projectId;
+  const agentsRoute = Boolean(useMatch("/agents/*"));
   const machineJobs = useMatch("/jobs");
   const repoJobs = useMatch("/repos/:projectId/jobs");
   const machineKnowledge = useMatch("/knowledge/*");
@@ -114,10 +118,11 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const waiting = fixture ? reviewCount(data.overview, projectId)
     : (projectId ? data.reviewCount?.byRepo[projectId] : data.reviewCount?.total) ?? 0;
   const activePage = reviewRoute ? "review" : knowledgeRoute ? "knowledge" : machineJobs || repoJobs ? "jobs" : "home";
+  const agentsNeedRepair = data.agents?.agents.some(({ state }) => state === "needsRepair");
   const loadingPage = { home: "Home", knowledge: "Knowledge", review: "Review", jobs: "jobs" }[activePage];
 
   function pagePath(page: NavPage, id?: string) {
-    const repo = id ? `/repos/${encodeURIComponent(id)}` : "";
+    const repo = id && page !== "agents" ? `/repos/${encodeURIComponent(id)}` : "";
     const path = page === "home" ? repo || "/" : `${repo}/${page}`;
     const currentSearch = new URLSearchParams(search);
     const params = new URLSearchParams();
@@ -178,7 +183,8 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
               {navPages.map(({ page, label, icon: Icon }) => (
                 <li key={page}>
                   <NavLink
-                    aria-description={page === "review" && waiting > 0 ? `${waiting} waiting` : undefined}
+                    aria-description={page === "review" && waiting > 0 ? `${waiting} waiting`
+                      : page === "agents" && agentsNeedRepair ? "Some agents need repair" : undefined}
                     className={({ isActive }) => cn(shell.navLink, isActive && shell.navLinkActive)}
                     end={page === "home" || page === "jobs"}
                     onClick={closeMenu}
@@ -187,6 +193,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                     <Icon aria-hidden="true" />
                     <span>{label}</span>
                     {page === "review" && waiting > 0 && <Badge aria-hidden="true" variant="secondary">{waiting}</Badge>}
+                    {page === "agents" && agentsNeedRepair && <span aria-hidden="true" className={styles.warningDot} />}
                   </NavLink>
                 </li>
               ))}
@@ -200,30 +207,43 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
           </footer>
         )}
       </aside>
-      <header aria-label="Repository context" className={cn(shell.contextBar, styles.topBar)}>
-        <span className={shell.repoGlyph}><FolderGit2 aria-hidden="true" /></span>
-        <NativeSelect
-          aria-label="Repo switcher"
-          className={styles.switcher}
-          disabled={projects === undefined}
-          onChange={(event) => navigate(pagePath(activePage, event.target.value))}
-          value={project?.id ?? ""}
-        >
-          <NativeSelectOption value="">All repos</NativeSelectOption>
-          {projects?.map(({ id, name }) => <NativeSelectOption key={id} value={id}>{name}</NativeSelectOption>)}
-        </NativeSelect>
+      <header aria-label={agentsRoute ? "Machine context" : "Repository context"} className={cn(shell.contextBar, styles.topBar)}>
+        {agentsRoute ? (
+          <div className={styles.machineContext}>
+            <span className={shell.repoGlyph}><Monitor aria-hidden="true" /></span>
+            <span>This machine</span>
+          </div>
+        ) : (
+          <>
+            <span className={shell.repoGlyph}><FolderGit2 aria-hidden="true" /></span>
+            <NativeSelect
+              aria-label="Repo switcher"
+              className={styles.switcher}
+              disabled={projects === undefined}
+              onChange={(event) => navigate(pagePath(activePage, event.target.value))}
+              value={project?.id ?? ""}
+            >
+              <NativeSelectOption value="">All repos</NativeSelectOption>
+              {projects?.map(({ id, name }) => <NativeSelectOption key={id} value={id}>{name}</NativeSelectOption>)}
+            </NativeSelect>
+          </>
+        )}
         <ThemeToggle />
       </header>
       <main className={cn(shell.main, styles.main)} id="main-content" ref={main} tabIndex={-1}>
         <div className={styles.content}>
           <HubBanners events={events} stopped={connectionLost} terminal={terminal} updated={session.version !== __MEX_HUB_VERSION__} />
-          {projectsError && !connectionLost && (
+          {projectsError && !connectionLost && !agentsRoute && (
             <div className={styles.pageState}>
               <p role="status">Couldn’t load repos.</p>
               <Button onClick={retryProjects} size="sm" type="button" variant="outline">Retry</Button>
             </div>
           )}
-          {projects ? (
+          {agentsRoute ? (
+            <Suspense fallback={<p className={styles.pageState} role="status">Loading Agents…</p>}>
+              <AgentsPage preview={data.agents} />
+            </Suspense>
+          ) : projects ? (
             <Suspense fallback={<p className={styles.pageState} role="status">Loading {loadingPage}…</p>}>
               <Routes>
                 <Route

@@ -445,3 +445,20 @@
   width: 12px;
   height: 12px;
 }
+
+.machineContext {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.warningDot {
+  width: 7px;
+  height: 7px;
+  margin-inline-end: 3px;
+  border-radius: 50%;
+  background: var(--warning);
+}
