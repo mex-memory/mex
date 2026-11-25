@@ -4,6 +4,7 @@ import type { z } from "zod";
 import { installAgents, InstallRevisionConflict, installHookCommands, type InstallChange, type RepairRevision } from "../../install/index.js";
 import { snapshotBytes } from "../../install/files.js";
 import { recordLocation } from "../../record/location.js";
+import { recordBusy } from "../../record/writer-wait.js";
 import type { AgentId, MachineAgentOptions } from "./agents-snapshot.js";
 import { hookChanges, visibleValue } from "./install-diff.js";
 import { HubRequestError } from "./security.js";
@@ -33,9 +34,8 @@ function diff(change: InstallChange, home: string) {
 }
 
 export function machineBusy(error: unknown): HubRequestError | undefined {
-  const detail = error as { errcode?: number; code?: string; message?: string; title?: string } | undefined;
-  if ((detail?.errcode !== undefined && [5, 6].includes(detail.errcode & 0xff))
-    || detail?.code === "SQLITE_BUSY" || detail?.code === "STORE_BUSY"
+  const detail = error as { code?: string; title?: string } | undefined;
+  if (recordBusy(error) || detail?.code === "STORE_BUSY"
     || detail?.title === "Artifact collection is being updated" || detail?.title === "Artifact lock recovery is in progress") {
     return new HubRequestError(503, "MEX_BUSY", "MEX is busy", "MEX is busy. Try again in a moment.");
   }

@@ -307,7 +307,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
     let notice;
     if (change.type === "telemetry") notice = await applyTelemetrySetting(location, env, change.enabled, expectedRevision);
     else {
-      const checkout = applyRecordSetting(location, env, now(), change, expectedRevision);
+      const checkout = await applyRecordSetting(location, env, now, change, expectedRevision);
       if (checkout) {
         const followUp = setImmediate(() => {
           followUps.delete(followUp);

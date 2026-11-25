@@ -244,13 +244,16 @@ describe("machine Agents and Settings", () => {
     const next = (await makeRepairPreview()).confirmation;
     writer.db.exec("BEGIN IMMEDIATE");
     try {
-      const busy = await post(repairPath, next, "retriable-repair");
+      const pending = post(repairPath, next, "retriable-repair");
+      // Reads keep working while the installer is waiting on the record writer.
+      expect((await request("/agents")).status).toBe(200);
+      const busy = await pending;
       expect(busy.status).toBe(503);
       expect(await busy.json()).toMatchObject({ code: "MEX_BUSY" });
       expect(readFileSync(claude())).toEqual(changed);
     } finally { writer.db.exec("ROLLBACK"); }
     expect((await post(repairPath, next, "retriable-repair")).status).toBe(200);
-  });
+  }, 12_000);
 
   it("offers the real terminal command when the shim is missing or the config is unreadable", async () => {
     await installFixture();

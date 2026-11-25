@@ -8,6 +8,7 @@ import { isDeepStrictEqual, promisify } from "node:util";
 import { mexHomeDir } from "../global-config.js";
 import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { recordLocation, type LocationOptions } from "../record/location.js";
+import { waitForRecordWriter } from "../record/writer-wait.js";
 import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { binaryFileName, findNativeBinary, selfTestBinary, type SelfTestResult } from "../hooks/shim/binary.js";
 import { cliEntryPath, launcherFile } from "../hooks/shim/launcher.js";
@@ -402,7 +403,7 @@ async function repairAgent(options: InstallOptions, repair: NonNullable<InstallO
     return { agents: [agent], changes: different ? [change] : [], notices: [], legacyTracked: [], runner: "native", repair: { path, revision, planRevision } };
   };
   if (options.dryRun) return plan();
-  const writer = openRecord({ ...location, busyTimeoutMs: 0 });
+  const writer = await waitForRecordWriter(location);
   try {
     return await withContainedArtifactLock(home, "install", ".install.lock", () => plan(writer));
   } finally { writer.close(); }

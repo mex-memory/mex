@@ -2,6 +2,7 @@ import { setCaptureEnabled, setCheckoutEnabled, setGlobalEnabled, setLearningSha
 import { rebuildNative } from "../../knowledge/native.js";
 import { openRecord, type CheckoutRow, type RecordWriter } from "../../record/index.js";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
+import { waitForRecordWriter } from "../../record/writer-wait.js";
 import { changeTelemetryPreference } from "../../telemetry/index.js";
 import { machinePath } from "./machine-projects.js";
 import { HubRequestError } from "./security.js";
@@ -40,10 +41,11 @@ export function refreshCheckoutRules(location: LocationOptions, path: string): v
   catch { /* The next rebuild catches up, as after a terminal switch. */ }
 }
 
-export function applyRecordSetting(
-  location: LocationOptions, env: NodeJS.ProcessEnv, now: number, change: RecordChange, expected: string,
-): string | undefined {
-  const writer = openRecord({ ...location, busyTimeoutMs: 0 });
+export async function applyRecordSetting(
+  location: LocationOptions, env: NodeJS.ProcessEnv, clock: () => number, change: RecordChange, expected: string,
+): Promise<string | undefined> {
+  const writer = await waitForRecordWriter(location);
+  const now = clock();
   try {
     switch (change.type) {
       case "globalPower":
@@ -88,10 +90,11 @@ export async function applyTelemetrySetting(location: LocationOptions, env: Node
   const writable = cliTelemetryHome(location);
   const check = () => checkSetting(expected, telemetrySetting(home, env, writable));
   check();
+  (await waitForRecordWriter(location)).close();
   const { purged } = await changeTelemetryPreference(enabled, () => {
     check();
     // Fail on an already busy or newer record before changing the opt-out marker.
-    const writer = openRecord({ ...location, busyTimeoutMs: 0 });
+    const writer = openRecord({ ...location, create: false, busyTimeoutMs: 0 });
     writer.close();
   });
   return purged ? undefined : "Telemetry is off. The local queue couldn’t be cleared.";
