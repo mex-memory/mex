@@ -367,3 +367,184 @@ export type MachineHome = z.infer<typeof MachineHomeSchema>;
 export type MachineJob = z.infer<typeof MachineJobSchema>;
 export type MachineJobActionRequest = z.infer<typeof MachineJobActionRequestSchema>;
 export type MachineChangeEvent = z.infer<typeof MachineChangeEventSchema>;
+
+export const MachineAgentIdSchema = z.enum(["claude-code", "codex", "copilot", "opencode"]);
+const machinePathSchema = z.string().min(1).max(4096);
+const machineLabelSchema = z.string().min(1).max(512);
+const agentFileSchema = z.object({
+  path: machinePathSchema,
+  kind: z.enum(["hookConfig", "rule", "gitExclude", "agentSettings"]),
+  hiddenFromGit: z.boolean(),
+  repo: machineLabelSchema.optional(),
+});
+
+export const MachineAgentSchema = z.object({
+  id: MachineAgentIdSchema,
+  name: machineLabelSchema,
+  state: z.enum(["working", "needsRepair", "notSetUp", "notFound"]),
+  hooks: z.object({
+    canVerify: z.boolean(),
+    events: z.array(z.object({
+      name: machineLabelSchema,
+      status: z.enum(["installed", "missing", "unverified"]),
+    })).max(32),
+  }),
+  trust: z.enum(["approved", "needsApproval", "unknown"]),
+  lastFiredAt: isoTimeSchema.nullable(),
+  errors: z.array(z.object({ at: isoTimeSchema, message: machineLabelSchema })).max(5),
+  files: z.array(agentFileSchema).max(128),
+  repair: z.enum(["browser", "terminal", "unavailable"]),
+});
+
+const repairChangeSchema = z.object({ path: machinePathSchema }).and(z.union([
+  z.object({ diff: z.string().min(1).max(64 * 1024) }),
+  z.object({ description: machineLabelSchema }),
+]));
+
+export const MachineAgentRepairPreviewSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("browser"),
+    agentId: MachineAgentIdSchema,
+    revision: z.string().min(1).max(256),
+    changes: z.array(repairChangeSchema).min(1).max(16),
+  }),
+  z.object({
+    type: z.literal("terminal"),
+    agentId: MachineAgentIdSchema,
+    reason: machineLabelSchema,
+    command: machineLabelSchema,
+  }),
+]);
+
+export const MachineAgentRepairResultSchema = z.object({ agent: MachineAgentSchema });
+
+const settingSourceSchema = z.enum(["default", "global", "repo", "checkout", "environment", "policy"]);
+const settingAvailabilitySchema = z.object({
+  source: settingSourceSchema,
+  disabledReason: machineLabelSchema.optional(),
+});
+const machineToggleSchema = settingAvailabilitySchema.extend({ enabled: z.boolean() });
+const checkoutPowerSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("on") }).strict(),
+  z.object({ state: z.literal("off") }).strict(),
+  z.object({ state: z.literal("offUntil"), until: isoTimeSchema }).strict(),
+]);
+const sharingModeSchema = z.enum(["automatic", "manual"]);
+
+export const MachineStorageSchema = z.object({
+  recordBytes: countSchema,
+  hooksBytes: countSchema,
+  indexes: z.array(z.object({ repoId: machineLabelSchema, repo: machineLabelSchema, bytes: countSchema })).max(128),
+  notesBytes: countSchema,
+  telemetryBytes: countSchema,
+  totalBytes: countSchema,
+  retention: z.object({
+    deliveryDays: countSchema.positive(),
+    captureDays: countSchema.positive(),
+    captureMegabytes: countSchema.positive(),
+  }),
+});
+
+export const MachineOutboundSchema = z.object({
+  telemetry: z.array(z.object({
+    id: machineLabelSchema,
+    at: isoTimeSchema,
+    event: machineLabelSchema,
+    fields: z.array(machineLabelSchema).max(32),
+  })).max(100),
+  modelCalls: z.array(z.object({
+    id: machineLabelSchema,
+    at: isoTimeSchema,
+    purpose: machineLabelSchema,
+    agent: machineLabelSchema,
+    tokens: countSchema,
+    estimated: z.boolean(),
+  })).max(100),
+});
+
+export const MachineSettingsSchema = z.object({
+  browser: z.object({
+    signOut: settingAvailabilitySchema,
+    signOutEverywhere: settingAvailabilitySchema,
+  }),
+  everywhere: machineToggleSchema,
+  capture: machineToggleSchema,
+  repos: z.array(z.object({
+    id: machineLabelSchema,
+    name: machineLabelSchema,
+    checkouts: z.array(settingAvailabilitySchema.extend({
+      path: machinePathSchema,
+      power: checkoutPowerSchema,
+    })).max(64),
+    capture: machineToggleSchema,
+    sharing: settingAvailabilitySchema.extend({ mode: sharingModeSchema }),
+    weekly: z.object({ nextRunAt: isoTimeSchema }).nullable(),
+  })).max(128),
+  ai: homeMetricsSchema.shape.week,
+  telemetry: machineToggleSchema,
+  outbound: MachineOutboundSchema,
+  hints: z.object({
+    active: countSchema,
+    confirmed: countSchema,
+    expiryMonths: z.number().int().min(1).max(120),
+    source: settingSourceSchema,
+  }),
+  storage: MachineStorageSchema,
+  about: z.object({
+    version: versionSchema,
+    homePath: machinePathSchema,
+    background: z.object({ startedAt: isoTimeSchema, version: versionSchema }).nullable(),
+    hubMode: hubModeSchema,
+  }),
+});
+
+export const MachineSignOutRequestSchema = z.object({
+  type: z.literal("signOut"),
+  scope: z.enum(["thisBrowser", "everywhere"]),
+}).strict();
+export const MachineGlobalPowerRequestSchema = z.object({
+  type: z.literal("globalPower"),
+  enabled: z.boolean(),
+}).strict();
+export const MachineCheckoutPowerRequestSchema = z.object({
+  type: z.literal("checkoutPower"),
+  path: machinePathSchema,
+  power: checkoutPowerSchema,
+}).strict();
+export const MachineCaptureRequestSchema = z.object({
+  type: z.literal("capture"),
+  enabled: z.boolean(),
+  repoId: machineLabelSchema.optional(),
+}).strict();
+export const MachineSharingRequestSchema = z.object({
+  type: z.literal("sharing"),
+  repoId: machineLabelSchema,
+  mode: sharingModeSchema,
+}).strict();
+export const MachineTelemetryRequestSchema = z.object({
+  type: z.literal("telemetry"),
+  enabled: z.boolean(),
+}).strict();
+export const MachineSettingsWriteRequestSchema = z.discriminatedUnion("type", [
+  MachineSignOutRequestSchema,
+  MachineGlobalPowerRequestSchema,
+  MachineCheckoutPowerRequestSchema,
+  MachineCaptureRequestSchema,
+  MachineSharingRequestSchema,
+  MachineTelemetryRequestSchema,
+]);
+
+export const MachineUninstallPreviewSchema = z.object({
+  changes: z.array(z.object({
+    id: machineLabelSchema,
+    group: machineLabelSchema,
+    path: machinePathSchema,
+    entry: machineLabelSchema,
+    before: z.string().max(4096).nullable(),
+    mexValue: z.string().min(1).max(4096),
+    restores: z.string().max(4096).nullable(),
+  })).max(512),
+  notRemoved: z.array(z.object({ path: machinePathSchema, kind: z.enum(["personalRule", "gitExclude"]) })).max(512),
+  dataPath: machinePathSchema,
+  dataSize: countSchema,
+});

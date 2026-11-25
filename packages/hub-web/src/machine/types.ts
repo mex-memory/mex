@@ -1,5 +1,8 @@
 import type { z } from "zod";
 import type {
+  MachineAgentRepairPreviewSchema,
+  MachineAgentRepairResultSchema,
+  MachineAgentSchema,
   MachineDailyActivitySchema,
   MachineForgottenItemSchema,
   MachineForgottenPageSchema,
@@ -23,6 +26,11 @@ import type {
   MachineReviewActionResponse,
   MachineReviewCard,
   MachineReviewQueue,
+  MachineOutboundSchema,
+  MachineSettingsSchema,
+  MachineSettingsWriteRequestSchema,
+  MachineStorageSchema,
+  MachineUninstallPreviewSchema,
 } from "@mex/hub-contracts/machine";
 
 export type KnowledgeStatusCounts = z.infer<typeof MachineKnowledgeStatusCountsSchema>;
@@ -100,3 +108,13 @@ export interface HubPreview {
   review: ReviewPreview;
   changeJob: (id: string, action: JobAction) => void;
 }
+
+export type MachineAgent = z.infer<typeof MachineAgentSchema>;
+export type AgentRepairPreview = z.infer<typeof MachineAgentRepairPreviewSchema>;
+export type BrowserAgentRepair = Extract<AgentRepairPreview, { type: "browser" }>;
+export type AgentRepairResult = z.infer<typeof MachineAgentRepairResultSchema>;
+export type MachineSettings = z.infer<typeof MachineSettingsSchema>;
+export type SettingsWrite = z.infer<typeof MachineSettingsWriteRequestSchema>;
+export type MachineStorage = z.infer<typeof MachineStorageSchema>;
+export type MachineOutbound = z.infer<typeof MachineOutboundSchema>;
+export type MachineUninstallPreview = z.infer<typeof MachineUninstallPreviewSchema>;
