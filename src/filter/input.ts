@@ -59,6 +59,13 @@ export function timestampNs(value: string): bigint | undefined {
   const fraction = (value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/u)?.[1] ?? "").padEnd(9, "0").slice(3, 9);
   return BigInt(milliseconds) * 1_000_000n + BigInt(fraction || "0");
 }
+export interface SessionPosition { branch?: string; head?: string; position_at?: string; seen_at: string; }
+export function capturedPositionAt(meta: SessionPosition | undefined, at: string) {
+  if (!meta?.branch || !meta.head || !meta.position_at) return;
+  const source = timestampNs(at), since = timestampNs(meta.position_at), seen = timestampNs(meta.seen_at);
+  if (source !== undefined && since !== undefined && seen !== undefined && source >= since && source <= seen)
+    return { branch: meta.branch, head: meta.head };
+}
 function heartbeat(writer: RecordWriter, agent: string, session: string): bigint | undefined {
   if (agent !== "codex" && agent !== "claude-code") return 0n;
   const directory = containedDirectory(writer.location.home, ["heartbeats", agent]);
@@ -83,7 +90,7 @@ function sessionActivity(writer: RecordWriter, project: string, checkout: string
   const agent: Transcript["agent"] = row.agent === "claude-code" ? "claude" : "codex";
   const transcript: Transcript | undefined = meta?.transcript ? { path: meta.transcript, agent: meta.agent === "claude-code" ? "claude" : "codex" } : undefined;
   return { seen: recorded !== undefined && recorded > activity ? recorded : activity,
-    finished: meta?.finished && recorded !== undefined && recorded >= activity, agent, transcript };
+    finished: meta?.finished && recorded !== undefined && recorded >= activity, agent, transcript, meta };
 }
 function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
   const check = personalReadGuard(join(writer.location.home, "projects", project, "notes"));
@@ -178,7 +185,7 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
 interface SessionSelection { session: string; retryRows?: readonly number[]; }
 /** Select one finished session, with a bounded page for unusually long sessions. */
 export function stageOneInput(writer: RecordWriter, project: string, checkout: string, scan: ScanWindow, contextMode: ReplyContextMode,
-  selection?: SessionSelection): { session: string; input: FilterInput } | undefined {
+  selection?: SessionSelection): { session: string; input: FilterInput; sourcePosition?: SessionPosition } | undefined {
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
     if (hooks?.diagnostic) throw new Error("The filter needs a compatible capture journal.");
@@ -219,7 +226,9 @@ export function stageOneInput(writer: RecordWriter, project: string, checkout: s
     if (activity?.transcript) transcripts.set(session, activity.transcript);
     const input = completeInput(writer, project, checkout, hooks, rows.map(row => capturedMessage(row, !row.marks)), [], transcripts, contextMode, scan,
       retryRows ? "retry" : "page");
-    return { session, input };
+    const meta = activity?.meta;
+    const sourcePosition = meta && { branch: meta.branch, head: meta.head, position_at: meta.position_at, seen_at: meta.seen_at };
+    return { session, input, sourcePosition };
   } finally { hooks?.close(); }
 }
 

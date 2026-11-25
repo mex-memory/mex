@@ -52,7 +52,7 @@ beforeEach(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), "mex-consolidation-"))); root = join(base, "repo"); home = join(base, "home"); mkdirSync(root);
   writeFileSync(join(root, "package.json"), '{"scripts":{"test":"vitest"},"description":"Tests use vitest. Sasha uses build.example.net and sasha@example.net."}\n');
   writer = openRecord({ home, projectPath: root, isNetwork: () => false }); project = writer.checkout(root)!.project_id;
-  deps = { model: vi.fn(async () => { throw new Error("unexpected model call"); }), recordChecks: vi.fn(async () => undefined), clock: Date.now };
+  deps = { model: vi.fn(async () => { throw new Error("unexpected model call"); }), recordChecks: vi.fn(async () => undefined), clock: () => Date.parse("2026-11-15T12:00:00.000Z") };
   readyJob();
 });
 afterEach(() => { writer.close(); vi.restoreAllMocks(); rmSync(base, { recursive: true, force: true }); });
@@ -175,6 +175,24 @@ it("records unsure once, ignores same-session repeats, then promotes an independ
   batch("4".repeat(64), [{ ...first, source: { ...first.source, session: "s2", at: recent } }]); await apply(); expect(notes()).toHaveLength(1);
   expect(writer.db.prepare("SELECT key FROM settings WHERE key LIKE 'learning.seen.%'").all()).toHaveLength(0);
 });
+it("archives a legacy seen-once observation at 30 days without using the model", async () => {
+  const first = { ...candidate(), label: "unsure" };
+  const key = "learning.seen." + "a".repeat(64);
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(project, key, JSON.stringify({ candidate: first, sessions: ["s1"] }));
+  const expiresAt = Date.parse(old) + 30 * 86_400_000;
+  deps.clock = () => expiresAt - 1;
+  await apply();
+  expect(writer.setting(project, key)).toBeDefined();
+  deps.clock = () => expiresAt;
+  await apply();
+  expect(writer.setting(project, key)).toBeUndefined();
+  expect(deps.model).not.toHaveBeenCalled();
+  const history = writer.db.prepare("SELECT value FROM settings WHERE scope=? AND key LIKE 'learning.seen-retired.%'").all(project);
+  expect(history.map(row => JSON.parse(String(row.value)))).toMatchObject([
+    { candidate: { quote: first.quote }, sessions: ["s1"], retired: { reason: "seen-once", at: new Date(expiresAt).toISOString() } },
+  ]);
+});
+
 it("does not attribute pasted messages or delivered-note echoes to a person", async () => {
   const n = note({ text: "Tests use vitest." }, { home, projectPath: root }, new Date(old));
   const pasted = candidate(); pasted.source.marks = "pasted";

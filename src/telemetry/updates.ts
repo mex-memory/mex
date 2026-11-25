@@ -6,27 +6,10 @@ import { isDevRepo, readGlobalConfig, setGlobalConfigKey } from "../global-confi
 import { VERSION } from "../version.js";
 import { isCI } from "./policy.js";
 import { utcDay } from "./store.js";
+import { isVersion, newerVersion } from "../version-order.js";
+export { newerVersion } from "../version-order.js";
 
 export const UPDATE_TIMEOUT_MS = 1500;
-const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([a-zA-Z0-9]+(?:[.-][a-zA-Z0-9]+)*))?$/;
-export function newerVersion(candidate: string, current: string): boolean {
-  const next = semver.exec(candidate), old = semver.exec(current);
-  if (!next || !old || candidate.length > 80 || current.length > 80) return false;
-  for (let i = 1; i <= 3; i++) { if (Number(next[i]) !== Number(old[i])) return Number(next[i]) > Number(old[i]); }
-  if (!next[4]) return !!old[4];
-  if (!old[4]) return false;
-  const a = next[4].split("."), b = old[4].split(".");
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    if (a[i] === b[i]) continue;
-    if (a[i] === undefined) return false;
-    if (b[i] === undefined) return true;
-    const an = /^\d+$/.test(a[i]), bn = /^\d+$/.test(b[i]);
-    if (an && bn) return Number(a[i]) > Number(b[i]);
-    if (an !== bn) return !an;
-    return a[i] > b[i];
-  }
-  return false;
-}
 
 function publishedVersion(): Promise<string | undefined> {
   return new Promise((resolve) => {
@@ -49,7 +32,7 @@ function publishedVersion(): Promise<string | undefined> {
         if (bytes > 16384) { response.destroy(); finish(); return; }
         body += chunk;
       });
-      response.on("end", () => { try { const version: unknown = JSON.parse(body).version; finish(typeof version === "string" && semver.test(version) && version.length <= 80 ? version : undefined); } catch { finish(); } });
+      response.on("end", () => { try { const version: unknown = JSON.parse(body).version; finish(typeof version === "string" && isVersion(version) ? version : undefined); } catch { finish(); } });
       response.on("error", () => finish()); response.on("aborted", () => finish());
     });
     req.on("error", () => finish());

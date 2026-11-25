@@ -11,7 +11,7 @@ import { formatStatus, readStatus } from "../../status.js";
 import { ModelWaitError, runModel, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
 import { recordChecks } from "../../judge/native.js";
 import { runJudgeSync } from "../../judge/sync.js";
-import { hash } from "../../judge/evidence.js";
+import { hash, position } from "../../judge/evidence.js";
 import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
 import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
 import { note } from "../../knowledge/store.js";
@@ -23,6 +23,8 @@ import { replyContexts } from "../transcript.js";
 import { readContinuityItems } from "../continuity.js";
 import { readStageOneBatch } from "../stage-one.js";
 import { verbatimNote } from "../verdicts.js";
+import { sessionNoteHistory, sessionNoteQuotes } from "../session-notes.js";
+import { observeLifetimeGit } from "../lifetime-git.js";
 
 // Extraction tests exercise the staging seam; consolidation has its own integration fixtures.
 vi.mock("../consolidation.js", () => ({ consolidateNext: async () => undefined }));
@@ -634,6 +636,54 @@ describe("finished-session verdicts", () => {
     stageModel(messages => messages.map(({ id, text }) => ({ id, verdict: "next-session", quote: text })));
     await run(queue());
     expect(readContinuityItems(writer, project, root, "work")?.items).toMatchObject([{ text: typed }]);
+  });
+
+  it("retires a captured branch note after merge and deletion without another model call", async () => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe" }).trim();
+    const commit = (message: string) => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", message);
+    git("init", "-q", "-b", "main");
+    commit("initial");
+    git("switch", "-qc", "work");
+    commit("note source");
+    const typed = "On this branch, keep uploads local.";
+    add("ended", typed, { finished: true });
+    const path = join(writer.location.directory, "filter-sessions", shortHash(project + "\0ended") + ".json");
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), branch: "work", head: git("rev-parse", "HEAD"), position_at: old }));
+    stageModel(messages => messages.map(({ id, text }) => ({ id, verdict: "candidate", quote: text, kind: "instruction",
+      lasts: "branch", marker: "On this branch", reason: null })));
+    const id = queue();
+    await run(id);
+    expect((await run(id)).state).toBe("done");
+    const [stored] = sessionNoteHistory(writer, project);
+    expect(stored?.scope).toMatchObject({ kind: "branch", origin: { name: "work", unmerged_head: git("rev-parse", "HEAD") } });
+    if (stored?.scope.kind !== "branch") throw new Error("Expected a branch note");
+    const facts = await observeLifetimeGit(root, [stored.scope.origin], false);
+    expect(sessionNoteQuotes(writer, project, await position(root), now, facts)).toMatchObject([{ lasts: "branch" }]);
+    git("switch", "-q", "main");
+    git("merge", "--ff-only", "work");
+    git("branch", "-d", "work");
+    const next = queue();
+    await run(next);
+    expect((await run(next)).state).toBe("done");
+    expect(sessionNoteHistory(writer, project)).toMatchObject([{ quote: typed, retired: { reason: "branch-merged" } }]);
+    expect(sessionNoteQuotes(writer, project, await position(root), now, { branches: new Map() })).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rolls back the verdict and cursor if the note history write fails", async () => {
+    const typed = "In this repo, keep uploads local.", first = add("ended", typed, { finished: true });
+    stageModel(messages => messages.map(({ id, text }) => ({ id, verdict: "candidate", quote: text, kind: "instruction",
+      lasts: "repo", marker: "In this repo", reason: null })));
+    writer.db.exec("CREATE TEMP TRIGGER fail_history BEFORE INSERT ON settings WHEN NEW.key LIKE 'learning.session-note.%' BEGIN SELECT RAISE(ABORT, 'fixture'); END");
+    const id = queue();
+    expect((await run(id)).results).toBe(0);
+    expect(stageBatch(first)).toBeUndefined();
+    expect(acknowledged(writer, project, "ended")).toBe(0);
+    expect(sessionNoteHistory(writer, project)).toEqual([]);
+    writer.db.exec("DROP TRIGGER fail_history");
+    expect((await run(id)).results).toBe(1);
+    expect(sessionNoteHistory(writer, project)).toHaveLength(1);
   });
 
   it("discards in-flight verdicts if typed-learning consent changes", async () => {

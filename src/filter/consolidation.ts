@@ -15,12 +15,14 @@ import { privacyHolds, repoVocabulary } from "./privacy.js";
 import { backgroundEnvironment } from "./environment.js";
 import { stageContinuity, CONTINUITY_TTL } from "./continuity.js";
 import { noteAttempt } from "./note-attempts.js";
+import { SEEN_ONCE_MS } from "./session-notes.js";
 
 const Group = z.object({ members: z.array(z.number().int().nonnegative()).min(1).max(128), target: z.string().max(128).nullable(), relation: z.enum(["duplicate", "correction"]), duplicates: z.array(z.string().max(128)).max(32).optional() }).strict();
 const Plan = z.object({ groups: z.array(Group).max(128) }).strict();
 type Grouping = z.infer<typeof Plan>;
 interface Inventory { id: string; text: string; at: string; kind: string; scope: string[]; }
-interface Observation { candidate: FilterCandidate; sessions: string[]; }
+interface Observation { candidate: FilterCandidate; sessions: string[]; firstSeenAt?: string; }
+const SEEN_KEY = "learning.seen.";
 import { contextSource, learningMetadata as metadata, type SourceRecord } from "./metadata.js";
 import { stagePromotion } from "./publication.js";
 const newId = () => `mx_${randomBytes(12).toString("hex")}`;
@@ -97,18 +99,39 @@ function validatePlan(value: unknown, candidates: FilterCandidate[], inventory: 
   if (seen.size !== candidates.length) throw new Error("Consolidation omitted a candidate.");
   return plan;
 }
-function observed(writer: RecordWriter, project: string): Map<string, Observation> {
-  const rows = writer.db.prepare("SELECT key,value FROM settings WHERE scope=? AND key LIKE 'learning.seen.%' ORDER BY key LIMIT 129").all(project);
+function expireObserved(writer: RecordWriter, project: string, params: FilterParams, job: JobRow, now: number): Map<string, Observation> {
+  const rows = writer.db.prepare("SELECT key,CASE WHEN length(CAST(value AS BLOB))<=65536 THEN value END value FROM settings WHERE scope=? AND key LIKE 'learning.seen.%' ORDER BY key LIMIT 129").all(project);
   if (rows.length > 128) throw new KnowledgeError("STORE_LIMIT", "Seen-once memory needs consolidation before more can be saved.");
   const out = new Map<string, Observation>();
+  const expired: Array<{ key: string; raw: string; observation: Observation }> = [];
+  const Observation = z.object({ candidate: candidateSchema, sessions: z.array(z.string().max(512)).max(128), firstSeenAt: z.string().max(64).optional() }).strict();
   for (const row of rows) {
-    const raw = String(row.value);
-    if (Buffer.byteLength(raw) > 64 << 10) throw new KnowledgeError("STORE_LIMIT", "Seen-once memory exceeds its limit.");
+    if (typeof row.value !== "string") throw new KnowledgeError("STORE_LIMIT", "Seen-once memory exceeds its limit.");
+    const key = String(row.key), raw = row.value;
     try {
-      const parsed = z.object({ candidate: candidateSchema, sessions: z.array(z.string().max(512)).max(128) }).strict().parse(JSON.parse(raw));
-      out.set(String(row.key).slice("learning.seen.".length), parsed);
+      const observation = Observation.parse(JSON.parse(raw));
+      const first = Date.parse(observation.firstSeenAt ?? observation.candidate.source.at);
+      if (!Number.isFinite(first)) throw new Error();
+      if (now - first >= SEEN_ONCE_MS) expired.push({ key, raw, observation });
+      else out.set(key.slice(SEEN_KEY.length), observation);
     } catch { throw new KnowledgeError("INVALID_ENTRY", "Seen-once metadata is invalid; memory was kept."); }
   }
+  if (!expired.length) return out;
+  writer.db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!filterAllowed(writer, project, params)
+      || !writer.db.prepare("SELECT 1 FROM jobs WHERE id=? AND owner=? AND state='running' AND request IS NULL").get(job.id, job.owner))
+      throw new Error("Seen-once retirement lost filter ownership or consent.");
+    const archiveRecord = writer.db.prepare("INSERT OR IGNORE INTO settings(scope,key,value) VALUES(?,?,?)");
+    const remove = writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=? AND value=?");
+    for (const { key, raw, observation } of expired) {
+      const archive = "learning.seen-retired." + hash(JSON.stringify([key, raw])).slice(7);
+      const history = { ...observation, retired: { reason: "seen-once", at: new Date(now).toISOString() } };
+      archiveRecord.run(project, archive, JSON.stringify(history));
+      if (remove.run(project, key, raw).changes !== 1) throw new Error("Seen-once memory changed during retirement.");
+    }
+    writer.db.exec("COMMIT");
+  } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
   return out;
 }
 
@@ -116,6 +139,7 @@ function observed(writer: RecordWriter, project: string): Map<string, Observatio
 export async function consolidateNext(writer: RecordWriter, project: string, params: FilterParams, job: JobRow, deps: FilterDependencies,
   at: Position): Promise<{ summary: string; results: number; tokens: number } | undefined> {
   recoverNotes(writer, project);
+  const seen = expireObserved(writer, project, params, job, deps.clock());
   for (const row of localSettings(writer, project, "learning.pending.", 512 << 10)) {
     let saved;
     try { saved = z.object({ version: z.literal(1), reason: z.string(), candidates: z.array(candidateSchema).max(128) }).strict().parse(JSON.parse(row.value)); }
@@ -149,7 +173,6 @@ export async function consolidateNext(writer: RecordWriter, project: string, par
     return { results: 0, tokens: 0, summary: "Earlier-checkout candidates kept local for review" };
   }
   const before = snapshotNotes(writer, project), active = new Map<string, KnowledgeEntry>();
-  const seen = observed(writer, project);
   for (const [id, raw] of before.files) { const e = parseEntry(raw); if (e.mex.status === "active" && !writer.setting(project, `knowledge.retired.${id}`)) active.set(id, e); }
   const vocabulary = repoVocabulary(params.checkout), holds = candidates.map(c => privacyHolds(c, vocabulary));
   const candidateTerms = terms(candidates.map(c => c.text).join(" "));
@@ -235,7 +258,8 @@ Input follows as JSON:\n${JSON.stringify({ candidates, notes: inventory })}`;
       const key = seenId ?? claimHash(c.text).slice(7);
       if (!seenKeys.has(key) && seenKeys.size >= 128) { group.members.forEach(i => deferred.add(i)); continue; }
       seenKeys.add(key);
-      writes.push(() => set(writer, project, `learning.seen.${key}`, { candidate: c, sessions: [...sessions] }));
+      const firstSeenAt = observation?.firstSeenAt ?? observation?.candidate.source.at ?? c.source.at;
+      writes.push(() => set(writer, project, SEEN_KEY + key, { candidate: c, sessions: [...sessions], firstSeenAt }));
       continue;
     }
     const id = target ? target.mex.id : newId(), day = date(c);

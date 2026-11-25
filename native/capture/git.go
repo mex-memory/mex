@@ -347,6 +347,10 @@ func defaultBranch(checkout string) (ref, name string) {
 // branch. A branch with no commits of its own counts as not merged.
 func Merged(checkout, branch, head string) bool {
 	ref, name := defaultBranch(checkout)
+	return mergedInto(checkout, branch, head, ref, name)
+}
+
+func mergedInto(checkout, branch, head, ref, name string) bool {
 	if ref == "" || name == branch || head == "" {
 		return false
 	}
@@ -358,6 +362,12 @@ func Merged(checkout, branch, head string) bool {
 			return false
 		}
 	}
+	merged, _ := ancestor(checkout, head, ref)
+	return merged
+}
+
+func ancestor(checkout, head, ref string) (isAncestor, known bool) {
 	_, err := git(checkout, "merge-base", "--is-ancestor", head, ref)
-	return err == nil
+	var exit *exec.ExitError
+	return err == nil, err == nil || errors.As(err, &exit) && exit.ExitCode() == 1
 }

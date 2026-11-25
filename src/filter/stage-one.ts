@@ -8,7 +8,8 @@ import { sessionLearningOn } from "../knowledge/session-learning.js";
 import { runModel } from "../model-runner/index.js";
 import { acknowledged, ackKey, advanceConsumed, FILTER_LIMITS, filterAllowed, stageOneInput, statementsOn, type FilterParams, type ScanWindow } from "./input.js";
 import { stageContinuity } from "./continuity.js";
-import { parseStageOne, StageOneVerdict, stageOnePrompt, verbatimNote, VerdictCoverage } from "./verdicts.js";
+import { parseStageOne, repeatsDeliveredNote, StageOneVerdict, stageOnePrompt, verbatimNote, VerdictCoverage } from "./verdicts.js";
+import { planSessionNotes, saveSessionNotes } from "./session-notes.js";
 import type { ReplyContextMode, TranscriptIssue } from "./transcript.js";
 
 const ROWS = z.array(z.number().int().positive().safe()).max(FILTER_LIMITS.messages);
@@ -65,13 +66,20 @@ export function stageOneRoom(writer: RecordWriter, project: string): boolean {
   return Number(current.n) < BATCH_LIMIT && Number(current.bytes) + Number(pending.n) * BATCH_BYTES <= STORE_BYTES - BATCH_BYTES;
 }
 
-function saveBatch(writer: RecordWriter, project: string, checkout: string, job: JobRow, batch: Batch, commit: () => void): void {
-  const data = JSON.stringify(Batch.parse(batch));
-  if (Buffer.byteLength(data) > BATCH_BYTES) throw new Error("The session verdict batch exceeds its result limit.");
+function ownedWrite(writer: RecordWriter, job: JobRow, commit: () => void): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {
     const owned = writer.db.prepare("SELECT 1 FROM jobs WHERE id=? AND owner=? AND state='running' AND request IS NULL").get(job.id, job.owner);
     if (!owned) throw new Error("Filter job ownership changed; session verdicts discarded.");
+    commit();
+    writer.db.exec("COMMIT");
+  } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
+}
+
+function saveBatch(writer: RecordWriter, project: string, checkout: string, job: JobRow, batch: Batch, commit: () => void): void {
+  const data = JSON.stringify(Batch.parse(batch));
+  if (Buffer.byteLength(data) > BATCH_BYTES) throw new Error("The session verdict batch exceeds its result limit.");
+  ownedWrite(writer, job, () => {
     const put = writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
     put.run(project, batchKey(checkout, batch.rows[0]), data);
     if (batch.retry.length) put.run(project, retryKey(checkout), String(batch.rows[0]));
@@ -82,8 +90,7 @@ function saveBatch(writer: RecordWriter, project: string, checkout: string, job:
       advanceConsumed(writer, project);
     }
     commit();
-    writer.db.exec("COMMIT");
-  } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
+  });
 }
 
 interface StageOneResult {
@@ -102,7 +109,13 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
   const selected = stageOneInput(writer, project, checkout, scan, mode, retry);
   if (!selected) {
     if (scan.more) return { after: scan.through!, summary: "Scanning for finished sessions; active sessions remain unread" };
-    return;
+    const changes = await planSessionNotes(writer, project, checkout, deps.clock());
+    if (!changes.size || !samePosition(at, await position(checkout)) || !allowed()) return;
+    ownedWrite(writer, job, () => {
+      if (!allowed()) throw new Error("Session note consent changed.");
+      saveSessionNotes(writer, changes);
+    });
+    return { after, summary: "Updated lifetimes for " + changes.size + " private session notes" };
   }
   if (!pending && !stageOneRoom(writer, project)) return { after, summary: STAGE_ONE_WAIT, wait: STAGE_ONE_WAIT };
   const { input, session } = selected;
@@ -112,9 +125,15 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
   const response = prompt ? await deps.model({ agent: params.agent, role: "cheap", projectRoot: checkout, purpose: "filter", prompt,
     automatic: { estimate: { input: Buffer.byteLength(prompt), cache_read: 0, cache_write: 0, output: 8192 } } }) : undefined;
   const parsed = parseStageOne(response?.text ?? '{"verdicts":[]}', input);
+  const discarded = { after, summary: "Session verdicts discarded because the inputs or consent changed" };
+  if (!allowed()) return discarded;
+  const notes = parsed.verdicts.filter(verdict => verdict.verdict === "candidate")
+    .filter(verdict => !repeatsDeliveredNote(verdict.quote.text, input.delivered_notes));
+  const now = deps.clock();
+  const changes = await planSessionNotes(writer, project, checkout, now, { session, sourcePosition: selected.sourcePosition, verdicts: notes });
   if (!samePosition(at, await position(checkout)) || !allowed()
     || JSON.stringify(stageOneInput(writer, project, checkout, { after }, mode, retry ?? { session })) !== JSON.stringify(selected))
-    return { after, summary: "Session verdicts discarded because the inputs or consent changed" };
+    return discarded;
 
   const verdicts = [...(pending?.verdicts ?? []), ...parsed.verdicts].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
   const resolved = new Set(parsed.verdicts.map(verdict => verdict.id));
@@ -137,17 +156,18 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
   let carried = 0;
   saveBatch(writer, project, checkout, job, batch, () => {
     if (!allowed()) throw new Error("Session verdicts discarded because consent changed.");
+    saveSessionNotes(writer, changes);
     if (continuations.length && samePosition(batch.position, at))
-      carried = stageContinuity(writer, project, checkout, at, continuations, deps.clock()).size;
+      carried = stageContinuity(writer, project, checkout, at, continuations, now).size;
   });
-  const notes = parsed.verdicts.filter(verdict => verbatimNote(verdict)).length;
+  const noteCandidates = notes.filter(verdict => verbatimNote(verdict)).length;
   const tokens = response?.usage;
   const coverage = batch.attempts.at(-1)!.coverage;
   return { after, results: parsed.verdicts.length, tokens: tokens && tokens.input + tokens.output + tokens.cache_write + tokens.cache_read,
     gaps: unresolved.length > 0, contextIssues: scan.contextIssues,
     summary: [
       "Session verdicts batch " + (job.batch + 1) + " saved " + parsed.verdicts.length,
-      notes + " verbatim note candidates",
+      noteCandidates + " verbatim note candidates",
       carried + " continuity items",
       pending ? unresolved.length + " unresolved after retry" : parsed.missing.length + " missing for retry",
       coverage.duplicate + " duplicate IDs, " + coverage.unknown + " unknown IDs, " + coverage.invalid + " invalid rows",
