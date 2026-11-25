@@ -308,7 +308,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           </section>
         )}
         {entryKey ? (
-          <KnowledgeDetailPanel backHref={listHref} item={detail} key={entryKey} narrow={narrow} now={now} titleRef={detailTitle} />
+          <KnowledgeDetailPanel backHref={listHref} item={detail} key={entryKey} knowledge={knowledge} narrow={narrow} now={now} titleRef={detailTitle} />
         ) : items.length > 0 && (
           <div className={styles.detailPlaceholder}><BookOpen aria-hidden="true" /><p>Select an item to read it.</p></div>
         )}

@@ -1,12 +1,15 @@
-import { useId, useState, type ReactNode, type Ref } from "react";
-import { ArrowLeft, ChevronDown, X } from "lucide-react";
+import { useId, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from "react";
+import { ArrowLeft, Check, ChevronDown, Pencil, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
 import { Button } from "../components/primitives/button";
+import { KnowledgeConflictDialog, KnowledgeEditor, type EditConflict, type EditDraft } from "./KnowledgeEditor";
+import { KnowledgeReviewDialog } from "./KnowledgeReviewDialog";
+import { scopePatterns } from "./knowledge-fields";
 import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
 import { KnowledgeStatusLabel } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
-import type { KnowledgeDetail as Detail } from "./types";
+import type { KnowledgeDetail as Detail, KnowledgeEdit, KnowledgePreview, KnowledgeWritePreview } from "./types";
 import styles from "./knowledge.module.css";
 import shared from "./machine.module.css";
 
@@ -101,15 +104,95 @@ function DetailSection({ title, narrow, children }: { title: string; narrow: boo
   return <div className={styles.detailSection}><Heading>{title}</Heading>{children}</div>;
 }
 
-export function KnowledgeDetailPanel({ item, backHref, titleRef, narrow, now }: {
+function EditAction({ hint, onEdit, buttonRef }: { hint: boolean; onEdit: () => void; buttonRef: Ref<HTMLButtonElement> }) {
+  const reason = useId();
+  return (
+    <div className={styles.editAction}>
+      <Button aria-describedby={hint ? reason : undefined} disabled={hint} onClick={onEdit} ref={buttonRef} size="sm" type="button" variant="outline">
+        <Pencil aria-hidden="true" /> Edit
+      </Button>
+      {hint && <p id={reason}>Edit this hint in your agent’s memory.</p>}
+    </div>
+  );
+}
+
+type EditReview = { type: "preview"; preview: KnowledgeWritePreview; request: KnowledgeEdit } | EditConflict;
+
+export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narrow, now }: {
   item?: Detail;
   backHref: string;
   titleRef: Ref<HTMLHeadingElement>;
+  knowledge: KnowledgePreview;
   narrow: boolean;
   now: Date;
 }) {
   const Heading = narrow ? "h1" : "h2";
   const titleId = useId();
+  const [draft, setDraft] = useState<EditDraft | null>(null);
+  const [review, setReview] = useState<EditReview | null>(null);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const editAtTop = useRef(false);
+  const restoreEdit = useRef(false);
+  const topEdit = useRef<HTMLButtonElement>(null);
+  const bottomEdit = useRef<HTMLButtonElement>(null);
+  const save = useRef<HTMLButtonElement>(null);
+  const hint = item?.audience === "hint";
+
+  useLayoutEffect(() => {
+    if (draft || !restoreEdit.current) return;
+    restoreEdit.current = false;
+    (editAtTop.current && topEdit.current ? topEdit.current : bottomEdit.current)?.focus();
+  }, [draft]);
+
+  function beginEdit(atTop: boolean) {
+    if (!item) return;
+    editAtTop.current = atTop;
+    const { key, revision, oneLine, text, kind, scope } = item;
+    setDraft({ key, expectedRevision: revision, oneLine, text, kind, scope });
+    setError("");
+    setNotice("");
+  }
+
+  function closeEditor(message = "") {
+    restoreEdit.current = true;
+    setReview(null);
+    setDraft(null);
+    setNotice(message);
+  }
+
+  function submitEdit(request: KnowledgeEdit) {
+    setError("");
+    try {
+      const result = knowledge.editNote(request);
+      if (result.type === "ok") {
+        closeEditor("Saved");
+      } else {
+        setReview(result.type === "preview" ? { type: "preview", preview: result, request } : result);
+      }
+    } catch {
+      setReview(null);
+      setError("Couldn’t save this note. Try again.");
+    }
+  }
+
+  function saveDraft() {
+    if (!draft) return;
+    const oneLine = draft.oneLine.trim();
+    const text = draft.text.trim();
+    if (!oneLine || !text) {
+      setError("Enter a summary and note text.");
+      return;
+    }
+    submitEdit({ ...draft, oneLine, text, scope: scopePatterns(draft.scope) });
+  }
+
+  function editAgain() {
+    if (review?.type !== "conflict" || !draft) return;
+    setDraft({ ...draft, expectedRevision: review.current.revision });
+    setReview(null);
+  }
+
   return (
     <div className={styles.detailColumn}>
       <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
@@ -131,7 +214,14 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, narrow, now }: 
               </ul>
             )}
           </header>
-          {item ? (
+          {narrow && item && !draft && (
+            <div className={styles.mobileActions}>
+              <EditAction buttonRef={topEdit} hint={hint} onEdit={() => beginEdit(true)} />
+            </div>
+          )}
+          {draft ? (
+            <KnowledgeEditor draft={draft} error={error} onCancel={() => closeEditor()} onChange={setDraft} onSave={saveDraft} saveRef={save} />
+          ) : item ? (
             <>
               <div className={styles.detailText}>
                 {item.text.split(/\r?\n[\t ]*\r?\n/u).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
@@ -150,7 +240,32 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, narrow, now }: 
             <p className={styles.detailText}>This item may have been forgotten or moved to another repo.</p>
           )}
         </div>
+        {item && !draft && (
+          <footer className={styles.detailFooter}>
+            <EditAction buttonRef={bottomEdit} hint={hint} onEdit={() => beginEdit(false)} />
+            <span className={styles.saved} role="status">{notice && <><Check aria-hidden="true" />{notice}</>}</span>
+          </footer>
+        )}
       </section>
+      <KnowledgeReviewDialog
+        finalFocus={() => save.current ?? false}
+        onCancel={() => setReview(null)}
+        onConfirm={() => {
+          if (review?.type === "preview") submitEdit({ ...review.request, confirmRevision: review.preview.revision });
+        }}
+        preview={review?.type === "preview" ? review.preview : null}
+      />
+      <KnowledgeConflictDialog
+        conflict={review?.type === "conflict" ? review : null}
+        finalFocus={() => save.current ?? false}
+        onCurrent={() => closeEditor("Using current note")}
+        onEditAgain={editAgain}
+        onKeep={() => {
+          if (review?.type !== "conflict") return;
+          const { confirmRevision: _previewRevision, ...attempted } = review.attempted;
+          submitEdit({ ...attempted, expectedRevision: review.current.revision });
+        }}
+      />
     </div>
   );
 }

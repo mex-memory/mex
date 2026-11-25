@@ -616,6 +616,56 @@ main:has(.page) {
   padding-inline: 0;
 }
 
+.detailFooter,
+.mobileActions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.detailFooter {
+  padding: 10px 18px;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+}
+
+.mobileActions {
+  margin-top: 14px;
+}
+
+.editAction {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.editAction p,
+.saved {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--success);
+  font-weight: 500;
+}
+
+.saved:empty {
+  position: absolute;
+}
+
+.saved svg {
+  width: 13px;
+  height: 13px;
+}
+
 @media (min-width: 1024px) {
   .workspace {
     grid-template-columns: minmax(0, 55fr) minmax(0, 45fr);
@@ -686,5 +736,9 @@ main:has(.page) {
 
   .detailScroll {
     padding: 16px;
+  }
+
+  .detailFooter {
+    padding-inline: 16px;
   }
 }
