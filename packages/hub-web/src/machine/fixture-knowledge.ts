@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
+import { useFixtureKnowledgeTools } from "./fixture-knowledge-tools";
 import type { FixtureVariant, KnowledgeFixture } from "./fixtures";
 import type {
   ForgottenItem, KnowledgeCreate, KnowledgeDetail, KnowledgeEdit, KnowledgeEditResult, KnowledgeFilters,
@@ -139,6 +140,7 @@ export interface FixtureKnowledge extends KnowledgePreview {
 }
 
 export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonly MachineProject[], variant: FixtureVariant): FixtureKnowledge {
+  const tools = useFixtureKnowledgeTools(variant);
   const [fixture, setFixture] = useState(initial);
   const current = useRef(initial);
   const sequence = useRef(1);
@@ -249,6 +251,7 @@ export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonl
   }
 
   return {
+    tools,
     getLanding: (scopeId) => landingOf(fixture, scopeId),
     getPage: (filters, cursor) => pageOf(fixture, filters, cursor),
     getDetail: (key) => fixture.items.find((item) => item.key === key),

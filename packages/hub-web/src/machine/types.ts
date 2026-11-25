@@ -10,6 +10,9 @@ import type {
   MachineJobActionRequestSchema,
   MachineJobSchema,
   MachineKnowledgeAudienceSchema,
+  MachineKnowledgeBrief,
+  MachineKnowledgeBriefRequest,
+  MachineKnowledgeCheckout,
   MachineKnowledgeCreateRequestSchema,
   MachineKnowledgeDetailSchema,
   MachineKnowledgeEditRequestSchema,
@@ -18,6 +21,7 @@ import type {
   MachineKnowledgeKindSchema,
   MachineKnowledgeLandingSchema,
   MachineKnowledgePageSchema,
+  MachineKnowledgeRules,
   MachineKnowledgeStatusCountsSchema,
   MachineKnowledgeStatusSchema,
   MachineKnowledgeSummarySchema,
@@ -95,6 +99,7 @@ export interface KnowledgeActions {
 }
 
 export interface KnowledgePreview {
+  tools: KnowledgeToolsPreview;
   getLanding: (scopeId?: string) => KnowledgeLandingData;
   getPage: (filters: KnowledgeFilters, cursor?: string) => KnowledgePageData;
   getDetail: (key: string) => KnowledgeDetail | undefined;
@@ -102,6 +107,12 @@ export interface KnowledgePreview {
   createNote: (request: KnowledgeCreate) => KnowledgeCreateResult;
   editNote: (request: KnowledgeEdit) => KnowledgeEditResult;
   forgetItem: (request: KnowledgeForget) => KnowledgeForgetResult;
+}
+
+export interface KnowledgeToolsPreview {
+  readRules: (scope: MachineKnowledgeCheckout) => MachineKnowledgeRules;
+  refreshRules: (scope: MachineKnowledgeCheckout) => Promise<void>;
+  previewBrief: (request: MachineKnowledgeBriefRequest, signal: AbortSignal) => Promise<MachineKnowledgeBrief>;
 }
 
 export interface HubPreview {
