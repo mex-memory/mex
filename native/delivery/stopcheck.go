@@ -33,7 +33,7 @@ import (
 
 const (
 	// stopJournalRows bounds the journal rows one stop reads. A longer turn
-	// is checked on its first rows only.
+	// is read in parts: the rows past the bound are read at the next stop.
 	stopJournalRows = 2048
 	// stopMaxObligations bounds the CI obligations one reason names.
 	stopMaxObligations = 4
