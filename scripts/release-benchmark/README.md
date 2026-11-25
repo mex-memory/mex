@@ -41,8 +41,9 @@ validate. Graph and Wiki database ratios continue to use the frozen fixtures
 and their existing limits.
 
 Cold readiness, idle, Home heap, session, and projects retain their previous
-limits. Home, Jobs, Knowledge, and Review API latency have provisional caps
-per fixture size. The Review queue uses the Knowledge page caps. Review detail
+limits. Home, Jobs, Knowledge, Review, Agents, and Settings API latency have
+provisional caps per fixture size. The four Agents and Settings reads use
+the Review queue caps and are timed after the snapshots are ready. The Review queue uses the Knowledge page caps. Review detail
 has twice that allowance for the selected checkout scan. Repo heap uses the smallest previous route heap limit. Those limits enforce
 on the pinned runner, where calibration uses `ceil(measured p95 * 1.15)`.
 Local macOS or Windows timing and heap samples are for characterization.
