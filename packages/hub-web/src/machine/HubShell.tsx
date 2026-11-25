@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
-import { FolderGit2, House, ListTodo, Menu, Terminal, X } from "lucide-react";
+import { BookOpen, FolderGit2, House, ListTodo, Menu, Terminal, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
@@ -15,10 +15,13 @@ import styles from "./machine.module.css";
 
 const HomePage = lazy(() => import("./HomePage"));
 const JobsPage = lazy(() => import("./JobsPage"));
+const KnowledgePage = lazy(() => import("./KnowledgePage"));
 const navPages = [
   { page: "home", label: "Home", icon: House },
+  { page: "knowledge", label: "Knowledge", icon: BookOpen },
   { page: "jobs", label: "Jobs", icon: ListTodo },
 ] as const;
+type NavPage = typeof navPages[number]["page"];
 
 interface ShellProps {
   session: MachineSession;
@@ -84,14 +87,27 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const projectId = useMatch("/repos/:projectId/*")?.params.projectId;
   const machineJobs = useMatch("/jobs");
   const repoJobs = useMatch("/repos/:projectId/jobs");
+  const machineKnowledge = useMatch("/knowledge/*");
+  const repoKnowledge = useMatch("/repos/:projectId/knowledge/*");
+  const knowledgeRoute = Boolean(machineKnowledge || repoKnowledge);
   const project = projects?.find(({ id }) => id === projectId);
   const navigate = useNavigate();
   const terminal = session.mode === "terminal";
 
-  function pagePath(page: "home" | "jobs", id?: string) {
+  function pagePath(page: NavPage, id?: string) {
     const repo = id ? `/repos/${encodeURIComponent(id)}` : "";
-    const path = page === "jobs" ? `${repo}/jobs` : repo || "/";
-    return path + (fixture ? search : "");
+    const path = page === "home" ? repo || "/" : `${repo}/${page}`;
+    const currentSearch = new URLSearchParams(search);
+    const params = new URLSearchParams();
+    const variant = fixture && currentSearch.get("fixture");
+    if (variant) params.set("fixture", variant);
+    if (page === "knowledge" && knowledgeRoute) {
+      for (const name of ["q", "kind", "audience", "status", "repo"]) {
+        const value = currentSearch.get(name);
+        if (value && (name !== "repo" || !id)) params.set(name, value);
+      }
+    }
+    return params.size ? `${path}?${params}` : path;
   }
 
   const homeHref = pagePath("home");
@@ -102,8 +118,8 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
     if (previousPath.current === pathname) return;
     previousPath.current = pathname;
     setMenuOpen(false);
-    main.current?.focus();
-  }, [pathname]);
+    if (!knowledgeRoute) main.current?.focus();
+  }, [knowledgeRoute, pathname]);
 
   function closeMenu() {
     if (!menuOpen) return;
@@ -141,7 +157,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                 <li key={page}>
                   <NavLink
                     className={({ isActive }) => cn(shell.navLink, isActive && shell.navLinkActive)}
-                    end
+                    end={page !== "knowledge"}
                     onClick={closeMenu}
                     to={pagePath(page, projectId)}
                   >
@@ -166,7 +182,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
           aria-label="Repo switcher"
           className={styles.switcher}
           disabled={projects === undefined}
-          onChange={(event) => navigate(pagePath(machineJobs || repoJobs ? "jobs" : "home", event.target.value))}
+          onChange={(event) => navigate(pagePath(knowledgeRoute ? "knowledge" : machineJobs || repoJobs ? "jobs" : "home", event.target.value))}
           value={project?.id ?? ""}
         >
           <NativeSelectOption value="">All repos</NativeSelectOption>
@@ -184,7 +200,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
             </div>
           )}
           {projects ? (
-            <Suspense fallback={<p className={styles.pageState} role="status">{machineJobs || repoJobs ? "Loading jobs…" : "Loading Home…"}</p>}>
+            <Suspense fallback={<p className={styles.pageState} role="status">{knowledgeRoute ? "Loading Knowledge…" : machineJobs || repoJobs ? "Loading jobs…" : "Loading Home…"}</p>}>
               <Routes>
                 <Route
                   element={(
@@ -198,6 +214,16 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                     />
                   )}
                   path="/"
+                />
+                <Route
+                  element={<KnowledgePage key="all" knowledge={data.knowledge} projects={projects} />}
+                  path="/knowledge/:entryKey?"
+                />
+                <Route
+                  element={project ? (
+                    <KnowledgePage key={project.id} knowledge={data.knowledge} project={project} projects={projects} />
+                  ) : unknownRepo}
+                  path="/repos/:projectId/knowledge/:entryKey?"
                 />
                 <Route
                   element={project ? (

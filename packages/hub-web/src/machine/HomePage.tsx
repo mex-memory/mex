@@ -6,7 +6,7 @@ import { Button } from "../components/primitives/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/primitives/tooltip";
 import { ActivityChart, ActivityLegend, KnowledgeChart, KnowledgeLegend, SessionsSparkline, UsageMeter } from "./HomeCharts";
 import { JobProgress, jobProgressPercent, JobStatus } from "./JobStatus";
-import { fullDateTime } from "./local-time";
+import { fullDateTime, relativeTime } from "./local-time";
 import { RepoCheckouts } from "./pages";
 import type { HomeOverview, HubJob, KnowledgeKind, KnowledgeSummary } from "./types";
 import { CopyButton, PageRequestState, type PageLoad } from "./ui";
@@ -15,12 +15,11 @@ import shared from "./machine.module.css";
 
 const ruleLimit = 4;
 const sessionLimit = 3;
-const kinds = ["rule", "recipe", "decision", "pitfall", "procedure", "fact"] as const satisfies readonly KnowledgeKind[];
+const kinds = ["rule", "recipe", "decision", "pitfall", "procedure", "fact", "hint"] as const satisfies readonly KnowledgeKind[];
 const emptyKnowledge: KnowledgeSummary = {
   total: 0, upToDate: 0, codeChanged: 0, outOfDate: 0, notChecked: 0, onlyYou: 0, team: 0, byKind: {},
 };
 const number = new Intl.NumberFormat();
-const shortDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
 type RepoNames = ReadonlyMap<string, string>;
 type Rule = HomeOverview["needs"][number];
@@ -61,8 +60,10 @@ function StatTile({ label, value, note, href, action, children }: {
   return (
     <div className={styles.tile}>
       <div className={styles.tileHeading}>
-        {href ? (
+        {href?.startsWith("#") ? (
           <a className={styles.tileAction} href={href}>{label}<ArrowUpRight aria-hidden="true" /></a>
+        ) : href ? (
+          <Link className={styles.tileAction} to={href}>{label}<ArrowUpRight aria-hidden="true" /></Link>
         ) : <span>{label}</span>}
         {action}
       </div>
@@ -71,17 +72,6 @@ function StatTile({ label, value, note, href, action, children }: {
       <div className={styles.tileVisual}>{children}</div>
     </div>
   );
-}
-
-function relativeTime(at: Date, now: Date) {
-  const minutes = Math.floor((now.getTime() - at.getTime()) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} h ago`;
-
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  return at.toDateString() === yesterday.toDateString() ? "yesterday" : shortDate.format(at);
 }
 
 function waitingAge(at: string, now: Date) {
@@ -238,11 +228,12 @@ function sumKnowledge(repos: readonly KnowledgeSummary[]) {
   }), emptyKnowledge);
 }
 
-function Knowledge({ summary, repos, scoped, legendId, pending }: {
+function Knowledge({ summary, repos, scoped, legendId, href, pending }: {
   summary: KnowledgeSummary;
   repos: readonly { label: string; counts: KnowledgeSummary; total: number }[];
   scoped: boolean;
   legendId: string;
+  href: string;
   pending: boolean;
 }) {
   const rows = scoped ? kinds.flatMap((kind) => {
@@ -253,11 +244,16 @@ function Knowledge({ summary, repos, scoped, legendId, pending }: {
   }) : repos;
 
   return (
-    <HomeCard id="knowledge" layout={styles.knowledgeCard} title="What MEX knows">
+    <HomeCard
+      extra={<Link className={shared.textLink} to={href}>Open Knowledge <ArrowRight aria-hidden="true" /></Link>}
+      id="knowledge"
+      layout={styles.knowledgeCard}
+      title="What MEX knows"
+    >
       {pending ? <p className={styles.quietState}>—</p> : (
         <>
           {summary.total > 0 && <KnowledgeLegend counts={summary} id={legendId} />}
-          <KnowledgeChart caption={scoped ? "Knowledge by kind" : "Knowledge by repo"} legendId={legendId} rows={rows} summary={summary} />
+          <KnowledgeChart caption={scoped ? "Knowledge by kind" : "Knowledge by repo"} href={href} legendId={legendId} rows={rows} summary={summary} />
           {summary.total > 0 && (
             <p className={styles.ownership}>{number.format(summary.onlyYou)} only you · {number.format(summary.team)} your team</p>
           )}
@@ -353,6 +349,7 @@ interface HomePageProps {
 export function HomePage({ projects, project, overview, jobs, jobsHref, load, jobsLoad }: HomePageProps) {
   const legendId = useId();
   const location = useLocation();
+  const knowledgeHref = `${project ? `/repos/${encodeURIComponent(project.id)}` : ""}/knowledge${location.search}`;
   const checkouts = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (location.hash === "#checkouts") {
@@ -442,12 +439,12 @@ export function HomePage({ projects, project, overview, jobs, jobsHref, load, jo
               <SessionsSparkline days={days} total={sessionCount} />
             </StatTile>
             <StatTile
-              href="#knowledge"
+              href={knowledgeHref}
               label="What MEX knows"
               note={waitingForSnapshot ? undefined : `${number.format(knowledge.upToDate)} up to date · ${number.format(needsLook)} need a look`}
               value={waitingForSnapshot ? "—" : knowledge.total}
             >
-              {!waitingForSnapshot && <KnowledgeChart caption="Knowledge status totals" compact legendId={legendId} rows={[{ label: scope, counts: knowledge, total: knowledge.total }]} summary={knowledge} />}
+              {!waitingForSnapshot && <KnowledgeChart caption="Knowledge status totals" compact href={knowledgeHref} legendId={legendId} rows={[{ label: scope, counts: knowledge, total: knowledge.total }]} summary={knowledge} />}
             </StatTile>
             <WeekUsage scoped={Boolean(project)} week={overview.week} />
           </>
@@ -460,7 +457,7 @@ export function HomePage({ projects, project, overview, jobs, jobsHref, load, jo
         )}
         {overview && (
           <>
-            <Knowledge summary={knowledge} repos={repos} scoped={Boolean(project)} legendId={legendId} pending={waitingForSnapshot} />
+            <Knowledge summary={knowledge} repos={repos} scoped={Boolean(project)} legendId={legendId} href={knowledgeHref} pending={waitingForSnapshot} />
             <Jobs jobs={scopedJobs} load={jobsLoad} repoNames={repoNames} href={jobsHref} />
           </>
         )}
