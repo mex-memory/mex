@@ -14,6 +14,7 @@ import { filterAllowed, FILTER_LIMITS, type FilterParams } from "./input.js";
 import { privacyHolds, repoVocabulary } from "./privacy.js";
 import { backgroundEnvironment } from "./environment.js";
 import { stageContinuity, CONTINUITY_TTL } from "./continuity.js";
+import { noteAttempt } from "./note-attempts.js";
 
 const Group = z.object({ members: z.array(z.number().int().nonnegative()).min(1).max(128), target: z.string().max(128).nullable(), relation: z.enum(["duplicate", "correction"]), duplicates: z.array(z.string().max(128)).max(32).optional() }).strict();
 const Plan = z.object({ groups: z.array(Group).max(128) }).strict();
@@ -140,7 +141,9 @@ export async function consolidateNext(writer: RecordWriter, project: string, par
   });
   if (!pending) return undefined;
   const batch = readFilterBatch(writer, project, pending)!, forgotten = retiredClaimHashes(writer, project);
-  const candidates = batch.candidates!.filter(c => c.source.note_id || !forgotten.has(claimHash(c.text)));
+  // Batches prepared by earlier versions can contain an unchecked explicit note.
+  const unchecked = new Set(batch.candidates!.flatMap(c => c.source.note_id && !c.checks.length ? [c.source.note_id] : []));
+  const candidates = batch.candidates!.filter(c => c.source.note_id ? !unchecked.has(c.source.note_id) : !forgotten.has(claimHash(c.text)));
   if (!samePosition(batch.position, at)) {
     holdBatch(writer, project, pending, candidates, job, "checkout-changed");
     return { results: 0, tokens: 0, summary: "Earlier-checkout candidates kept local for review" };
@@ -150,7 +153,9 @@ export async function consolidateNext(writer: RecordWriter, project: string, par
   for (const [id, raw] of before.files) { const e = parseEntry(raw); if (e.mex.status === "active" && !writer.setting(project, `knowledge.retired.${id}`)) active.set(id, e); }
   const vocabulary = repoVocabulary(params.checkout), holds = candidates.map(c => privacyHolds(c, vocabulary));
   const candidateTerms = terms(candidates.map(c => c.text).join(" "));
-  const inventory: Inventory[] = [...active].map(([id, e]) => ({ id, text: e.text, kind: e.mex.kind, scope: e.mex.scope, at: metadata(writer, project, id).at ?? e.mex.created }))
+  // Other candidates may still use the delivery history, but cannot rewrite a note awaiting a valid filter result.
+  const inventory: Inventory[] = [...active].filter(([id, entry]) => !unchecked.has(id) && (entry.mex.checks.length || !noteAttempt(writer, project, id, hash(before.files.get(id)!))))
+    .map(([id, e]) => ({ id, text: e.text, kind: e.mex.kind, scope: e.mex.scope, at: metadata(writer, project, id).at ?? e.mex.created }))
     .concat([...seen].map(([id, observation]) => ({ id: `seen:${id}`, text: observation.candidate.text, kind: observation.candidate.kind, scope: observation.candidate.scope, at: observation.candidate.source.at })));
   const score = (n: Inventory) => [...terms(n.text)].filter(t => candidateTerms.has(t)).length;
   inventory.sort((a, b) => Number(candidates.some(c => c.source.note_id === b.id)) - Number(candidates.some(c => c.source.note_id === a.id)) || score(b) - score(a) || a.id.localeCompare(b.id));

@@ -10,6 +10,8 @@ import { judgeCandidates } from "./job.js";
 import { evaluate } from "./native.js";
 import { pendingJudgeRequest, type JudgeParams } from "./pending.js";
 import { sessionWorkEnabled } from "./session.js";
+import { filterAllowed } from "../filter/input.js";
+import { releaseNoteAttempts } from "../filter/note-attempts.js";
 
 interface SyncDependencies {
   available?: typeof isCliAvailable;
@@ -92,6 +94,17 @@ export async function runJudgeSync(options: KnowledgeOptions & { dryRun?: boolea
     if (checkout?.path !== project.root || checkout.project_id !== project.projectId) throw new Error("Checkout registration changed. Run `mex sync` again.");
     const self = ownerId("foreground");
     recoverInterruptedJobs(writer, self);
+    if (selectedAgent) {
+      const filter = { checkout: project.root, agent: selectedAgent, sessionId: params.sessionId };
+      if (filterAllowed(writer, project.projectId, filter)) {
+        const ready = releaseNoteAttempts(writer, project.projectId);
+        if (ready) {
+          queueJob(writer, { kind: "filter", projectId: project.projectId, params: filter });
+          write(`${ready} explicit ${ready === 1 ? "note is" : "notes are"} ready for the memory filter to retry.`);
+          try { ensureBackground({ home: writer.location.home, cache: options.cache }); } catch { /* The queued filter is durable. */ }
+        }
+      }
+    }
     const report = (job: JobRow) => {
       write(`Knowledge judge: ${job.state}; ${job.results} entries checked by model.`);
       const reason = job.reason ?? blockedReason({ all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never }, job);

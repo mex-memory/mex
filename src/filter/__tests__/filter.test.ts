@@ -9,6 +9,7 @@ import { enqueueJob, listJobs, registerJobKind, runOneBatch, requeueReadyJobs, t
 import { shortHash } from "../../record/project.js";
 import { ModelWaitError, runModel, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
 import { recordChecks } from "../../judge/native.js";
+import { runJudgeSync } from "../../judge/sync.js";
 import { hash } from "../../judge/evidence.js";
 import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
 import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
@@ -123,11 +124,12 @@ describe("filter batches and provenance", () => {
     expect(value.messages[0]).toMatchObject({ marks: "pasted,scripted", delivered: ["mx_given00"] });
     expect(value.delivered_notes).toEqual([{ id: "mx_given00", text: null }]);
   });
-  it.each(["fabricated quote", "another session's words"])("rejects %s without acknowledging text", async quote => {
+  it.each(["fabricated quote", "another session's words"])("drops %s and saves the valid sibling", async quote => {
     add("s", "actual user words"); add("other", "another session's words");
     deps.model = vi.fn(async request => { const result = answer(request); const parsed = JSON.parse(result.text); parsed.items[0].quote = quote; return { ...result, text: JSON.stringify(parsed) }; });
-    const id = queue(); expect((await run(id)).reason).toBe("The filter quote was not found in its typed source.");
-    expect(batches()).toHaveLength(0); expect(writer.setting(project, "journal.consumed")).toBeUndefined();
+    const id = queue(); expect((await run(id)).results).toBe(1);
+    expect(batches()[0]).toMatchObject({ phase: "complete", dropped: { "unverified quote": 1 }, candidates: [{ source_id: "m2", quote: "another session's words" }] });
+    expect(writer.setting(project, "journal.consumed")).toBe("2");
   });
   it("records checks using the real evaluator and saves candidates without writing notes", async () => {
     add("s", "Tests use vitest because the project chose it.");
@@ -204,6 +206,87 @@ describe("filter batches and provenance", () => {
     expect(readFileSync(path, "utf8")).toBe(original);
     expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
   });
+  it("keeps valid items and counts each dropped item by its failing gate", async () => {
+    const text = "Tests use vitest because the project chose it.";
+    add("s", text);
+    const secret = "fixture_only_" + "s".repeat(20);
+    deps.model = vi.fn(async request => {
+      const result = answer(request), [good] = JSON.parse(result.text).items;
+      const items = [good, { ...good, kind: "unknown" }, { ...good, quote: "words from the agent" }, { ...good, scope: ["../outside"] },
+        { ...good, checks: [{ ...check, target: { file: "x".repeat(70 << 10) } }] },
+        { ...good, text: `password=${secret}` }, { ...good, text: `pass\u200bword=${secret}` }, null, good,
+        { ...good, text: "Use the test script.", one_line: "Use the test script." }];
+      return { ...result, text: JSON.stringify({ items }) };
+    });
+    const id = queue();
+    expect((await run(id)).results).toBe(2);
+    expect(batches()[0]).toMatchObject({ phase: "complete", dropped: { "invalid kind": 1, "unverified quote": 1, "invalid entry": 2, secret: 2, "item shape": 1, duplicate: 1 } });
+    expect(JSON.stringify(batches())).not.toContain(secret);
+    const summary = writer.db.prepare("SELECT summary FROM job_results WHERE job_id=?").get(id)?.summary;
+    expect(summary).toContain("invalid kind 1");
+    expect(summary).not.toContain(secret);
+    expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
+  });
+  it.each(["malformed response", '{"items":{}}', '{"items":[],"extra":true}'])("fails the call for an invalid envelope %s", async text => {
+    add("s", "Tests use vitest.");
+    deps.model = vi.fn(async () => ({ selectedModel: "fake-cheap", usage, text }));
+    expect((await run(queue())).reason).toBe("The filter did not return valid structured items.");
+    expect(batches()).toEqual([]);
+    expect(writer.setting(project, "journal.consumed")).toBeUndefined();
+  });
+  it("defers only the failed explicit note, stops after three batches, and restarts it on sync", async () => {
+    vi.stubEnv("MEX_BACKGROUND", "0");
+    vi.stubEnv("CODEX_THREAD_ID", "");
+    vi.stubEnv("CLAUDECODE", "");
+    const bad = note({ text: "Keep the current parser." }, { projectPath: root, home }).entry;
+    const good = note({ text: "Use the project test script." }, { projectPath: root, home }).entry;
+    const path = join(home, "projects", project, "notes", `${bad.mex.id}.md`), original = readFileSync(path, "utf8");
+    const attemptKey = `filter.note-retry.${bad.mex.id}`;
+    add("s", "Tests use vitest.");
+    let attempt = 0, afterSync = false;
+    deps.model = vi.fn(async request => {
+      calls.push(request);
+      const result = answer(request);
+      if (afterSync) return result;
+      const items = JSON.parse(result.text).items.filter((item: { source_id: string }) => item.source_id !== bad.mex.id);
+      const badAnswer = item(bad.mex.id, bad.mex.source.quote!);
+      if (request.prompt.includes("\nRepair only")) items.push({ ...badAnswer, one_line: "This would change the claim." });
+      else if (++attempt === 1) items.push(badAnswer, { ...badAnswer, quote: "A fabricated quote." });
+      else if (attempt === 3) items.push({ ...badAnswer, checks: [] });
+      return { ...result, text: JSON.stringify({ items }) };
+    });
+
+    const id = queue();
+    expect((await run(id)).results).toBe(2);
+    expect(batches()[0].candidates.map((candidate: { source_id: string }) => candidate.source_id)).toEqual(["m1", good.mex.id]);
+    expect(batches()[0]).toMatchObject({ notes_deferred: 1, dropped: { "unverified quote": 1, duplicate: 1 } });
+    for (const failures of [2, 3]) {
+      expect(filterInput(writer, project, params(), true, now)?.notes.map(note => note.id)).toEqual([bad.mex.id]);
+      await run(id);
+      expect(JSON.parse(writer.setting(project, attemptKey)!)).toMatchObject({ failures, hash: hash(original) });
+    }
+    expect(batches().find(batch => batch.notes_waiting_for_sync === 1)?.dropped).toEqual({ "changed repair claim": 1, "unrecordable checks": 1 });
+    expect(filterInput(writer, project, params(), true, now)).toBeUndefined();
+    expect((await run(id)).state).toBe("done");
+    expect(calls).toHaveLength(4);
+    expect(readFileSync(path, "utf8")).toBe(original);
+    expect(writer.setting(project, `filter.note.${bad.mex.id}`)).toBeUndefined();
+
+    const syncDeps = { available: (agent: string) => agent === "codex", budgetMs: 0, write: vi.fn(),
+      evaluate: async () => ({ ok: true as const, stored: false, items: [], results: [], problems: [] }) };
+    await runJudgeSync({ home, projectPath: root, dryRun: true }, syncDeps);
+    expect(JSON.parse(writer.setting(project, attemptKey)!).failures).toBe(3);
+    await runJudgeSync({ home, projectPath: root }, syncDeps);
+    expect(JSON.parse(writer.setting(project, attemptKey)!)).toMatchObject({ failures: 0 });
+    const retry = writer.db.prepare("SELECT id FROM jobs WHERE kind='filter' AND state='queued'").get();
+    expect(retry?.id).toBeTypeOf("string");
+    afterSync = true;
+    expect((await run(String(retry!.id))).results).toBe(1);
+    expect(calls).toHaveLength(5);
+    expect(writer.setting(project, attemptKey)).toBeUndefined();
+    expect(writer.setting(project, `filter.note.${bad.mex.id}`)).toBe(hash(original));
+    expect(readFileSync(path, "utf8")).toBe(original);
+  });
   it("repairs checks once, and leaves an unrecordable claim unresolved", async () => {
     add("s", "Tests use vitest because the project chose it."); deps.recordChecks = vi.fn(async () => undefined);
     const id = queue(); await run(id);
@@ -215,6 +298,19 @@ describe("filter batches and provenance", () => {
     const baseline = hash(readFileSync(join(root, "package.json"), "utf8"));
     deps.recordChecks = vi.fn(async () => [{ kind: "source" as const, role: "complete" as const, target: { file: "package.json" }, saw: { hash: baseline }, files: { "package.json": baseline } }]);
     await run(queue()); expect(calls).toHaveLength(2); expect(batches()[0].candidates[0].needs_checks).toBe(true);
+  });
+  it("uses a valid repair even when another repair changes its claim", async () => {
+    add("s", "Tests use vitest."); add("s", "Use the test script.");
+    deps.model = vi.fn(async request => {
+      const result = answer(request), items: ReturnType<typeof item>[] = JSON.parse(result.text).items;
+      if (request.prompt.includes("\nRepair only")) items[0]!.kind = "recipe";
+      else for (const item of items) item.checks = [{ ...check, target: { ...check.target, pointer: "/missing" } }];
+      return { ...result, text: JSON.stringify({ items }) };
+    });
+    await run(queue());
+    expect(batches()[0]).toMatchObject({ dropped: { "changed repair claim": 1 }, candidates: [
+      { kind: "rule", needs_checks: true, checks: [] }, { kind: "rule", needs_checks: false, checks: [check] },
+    ] });
   });
   it("retains the first paid result across a budget wait on check repair", async () => {
     add("s", "Tests use vitest because the project chose it."); deps.recordChecks = vi.fn(async () => undefined);
@@ -269,13 +365,22 @@ describe("filter batches and provenance", () => {
     expect(JSON.parse(result.checkpoint!)).toHaveProperty("position");
     expect(requeueReadyJobs(writer)).toBe(0);
   });
-  it("rolls back completion and acknowledgements together and reuses its draft after a save failure", async () => {
+  it("rolls back completion, retries and acknowledgements together and reuses its draft after a save failure", async () => {
     add("s", "Tests use vitest because the project chose it.");
-    writer.db.exec("CREATE TRIGGER reject_ack BEFORE INSERT ON settings WHEN new.key LIKE 'filter.session.%' BEGIN SELECT RAISE(ABORT,'injected failure'); END");
+    const saved = note({ text: "Use the parser's default." }, { projectPath: root, home });
+    const attemptKey = `filter.note-retry.${saved.entry.mex.id}`;
+    deps.model = vi.fn(async request => {
+      calls.push(request);
+      const result = answer(request);
+      return { ...result, text: JSON.stringify({ items: JSON.parse(result.text).items.slice(0, 1) }) };
+    });
+    writer.db.exec("CREATE TRIGGER reject_ack BEFORE INSERT ON settings WHEN new.key='journal.consumed' BEGIN SELECT RAISE(ABORT,'injected failure'); END");
     const id = queue(); await run(id);
     expect(batches()[0].phase).toBe("draft"); expect(writer.setting(project, "journal.consumed")).toBeUndefined();
+    expect(writer.setting(project, attemptKey)).toBeUndefined();
     writer.db.exec("DROP TRIGGER reject_ack"); await run(id);
     expect(batches()[0].phase).toBe("complete"); expect(calls).toHaveLength(1);
+    expect(JSON.parse(writer.setting(project, attemptKey)!).failures).toBe(1);
   });
   it("does not repeat a malformed check-repair call after recovery", async () => {
     add("s", "Tests use vitest because the project chose it."); deps.recordChecks = vi.fn(async () => undefined);

@@ -12,13 +12,14 @@ import { hash } from "../judge/evidence.js";
 import { replyContexts, type ReplyContextMode, type TranscriptIssue } from "./transcript.js";
 import { deliveredContext, deliveredNoteLookup } from "./delivered.js";
 import { sessionWorkEnabled } from "../judge/session.js";
+import { NOTE_ATTEMPT_LIMIT, noteAttempt, type NoteAttempt } from "./note-attempts.js";
 
 export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, promptBytes: 256 << 10,
   files: 16, fileBytes: 16 << 10, idleMs: 10 * 60_000, ageMs: 24 * 60 * 60_000 } as const;
 export interface FilterParams { checkout: string; agent: "claude" | "codex"; generation?: string; sessionId?: string; }
 export interface Message { id: string; row: number; session: string; at: string; text: string; marks: string;
   previous_reply: string | null; delivered: string[]; }
-export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; }
+export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; attempt?: NoteAttempt; }
 export interface FilterInput { messages: Message[]; notes: NoteInput[]; files: Array<{ path: string; text: string; hash: string }>;
   delivered_notes: Array<{ id: string; text: string | null }>; }
 export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean; contextIssues?: TranscriptIssue[]; }
@@ -87,10 +88,13 @@ function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
     const path = join(dir, name), raw = readEntryFile(path);
     if (raw === undefined) continue;
     const entry = parseEntry(raw);
+    const digest = hash(raw);
     if (`${entry.mex.id}.md` !== name || entry.mex.status !== "active" || entry.mex.checks.length
       || writer.setting(project, `knowledge.retired.${entry.mex.id}`)
-      || writer.setting(project, `filter.note.${entry.mex.id}`) === hash(raw)) continue;
-    notes.push({ id: entry.mex.id, path, hash: hash(raw), entry });
+      || writer.setting(project, `filter.note.${entry.mex.id}`) === digest) continue;
+    const attempt = noteAttempt(writer, project, entry.mex.id, digest);
+    if (attempt?.failures === NOTE_ATTEMPT_LIMIT) continue;
+    notes.push({ id: entry.mex.id, path, hash: digest, entry, attempt });
     if (notes.length === FILTER_LIMITS.notes) break;
   }
   check(); return notes;
