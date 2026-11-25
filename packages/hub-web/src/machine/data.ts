@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MachineChangeEventSchema, type MachineJobActionRequest } from "@mex/hub-contracts/machine";
-import { getHome, getJobs, getReviewCounts, HubProblemError, postJobAction } from "./api";
+import { getHome, getJobs, getReviewCounts, HubProblemError, postJobAction, signOut } from "./api";
 import { changeSetting, getAgent, getAgents, getSettings, getUninstallPreview, previewAgentRepair, repairAgent, type SettingsChange } from "./control-api";
 import { retryKnowledgeBusy } from "./knowledge-write-state";
 import type { BrowserAgentRepair, HubJob, JobAction, MachineAgent } from "./types";
@@ -116,6 +116,16 @@ export function useSettingChange({ csrfToken, reportDataError }: ControlConnecti
       reportDataError(error);
       if (error instanceof HubProblemError && error.status === 409) void client.invalidateQueries({ queryKey: settingsKey });
     },
+  }).mutateAsync;
+}
+
+/** After signing out, the session check finds no cookie and shows the sign-in screen. */
+export function useSignOut({ csrfToken, reportDataError }: ControlConnection) {
+  return useMutation({
+    networkMode: "always", retry: false,
+    mutationFn: (scope: "thisBrowser" | "everywhere") => signOut(scope, csrfToken),
+    onSuccess: () => reportDataError(new HubProblemError(401)),
+    onError: reportDataError,
   }).mutateAsync;
 }
 

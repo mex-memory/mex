@@ -107,6 +107,25 @@ it("posts a live setting with its revision and shows the recorded uninstall prev
   expect(preview.queryByRole("button", { name: /^Uninstall$/ })).toBeNull();
 });
 
+it("signs every browser out after confirmation and returns to the sign-in screen", async () => {
+  const user = userEvent.setup();
+  let signedIn = true;
+  const fetch = app("/settings", (url, init) => {
+    if (url === "/api/v1/session" && !signedIn) return Response.json({ title: "Sign in from the terminal", status: 401 }, { status: 401 });
+    if (url === "/api/v1/settings/uninstall") return Response.json({ preview: data.settings.uninstall });
+    if (url === "/api/v1/settings") return Response.json({ settings: { ...data.settings.settings, browser: { signOut: { source: "default" }, signOutEverywhere: { source: "default" } } } });
+    if (url === "/api/v1/session/sign-out-everywhere" && init?.method === "POST") {
+      signedIn = false;
+      return new Response(null, { status: 204 });
+    }
+  });
+  await user.click(await screen.findByRole("button", { name: "Sign out everywhere" }));
+  await user.click(within(await screen.findByRole("alertdialog", { name: "Sign out everywhere?" })).getByRole("button", { name: "Sign out everywhere" }));
+  expect(await screen.findByRole("heading", { name: "Open the Hub from the terminal" })).toBeVisible();
+  const init = fetch.mock.calls.find(([url]) => url === "/api/v1/session/sign-out-everywhere")?.[1];
+  expect(new Headers(init?.headers).get("x-mex-csrf")).toBe(csrf);
+});
+
 it("polls live agent status every ten seconds when events are unavailable", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   let agents = missing.agents;

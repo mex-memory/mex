@@ -88,6 +88,14 @@ export function getSession() {
   return requestJson("/session", MachineSessionSchema);
 }
 
+export async function signOut(scope: "thisBrowser" | "everywhere", csrfToken: string): Promise<void> {
+  const response = await request(scope === "everywhere" ? "/session/sign-out-everywhere" : "/session/sign-out", {
+    method: "POST",
+    headers: { "x-mex-csrf": csrfToken },
+  });
+  if (response.status !== 204) throw new HubProblemError(response.status);
+}
+
 export function getProjects() {
   return requestJson("/projects", MachineProjectsSchema);
 }

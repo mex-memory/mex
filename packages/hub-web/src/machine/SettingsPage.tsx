@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { BrowserSettings, PowerSettings, SharingSettings, type SettingsEdits } from "./SettingsControls";
 import { AboutSettings, AISettings, HintsSettings, PrivacySettings, StorageSettings } from "./SettingsReadouts";
-import { useSettings, useSettingChange, useUninstallPreview, type ControlConnection } from "./data";
+import { useSettings, useSettingChange, useSignOut, useUninstallPreview, type ControlConnection } from "./data";
 import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
 import type { MachineSettings, SettingsPreview, SettingsWrite } from "./types";
 import { UninstallSettings } from "./UninstallPreviewDialog";
@@ -167,6 +167,7 @@ function ConnectedSettings({ live }: { live: ControlConnection }) {
   const query = useSettings(live.events);
   const uninstall = useUninstallPreview(live.events);
   const change = useSettingChange(live);
+  const signOut = useSignOut(live);
   const settings = query.data?.settings;
   const issue = query.data?.issue;
   useEffect(() => {
@@ -186,7 +187,7 @@ function ConnectedSettings({ live }: { live: ControlConnection }) {
             uninstallLoad={{ loading: !uninstall.data?.preview && !uninstall.isError && !uninstall.data?.issue,
               error: uninstall.isError, retry: () => void uninstall.refetch() }}
             preview={{ settings, uninstall: uninstall.data?.preview, write: (request, onRetry = () => {}) => {
-              if (request.type === "signOut") throw new Error("Sign-out is unavailable.");
+              if (request.type === "signOut") return signOut(request.scope).then(() => ({}), () => ({}));
               const revision = expectedRevision(settings, request);
               if (!revision) throw new Error("Setting revision unavailable.");
               return change({ change: request, revision, onRetry });
