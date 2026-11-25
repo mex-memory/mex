@@ -1,5 +1,5 @@
 /** Read-only machine and checkout status. No refresh, registration or model work. */
-import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { VERSION } from "./version.js";
 import { AGENT_NAMES as NAMES, installationChanges, type InstallRow } from "./install/index.js";
@@ -10,15 +10,12 @@ import { openHooksReadOnly, openRecordReadOnly, recordLocation, type CheckoutRow
 import { realPath } from "./record/project.js";
 import type { LocationOptions } from "./record/location.js";
 import { listJobs } from "./record/jobs.js";
-import { modelBudgetSnapshot } from "./model-runner/budget-queue.js";
-import { DEFAULT_CAP_BASIS_POINTS } from "./model-runner/budget-policy.js";
-import { weightedTokens } from "./model-runner/budget-policy.js";
-import { modelWeights } from "./model-runner/budget-prices.js";
-import { mexSpendTotals, type Tokens } from "./record/usage.js";
+import { readModelUse } from "./model-runner/model-use.js";
 import { cachedVerdicts, type Verdict } from "./knowledge/check.js";
 import { knowledgeProject, type KnowledgeOptions } from "./knowledge/context.js";
-import { KNOWLEDGE_LIMITS, parseEntry } from "./knowledge/entry.js";
-import { containedDirectory, readEntryFile } from "./knowledge/files.js";
+import { entryInventory } from "./knowledge/inventory.js";
+import type { KnowledgeEntry } from "./knowledge/entry.js";
+import { containedDirectory } from "./knowledge/files.js";
 import { hintStatus } from "./knowledge/hints.js";
 
 type Switch = "on" | "off" | "unknown";
@@ -74,34 +71,14 @@ function knowledge(options: KnowledgeOptions): KnowledgeStatus {
   const project = knowledgeProject(options);
   const verdicts = cachedVerdicts(options, project.projectId, project.root);
   const counts: Record<Verdict, number> = { held: 0, changed: 0, broken: 0, unknown: 0 };
-  let bytes = 0, seen = 0;
-  function entries(directory: string, depth = 0): number {
-    if (!existsSync(directory)) return 0;
-    if (lstatSync(directory).isSymbolicLink()) throw new Error("Redirected store");
-    let count = 0;
-    for (const child of readdirSync(directory, { withFileTypes: true })) {
-      if (++seen > KNOWLEDGE_LIMITS.entries) throw new Error("Store limit");
-      const file = join(directory, child.name);
-      if (child.isSymbolicLink()) throw new Error("Redirected entry");
-      if (child.isDirectory() && depth) { count += entries(file, depth - 1); continue; }
-      if (!child.isFile() || !child.name.endsWith(".md") || child.name.startsWith(".")) continue;
-      const text = readEntryFile(file);
-      if (text === undefined) continue;
-      bytes += Buffer.byteLength(text);
-      if (bytes > KNOWLEDGE_LIMITS.scanBytes) throw new Error("Store limit");
-      const entry = parseEntry(text);
-      if (entry.mex.status !== "active" || project.retired.has(entry.mex.id)) continue;
-      counts[verdicts?.get(entry.mex.id) ?? "unknown"]++;
-      count++;
-    }
-    return count;
-  }
+  const entries = entryInventory(project.retired);
+  const count = (entry: KnowledgeEntry) => { counts[verdicts?.get(entry.mex.id) ?? "unknown"]++; };
   const personalDir = existsSync(project.location.home) ? containedDirectory(project.location.home, ["projects", project.projectId, "notes"]) : undefined;
   const hintsDir = existsSync(project.location.home) ? containedDirectory(project.location.home, ["projects", project.projectId, "hints"]) : undefined;
-  const personal = personalDir ? entries(personalDir) : 0;
+  const personal = entries(personalDir, 0, count);
   if (existsSync(join(project.root, ".mex")) && lstatSync(join(project.root, ".mex")).isSymbolicLink()) throw new Error("Redirected team store");
-  const team = entries(join(project.root, ".mex", "learned"), 1);
-  if (hintsDir) entries(hintsDir);
+  const team = entries(join(project.root, ".mex", "learned"), 1, count);
+  entries(hintsDir, 0, count);
   return { personal, team, hints: hintStatus(options).active, checks: existsSync(project.location.hooks) && !verdicts ? null : counts };
 }
 
@@ -151,19 +128,10 @@ export function readStatus(options: StatusOptions = {}): StatusView {
         const label = last && listJobs(reader, 500).find(job => job.kind === last.kind)?.label;
         return { ...pending, ...(last ? { lastRun: { name: label?.startsWith("Unknown job") ? last.kind : label ?? last.kind, at: last.at } } : {}) };
       });
-      view.modelUse = attempt(() => {
-        const budget = modelBudgetSnapshot(reader, now);
-        const spend = mexSpendTotals(reader, new Date(now - 6 * 86_400_000).toISOString(), new Date(now).toISOString());
-        const from = new Date(now - 6 * 86_400_000).toISOString().slice(0, 10);
-        const through = new Date(now + 86_400_000).toISOString().slice(0, 10);
-        const used = reader.all<Tokens & { model: string }>("SELECT model,sum(input) input,sum(cache_write) cache_write,sum(cache_read) cache_read,sum(output) output FROM model_calls WHERE kind='headless' AND ts>=? AND ts<? GROUP BY model", from, through)
-          .reduce((sum, row) => sum + weightedTokens(row, modelWeights(row.model, row)), 0);
-        return { runs: spend.spend.reduce((sum, row) => sum + row.calls, 0), percent: budget.ownUsageReadable && budget.lastSevenUnits > 0 ? 100 * used / budget.lastSevenUnits : null,
-          capPercent: DEFAULT_CAP_BASIS_POINTS / 100, estimated: true as const };
-      });
+      view.modelUse = attempt(() => readModelUse(reader, now));
     } else if (location && !existsSync(location.record)) {
       view.background = { waiting: 0, running: 0 };
-      view.modelUse = { runs: 0, percent: null, capPercent: DEFAULT_CAP_BASIS_POINTS / 100, estimated: true };
+      view.modelUse = readModelUse(undefined, now);
     }
     return view;
   } finally { reader?.close(); }
