@@ -1,13 +1,18 @@
 package delivery
 
 import (
+	"database/sql"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
+	"github.com/mex-memory/mex/native/record/place"
 )
 
 // apiObligation is knowledge-08's CI path obligation for packages/api.
@@ -207,6 +212,144 @@ func TestStopSilentWhereItCanNotKnow(t *testing.T) {
 			t.Fatalf("%+v", r)
 		}
 	})
+}
+
+const (
+	stopSourceFile = "packages/api/src/routes.ts"
+	stopTestFile   = "packages/api/tests/routes.test.ts"
+)
+
+func stopTestFixture(t *testing.T, indexed bool) *fixture {
+	t.Helper()
+	f := rescueFixture(t)
+	if indexed {
+		plantStopTestGraph(t, f)
+	}
+	f.file(stopSourceFile, "export function parseRoute(route: string) {\n  return route.trim();\n}\n")
+	f.file(stopTestFile, "import { parseRoute } from '../src/routes';\nfunction testParseRoute() {\n  return parseRoute('/orders');\n}\n")
+	f.start("startup")
+	return f
+}
+
+func plantStopTestGraph(t *testing.T, f *fixture) {
+	t.Helper()
+	// The edit will leave the source index stale. The test's call is backed
+	// by the graph and rechecked against the test file on disk.
+	plantIndex(t, f, map[string][]plantedSymbol{stopSourceFile: {{"parseRoute", "function", 1, 3}}})
+	dir := index.Directory(f.dir, f.project)
+	const base = "graph-base-test.db"
+	db, err := sql.Open("sqlite", filepath.Join(dir, base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	execSQL := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	execSQL(`CREATE TABLE files(path TEXT PRIMARY KEY, content_hash TEXT);
+CREATE TABLE nodes(id TEXT PRIMARY KEY, name TEXT, file_path TEXT, start_line INT, end_line INT, kind TEXT, is_exported INT, signature TEXT, body_hash TEXT, container_id TEXT);
+CREATE TABLE edges(source TEXT, target TEXT, kind TEXT, line INT, resolution_method TEXT);
+CREATE TABLE unresolved_refs(reference_name TEXT, from_node_id TEXT, status TEXT, reference_kind TEXT, candidates TEXT, line INT);`)
+	execSQL(`INSERT INTO nodes VALUES
+		('parseRoute', 'parseRoute', ?, 1, 3, 'function', 1, '', '', NULL),
+		('testParseRoute', 'testParseRoute', ?, 2, 4, 'function', 0, '', '', NULL)`, stopSourceFile, stopTestFile)
+	execSQL(`INSERT INTO edges VALUES('testParseRoute', 'parseRoute', 'calls', 3, 'explicit-import')`)
+	pointer, err := json.Marshal(map[string]any{"version": 1, "root": f.root, "base": base, "as_of": "2026-11-15T00:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkouts := filepath.Join(dir, "graph-checkouts")
+	if err := os.MkdirAll(checkouts, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkouts, place.ShortHash(f.root)+".json"), pointer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stopWithChangedFile(f *fixture, rel string) contract.Reply {
+	f.t.Helper()
+	env := f.env()
+	file := filepath.ToSlash(filepath.Join(f.root, rel))
+	env.Changed = ChangedLines{file: {{From: 2, To: 3}}}
+	return StopChecks(f.event(contract.Stop), env)
+}
+
+func TestStopDirectTests(t *testing.T) {
+	edit := editRow(stopSourceFile)
+	cases := []struct {
+		name    string
+		changed string
+		rows    []record.JournalRow
+		noGraph bool
+		deny    bool
+	}{
+		{name: "no test command", changed: stopSourceFile, rows: []record.JournalRow{edit}, deny: true},
+		{name: "full suite after edit", changed: stopSourceFile, rows: []record.JournalRow{edit, commandRow("npm test", 0)}},
+		{name: "test path after edit", changed: stopSourceFile, rows: []record.JournalRow{edit, commandRow("npx vitest run "+stopTestFile, 0)}},
+		{name: "test base name after edit", changed: stopSourceFile, rows: []record.JournalRow{edit, commandRow("npx vitest run routes.test.ts", 0)}},
+		{name: "test folder after edit", changed: stopSourceFile, rows: []record.JournalRow{edit, commandRow("npx vitest run packages/api/tests/", 0)}},
+		{name: "test command before last edit", changed: stopSourceFile, rows: []record.JournalRow{edit, commandRow("npm test", 0), edit}, deny: true},
+		{name: "only a test file edited", changed: stopTestFile, rows: []record.JournalRow{editRow(stopTestFile)}},
+		{name: "no graph or file index", changed: stopSourceFile, rows: []record.JournalRow{edit}, noGraph: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := stopTestFixture(t, !c.noGraph)
+			f.journal(c.rows...)
+			r := stopWithChangedFile(f, c.changed)
+			if !c.deny {
+				if r != (contract.Reply{}) {
+					t.Fatalf("want an empty reply, got %+v", r)
+				}
+				return
+			}
+			if r.Decision != contract.Deny {
+				t.Fatalf("missed direct tests did not deny: %+v", r)
+			}
+			for _, want := range []string{"`parseRoute`", "`" + stopTestFile + "`", "Run it now"} {
+				if !strings.Contains(r.Reason, want) {
+					t.Fatalf("reason lacks %q:\n%s", want, r.Reason)
+				}
+			}
+		})
+	}
+}
+
+func TestStopCIObligationSuppressesDirectTestsForTheSameFile(t *testing.T) {
+	f := stopTestFixture(t, true)
+	apiObligation(f)
+	f.journal(editRow(stopSourceFile))
+
+	r := stopWithChangedFile(f, stopSourceFile)
+	if r.Decision != contract.Deny {
+		t.Fatalf("missed obligation did not deny: %+v", r)
+	}
+	if strings.Count(r.Reason, "\n\n- ") != 1 || !strings.Contains(r.Reason, "`npm run -w packages/api test`") ||
+		!strings.Contains(r.Reason, "(mx_factapi)") || strings.Contains(r.Reason, stopTestFile) || strings.Contains(r.Reason, "`parseRoute`") {
+		t.Fatalf("reason should name only the CI obligation:\n%s", r.Reason)
+	}
+}
+
+func TestStopDirectTestsSpendOneBudgetPerEpoch(t *testing.T) {
+	f := stopTestFixture(t, true)
+	f.journal(editRow(stopSourceFile))
+	if r := stopWithChangedFile(f, stopSourceFile); r.Decision != contract.Deny {
+		t.Fatalf("first turn should deny: %+v", r)
+	}
+	ev := f.event(contract.Stop)
+	state := loadBumpState(bumpStatePath(f.dir, ev), currentEpoch(t, f))
+	if !state.Stopped["mex:direct-tests"] {
+		t.Fatalf("direct-tests rule was not recorded in the stop budget: %v", state.Stopped)
+	}
+
+	f.journal(editRow(stopSourceFile))
+	if r := stopWithChangedFile(f, stopSourceFile); r != (contract.Reply{}) {
+		t.Fatalf("second turn in the same epoch should be silent: %+v", r)
+	}
 }
 
 func TestSameCommand(t *testing.T) {
