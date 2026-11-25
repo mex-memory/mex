@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 import { Check, Copy, Monitor, Moon, RefreshCw, Sun, Terminal, WifiOff, X } from "lucide-react";
+import type { HubEventState } from "./data";
 import { nextThemePreference, useThemePreference } from "./theme";
 import { Alert, AlertTitle } from "../components/primitives/alert";
 import { Button } from "../components/primitives/button";
@@ -53,6 +54,23 @@ export function CopyButton({ text, path = false }: { text: string; path?: boolea
   );
 }
 
+export function HubPageHeader({ title, subtitle, action, titleRef }: {
+  title: string;
+  subtitle: string;
+  action?: ReactNode;
+  titleRef?: Ref<HTMLHeadingElement>;
+}) {
+  return (
+    <header className={styles.pageHeader}>
+      <div>
+        <h1 className={styles.pageTitle} ref={titleRef} tabIndex={titleRef ? -1 : undefined}>{title}</h1>
+        <p className={styles.muted}>{subtitle}</p>
+      </div>
+      {action}
+    </header>
+  );
+}
+
 export function CommandCard({ title, children, command }: { title: string; children: ReactNode; command: string }) {
   return (
     <Card className={styles.commandCard}>
@@ -68,10 +86,11 @@ export function CommandCard({ title, children, command }: { title: string; child
   );
 }
 
-export function HubBanners({ stopped, updated = false, terminal = false }: {
+export function HubBanners({ stopped, updated = false, terminal = false, events }: {
   stopped: boolean;
   updated?: boolean;
   terminal?: boolean;
+  events?: HubEventState;
 }) {
   return (
     <div aria-live="polite" className={styles.banners} role="status">
@@ -79,6 +98,12 @@ export function HubBanners({ stopped, updated = false, terminal = false }: {
         <Alert className={styles.banner} data-tone="warning" role={undefined}>
           <WifiOff aria-hidden="true" />
           <AlertTitle>The Hub stopped. Run <code>mex hub</code> to start it again.</AlertTitle>
+        </Alert>
+      )}
+      {!stopped && (events === "reconnecting" || events === "polling") && (
+        <Alert className={styles.banner} role={undefined}>
+          <WifiOff aria-hidden="true" />
+          <AlertTitle>{events === "reconnecting" ? "Reconnecting…" : "Live updates are off. Refreshing every 10 s."}</AlertTitle>
         </Alert>
       )}
       {updated && (
@@ -94,6 +119,22 @@ export function HubBanners({ stopped, updated = false, terminal = false }: {
           <AlertTitle>Running from this terminal; closing it stops the Hub.</AlertTitle>
         </Alert>
       )}
+    </div>
+  );
+}
+
+export interface PageLoad {
+  loading?: boolean;
+  error?: boolean;
+  retry?: () => void;
+}
+
+export function PageRequestState({ name, loading, error, retry }: PageLoad & { name: "Home" | "jobs" }) {
+  if (!loading && !error) return null;
+  return (
+    <div className={styles.pageState}>
+      <p role="status">{error ? `Couldn’t load ${name}.` : `Loading ${name}…`}</p>
+      {error && <Button onClick={retry} size="sm" type="button" variant="outline">Retry</Button>}
     </div>
   );
 }

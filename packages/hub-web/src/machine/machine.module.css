@@ -84,7 +84,6 @@
   margin-inline: auto;
 }
 
-.page,
 .banners {
   display: grid;
   min-width: 0;
@@ -103,6 +102,26 @@
   line-height: 1.18;
   letter-spacing: -0.035em;
   overflow-wrap: anywhere;
+}
+
+.pageHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 20px;
+  padding-bottom: 4px;
+}
+
+.pageHeader .muted {
+  margin-top: 4px;
+}
+
+.muted {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .banner.banner {
@@ -135,8 +154,7 @@
 
 .banner code,
 .commandHeader code,
-.checkoutDetails code,
-.missing code {
+.checkoutDetails code {
   font-family: var(--font-mono, "IBM Plex Mono", monospace);
 }
 
@@ -179,8 +197,7 @@
   color: var(--warning);
 }
 
-.commandGlyph,
-.projectGlyph {
+.commandGlyph {
   display: grid;
   width: 36px;
   height: 36px;
@@ -189,111 +206,110 @@
   background: var(--secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-}
-
-.commandGlyph {
   margin-bottom: 4px;
 }
 
-.commandGlyph svg,
-.projectGlyph svg {
+.commandGlyph svg {
   width: 17px;
   height: 17px;
   stroke-width: 1.65;
 }
 
-.projects,
-.checkouts {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.projects {
-  display: grid;
-  gap: 12px;
-}
-
-.projects > li {
-  min-width: 0;
-}
-
-.projectCard.projectCard {
-  --card-spacing: 14px;
-  gap: 0;
-  overflow: visible;
-}
-
-.projectHeader.projectHeader {
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-}
-
-.projectIdentity h2,
-.projectIdentity p {
-  margin: 0;
-}
-
-.projectIdentity h2 {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-.projectIdentity p {
-  margin-top: 2px;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.projectIdentity a,
 .textLink {
-  color: var(--foreground);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--link);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
   text-underline-offset: 3px;
 }
 
-.projectIdentity a {
-  text-decoration: none;
-}
-
-.projectIdentity a:hover,
 .textLink:hover {
-  color: var(--primary);
   text-decoration: underline;
 }
 
-.projectIdentity a svg {
-  display: inline-block;
+.textLink svg {
   width: 13px;
   height: 13px;
-  color: var(--muted-foreground);
-  vertical-align: -2px;
 }
 
-.provisional {
-  align-self: start;
-  margin-top: 2px;
+.jobStatus.jobStatus {
+  height: auto;
+  min-height: 20px;
+  max-width: 100%;
+  align-items: flex-start;
+  padding-block: 2px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.jobStatus svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.jobStatus[data-phase="running"] {
+  color: var(--info);
+  background: var(--info-soft);
+  border-color: var(--info-border);
+}
+
+.jobStatus[data-phase="waiting"],
+.jobStatus[data-phase="doneWithGaps"] {
   color: var(--warning);
   background: var(--warning-soft);
   border-color: var(--warning-border);
 }
 
-.projectCheckouts.projectCheckouts {
-  margin-top: 10px;
+.jobStatus[data-phase="done"] {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: var(--success-border);
 }
 
-.projectCheckouts .checkouts {
-  padding-top: 7px;
-  border-top: 1px solid var(--border);
+.jobStatus[data-phase="failed"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
 }
 
-.checkouts > li + li {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
+.jobProgress {
+  display: block;
+  height: 3px;
+  max-width: 144px;
+  overflow: hidden;
+  background: var(--muted);
+  border-radius: 999px;
+}
+
+.jobProgress > span {
+  display: block;
+  height: 100%;
+  background: var(--brand);
+  border-radius: inherit;
+}
+
+.checkoutDisclosure summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.checkoutDisclosure summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.checkouts {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0 0 0 14px;
+  list-style: none;
 }
 
 .checkoutRow {
@@ -304,22 +320,19 @@
 }
 
 .checkoutDetails {
-  display: grid;
+  display: flex;
   min-height: 28px;
   min-width: 0;
-  align-content: center;
-  gap: 6px;
-}
-
-.checkoutDetails code,
-.missing {
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
 }
 
 .checkoutDetails code {
   color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
@@ -335,21 +348,6 @@
   color: var(--success);
   background: var(--success-soft);
   border-color: var(--success-border);
-}
-
-.missing {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 4px 0 0;
-  color: var(--warning);
-}
-
-.missing svg {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  margin-top: 2px;
 }
 
 .pageState {
