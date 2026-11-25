@@ -3,7 +3,6 @@ import { queueNativeRebuild } from "../../knowledge/native-queue.js";
 import { ensureBackground } from "../../record/background.js";
 import { openHooksReadOnly, openRecordReadOnly } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
-import { realPath } from "../../record/project.js";
 import { waitForRecordWriter } from "../../record/writer-wait.js";
 import { applySetupAnswers } from "../../repo-start/questions/index.js";
 import { readSetupStepRows, setupStepCheckout } from "../../repo-start/steps.js";
@@ -26,11 +25,12 @@ export async function answerHubSetup(
   try {
     const data = readStore(openRecordReadOnly, location, reader => readStore(openHooksReadOnly, location, hooks => {
       const target = reader && readSetupTarget(reader, hooks, writer.location, repoId, now());
-      if (!reader || !target?.enabled || target.missing || env.MEX_OFF === "1" || realPath(target.checkout.path) !== target.checkout.path) throw stale();
+      if (!reader || !target?.enabled || target.missing || env.MEX_OFF === "1") throw stale();
       const row = readSetupStepRows(reader, repoId).find(({ kind }) => kind === "code-facts");
       const facts = readSetupFacts(writer.location, target, row && setupStepCheckout(row));
       return readSetupQuestions(writer.location, repoId, target.checkout.path, setupOfferRevision(target), facts);
     }));
+    if (request.action === "skipAll" && data.questions.length !== refs.length) throw stale();
     const reply = request.action === "answer" ? request.choice : "skip";
     const outcomes = await applySetupAnswers({ ...data.input, env, now: new Date(now()) }, refs.map(({ id, revision }) => {
       const question = data.questions.find(({ gap, view }) => gap.id === id && view.revision === revision);
@@ -45,14 +45,10 @@ export async function answerHubSetup(
       queueNativeRebuild(data.input.root, {}, location);
       ensureBackground({ ...location, env, entry });
     }
-    const questions: MachineSetupQuestion[] = outcomes.map(({ gap, ...outcome }) => {
-      const view = data.questions.find(item => item.gap === gap)!.view;
-      return { ...view, outcome };
+    const questions = outcomes.map((outcome): MachineSetupQuestion => {
+      const view = data.questions.find(({ gap }) => gap === outcome.gap)!.view;
+      return { ...view, outcome: outcome.status === "skipped" ? { status: "skipped" } : { status: outcome.status, line: outcome.line } };
     });
-    // Entry IDs are private server bookkeeping. The question only needs the outcome line.
-    return { questions: questions.map(({ outcome, ...question }) => ({
-      ...question, outcome: outcome?.status === "skipped" ? { status: "skipped" as const }
-        : outcome && { status: outcome.status, line: outcome.line },
-    })) };
+    return { questions };
   } finally { writer.close(); }
 }

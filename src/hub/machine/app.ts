@@ -180,7 +180,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
       checkWrite(context.req.raw.headers, context.get("address"), session);
     }
     context.set("session", session);
-    if (context.req.path !== "/api/v1/setup") {
+    if (context.req.path !== "/api/v1/setup" && !(context.req.path === "/api/v1/jobs" && context.req.query("job") !== undefined)) {
       home.touch();
       agentRead.touch();
       settingsRead.touch();
@@ -362,7 +362,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.post("/api/v1/setup/:repo/learn", (context) => machinePost(context, async (body) => {
     const repoId = setupRepoId(context.req.param("repo"));
     const step = await setupLearning.start(repoId, context.get("session").id, body);
-    setup.refresh(repoId);
+    setup.change(repoId, repo => ({ ...repo, steps: [...repo.steps, step], offerRevision: undefined, learnDeeper: undefined }));
     events.controlsChanged("setup", "jobs");
     return step;
   }));
@@ -370,7 +370,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.post("/api/v1/setup/:repo/skip-learning", (context) => machinePost(context, async (body) => {
     const repoId = setupRepoId(context.req.param("repo"));
     const saved = await setupLearning.skip(repoId, context.get("session").id, body);
-    setup.refresh(repoId);
+    setup.change(repoId, repo => ({ ...repo, offerRevision: undefined, learnDeeper: { state: "skipped" } }));
     events.controlsChanged("setup");
     return saved;
   }));
@@ -378,16 +378,20 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.post("/api/v1/setup/:repo/questions", (context) => machinePost(context, async (body) => {
     const repoId = setupRepoId(context.req.param("repo"));
     const result = await answerHubSetup(location, now, options.env ?? process.env, options.agentEntry, repoId, body);
-    setup.refresh(repoId);
+    const answered = new Set(result.questions.map(({ id }) => id));
+    setup.change(repoId, repo => ({ ...repo, questions: repo.questions.filter(({ id }) => !answered.has(id)) }));
     events.controlsChanged("setup");
-    if (result.questions.some(({ outcome }) => outcome?.status !== "skipped")) await changed(repoId, true);
+    if (result.questions.some(({ outcome }) => outcome?.status !== "skipped")) {
+      events.controlsChanged("jobs");
+      void changed(repoId, true).catch(() => { /* The next snapshot picks up the durable answer. */ });
+    }
     return result;
   }));
 
   app.post("/api/v1/setup/:repo/steps/:id", (context) => machinePost(context, async (body) => {
     const repoId = setupRepoId(context.req.param("repo"));
     const step = await changeSetupStep(location, options.env, options.agentEntry, repoId, context.req.param("id"), body);
-    setup.refresh(repoId);
+    setup.change(repoId, repo => ({ ...repo, steps: repo.steps.map(current => current.jobId === step.jobId ? step : current) }));
     events.controlsChanged("setup", "jobs");
     return step;
   }));

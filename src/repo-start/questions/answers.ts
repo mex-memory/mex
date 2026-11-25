@@ -41,10 +41,10 @@ export function saveAnswers(
   const { location, db } = writer;
   db.exec("BEGIN IMMEDIATE");
   try {
+    containedDirectory(location.home, ["projects", projectId], true);
     const file = readAnswers(location, projectId);
     const changed = !onlyNew || !answers.some(([id]) => Object.hasOwn(file.answers, id));
     if (changed) {
-      containedDirectory(location.home, ["projects", projectId], true);
       for (const [id, answer] of answers) file.answers[id] = answer;
       const ids = Object.keys(file.answers);
       if (ids.length > MAX_ANSWERS) {

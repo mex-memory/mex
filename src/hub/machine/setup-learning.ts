@@ -8,7 +8,6 @@ import { LEARNING_DISMISSED, queueLearning } from "../../learn-deeper/queue.js";
 import { ensureBackground } from "../../record/background.js";
 import { openHooksReadOnly, openRecordReadOnly, type RecordReader, type RecordWriter } from "../../record/index.js";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
-import { realPath } from "../../record/project.js";
 import { waitForRecordWriter } from "../../record/writer-wait.js";
 import { stepFromRow } from "../../repo-start/steps.js";
 import { machineBusy } from "./agent-repair.js";
@@ -40,10 +39,6 @@ type Approval = {
 
 function staleQuote() {
   return new HubRequestError(409, "REVISION_CONFLICT", "The learning estimate changed", "Open the current estimate and try again.");
-}
-
-function isSameCheckout(path: string) {
-  try { return realPath(path) === path; } catch { return false; }
 }
 
 function planRevision({ since: _since, until: _until, ...plan }: LearningPlan) {
@@ -186,7 +181,7 @@ export class SetupLearning {
     const location = recordLocation({ ...this.location, create: false });
     const target = readStore(openHooksReadOnly, this.location, hooks => readSetupTarget(reader, hooks, location, repoId, this.now()));
     if (!target?.enabled || target.missing || target.run?.caller !== "person" || this.env.MEX_OFF === "1"
-      || !isSameCheckout(target.checkout.path) || setupOfferRevision(target) !== revision
+      || setupOfferRevision(target) !== revision
       || reader.setting(repoId, LEARNING_DISMISSED) === "true"
       || reader.get("SELECT 1 FROM jobs WHERE project_id=? AND kind=? LIMIT 1", repoId, LEARN_KIND)) throw staleQuote();
     return target.checkout.path;

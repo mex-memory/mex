@@ -55,12 +55,12 @@ function removeAbandonedTemporaries(directory: string, name: string): void {
 }
 
 /** A missing, unreadable or unknown-version file reads as nothing found. */
-export function readFactFile<T extends { version: number }>(location: RecordLocation, projectId: string, name: string): T | undefined {
+export function readFactFile<T extends { version: number }>(location: RecordLocation, projectId: string, name: string, maxBytes = MAX_FACT_BYTES): T | undefined {
   if (!/^[gf]-[a-f0-9]{24}$/u.test(projectId)) return undefined;
   const file = join(location.home, "projects", projectId, name);
   try {
     const stat = lstatSync(file);
-    if (!stat.isFile() || stat.size > MAX_FACT_BYTES) return undefined;
+    if (!stat.isFile() || stat.size > maxBytes) return undefined;
     const value = JSON.parse(readFileSync(file, "utf8")) as T;
     return value?.version === SETUP_FACTS_VERSION ? value : undefined;
   } catch { return undefined; }

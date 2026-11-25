@@ -1,4 +1,4 @@
-import { MachineSetupRepoIdSchema, type MachineSetupSnapshot } from "@mex/hub-contracts/machine";
+import { MachineSetupRepoIdSchema, type MachineRepoSetup, type MachineSetupSnapshot } from "@mex/hub-contracts/machine";
 import { openHooksReadOnly, openRecordReadOnly } from "../../record/index.js";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
 import { ControlSnapshot } from "./control-snapshot.js";
@@ -50,9 +50,11 @@ export class SetupData {
     for (const detail of this.#details.values()) detail.touch();
   }
 
-  refresh(repoId: string) {
+  change(repoId: string, edit: (repo: MachineRepoSetup) => MachineRepoSetup) {
     this.#index.refresh();
-    this.#details.get(repoId)?.refresh();
+    const detail = this.#details.get(repoId);
+    detail?.update(data => data.repo ? { ...data, repo: edit(data.repo) } : data);
+    detail?.refresh();
   }
 
   close() {

@@ -80,7 +80,8 @@ export function useLiveSetup({ events, csrfToken, reportDataError }: ControlConn
       if (revision) apply(key => api.step(id, action, revision, key), stepSaved);
     },
     startLearning(_repo, accepted) {
-      if (accepted.revision) apply(key => api.learn(accepted.revision!, key), stepSaved);
+      const revision = accepted.revision;
+      if (revision) apply(key => api.learn(revision, key), stepSaved);
     },
     skipLearning() {
       const revision = offer?.state === "offered" ? offer.quote.revision : undefined;

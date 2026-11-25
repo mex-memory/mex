@@ -43,6 +43,7 @@ const status: Record<MachineSetupStep["state"], [HubJob["state"]["phase"], strin
 };
 
 const count = new Intl.NumberFormat("en-US");
+const setupUnfinished = (state: MachineSetupStep["state"]) => ["queued", "running", "paused", "waiting"].includes(state);
 
 function StepRow({ step, repo, search, changeStep, disabled }: {
   disabled?: boolean;
@@ -67,9 +68,8 @@ function StepRow({ step, repo, search, changeStep, disabled }: {
   const resume = phase === "paused";
   const requestText = pending === "pause" ? "Pausing after this batch. You can resume or cancel when it pauses."
     : pending === "cancel" ? "Cancelling after this batch. Wait for the job to finish stopping." : undefined;
-  const map = repo.steps.find(({ kind }) => kind === "graph-build");
-  const mapIsPending = map?.finishedAt === null;
-  const progressText = progress?.message ?? (paid && phase === "queued" && mapIsPending
+  const earlierUnfinished = repo.steps.some(({ kind, state }) => kind !== "learn-deeper" && setupUnfinished(state));
+  const progressText = progress?.message ?? (paid && phase === "queued" && earlierUnfinished
     ? "Starts after the code map and other setup work." : undefined);
   const jobHref = repoPrefix(repo.repoId) + "/jobs" + search + jobHash(jobId);
 
@@ -171,7 +171,7 @@ export function SetupSteps({ repo, search, setup, disabled }: {
         })}
       </ol>
       <SetupLearningDialog
-        waitsForSetup={repo.steps.some(({ kind, finishedAt }) => kind !== "learn-deeper" && finishedAt === null)}
+        waitsForSetup={repo.steps.some(({ kind, state }) => kind !== "learn-deeper" && setupUnfinished(state))}
         finalFocus={() => starting.current ? title.current : start.current ?? title.current}
         onClose={() => setQuote(null)}
         onStart={(accepted) => { starting.current = true; setup.startLearning(repo.repoId, accepted); setQuote(null); }}

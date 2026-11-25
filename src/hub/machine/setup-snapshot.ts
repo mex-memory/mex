@@ -8,6 +8,7 @@ import { LEARNING_DISMISSED } from "../../learn-deeper/queue.js";
 import type { CheckoutRow, ProjectRow, RecordReader } from "../../record/index.js";
 import { TERMINAL_STATES, type JobRow } from "../../record/jobs.js";
 import type { RecordLocation } from "../../record/location.js";
+import { realPath } from "../../record/project.js";
 import { readFactFile, type SetupRun } from "../../repo-start/facts.js";
 import type { CodeFactsFile } from "../../repo-start/history/job.js";
 import { readSetupSteps, readSetupStepRows, setupStepCheckout, type SetupStep } from "../../repo-start/steps.js";
@@ -56,12 +57,12 @@ export interface SetupTarget {
 
 function setupRun(location: RecordLocation, repoId: string) {
   if (!containedDirectory(location.home, ["projects", repoId])) return;
-  const run = readFactFile<SetupRun>(location, repoId, "setup.json");
+  const run = readFactFile<SetupRun>(location, repoId, "setup.json", 16 << 10);
   return run && machineTime(run.last_run) ? run : undefined;
 }
 
 function checkoutExists(path: string) {
-  return lstatSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  try { return lstatSync(path).isDirectory() && realPath(path) === path; } catch { return false; }
 }
 
 function selectTarget(
@@ -75,9 +76,11 @@ function selectTarget(
     AND kind IN ('file-index','code-facts','graph-build') AND created_at<=?
     ORDER BY created_at DESC, id DESC LIMIT 1`, repoId, run?.last_run ?? new Date(now).toISOString());
   const path = run?.checkout ?? (job && setupStepCheckout(job));
-  const checkout = checkouts.find(row => row.path === path)
-    ?? checkouts.find(row => row.path === mostRecentCheckout(hooks, repoId, checkouts.map(({ path }) => path)))
-    ?? checkouts[0];
+  const recorded = typeof path === "string" && machinePath(path)
+    ? checkouts.find(row => row.path === path) ?? reader.get<CheckoutRow>("SELECT * FROM checkouts WHERE project_id=? AND path=?", repoId, path)
+    : undefined;
+  const recent = !recorded && mostRecentCheckout(hooks, repoId, checkouts.map(row => row.path));
+  const checkout = recorded ?? checkouts.find(row => row.path === recent) ?? checkouts[0];
   if (!checkout) return;
   return {
     repoId, kind, checkout, run, missing: !checkoutExists(checkout.path),
@@ -116,17 +119,17 @@ function plural(count: number, unit: string) {
 function setupSummary(run: SetupRun | undefined): MachineRepoSetup["summary"] {
   const findings: MachineRepoSetup["summary"]["findings"] = [];
   const found = run?.found;
-  if (Number.isSafeInteger(found?.recipes) && found!.recipes > 0) {
-    const packages = Number.isSafeInteger(found!.packages) && found!.packages > 1 ? ` across ${plural(found!.packages, "package")}` : "";
-    findings.push({ label: "Commands", text: `Found ${plural(found!.recipes, "command")}${packages} in config.` });
+  if (found && Number.isSafeInteger(found.recipes) && found.recipes > 0) {
+    const packages = Number.isSafeInteger(found.packages) && found.packages > 1 ? ` across ${plural(found.packages, "package")}` : "";
+    findings.push({ label: "Commands", text: `Found ${plural(found.recipes, "command")}${packages} in config.` });
   }
-  if (Number.isSafeInteger(found?.rule_files) && found!.rule_files > 0) {
-    const conflicts = Number.isSafeInteger(found!.rule_conflicts) && found!.rule_conflicts > 0
-      ? ` ${plural(found!.rule_conflicts, "disagreement")} found.` : "";
-    findings.push({ label: "Rule files", text: `Read ${plural(found!.rule_files, "file")}.${conflicts}` });
+  if (found && Number.isSafeInteger(found.rule_files) && found.rule_files > 0) {
+    const conflicts = Number.isSafeInteger(found.rule_conflicts) && found.rule_conflicts > 0
+      ? ` ${plural(found.rule_conflicts, "disagreement")} found.` : "";
+    findings.push({ label: "Rule files", text: `Read ${plural(found.rule_files, "file")}.${conflicts}` });
   }
-  if (Number.isSafeInteger(found?.hints) && found!.hints > 0) {
-    findings.push({ label: "Agent memory", text: `Offered ${plural(found!.hints, "note")} as hints.` });
+  if (found && Number.isSafeInteger(found.hints) && found.hints > 0) {
+    findings.push({ label: "Agent memory", text: `Offered ${plural(found.hints, "note")} as hints.` });
   }
   return {
     findings,
