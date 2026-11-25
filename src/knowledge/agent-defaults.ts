@@ -33,6 +33,9 @@ const { rules } = z.object({
   })).length(Object.keys(topics).length),
 }).parse(pack);
 
+/** The default rules every agent gets when the defaults are on, in pack order. */
+export const defaultRuleTexts = (): string[] => rules.map(rule => rule.text);
+
 const directive = /\b(?:always|never|must|shall|should|required|only|prefer|avoid|do not|don't|cannot|may not|make sure|ensure|take care|we (?:use|require|expect))\b|^(?:add|check|describe|document|don't|follow|keep|limit|match|preserve|remove|report|reuse|run|skip|use|write|update|regenerate)\b/iu;
 const conflict: Partial<Record<RuleId, RegExp>> = {
   scope: /\b(?:include|bundle|combine|fix|perform)\b.{0,55}\b(?:unrelated|opportunistic|drive-by)\b/iu,

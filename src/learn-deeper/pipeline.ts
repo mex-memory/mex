@@ -32,6 +32,7 @@ import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harve
 import { branchScope, staleDoc } from "./history-docs.js";
 import { networkGroups, networkProofKey, networkRowKey, readNetworkGroups } from "./network-proof.js";
 import { collectGateEvidence, gateBatches, gatePrompt, parseGate, type GateRule, type GateVerdict } from "./norm-gate.js";
+import { defaultRuleTexts, DEFAULTS_SETTING } from "../knowledge/agent-defaults.js";
 import { docsPrompt, normPrompt, packObservations, parseDocs, parseNorms, type Draft, type EarlierNorm } from "./norm-writer.js";
 import { observationCutoff, readObservations, saveObservations, supportObservations } from "./observations.js";
 import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
@@ -44,6 +45,9 @@ import { parseTriage, triagePrompt, type Observation } from "./triage.js";
 import { replyJson } from "./reply.js";
 import { sessionsActive } from "./weekly-schedule.js";
 import { evidencePairs, parsePatterns, patternPrompt, type PatternInput, type WriterEntry } from "./write.js";
+
+/** A best-model writer or gate call may think past the runner's default five minutes; the process cap is fifteen. */
+const BEST_CALL_TIMEOUT_MS = 12 * 60_000;
 
 export const PIPELINE_LIMITS = { stagedFiles: 2000 } as const;
 export const Phase = z.enum(["harvest", "triage", "write", "finish"]);
@@ -233,6 +237,8 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
       recordHome: writer.location.home, stage }, () => deps.model({
       // Every learning call is text in, JSON out: Codex needs none of its tools or agent instructions.
       agent: modelAgent(plan.agent), setup: procedure ? "mixed" : plan.setup, role, projectRoot: plan.checkout, executionDirectory, allowNonGit: true, isolatedText: true,
+      // A best-model writer or gate call over a large window can think for more than the default five minutes.
+      ...(role === "best" ? { timeoutMs: BEST_CALL_TIMEOUT_MS } : {}),
       purpose: procedure ? "learn-deeper-procedure" : role === "cheap" ? "learn-deeper-filter" : LEARN_KIND, prompt,
       ...(weekly || procedure ? { automatic: { estimate, measuredUsageOnly: true } } : { consented: { ceiling: plan.ceiling, estimate } }),
     }));
@@ -249,7 +255,8 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   catch (error) {
     // A command that failed or broke off produced no answer, so a resumed job would count the stage as lost.
     // One more try now, when the allowance covers it, is cheaper than a stage nobody judged.
-    const transient = error instanceof ModelRunError && (error.category === "failed" || error.category === "protocol");
+    // A hung or slow call loses a whole stage, so a timeout gets the same one retry as a failed command.
+    const transient = error instanceof ModelRunError && (error.category === "failed" || error.category === "protocol" || error.category === "timeout");
     if (!transient || (!weekly && !procedure && tokenCount(estimate) > plan.ceiling - recordedModelSpend(writer, job.id))) throw error;
     reply = await ask();
   }
@@ -568,7 +575,10 @@ async function evaluateDrafts(input: PipelineInput, name: string, counts: Pipeli
   rules: GateRule[], earlier: readonly EarlierNorm[]): Promise<Map<string, GateVerdict>> {
   const verdicts = new Map<string, GateVerdict>();
   if (!rules.length) return verdicts;
-  const evidence = await collectGateEvidence(input.deps.tree, rules, earlier.filter(rule => !rule.refused));
+  const project = input.context.job.project_id;
+  const defaultsOn = !project || input.context.writer.setting(project, DEFAULTS_SETTING) !== "off";
+  const evidence = { ...await collectGateEvidence(input.deps.tree, rules, earlier.filter(rule => !rule.refused)),
+    ...(defaultsOn ? { defaults: defaultRuleTexts() } : {}) };
   for (const [i, batch] of gateBatches(rules, evidence).entries()) {
     const apply = (text: string, requested: readonly GateRule[]) => {
       const outcome = parseGate(text, requested);

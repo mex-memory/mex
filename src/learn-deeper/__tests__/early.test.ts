@@ -80,6 +80,23 @@ it("tries a failed command once more as a text-only call, and keeps its answer",
   } finally { f.dispose(); }
 });
 
+it("tries a timed-out call once more, like a failed command, and keeps its answer", async () => {
+  const f = splitFixture(() => true, call => call === 1 ? new ModelRunError("timeout", "codex") : undefined);
+  try {
+    const result = await f.run();
+    expect(f.prompts).toHaveLength(2);
+    expect(result.state.counts).toMatchObject({ "calls.triage": 1, "triage-kept": 1 });
+  } finally { f.dispose(); }
+});
+
+it("gives up on a call that times out twice", async () => {
+  const f = splitFixture(() => true, () => new ModelRunError("timeout", "codex"));
+  try {
+    await expect(f.run()).rejects.toMatchObject({ category: "timeout" });
+    expect(f.prompts).toHaveLength(2);
+  } finally { f.dispose(); }
+});
+
 it("bounds a batch that never gets a readable answer at six calls", async () => {
   const f = splitFixture(() => false, () => "not json");
   try {

@@ -36,7 +36,15 @@ export interface GateEvidence {
   earlier: { id: string; claim: string }[];
   drafts: { id: string; claim: string; scope: string[] }[];
   named: ReadonlyMap<string, NamedEvidence[]>;
+  /** The agent defaults every agent here already gets, when the setting is on. */
+  defaults?: readonly string[];
 }
+
+/**
+ * Agent instruction files are what a learned rule must not repeat, so the gate reads them whole: a long AGENTS.md
+ * keeps its key commands well past the first screen.
+ */
+const INSTRUCTION_LINES = 400, INSTRUCTION_BYTES = 24_000;
 
 function instructionPath(path: string): boolean {
   return !!ruleFormat(path) || /^\.cursor\/rules\//iu.test(path)
@@ -328,7 +336,7 @@ export async function collectGateEvidence(tree: PinnedTree, rules: readonly Gate
   const manifestFiles = await Promise.all(manifests.map(async path => ({ path, lines: manifestLines(path, await read(path) ?? []) })));
   const configFiles = await Promise.all(configs.map(async path => ({ path, lines: headerLines(await read(path) ?? [], 32) })));
   const workflowFiles = await Promise.all(workflows.map(async path => ({ path, lines: workflowLines(await read(path) ?? []) })));
-  const instructionFiles = (await Promise.all(instructions.map(async path => ({ path, lines: headerLines(await read(path) ?? [], 48) }))))
+  const instructionFiles = (await Promise.all(instructions.map(async path => ({ path, lines: headerLines(await read(path) ?? [], INSTRUCTION_LINES) }))))
     .filter(file => file.lines.length);
   const libOutputs = new Set([...manifestFiles, ...configFiles, ...workflowFiles].flatMap(({ path, lines }) =>
     lines.some(({ text }) => LIB_OUTPUT.test(text)) ? [posix.join(CI.test(path) ? "." : posix.dirname(path), "lib").toLowerCase()] : []));
@@ -393,7 +401,7 @@ export async function collectGateEvidence(tree: PinnedTree, rules: readonly Gate
     manifests: packFiles([...locks.map(path => ({ path, lines: [] })), ...manifestFiles], 3_400),
     configs: packFiles(configFiles, 3_200),
     workflows: packFiles(workflowFiles, 3_600),
-    instructions: packFiles(instructionFiles, 4_000),
+    instructions: packFiles(instructionFiles, INSTRUCTION_BYTES),
     earlier: compactEntries(earlier.slice(0, 200).flatMap(({ id, claim }) => {
       const safe = safeRaw(claim);
       return safe === undefined ? [] : [{ id: excerpt(id, 120), claim: excerpt(safe, 420) }];
