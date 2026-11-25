@@ -1,10 +1,13 @@
 import type { FixtureReviewQueue } from "./types";
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
 import { fixtureHomeReview, fixtureReviewQueue } from "./fixture-review-data";
+import { fixtureAgents } from "./fixture-agents";
+import { fixtureSettings } from "./fixture-settings";
 import type { ForgottenItem, HomeOverview, HubJob, KnowledgeDetail, KnowledgeStatusCounts } from "./types";
 
 export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating" | "conflict" | "calm"
-  | "review-empty" | "review-handled" | "review-handled-unknown" | "review-busy" | "review-loading";
+  | "review-empty" | "review-handled" | "review-handled-unknown" | "review-busy" | "review-loading"
+  | "agents-broken" | "agents-terminal" | "settings-forced-off";
 
 export interface KnowledgeFixture {
   items: readonly KnowledgeDetail[];
@@ -20,6 +23,8 @@ interface HubFixture {
   jobs: readonly HubJob[];
   knowledge: KnowledgeFixture;
   review?: FixtureReviewQueue;
+  agents: ReturnType<typeof fixtureAgents>;
+  settings: ReturnType<typeof fixtureSettings>;
 }
 
 const session = {
@@ -386,6 +391,8 @@ export function getFixture(variant: FixtureVariant): HubFixture {
   const notes = knowledgeFixture(now, generatedAt, variant);
   const review = fixtureReviewQueue(now, notes.items, variant);
   const waiting = fixtureHomeReview(review);
+  const agents = fixtureAgents(now, variant);
+  const settings = fixtureSettings(now, variant, variant === "empty" ? [] : projects, week);
   if (variant === "empty") {
     return {
       session,
@@ -393,7 +400,7 @@ export function getFixture(variant: FixtureVariant): HubFixture {
       overview: { ...homeMetrics(now, []), week: { ...week, percent: 0 }, generatedAt, byRepo: {}, needs: [], needsCount: {}, knowledge: {}, sessions: [] },
       jobs: [],
       knowledge: notes,
-      review,
+      review, agents, settings,
     };
   }
   const scopedKnowledge = variant === "stale" || variant === "updating"
@@ -406,7 +413,7 @@ export function getFixture(variant: FixtureVariant): HubFixture {
     [id, homeMetrics(now, sessions.filter(({ repoId }) => id === repoId))]
   )));
   return {
-    session, projects, jobs, knowledge: notes, review,
+    session, projects, jobs, knowledge: notes, review, agents, settings,
     overview: { ...homeMetrics(now, sessions), generatedAt, byRepo, ...waiting, knowledge: scopedKnowledge, sessions },
   };
 }

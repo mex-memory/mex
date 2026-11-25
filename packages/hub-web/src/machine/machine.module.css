@@ -431,3 +431,17 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+.signOutSaved {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-inline-start: 5px;
+  color: var(--success);
+  font-size: 12px;
+}
+
+.signOutSaved svg {
+  width: 12px;
+  height: 12px;
+}

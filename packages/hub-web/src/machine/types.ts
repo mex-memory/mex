@@ -106,6 +106,8 @@ export interface HubPreview {
   jobs: readonly HubJob[];
   knowledge: KnowledgePreview;
   review: ReviewPreview;
+  agents: AgentsPreview;
+  settings: SettingsPreview;
   changeJob: (id: string, action: JobAction) => void;
 }
 
@@ -118,3 +120,16 @@ export type SettingsWrite = z.infer<typeof MachineSettingsWriteRequestSchema>;
 export type MachineStorage = z.infer<typeof MachineStorageSchema>;
 export type MachineOutbound = z.infer<typeof MachineOutboundSchema>;
 export type MachineUninstallPreview = z.infer<typeof MachineUninstallPreviewSchema>;
+
+
+export interface AgentsPreview {
+  agents: readonly MachineAgent[];
+  getRepairPreview: (id: MachineAgent["id"]) => AgentRepairPreview | undefined;
+  repair: (preview: BrowserAgentRepair) => Promise<AgentRepairResult>;
+}
+
+export interface SettingsPreview {
+  settings: MachineSettings;
+  uninstall: MachineUninstallPreview;
+  write: (request: SettingsWrite) => void;
+}
