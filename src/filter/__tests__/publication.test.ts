@@ -1,7 +1,7 @@
 import { beforeAll, afterAll, beforeEach, afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync, realpathSync, existsSync, symlinkSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync, realpathSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openRecord, type RecordWriter } from "../../record/index.js";
@@ -60,7 +60,8 @@ beforeEach(async () => {
 });
 afterEach(() => { hooks.close(); writer.close(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }); });
 
-it("shows the exact diff before adding a checked entry, with no staging or commit", async () => {
+it("proves an early quote in a long session and shows the exact diff before adding the entry", async () => {
+  appendFileSync(transcript, "\n" + JSON.stringify({ type: "progress", padding: "x".repeat(6 << 20) }));
   const head = git("rev-parse", "HEAD"); expect((await run())?.wait).toBe(PUBLICATION_WAIT); expect(existsSync(teamPath())).toBe(false);
   const preview = writer.db.prepare("SELECT text FROM notices WHERE kind LIKE 'learning-preview.%'").get()!;
   expect(JSON.parse(String(preview.text)).text).toContain("+Tests use vitest"); expect(publicationReady(writer, job)).toBe(false);
