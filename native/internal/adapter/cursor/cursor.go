@@ -101,6 +101,7 @@ type payload struct {
 	SubagentID     string          `json:"subagent_id"`
 	SubagentType   string          `json:"subagent_type"`
 	ComposerMode   string          `json:"composer_mode"`
+	LoopCount      int             `json:"loop_count"`
 }
 
 func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
@@ -149,6 +150,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 	case contract.SubagentStart:
 		ev.AgentID = p.SubagentID
 		ev.AgentType = p.SubagentType
+	case contract.Stop:
+		ev.StopActive = p.LoopCount > 0
 	}
 	return ev, nil
 }
