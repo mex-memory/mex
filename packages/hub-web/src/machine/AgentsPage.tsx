@@ -50,8 +50,8 @@ function AgentFacts({ agent }: { agent: MachineAgent }) {
   const { canVerify, events } = agent.hooks;
   const missing = events.filter(({ status }) => status === "missing").length;
   const error = agent.errors[0];
-  const hooks = !canVerify ? "Can’t verify for this agent yet"
-    : events.length === 0 ? "—"
+  const hooks = agent.state === "notFound" || events.length === 0 ? "—"
+    : !canVerify ? "Can’t verify for this agent yet"
     : events.some(({ status }) => status === "unverified") ? "Couldn’t verify"
     : missing > 0 ? "Missing " + missing + " of " + events.length : "Installed";
   const trust = agent.trust === "approved" ? "Yes" : agent.trust === "needsApproval"

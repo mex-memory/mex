@@ -90,7 +90,8 @@ export function fixtureAgents(now: number, variant: FixtureVariant) {
       id: "opencode",
       name: "OpenCode",
       state: "notFound",
-      hooks: { canVerify: false, events: [] },
+      // Live reads report every expected event as missing for an absent agent.
+      hooks: { canVerify: true, events: ["session.created", "session.idle", "tool.execute.before"].map((name) => ({ name, status: "missing" as const })) },
       trust: "unknown",
       lastFiredAt: null,
       errors: [],
