@@ -68,12 +68,14 @@ describe("release benchmark contract", () => {
     }
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       const cap = Math.min(...Object.values(previous.apiLatencyMs[profile]));
-      const { session, projects, home, jobs, knowledge, knowledgeLanding } = budgets.runtime.apiLatencyMs[profile];
+      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail } = budgets.runtime.apiLatencyMs[profile];
       expect({ session, projects }).toEqual({ session: cap, projects: cap });
       expect(home).toBeGreaterThan(0);
       expect(jobs).toBeGreaterThan(0);
       expect(knowledge).toBeGreaterThan(0);
       expect(knowledgeLanding).toBeGreaterThan(0);
+      expect(review).toBeGreaterThan(0);
+      expect(reviewDetail).toBeGreaterThan(0);
       expect(budgets.runtime.browserHeapBytes[profile]).toEqual({
         home: previous.browserHeapBytes[profile].home,
         repo: Math.min(...Object.values(previous.browserHeapBytes[profile])),
@@ -86,10 +88,11 @@ describe("release benchmark contract", () => {
     const home = { jsBytes: 112676, cssBytes: 9787, fontBytes: 0 };
     const jobs = { jsBytes: 65613, cssBytes: 3983, fontBytes: 0 };
     const knowledge = { jsBytes: 117930, cssBytes: 25455, fontBytes: 0 };
+    const review = { jsBytes: 103715, cssBytes: 17786, fontBytes: 0 };
     expect(budgets.assets).toEqual({
       maxJsChunkBytes: assetBudgetCandidate(measuredInitial.jsBytes),
       initial: assetGroup(measuredInitial),
-      routes: { home: assetGroup(home), repo: assetGroup(home), jobs: assetGroup(jobs), knowledge: assetGroup(knowledge) },
+      routes: { home: assetGroup(home), repo: assetGroup(home), jobs: assetGroup(jobs), knowledge: assetGroup(knowledge), review: assetGroup(review) },
     });
   });
 
@@ -101,7 +104,7 @@ describe("release benchmark contract", () => {
       medium: { sourceFiles: 16, wikiEntities: 16, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 16 },
       large: { sourceFiles: 48, wikiEntities: 48, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 48 },
     });
-    expect(Object.keys(budgets.assets.routes)).toEqual([...RELEASE_ROUTE_KEYS, "jobs", "knowledge"]);
+    expect(Object.keys(budgets.assets.routes)).toEqual([...RELEASE_ROUTE_KEYS, "jobs", "knowledge", "review"]);
     const projectId = "g-0123456789abcdef01234567";
     expect(releaseWorkbenchPaths({ projectId })).toEqual({ home: "/", repo: "/repos/" + projectId });
     expect(() => releaseWorkbenchPaths({ projectId: "../outside" })).toThrow(/machine project ID/u);
@@ -109,11 +112,12 @@ describe("release benchmark contract", () => {
     expect(main).toContain("<MachineHub />");
     const routes = readFileSync(new URL("../../packages/hub-web/src/machine/HubShell.tsx", import.meta.url), "utf8");
     const patterns = [...routes.matchAll(/<Route\s+[\s\S]*?\bpath="([^"]+)"/gu)].map(([, path]) => path);
-    expect(patterns).toEqual(["/", "/knowledge/:entryKey?", "/repos/:projectId/knowledge/:entryKey?", "/repos/:projectId", "/jobs", "/repos/:projectId/jobs", "*"]);
+    expect(patterns).toEqual(["/", "/review/:cardKey?", "/repos/:projectId/review/:cardKey?", "/knowledge/:entryKey?", "/repos/:projectId/knowledge/:entryKey?", "/repos/:projectId", "/jobs", "/repos/:projectId/jobs", "*"]);
     expect(routes).toContain('<Route element={<Navigate replace to={homeHref} />} path="*" />');
     expect(RELEASE_COMMON_READ_PATHS).toEqual({
       session: "/api/v1/session", projects: "/api/v1/projects", home: "/api/v1/home", jobs: "/api/v1/jobs",
       knowledge: "/api/v1/knowledge", knowledgeLanding: "/api/v1/knowledge/landing",
+      review: "/api/v1/review", reviewDetail: "/api/v1/review/cards/:key",
     });
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile])).toEqual(RELEASE_ROUTE_KEYS);
@@ -492,12 +496,12 @@ describe("release benchmark contract", () => {
     });
   });
 
-  it("fails closed when either machine API budget is missing", () => {
+  it("fails closed when a machine API budget is missing", () => {
     const profiles = Object.fromEntries(Object.keys(RELEASE_FIXTURE_PROFILES).map((profile) => [
       profile,
       {
         ...runtimeProfile(100),
-        apiLatencyMs: { session: { p95: 2 }, projects: { p95: 3 } },
+        apiLatencyMs: { session: { p95: 2 }, projects: { p95: 3 }, review: { p95: 4 }, reviewDetail: { p95: 5 } },
         maintenance: null,
       },
     ]));
@@ -507,10 +511,12 @@ describe("release benchmark contract", () => {
     expect(evaluateRuntimeBudgets(profiles, candidate)).toEqual([]);
     for (const profile of Object.keys(profiles)) candidate.apiLatencyMs[profile] = {};
     const violations = evaluateRuntimeBudgets(profiles, candidate);
-    expect(violations).toHaveLength(6);
+    expect(violations).toHaveLength(12);
     expect(violations).toEqual(expect.arrayContaining([
       { metric: "runtime.apiLatencyMs.small.session", measured: 2, budget: null, reason: "budget_missing" },
       { metric: "runtime.apiLatencyMs.large.projects", measured: 3, budget: null, reason: "budget_missing" },
+      { metric: "runtime.apiLatencyMs.small.review", measured: 4, budget: null, reason: "budget_missing" },
+      { metric: "runtime.apiLatencyMs.large.reviewDetail", measured: 5, budget: null, reason: "budget_missing" },
     ]));
     expect(classifyRuntimeViolations(violations)).toEqual({ confirmable: [], immediate: violations });
     expect(JSON.parse(JSON.stringify(violations))).toEqual(violations);
@@ -623,7 +629,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(57);
+    expect(exactMetrics).toHaveLength(63);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);

@@ -9,7 +9,7 @@ still requires `MEX_ENFORCE_RELEASE_BUDGETS=1` on Ubuntu 24.04 x64 with Node
 ## Machine Hub
 
 The Vite manifest accounts for the initial JS and CSS closure and every built
-font. Route measurements count the bytes added by each lazy Home, Jobs, and Knowledge
+font. Route measurements count the bytes added by each lazy Home, Jobs, Knowledge, and Review
 page, including their shared chunk. The initial and largest-chunk limits
 retain the previous calibration. Route limits use `ceil(built bytes * 1.05)`.
 
@@ -17,9 +17,10 @@ Cold readiness runs `mex hub --foreground --no-open` against a new temporary
 MEX home for every sample and times through the first completed, validated
 `GET /api/v1/hello`. The warm API reads use the session cookie and time complete
 responses from `/api/v1/session`, `/api/v1/projects`, `/api/v1/home`, `/api/v1/jobs`,
-`/api/v1/knowledge`, and `/api/v1/knowledge/landing`. Each frozen fixture
-profile registers one Git checkout in its own temporary MEX home. The warm
-Knowledge reads use 4, 16, or 48 seeded notes after the snapshot is ready. Browser heap
+`/api/v1/knowledge`, `/api/v1/knowledge/landing`, `/api/v1/review`, and
+`/api/v1/review/cards/:key`. Each frozen fixture profile registers one Git
+checkout in its own temporary MEX home. Knowledge and Review read 4, 16, or
+48 seeded items after their snapshots are ready. Browser heap
 uses a fresh Chromium context for each sample after real fixture content appears
 on the route, and fails if the page requests any other origin. The benchmark
 checks that Hub reads preserve repository state.
@@ -39,8 +40,9 @@ validate. Graph and Wiki database ratios continue to use the frozen fixtures
 and their existing limits.
 
 Cold readiness, idle, Home heap, session, and projects retain their previous
-limits. Home, Jobs, and Knowledge API latency have provisional caps per fixture size.
-Repo heap uses the smallest previous route heap limit. Those limits enforce
+limits. Home, Jobs, Knowledge, and Review API latency have provisional caps
+per fixture size. The Review queue uses the Knowledge page caps. Review detail
+has twice that allowance for the selected checkout scan. Repo heap uses the smallest previous route heap limit. Those limits enforce
 on the pinned runner, where calibration uses `ceil(measured p95 * 1.15)`.
 Local macOS or Windows timing and heap samples are for characterization.
 
