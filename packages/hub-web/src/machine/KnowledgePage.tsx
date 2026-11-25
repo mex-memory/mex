@@ -270,7 +270,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     items.push(...page.items);
   }
 
-  const total = Object.values(first.statusCounts).reduce((sum, count) => sum + count, 0);
+  const total = Object.values(first.counts.status).reduce((sum, count) => sum + count, 0);
   const repoNames = new Map(projects.map(({ id, name }) => [id, name]));
   const now = new Date();
   const forgotten = knowledge.forgotten.filter(({ repoId }) => !project || repoId === project.id);
@@ -367,7 +367,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         <KnowledgeSummary
           active={statusFilter}
           browseHref={showList ? undefined : browseHref}
-          counts={first.statusCounts}
+          counts={first.counts.status}
           onToggle={(slug) => changeFilter("status", statusFilter === slug ? "" : slug)}
           total={total}
         />

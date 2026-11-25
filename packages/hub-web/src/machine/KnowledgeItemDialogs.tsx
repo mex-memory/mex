@@ -10,7 +10,7 @@ import { CopyButton } from "./ui";
 import styles from "./knowledge-forms.module.css";
 
 const forgetCopy = {
-  personal: {
+  onlyYou: {
     title: "Forget this note?",
     text: "MEX stops using it. The file stays on disk, and it moves to Forgotten.",
   },

@@ -11,6 +11,8 @@ import { validateHubRequestPath, type HubAssetManifest } from "../static/assets.
 import { HubEvents } from "./events.js";
 import { HomeData } from "./home.js";
 import { changeHubJob, readHubJobs } from "./jobs.js";
+import { KnowledgeData } from "./knowledge.js";
+import { readKnowledgePage } from "./knowledge-list.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { consumeBootstrap, keepHubOpen, TAB_KEEPALIVE_MS, type HubMode } from "./state.js";
 
@@ -49,6 +51,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   };
 
   const home = new HomeData(location, now);
+  const knowledge = new KnowledgeData(location, now, options.env);
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
   const events = new HubEvents(location, home, now, keepOpen);
 
@@ -128,6 +131,8 @@ export function createMachineHubApp(options: MachineHubOptions) {
 
   app.get("/api/v1/home", (context) => context.json(home.get(context.req.query("tz"))));
 
+  app.get("/api/v1/knowledge", (context) => context.json(readKnowledgePage(knowledge, context.req.query())));
+
   app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
 
   app.post("/api/v1/jobs/:id/actions", async (context) => {
@@ -165,6 +170,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   return Object.assign(app, { close() {
     events.close();
     home.close();
+    knowledge.close();
   } });
 }
 

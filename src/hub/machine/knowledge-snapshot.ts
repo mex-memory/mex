@@ -10,6 +10,7 @@ import type { LocationOptions } from "../../record/location.js";
 import { absolutePath, realPath } from "../../record/project.js";
 import { registeredProjectIds } from "./home-metrics.js";
 import { activeCheckouts, checkoutCollation, knowledgeStatus, mostRecentCheckout } from "./home-snapshot.js";
+import { knowledgeRanking, useKey, useWindow, USAGE_UNAVAILABLE, type UseWindow } from "./knowledge-usage.js";
 import { readStore } from "./read.js";
 
 export const PROJECT_ID = /^[gf]-[a-f0-9]{24}$/u;
@@ -34,6 +35,7 @@ export interface KnowledgeRow {
   status: Status;
   checkedAt?: string;
   search: string;
+  lastUsedAt: string | null;
 }
 
 export interface RetiredRow { id: string; repoId: string; audience: Audience; at: string }
@@ -49,6 +51,8 @@ export interface KnowledgeSnapshot {
   generatedAt: string;
   projects: Map<string, ProjectKnowledge>;
   partial?: string;
+  usage?: UseWindow;
+  usagePartial?: string;
 }
 
 export const searchText = (text: string) => text.normalize("NFKC").toLowerCase();
@@ -160,7 +164,7 @@ function projectKnowledge(
           if (consumed + cost > available) throw new KnowledgeError("STORE_LIMIT", SCAN_NOTE);
           consumed += cost;
           rows.set(key, { key, id, repoId, audience, kind: entry.mex.kind, oneLine, scope, revision: found.revision,
-            ...(audience === "team" ? { checkout } : {}), status: "notChecked", search });
+            ...(audience === "team" ? { checkout } : {}), status: "notChecked", search, lastUsedAt: null });
         } catch (error) {
           if (error instanceof KnowledgeError && ["STORE_LIMIT", "STORE_BUSY", "STORE_CHANGED"].includes(error.code)) throw error;
           partial ??= READ_NOTE;
@@ -222,5 +226,17 @@ export async function takeKnowledgeSnapshot(
       projects.set(id, project);
     }
   }
-  return { generatedAt: new Date(now()).toISOString(), projects };
+  let usage = previous?.usage;
+  let usagePartial = previous?.usagePartial;
+  try {
+    if (!only || !usage) usage = readStore(openHooksReadOnly, location, (hooks) => useWindow(hooks, now()));
+    const ranking = knowledgeRanking(location, usage);
+    usagePartial = ranking.partial;
+    for (const id of ids) {
+      const project = projects.get(id);
+      if (!project || project.rows === previous?.projects.get(id)?.rows) continue;
+      for (const row of project.rows.values()) row.lastUsedAt = ranking.items.get(useKey(row))?.lastUsedAt ?? null;
+    }
+  } catch { usagePartial = USAGE_UNAVAILABLE; }
+  return { generatedAt: new Date(now()).toISOString(), projects, usage, usagePartial };
 }

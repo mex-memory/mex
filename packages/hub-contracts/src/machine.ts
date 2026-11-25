@@ -55,7 +55,7 @@ const countSchema = z.number().int().nonnegative();
 const isoTimeSchema = z.string().datetime({ offset: true });
 
 export const MachineKnowledgeKindSchema = z.enum(["rule", "recipe", "decision", "pitfall", "procedure", "fact", "hint"]);
-export const MachineKnowledgeAudienceSchema = z.enum(["personal", "team", "hint"]);
+export const MachineKnowledgeAudienceSchema = z.enum(["onlyYou", "team", "hint"]);
 export const MachineKnowledgeStatusSchema = z.enum(["upToDate", "codeChanged", "outOfDate", "notChecked"]);
 export const MachineKnowledgeStatusCountsSchema = z.object({
   upToDate: countSchema,
@@ -81,14 +81,23 @@ const knowledgeContentSchema = z.object({
   scope: z.array(z.string().trim().min(1).max(512)).min(1).max(32),
 });
 
-export const MachineKnowledgeItemSchema = knowledgeContentSchema.pick({ oneLine: true, kind: true }).extend({
+export const MachineKnowledgeItemSchema = knowledgeContentSchema.pick({ oneLine: true, kind: true, scope: true }).extend({
   id: z.string().min(1),
   key: knowledgeKeySchema,
   repoId: z.string().min(1),
   audience: MachineKnowledgeAudienceSchema,
   status: MachineKnowledgeStatusSchema,
   lastUsedAt: isoTimeSchema.nullable(),
+  revision: knowledgeRevisionSchema,
+  checkout: z.string().min(1).optional(),
+  useCount30Days: countSchema.optional(),
 });
+
+const knowledgeReadState = {
+  generatedAt: isoTimeSchema,
+  updatingSince: isoTimeSchema.optional(),
+  partial: z.array(z.object({ repoId: z.string().optional(), note: z.string() })).optional(),
+};
 
 const knowledgeGroupSchema = z.object({
   count: countSchema,
@@ -97,6 +106,7 @@ const knowledgeGroupSchema = z.object({
 });
 
 export const MachineKnowledgeLandingSchema = z.object({
+  ...knowledgeReadState,
   groups: z.object({
     byKind: z.array(knowledgeGroupSchema.extend({ kind: MachineKnowledgeKindSchema })).max(7),
     byArea: z.array(knowledgeGroupSchema.extend({
@@ -139,14 +149,15 @@ export const MachineKnowledgeDetailSchema = MachineKnowledgeItemSchema.merge(kno
 });
 
 export const MachineKnowledgePageSchema = z.object({
-  items: z.array(MachineKnowledgeItemSchema).max(50),
+  ...knowledgeReadState,
+  items: z.array(MachineKnowledgeItemSchema).max(100),
   total: countSchema,
   nextCursor: z.string().nullable(),
-  statusCounts: MachineKnowledgeStatusCountsSchema,
-  kindCounts: z.record(MachineKnowledgeKindSchema, countSchema),
-  audienceCounts: z.record(MachineKnowledgeAudienceSchema, countSchema),
-  updatingSince: isoTimeSchema.optional(),
-  generatedAt: isoTimeSchema,
+  counts: z.object({
+    status: MachineKnowledgeStatusCountsSchema,
+    kind: z.record(MachineKnowledgeKindSchema, countSchema),
+    audience: z.record(MachineKnowledgeAudienceSchema, countSchema),
+  }),
 });
 
 export const MachineForgottenItemSchema = MachineKnowledgeItemSchema.pick({ id: true, repoId: true, audience: true })

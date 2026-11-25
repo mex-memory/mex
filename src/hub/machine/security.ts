@@ -16,7 +16,7 @@ export const CSRF_HEADER = "x-mex-csrf";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const FORWARDED_HEADERS = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-port", "x-forwarded-proto", "x-real-ip"] as const;
 
-export type HubProblem = "INVALID_REQUEST" | "UNAUTHORIZED" | "ORIGIN_REJECTED" | "JOB_CONFLICT" | "STREAM_UNAVAILABLE";
+export type HubProblem = "INVALID_REQUEST" | "UNAUTHORIZED" | "ORIGIN_REJECTED" | "JOB_CONFLICT" | "KNOWLEDGE_CHANGED" | "STREAM_UNAVAILABLE";
 
 export class HubRequestError extends Error {
   constructor(readonly status: number, readonly code: HubProblem, readonly title: string, detail: string) {

@@ -1,3 +1,5 @@
+import { MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
+import { setImmediate } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { KNOWLEDGE_LIMITS, serializeEntry, type KnowledgeEntry } from "../../../knowledge/entry.js";
 import { readHints, refreshHints } from "../../../knowledge/hints.js";
 import { openRecord, projectIdentity, type RecordWriter } from "../../../record/index.js";
+import { createMachineHubApp } from "../app.js";
+import { HubSessions } from "../security.js";
+import { usageRange } from "../knowledge-usage.js";
 import { knowledgeKey, takeKnowledgeSnapshot, type Audience } from "../knowledge-snapshot.js";
 
 const NOW = Date.parse("2026-11-24T18:00:00.000Z");
@@ -16,6 +21,9 @@ const PRIVATE = "The explanation remains available only in the detail.";
 let base: string, home: string, env: NodeJS.ProcessEnv;
 let writer: RecordWriter;
 let hooks: DatabaseSync;
+let app: ReturnType<typeof createMachineHubApp>;
+let cookie: string, csrf: string, clock: number;
+const ORIGIN = "http://127.0.0.1:41917";
 
 const location = () => ({ home, isNetwork: () => false });
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", timeout: 5_000 });
@@ -32,9 +40,17 @@ beforeEach(() => {
     hooks.exec(`PRAGMA user_version=${Number(file.slice(0, 4))}`);
   }
   hooks.exec("PRAGMA journal_mode=WAL");
+  clock = NOW;
+  const sessions = new HubSessions(home, () => clock);
+  const signed = sessions.create();
+  cookie = `${sessions.cookieName}=${signed.cookie}`;
+  csrf = signed.session.csrfToken;
+  app = createMachineHubApp({ ...location(), sessions, homeId: "test-home", version: "test", mode: "terminal", env, now: () => clock });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  app.close();
+  await setImmediate();
   hooks.close();
   writer.close();
   rmSync(base, { recursive: true, force: true });
@@ -134,5 +150,98 @@ describe("Knowledge snapshot", () => {
     expect(result.partial).toMatch(/reading limit/u);
     expect(result.rows.size).toBeGreaterThan(0);
     expect(result.rows.size).toBeLessThan(600);
+  });
+});
+
+
+function get(path: string, signed = true) {
+  return app.request(ORIGIN + "/api/v1/knowledge" + path, {
+    headers: { host: new URL(ORIGIN).host, ...(signed ? { cookie } : {}) },
+  });
+}
+
+async function page(query = "", wait = true) {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const response = await get(query);
+    expect(response.status).toBe(200);
+    const data = MachineKnowledgePageSchema.parse(await response.json());
+    if (!wait || !data.updatingSince) return data;
+    await setImmediate();
+  }
+  throw new Error("Snapshot did not finish");
+}
+
+let delivery = 0;
+function receipt(repo: ReturnType<typeof project>, id: string, time: string, action = "given", moment = "read") {
+  const session = "session-" + repo.id;
+  hooks.prepare("INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?,?,0)").run(session, "codex", repo.id, repo.path, at(), at());
+  hooks.prepare("INSERT OR IGNORE INTO epochs(session_id,agent_id,epoch,started_at) VALUES(?,'codex',0,?)").run(session, at());
+  hooks.prepare(`INSERT INTO deliveries(id,session_id,agent_id,epoch,ts,moment,entry_id,form,tokens,action,project_id,checkout)
+    VALUES(?,?,'codex',0,?,?,?,'one-line',0,?,?,?)`).run(String(delivery++), session, time, moment, id, action, repo.id, repo.path);
+}
+
+describe("Knowledge list", () => {
+  it("combines filters and body search while keeping totals for the selected repo", async () => {
+    const repo = project("repo");
+    const other = project("other");
+    save(repo, "onlyYou", entry("mx_personal", "ＡＰＩ boundaries", { scope: ["apps/api/**", "tests/**"] }, "Normalize the request first."));
+    save(repo, "team", entry("mx_teamrule", "Different rule", { kind: "fact", scope: ["apps/api/exact.ts"] }));
+    save(other, "onlyYou", entry("mx_otherrepo", "Another repo"));
+    verdict(repo, "mx_personal", "changed");
+    const query = `?repo=${repo.id}&q=Api%20Normalize&status=needs-look&kind=rule&audience=onlyYou&area=tests%2F**`;
+    const initial = await page(query, false);
+    expect(initial.updatingSince).toBe(at());
+    const result = await page(query);
+    expect(result.items.map(({ id }) => id)).toEqual(["mx_personal"]);
+    expect(result.counts).toEqual({
+      status: { upToDate: 0, codeChanged: 1, outOfDate: 0, notChecked: 1 },
+      kind: { rule: 1, fact: 1 }, audience: { onlyYou: 1, team: 1 },
+    });
+    expect((await page(`?repo=${repo.id}&audience=team`)).items.map(({ id }) => id)).toEqual(["mx_teamrule"]);
+    expect((await page("?kind=fact")).items.map(({ id }) => id)).toEqual(["mx_teamrule"]);
+    expect((await page("?status=codeChanged")).total).toBe(1);
+    expect((await page("?area=apps%2Fapi%2F**")).total).toBe(1);
+    expect((await page("?q=unrelated")).total).toBe(0);
+  });
+
+  it("sorts the full list by last use before paging and rejects a stale cursor", async () => {
+    const repo = project("repo");
+    const other = project("other");
+    save(repo, "onlyYou", entry("mx_personal", "Zebra"));
+    save(repo, "team", entry("mx_teamrule", "Aardvark"));
+    save(other, "onlyYou", entry("mx_otherrepo", "Another repo"));
+    receipt(repo, "mx_personal", at(-DAY).replace(".000Z", ".1Z"));
+    receipt(repo, "mx_personal", at(-DAY).replace(".000Z", ".101Z"), "replaced");
+    receipt(repo, "mx_personal", at(), "shadow");
+    receipt(repo, "mx_personal", at(), "given", "correction");
+    receipt(repo, "mx_personal", at(-31 * DAY));
+    receipt(repo, "mx_personal", at(1));
+    receipt(repo, "mx_teamrule", at(-DAY).replace(".000Z", "") + "Z");
+    receipt(other, "mx_personal", at(-DAY));
+    const first = await page("?limit=1");
+    expect(first.nextCursor).toBeTruthy();
+    expect(first.items[0]).toMatchObject({ id: "mx_personal", useCount30Days: 2, lastUsedAt: at(-DAY).replace(".000Z", ".101000000Z") });
+    const second = "?limit=1&cursor=" + first.nextCursor;
+    const result = await page(second);
+    expect(result.items[0]).toMatchObject({ id: "mx_teamrule", useCount30Days: 1 });
+    expect((await page("?limit=1&cursor=" + result.nextCursor)).items[0]).toMatchObject({ id: "mx_otherrepo", useCount30Days: 0, lastUsedAt: null });
+    expect(await (await get(second + "&kind=rule")).json()).toMatchObject({ status: 400 });
+    clock += 120_001;
+    await page("?limit=1");
+    expect(await (await get(second)).json()).toMatchObject({ status: 409, code: "KNOWLEDGE_CHANGED" });
+  });
+
+  it("uses the time index to cap receipt reads before grouping", () => {
+    const plan = hooks.prepare(`EXPLAIN QUERY PLAN WITH ${usageRange} SELECT count(*) FROM recent`)
+      .all(at(-30 * DAY), at(), 100, 100_000);
+    expect(plan.some((row) => String(row.detail).includes("SEARCH deliveries USING INDEX deliveries_ts (ts>? AND ts<?)"))).toBe(true);
+    expect(plan.some((row) => String(row.detail).includes("TEMP B-TREE FOR ORDER BY"))).toBe(false);
+  });
+
+  it("requires a session and rejects invalid or unregistered repo and limit values", async () => {
+    expect((await get("", false)).status).toBe(401);
+    expect((await get("?repo=../elsewhere")).status).toBe(400);
+    expect((await get("?repo=f-" + "a".repeat(24))).status).toBe(404);
+    expect((await get("?limit=101")).status).toBe(400);
   });
 });

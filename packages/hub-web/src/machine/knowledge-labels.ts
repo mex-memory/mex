@@ -11,7 +11,7 @@ export const kindLabels = {
 } satisfies Record<KnowledgeKind, string>;
 
 export const audienceLabels = {
-  personal: "Only you",
+  onlyYou: "Only you",
   team: "Your team",
   hint: "Hint from your agent",
 } satisfies Record<KnowledgeAudience, string>;

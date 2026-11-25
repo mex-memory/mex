@@ -263,7 +263,7 @@ describe("Knowledge fixtures", () => {
     const heading = await openItem(user, personal);
     const panel = detail(personal);
     expect(heading).toHaveFocus();
-    expect(decodeURIComponent(window.location.pathname)).toBe("/repos/storefront/knowledge/storefront:personal:mx_checkout");
+    expect(decodeURIComponent(window.location.pathname)).toBe("/repos/storefront/knowledge/storefront:onlyYou:mx_checkout");
     expect(panel.getByText("Applies to").parentElement).toHaveTextContent("Applies to apps/api");
     expect(panel.getByText(/The provider got an invalid address from guest checkout/).tagName).toBe("BLOCKQUOTE");
     expect(panel.getAllByText("Last checked", { exact: false })).toHaveLength(2);

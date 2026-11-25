@@ -122,7 +122,7 @@ function DetailActions({ audience, onEdit, onForget, onShare, editRef, forgetRef
         <Button aria-describedby={hint ? reason : undefined} disabled={hint} onClick={onEdit} ref={editRef} size="sm" type="button" variant="outline">
           <Pencil aria-hidden="true" /> Edit
         </Button>
-        {audience === "personal" && (
+        {audience === "onlyYou" && (
           <Button aria-haspopup="dialog" onClick={onShare} size="sm" type="button" variant="ghost"><Share2 aria-hidden="true" /> Share…</Button>
         )}
         {children}

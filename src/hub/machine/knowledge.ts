@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { statSync, watch, type FSWatcher } from "node:fs";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
 import { takeKnowledgeSnapshot, type KnowledgeSnapshot } from "./knowledge-snapshot.js";
@@ -26,6 +27,7 @@ export class KnowledgeData {
   #lastActivity = -Infinity;
   #lastSignal: string | undefined;
   #generation = 0;
+  readonly #instance = randomUUID();
   #timer: NodeJS.Timeout | undefined;
   #refreshing: Promise<void> | undefined;
 
@@ -37,7 +39,7 @@ export class KnowledgeData {
     this.touch();
     if (!this.#refreshing && this.now() - this.#lastStart >= REFRESH_MS) void this.#refresh();
     return {
-      snapshot: this.#snapshot, generation: this.#generation, updatingSince: this.#updatingSince,
+      snapshot: this.#snapshot, generation: `${this.#instance}:${this.#generation}`, updatingSince: this.#updatingSince,
       generatedAt: this.#snapshot?.generatedAt ?? new Date(this.now()).toISOString(),
     };
   }

@@ -11,8 +11,8 @@ const fixturePageSize = 20;
 const kindOrder: readonly KnowledgeKind[] = ["rule", "decision", "recipe", "pitfall", "procedure", "fact", "hint"];
 const reviewOrder: readonly KnowledgeStatus[] = ["outOfDate", "codeChanged"];
 
-function listItem({ id, key, repoId, oneLine, kind, audience, status, lastUsedAt }: KnowledgeDetail): KnowledgeItem {
-  return { id, key, repoId, oneLine, kind, audience, status, lastUsedAt };
+function listItem({ id, key, repoId, oneLine, kind, audience, status, lastUsedAt, scope, revision }: KnowledgeDetail): KnowledgeItem {
+  return { id, key, repoId, oneLine, kind, audience, status, lastUsedAt, scope, revision };
 }
 
 function summarizeGroup(items: readonly KnowledgeDetail[]) {
@@ -57,14 +57,14 @@ function landingOf(fixture: KnowledgeFixture, scopeId?: string): KnowledgeLandin
     return [{ priority, at: check ? observedAt(check) : Infinity, row: { ...listItem(item), why } }];
   }).sort((a, b) => a.priority - b.priority || a.at - b.at);
 
-  return { groups: { byKind, byArea }, needsLook: { total: attention.length, items: attention.slice(0, 3).map(({ row }) => row) } };
+  return { generatedAt: fixture.generatedAt, groups: { byKind, byArea }, needsLook: { total: attention.length, items: attention.slice(0, 3).map(({ row }) => row) } };
 }
 
 function pageOf(fixture: KnowledgeFixture, filters: KnowledgeFilters, cursor?: string): KnowledgePageData {
   const scoped = fixture.items.filter(({ repoId }) => !filters.scopeId || repoId === filters.scopeId);
   const statusCounts = { upToDate: 0, codeChanged: 0, outOfDate: 0, notChecked: 0 };
-  const kindCounts: KnowledgePageData["kindCounts"] = {};
-  const audienceCounts: KnowledgePageData["audienceCounts"] = {};
+  const kindCounts: KnowledgePageData["counts"]["kind"] = {};
+  const audienceCounts: KnowledgePageData["counts"]["audience"] = {};
   const words = filters.query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
   const statuses = filters.status === "needs-look" ? reviewOrder : filters.status ? [filters.status] : undefined;
   const matches: KnowledgeItem[] = [];
@@ -88,7 +88,7 @@ function pageOf(fixture: KnowledgeFixture, filters: KnowledgeFilters, cursor?: s
     items: matches.slice(start, end),
     total: matches.length,
     nextCursor: end < matches.length ? String(end) : null,
-    statusCounts, kindCounts, audienceCounts,
+    counts: { status: statusCounts, kind: kindCounts, audience: audienceCounts },
     generatedAt: fixture.generatedAt,
     updatingSince: fixture.updatingSince,
   };
@@ -167,7 +167,7 @@ export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonl
     const noteRevision = revision();
     const id = `mx_hubnote${noteRevision.slice(1)}`;
     const item: KnowledgeDetail = {
-      id, key: `${repoId}:personal:${id}`, repoId, audience: "personal", kind, scope, text,
+      id, key: `${repoId}:onlyYou:${id}`, repoId, audience: "onlyYou", kind, scope, text,
       oneLine: text.split("\n")[0].trim().slice(0, 1024),
       revision: noteRevision, status: "notChecked", checks: [],
       source: { type: "note", via: "hub", at }, lastUsedAt: null, useCount30Days: 0, history: [{ type: "added", at }],
@@ -193,7 +193,7 @@ export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonl
   function editNote(request: KnowledgeEdit): KnowledgeEditResult {
     let item = getCurrent(request.key);
     const at = new Date().toISOString();
-    if (variant === "conflict" && !conflictShown.current && item.key === "storefront:personal:mx_checkout") {
+    if (variant === "conflict" && !conflictShown.current && item.key === "storefront:onlyYou:mx_checkout") {
       conflictShown.current = true;
       item = {
         ...item, revision: revision(),
@@ -208,8 +208,8 @@ export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonl
     const updated: KnowledgeDetail = {
       ...item, oneLine, text, kind, scope,
       status: "notChecked", checks: [],
-      source: item.audience === "personal" ? { type: "note", at, via: "hub", edited: true } : item.source,
-      evidence: item.audience === "personal" ? undefined : item.evidence,
+      source: item.audience === "onlyYou" ? { type: "note", at, via: "hub", edited: true } : item.source,
+      evidence: item.audience === "onlyYou" ? undefined : item.evidence,
       history: [{ type: "edited", at }, ...item.history],
     };
     const preview = teamPreview(item, request, teamFile(updated));
