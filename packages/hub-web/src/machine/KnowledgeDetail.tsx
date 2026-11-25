@@ -2,7 +2,7 @@ import { useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNo
 import { ArrowLeft, Check, ChevronDown, Pencil, Share2, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
-import { Button } from "../components/primitives/button";
+import { Button, buttonVariants } from "../components/primitives/button";
 import { KnowledgeConflictDialog, KnowledgeEditor, type EditConflict, type EditDraft } from "./KnowledgeEditor";
 import { KnowledgeForgetDialog, KnowledgeShareDialog } from "./KnowledgeItemDialogs";
 import { KnowledgeReviewDialog } from "./KnowledgeReviewDialog";
@@ -251,15 +251,17 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
 
   return (
     <div className={styles.detailColumn}>
-      <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
+      {narrow && <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>}
       <section aria-labelledby={titleId} className={styles.detailCard}>
         <div aria-label="Read item" className={styles.detailScroll} role="group" tabIndex={narrow ? undefined : 0}>
           <header>
             <div className={styles.detailHeader}>
               <Heading id={titleId} ref={titleRef} tabIndex={-1}>{item?.oneLine ?? "Item unavailable"}</Heading>
-              <Button aria-label="Close item" className={styles.closeItem} render={<Link to={backHref} />} nativeButton={false} size="icon-sm" variant="ghost">
-                <X aria-hidden="true" />
-              </Button>
+              {!narrow && (
+                <Link aria-label="Close item" className={`${buttonVariants({ size: "icon-sm", variant: "ghost" })} ${styles.closeItem}`} to={backHref}>
+                  <X aria-hidden="true" />
+                </Link>
+              )}
             </div>
             {item && (
               <ul aria-label="Item details" className={styles.chips} role="list">
@@ -297,12 +299,12 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
           )}
         </div>
         {item && !draft && (
-          <footer className={styles.detailFooter}>
+          <div className={styles.detailFooter}>
             <DetailActions audience={item.audience} editRef={bottomEdit} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
               <span className={styles.saved} role="status">{notice && <><Check aria-hidden="true" />{notice}</>}</span>
             </DetailActions>
             {actionError && <p className={styles.actionError} role="alert">{actionError}</p>}
-          </footer>
+          </div>
         )}
       </section>
       <KnowledgeReviewDialog

@@ -496,8 +496,7 @@ main:has(.page) {
   stroke-width: 1.5;
 }
 
-.detailPlaceholder,
-.closeItem {
+.detailPlaceholder {
   display: none;
 }
 
@@ -541,6 +540,10 @@ main:has(.page) {
 
 .detailHeader .closeItem {
   margin: -2px -4px 0 0;
+}
+
+.back {
+  width: fit-content;
 }
 
 .chips {
@@ -774,13 +777,6 @@ main:has(.page) {
     scrollbar-color: var(--border-strong) transparent;
   }
 
-  .closeItem {
-    display: inline-flex;
-  }
-
-  .detailColumn .back {
-    display: none;
-  }
 }
 
 @media (max-width: 1023px) {
