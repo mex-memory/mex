@@ -424,7 +424,12 @@
 
 /* Learn deeper is the one optional step worth recommending: show what it adds first, the cost after. */
 .step[data-offer] {
+  padding-block: 16px;
   background: var(--surface-subtle);
+}
+
+.step[data-offer] .stepMain {
+  gap: 10px;
 }
 
 .recommended.recommended {
@@ -447,7 +452,7 @@
 .gains {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
+  gap: 8px 18px;
   margin: 0;
   padding: 0;
   list-style: none;
