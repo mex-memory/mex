@@ -5,7 +5,7 @@ import { assertNoSecrets, stripHidden } from "../knowledge/gates.js";
 import { KnowledgeError } from "../knowledge/entry.js";
 import type { Position } from "../judge/evidence.js";
 import type { FilterCandidate } from "./job.js";
-import { filterSession, timestampNs } from "./input.js";
+import { capturedPositionAt, filterSession } from "./input.js";
 
 export const CONTINUITY_TTL = 14 * 86400000;
 const Item = z.object({ id: z.string().regex(/^[a-f0-9]{24}$/u), session: z.string().min(1).max(512), at: z.string().datetime({ offset: true }),
@@ -34,8 +34,8 @@ export function stageContinuity<T extends Pick<FilterCandidate, "label" | "text"
   const items = new Map((existing?.items ?? []).filter(i => now - Date.parse(i.at) < CONTINUITY_TTL && Date.parse(i.at) <= now).map(i => [i.id, i]));
   for (const c of candidates) {
     if (c.label !== "next-session" || !c.source.session || c.source.marks || c.source.delivered.length || c.source.note_id) continue;
-    const meta = filterSession(writer, project, checkout, c.source.session), sourceAt = timestampNs(c.source.at), since = timestampNs(meta?.position_at ?? ""), seen = timestampNs(meta?.seen_at ?? "");
-    if (!meta || meta.branch !== branch || meta.head !== at.head || sourceAt === undefined || since === undefined || seen === undefined || sourceAt < since || sourceAt > seen) continue;
+    const origin = capturedPositionAt(filterSession(writer, project, checkout, c.source.session), c.source.at);
+    if (origin?.branch !== branch || origin.head !== at.head) continue;
     if (Date.parse(c.source.at) > now || now - Date.parse(c.source.at) >= CONTINUITY_TTL) continue;
     assertNoSecrets(c);
     const text = Array.from(stripHidden(c.text).trim().replace(/\s+/gu, " ")).slice(0, 120).join("");

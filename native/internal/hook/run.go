@@ -79,6 +79,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return checkStage(args[1:], getenv)
 		case "--check-run":
 			return checkRun(stdin, stdout)
+		case "--session-lifetimes":
+			return sessionLifetimes(stdin, stdout)
 		case "--graph-read":
 			return graphRead(stdin, stdout)
 		case "--delivery-probe":

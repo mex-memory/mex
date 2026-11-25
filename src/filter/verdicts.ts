@@ -97,6 +97,10 @@ function approvalReference(message: Message, proposed: z.infer<typeof Approval> 
 }
 
 const normalized = (text: string) => stripHidden(text).trim().replace(/\s+/gu, " ").toLowerCase();
+export function repeatsDeliveredNote(quote: string, delivered: FilterInput["delivered_notes"]): boolean {
+  return delivered.some(note => !!note.text && normalized(note.text).includes(normalized(quote)));
+}
+
 function resolveVerdict(answer: z.infer<typeof Answer>, message: Message, delivered: FilterInput["delivered_notes"]): StageOneVerdict | undefined {
   if (answer.verdict !== "candidate" && answer.verdict !== "next-session") return answer;
   const quote = typedSpan(message.text, answer.quote);
@@ -108,8 +112,7 @@ function resolveVerdict(answer: z.infer<typeof Answer>, message: Message, delive
   const reason = answer.kind === "fact" || answer.kind === "decision" ? statedReason(message.text, quote, answer.reason) : null;
   const standing = (answer.kind === "instruction" || answer.kind === "correction") && !!marker;
   const lasts = answer.lasts === "task" ? "task" : marker?.lasts ?? (answer.lasts === "all" ? "repo" : answer.lasts);
-  const repeatsDelivery = delivered.some(note => note.text && normalized(note.text).includes(normalized(quote.text)));
-  const outcome = lasts !== "task" && (standing || reason) && !repeatsDelivery ? "personal" : "unsure";
+  const outcome = lasts !== "task" && (standing || reason) && !repeatsDeliveredNote(quote.text, delivered) ? "personal" : "unsure";
   return { id: answer.id, verdict: answer.verdict, kind: answer.kind, lasts, marker: marker?.text ?? null, reason, outcome, ...source,
     approval: answer.kind === "approval" ? approvalReference(message, answer.approval) : null };
 }
@@ -153,5 +156,7 @@ export function parseStageOne(text: string, input: FilterInput) {
 /** The private delivery payload for a later consumer of the Stage 1 batch. */
 export function verbatimNote(verdict: StageOneVerdict): { lasts: Exclude<z.infer<typeof Lifetime>, "task">; text: string } | undefined {
   if (verdict.verdict !== "candidate" || verdict.outcome !== "personal" || verdict.lasts === "task") return;
-  return { lasts: verdict.lasts, text: "[you said, " + verdict.at.slice(0, 10) + '] "' + verdict.quote.text + '"' };
+  return { lasts: verdict.lasts, text: verbatimText(verdict.quote.text, verdict.at) };
 }
+
+export const verbatimText = (quote: string, at: string) => "[you said, " + at.slice(0, 10) + '] "' + quote + '"';
