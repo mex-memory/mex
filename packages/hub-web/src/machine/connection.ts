@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { bootstrapSession, getProjects, getSession, heartbeat, HubNetworkError, isUnauthorized } from "./api";
 
@@ -43,7 +43,11 @@ export function useMachineConnection() {
         throw error;
       });
       setConnectionLost(false);
-      if (!current || rejectedLink.current) queryClient.removeQueries({ queryKey: PROJECTS_KEY });
+      if (!current || rejectedLink.current) {
+        queryClient.removeQueries({ queryKey: PROJECTS_KEY });
+        queryClient.removeQueries({ queryKey: ["home"] });
+        queryClient.removeQueries({ queryKey: ["jobs"] });
+      }
       return { current: rejectedLink.current ? null : current, rejectedLink: rejectedLink.current };
     },
     retry: false,
@@ -80,8 +84,14 @@ export function useMachineConnection() {
     networkMode: "always",
   });
 
+  const checkSession = useCallback(() => { void refreshSession({ cancelRefetch: false }); }, [refreshSession]);
+  const reportDataError = useCallback((error: unknown) => {
+    if (error instanceof HubNetworkError) setConnectionLost(true);
+    if (isUnauthorized(error)) checkSession();
+  }, [checkSession]);
+
   useHeartbeat(session.data?.current?.csrfToken, setConnectionLost, refreshSession);
-  return { session, projects, connectionLost };
+  return { session, projects, connectionLost, checkSession, reportDataError };
 }
 
 function useHeartbeat(

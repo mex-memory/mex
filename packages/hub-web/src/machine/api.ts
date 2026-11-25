@@ -1,6 +1,12 @@
 import {
   MachineBootstrapSchema,
   MachineHelloSchema,
+  MachineHomeSchema,
+  MachineJobActionRequestSchema,
+  MachineJobActionResponseSchema,
+  MachineJobConflictSchema,
+  MachineJobsSchema,
+  type MachineJobActionRequest,
   MachineProblemSchema,
   MachineProjectsSchema,
   MachineSessionSchema,
@@ -50,7 +56,8 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
     throw new HubNetworkError(error);
   }
   if (!response.ok) {
-    const problem = MachineProblemSchema.safeParse(await readJson(response));
+    const schema = response.status === 409 ? MachineJobConflictSchema : MachineProblemSchema;
+    const problem = schema.safeParse(await readJson(response));
     throw new HubProblemError(response.status, problem.success ? problem.data : undefined);
   }
   return response;
@@ -86,4 +93,23 @@ export async function heartbeat(csrfToken: string): Promise<void> {
     headers: { "x-mex-csrf": csrfToken },
   });
   if (response.status !== 204) throw new HubProblemError(response.status);
+}
+
+export function getHome(tz: string) {
+  return requestJson(`/home?${new URLSearchParams({ tz })}`, MachineHomeSchema);
+}
+
+export function getJobs() {
+  return requestJson("/jobs", MachineJobsSchema);
+}
+
+export function postJobAction(
+  id: string, action: MachineJobActionRequest["action"], expectedState: MachineJobActionRequest["expectedState"], csrfToken: string,
+) {
+  const body = MachineJobActionRequestSchema.parse({ action, expectedState });
+  return requestJson(`/jobs/${encodeURIComponent(id)}/actions`, MachineJobActionResponseSchema, {
+    method: "POST",
+    headers: { "x-mex-csrf": csrfToken, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
