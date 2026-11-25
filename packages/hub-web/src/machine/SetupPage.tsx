@@ -91,12 +91,12 @@ function FreeFindings({ repo }: { repo: MachineRepoSetup }) {
 
 function SetupSummary({ project, repo }: { project: MachineProject; repo: MachineRepoSetup }) {
   const saved = repo.questions.filter(({ outcome }) => outcome?.status === "saved").length;
-  const seconds = (repo.summary.elapsedMs / 1_000).toLocaleString("en-US", { maximumFractionDigits: 1 });
+  const { elapsedMs } = repo.summary;
   return (
     <section className={styles.summary}>
       <div>
         <h2>Summary</h2>
-        <p>Read {project.name} in {seconds} s, for $0.</p>
+        {elapsedMs !== undefined && <p>Read {project.name} in {(elapsedMs / 1_000).toLocaleString("en-US", { maximumFractionDigits: 1 })} s, for $0.</p>}
         {repo.summary.commandsSaved && <p>Your agents now get its test and build commands.</p>}
         {saved > 0 && <p>Your {saved === 1 ? "answer reaches" : `${saved} answers reach`} your agents as “you said”.</p>}
       </div>
