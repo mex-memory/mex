@@ -29,6 +29,7 @@ import type {
   MachineOutboundSchema,
   MachineSettingsSchema,
   MachineSetup,
+  MachineSetupQuote,
   MachineSettingsWriteRequestSchema,
   MachineStorageSchema,
   MachineUninstallPreviewSchema,
@@ -140,4 +141,6 @@ export interface SettingsPreview {
 export interface SetupPreview {
   data: MachineSetup;
   changeStep: (jobId: string, action: SetupStepAction) => void;
+  startLearning: (repoId: string, quote: MachineSetupQuote) => void;
+  skipLearning: (repoId: string) => void;
 }

@@ -1,5 +1,5 @@
-import { useId, useRef, useState, type ReactNode } from "react";
-import type { MachineRepoSetup, MachineSetupStep } from "@mex/hub-contracts/machine";
+import { useId, useRef, useState } from "react";
+import type { MachineRepoSetup, MachineSetupQuote, MachineSetupStep } from "@mex/hub-contracts/machine";
 import { ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
@@ -16,8 +16,9 @@ import { Badge } from "../components/primitives/badge";
 import { Button } from "../components/primitives/button";
 import { jobHash } from "./job-links";
 import { JobStateBadge } from "./JobStatus";
-import { repoPrefix } from "./review-model";
+import { repoPrefix, reviewHref } from "./review-model";
 import { setupJobTokens } from "./setup-model";
+import { SetupLearningDialog, SetupLearningOffer } from "./SetupLearning";
 import type { HubJob, SetupPreview } from "./types";
 import shared from "./machine.module.css";
 import styles from "./setup.module.css";
@@ -103,6 +104,9 @@ function StepRow({ step, repo, search, changeStep }: {
             </Button>
           </div>
         )}
+        {paid && (state === "done" || state === "done with gaps") && (
+          <Link className={shared.textLink} to={reviewHref(repo.repoId, undefined, search)}>Open Review <ArrowRight aria-hidden="true" /></Link>
+        )}
         <Link aria-label={`View job for ${label}`} className={shared.textLink} to={jobHref}>View job <ArrowRight aria-hidden="true" /></Link>
       </div>
       <AlertDialog open={confirm} onOpenChange={setConfirm}>
@@ -123,21 +127,26 @@ function StepRow({ step, repo, search, changeStep }: {
   );
 }
 
-export function SetupSteps({ repo, search, changeStep, children }: {
+export function SetupSteps({ repo, search, setup }: {
   repo: MachineRepoSetup;
   search: string;
-  changeStep: SetupPreview["changeStep"];
-  children?: ReactNode;
+  setup: SetupPreview;
 }) {
   const titleId = useId();
+  const title = useRef<HTMLHeadingElement>(null);
+  const start = useRef<HTMLButtonElement>(null);
+  const [quote, setQuote] = useState<MachineSetupQuote | null>(null);
   return (
     <section aria-labelledby={titleId} className={styles.section}>
-      <h2 id={titleId}>Setup steps</h2>
+      <h2 id={titleId} ref={title} tabIndex={-1}>Setup steps</h2>
       <ol className={styles.steps} role="list">
         {kinds.map((kind) => {
           const step = repo.steps.find((step) => step.kind === kind);
-          if (step) return <StepRow changeStep={changeStep} key={step.jobId} repo={repo} search={search} step={step} />;
-          if (kind === "learn-deeper") return children;
+          if (step) return <StepRow changeStep={setup.changeStep} key={step.jobId} repo={repo} search={search} step={step} />;
+          if (kind === "learn-deeper") return repo.learnDeeper && (
+            <SetupLearningOffer key={kind} offer={repo.learnDeeper} onQuote={setQuote}
+              onSkip={() => setup.skipLearning(repo.repoId)} trigger={start} />
+          );
           const unavailable = repo.unavailableSteps?.find((step) => step.kind === kind);
           return unavailable && (
             <li className={styles.step} key={kind}>
@@ -152,6 +161,12 @@ export function SetupSteps({ repo, search, changeStep, children }: {
           );
         })}
       </ol>
+      <SetupLearningDialog
+        finalFocus={() => start.current ?? title.current}
+        onClose={() => setQuote(null)}
+        onStart={(accepted) => { setup.startLearning(repo.repoId, accepted); setQuote(null); }}
+        quote={quote}
+      />
     </section>
   );
 }

@@ -119,7 +119,7 @@ export default function SetupPage({ project, projects, setup }: {
       {!project ? <SetupRepos projects={projects} search={search} setup={setup.data} /> : repo ? (
         <>
           <FreeFindings repo={repo} />
-          <SetupSteps changeStep={setup.changeStep} repo={repo} search={search} />
+          <SetupSteps key={repo.repoId} repo={repo} search={search} setup={setup} />
           <SetupSummary project={project} repo={repo} />
         </>
       ) : <SetupCommand project={project} />}

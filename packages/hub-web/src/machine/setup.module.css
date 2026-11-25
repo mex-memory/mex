@@ -267,3 +267,68 @@
   .actions [data-slot="button"] { min-height: 44px; }
   .stepAside a { min-height: 28px; }
 }
+
+.estimate {
+  display: grid;
+  width: fit-content;
+  max-width: 100%;
+  gap: 8px;
+  margin-block: 3px;
+}
+
+.estimate dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin: 0;
+  padding: 9px 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.estimate dt {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.estimate dd {
+  margin: 2px 0 0;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.confirmationHeader.confirmationHeader {
+  justify-items: start;
+  text-align: start;
+}
+
+.confirmationBody {
+  display: grid;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.confirmationBody p {
+  margin: 0;
+}
+
+.confirmationBody code {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+@media (max-width: 600px) {
+  .confirmation [data-slot="alert-dialog-footer"] {
+    flex-direction: column;
+  }
+
+  .confirmation [data-slot="button"] {
+    min-height: 44px;
+  }
+}

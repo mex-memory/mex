@@ -3,7 +3,9 @@ import { Check } from "lucide-react";
 import { useFixtureKnowledge } from "./fixture-knowledge";
 import { useFixtureReview } from "./fixture-review";
 import { fixtureHomeReview } from "./fixture-review-data";
-import { fixtureSetupJobs, requestFixtureStep, settleFixtureStep, updateFixtureStep } from "./fixture-setup";
+import {
+  fixtureSetupJobs, requestFixtureStep, settleFixtureStep, skipFixtureLearning, startFixtureLearning, updateFixtureRepo, updateFixtureStep,
+} from "./fixture-setup";
 import { updateFixtureSettings } from "./fixture-settings";
 import { getFixture, type FixtureVariant } from "./fixtures";
 import { HubShell } from "./HubShell";
@@ -123,7 +125,14 @@ export default function FixtureHub({ variant }: { variant: FixtureVariant }) {
       connectionLost={false}
       preview={{
         jobs: setup ? fixtureSetupJobs(setup) : jobs, overview, knowledge, review, changeJob,
-        setup: setup && { data: setup, changeStep: changeSetupStep },
+        setup: setup && {
+          data: setup, changeStep: changeSetupStep,
+          startLearning: (repoId, quote) => {
+            const at = new Date().toISOString();
+            setSetup((current) => current && updateFixtureRepo(current, repoId, (repo) => startFixtureLearning(repo, quote, at)));
+          },
+          skipLearning: (repoId) => setSetup((current) => current && updateFixtureRepo(current, repoId, skipFixtureLearning)),
+        },
         agents: { agents, getRepairPreview: (id) => fixture.agents.repairPreviews[id], repair },
         settings: { settings, uninstall: fixture.settings.uninstall, write },
       }}

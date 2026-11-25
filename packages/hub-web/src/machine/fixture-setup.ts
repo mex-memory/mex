@@ -3,6 +3,7 @@ import {
   type MachineProject,
   type MachineRepoSetup,
   type MachineSetup,
+  type MachineSetupQuote,
   type MachineSetupStep,
 } from "@mex/hub-contracts/machine";
 import { setupJobTokens, type SetupStepAction } from "./setup-model";
@@ -63,7 +64,7 @@ export function fixtureSetup(now: number): MachineSetup {
           state: "offered",
           quote: {
             agent: "Claude Code", tokens: 48_000, seconds: 240, ceilingTokens: 72_000,
-            recentUse: "about 1.8% of your recorded use in the past week", weekly: true, privateRepo: false,
+            recentUse: "About 1.8% of your recorded use in the past week.", weekly: true, privateRepo: false,
           },
         },
         questions: [
@@ -178,4 +179,24 @@ export function settleFixtureStep(step: MachineSetupStep, action: SetupStepActio
   if (step.pending !== action) return step;
   if (action === "pause") return { ...step, state: "paused", pending: undefined };
   return { ...step, state: "cancelled", pending: undefined, progress: undefined, finishedAt: at };
+}
+
+export function updateFixtureRepo(setup: MachineSetup, repoId: string, update: (repo: MachineRepoSetup) => MachineRepoSetup): MachineSetup {
+  return { repos: setup.repos.map((repo) => repo.repoId === repoId ? update(repo) : repo) };
+}
+
+export function startFixtureLearning(repo: MachineRepoSetup, quote: MachineSetupQuote, at: string): MachineRepoSetup {
+  if (repo.learnDeeper?.state !== "offered" || repo.learnDeeper.quote !== quote) return repo;
+  return {
+    ...repo, learnDeeper: undefined,
+    steps: [...repo.steps, {
+      kind: "learn-deeper", jobId: repo.repoId + "-learn", label: "Learn deeper", state: "queued",
+      scope: repo.checkout, estimate: { tokens: quote.tokens, seconds: quote.seconds },
+      cost: noCost, startedAt: at, finishedAt: null,
+    }],
+  };
+}
+
+export function skipFixtureLearning(repo: MachineRepoSetup): MachineRepoSetup {
+  return repo.learnDeeper?.state === "offered" ? { ...repo, learnDeeper: { state: "skipped" } } : repo;
 }
