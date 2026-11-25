@@ -24,7 +24,7 @@ const Write = Group.merge(Item.pick({ scope: true, one_line: true, private: true
 const Decision = z.discriminatedUnion("action", [Defer, Discard, Write]);
 const Repair = z.object({ id: z.string().max(80), checks: Item.shape.checks }).strict();
 export interface StageTwoDraft {
-  id: string; item: Answer; members: StageTwoSource[]; source: StageTwoSource;
+  id: string; item: Answer; members: StageTwoSource[]; source: StageTwoSource; producer: "session-import" | "session-ongoing";
   lasts: NoteLifetime; relation: "same" | "correction"; retained: SessionNote; replaces?: string; hostProof?: HostMemoryProof;
 }
 export interface StageTwoPlan {
@@ -33,7 +33,7 @@ export interface StageTwoPlan {
   retire: Map<string, { reason: "one-off" }>;
   invalid: number;
 }
-export const SESSION_PRODUCER = "session-ongoing";
+const sourceProducer = (source: StageTwoSource) => source.host ? "session-import" as const : "session-ongoing" as const;
 
 /** The request carries bounded typed excerpts, and the verified reply only when it fits. */
 export function stageTwoPrompt(input: StageTwoInput, hostMatches: readonly HostMatch[]) {
@@ -50,7 +50,8 @@ export function stageTwoPrompt(input: StageTwoInput, hostMatches: readonly HostM
       previous_reply, previous_options };
   });
   const files = input.files.map(({ path, text }) => ({ path, text }));
-  const notes = input.existing.map(({ entry, at }) => ({ id: entry.mex.id, at, editable: entry.mex.source.producer === SESSION_PRODUCER,
+  const producer = input.sources[0] && sourceProducer(input.sources[0]);
+  const notes = input.existing.map(({ entry, at }) => ({ id: entry.mex.id, at, editable: !!producer && entry.mex.source.producer === producer,
     kind: entry.mex.kind, scope: entry.mex.scope, text: entry.text.slice(0, 2048), checks: entry.mex.checks.map(({ kind, target }) => ({ kind, target })) }));
   const hints = hostMatches.filter(m => sources.some(s => s.id === m.id) && !hasSecret(m.ref) && !hasSecret(m.text))
     .slice(0, HOST_HINT_LIMIT).map(({ id, ref, text, proof }) => ({ id, ref: stripHidden(ref).slice(0, 512), text: stripHidden(text).slice(0, 1200), hint_id: proof?.id }));
@@ -106,10 +107,11 @@ const negated = (source: StageTwoSource) => source.verdict.verdict === "candidat
 function prepare(group: z.infer<typeof Write>, members: StageTwoSource[], target?: ExistingNote, hostProof?: HostMemoryProof): StageTwoDraft | undefined {
   const evidence = members.filter(usable).sort(newest), source = evidence[0];
   if (!source || source.verdict.verdict !== "candidate" || !source.note || !source.activeNote) return;
+  const producer = sourceProducer(source);
   if (group.host_hint && (!hostProof || members.length !== 1 || group.relation !== "same" || group.target || source.activeNote.scope.kind !== "seen"
     || source.verdict.outcome !== "unsure" || hostProof.source.message.id !== source.message.id)) return;
   // One bare approval or one ambiguous utterance cannot become an entry.
-  if (group.target && (!target || target.entry.mex.source.producer !== SESSION_PRODUCER)) return;
+  if (group.target && (!target || target.entry.mex.source.producer !== producer)) return;
   const correction = group.relation === "correction";
   if (correction && (source.verdict.kind !== "correction" || !strong(source) || (!target && evidence.length < 2)
     || target && !(Date.parse(source.message.at) > Date.parse(target.at)))) return;
@@ -138,8 +140,8 @@ function prepare(group: z.infer<typeof Write>, members: StageTwoSource[], target
   const replaces = correction ? target?.entry.mex.id : undefined;
   const key = correction ? JSON.stringify([source.note.claim, source.note.id])
     : lasts === "repo" ? retained.claim : JSON.stringify([retained.claim, retained.id]);
-  const id = group.relation === "same" && target ? target.entry.mex.id : producerEntryId(SESSION_PRODUCER, key);
-  return { id, item: item.data, members, source, retained, lasts, relation: group.relation, replaces, hostProof };
+  const id = group.relation === "same" && target ? target.entry.mex.id : producerEntryId(producer, key);
+  return { id, item: item.data, members, source, producer, retained, lasts, relation: group.relation, replaces, hostProof };
 }
 
 export function parseStageTwo(text: string, supplied: ReturnType<typeof stageTwoPrompt>): StageTwoPlan {

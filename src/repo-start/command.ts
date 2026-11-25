@@ -503,7 +503,10 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
     write(`${offer.question} (${offer.estimate}). Nothing paid was started; to start it, run: ${offer.command}`);
     return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary, ...ended };
   }
-  if (await ask([`${offer.question} ${offer.estimate}. [y/n]`])) write(await offer.start(context));
+  if (await ask([`${offer.question} ${offer.estimate}. [y/n]`])) {
+    const summary = await offer.start(context, write);
+    if (summary) write(summary);
+  }
   else write(`Not started. \`${offer.command}\` starts it later.`);
   return { exitCode: 0, place: place.kind, projectId, turnedOn: true, offer: summary, ...ended };
 }

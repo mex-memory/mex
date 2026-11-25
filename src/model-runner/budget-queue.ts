@@ -9,6 +9,8 @@ import { decideAdmission, planWindow, subtractHeadless, weightedTokens, type Bud
 import { knownPrice, modelWeights, OWN_REFERENCE, PRICE_PROFILE, REFERENCE_BATCH_UNITS } from "./budget-prices.js";
 import { ModelRunError } from "./errors.js";
 import { CEILING_WAIT, recordedModelSpend, tokenCount, tokenReservation, type ConsentedModelBatch } from "./consent.js";
+import { importLearningOn, sessionLearningOn, sessionRunner, SESSION_LEARN_KIND, SESSION_RUNNER_WAIT, type SessionRunner } from "../knowledge/session-learning.js";
+import { SESSION_API_AGENT, SESSION_API_CAP_WAIT, SESSION_API_DAILY_UNITS, SESSION_API_MODEL } from "./session-api-policy.js";
 
 export type ModelWaitReason = "cap" | "fallback" | "usage-window" | "off" | "queue" | "storage" | "pricing";
 const REASONS: Record<ModelWaitReason, string> = {
@@ -25,7 +27,7 @@ export class ModelWaitError extends Error {
 export interface ModelJobContext { jobId: string; batch: number; projectId: string | null; recordHome?: string; }
 const context = new AsyncLocalStorage<ModelJobContext>();
 export function withModelJob<T>(job: ModelJobContext, work: () => T): T { return context.run(job, work); }
-export interface AutomaticModelBatch { estimate: Tokens; measuredUsageOnly?: boolean; }
+export interface AutomaticModelBatch { estimate: Tokens; measuredUsageOnly?: boolean; sessionRunner?: SessionRunner; sessionImport?: true; }
 export interface BatchRequest {
   agent: string; model: string; projectPath: string;
   automatic?: AutomaticModelBatch;
@@ -86,7 +88,7 @@ export function modelBudgetSnapshot(source: Source, now = Date.now()): BudgetSna
   const totals = source.all<{ spent: number; reserved: number; attempts: number }>(`SELECT
     coalesce(sum(CASE WHEN state='running' THEN 0 ELSE charged_units END),0) spent,
     coalesce(sum(CASE WHEN state='running' THEN reserved_units ELSE 0 END),0) reserved,count(*) attempts
-    FROM model_batches WHERE automatic=1 AND admitted_at>=?`, week)[0]!;
+    FROM model_batches WHERE automatic=1 AND agent<>? AND admitted_at>=?`, SESSION_API_AGENT, week)[0]!;
   // Future-dated admissions remain charged after a backwards clock adjustment.
   return { lastSevenUnits, lastFourWeeksUnits, ownUsageReadable, spentUnits: totals.spent, reservedUnits: totals.reserved, admittedAttempts: totals.attempts, estimated: true, priceProfile: PRICE_PROFILE };
 }
@@ -95,11 +97,30 @@ function windows(source: Source, agent: string, now: number): PlanWindow[] {
     "SELECT * FROM usage_windows WHERE agent=? AND observed_at<=?", agent, new Date(now).toISOString())
     .map(item => ({ usedPercent: item.used_percent, status: item.status, resetsAt: item.resets_at }));
 }
-function eligibility(writer: RecordWriter, entry: ModelBatchRow, snapshot: BudgetSnapshot, now: number) {
+function eligibility(writer: RecordWriter, entry: ModelBatchRow, snapshot: BudgetSnapshot, now: number, admitting = true) {
   if (!entry.automatic) return { allowed: true, nextReset: undefined as string | undefined };
-  if (!Object.hasOwn(OWN_REFERENCE, entry.agent) || !knownPrice(entry.requested_model)) return { allowed: false, reason: "pricing" as ModelWaitReason };
+  const api = entry.agent === SESSION_API_AGENT;
+  if (!knownPrice(entry.requested_model) || (!api && !Object.hasOwn(OWN_REFERENCE, entry.agent)))
+    return { allowed: false, reason: "pricing" as ModelWaitReason };
   if (!automaticWorkEnabled(writer, entry.project_id, now)) return { allowed: false, reason: "off" as ModelWaitReason };
-  const measured = JSON.parse(entry.pricing).measuredUsageOnly === true;
+  const pricing = JSON.parse(entry.pricing);
+  if (pricing.sessionRunner || api) {
+    const consent = sessionRunner(writer);
+    const importing = pricing.sessionImport === true;
+    const job = writer.db.prepare("SELECT 1 FROM jobs WHERE id=? AND project_id=? AND kind=? AND state=? AND request IS NULL")
+      .get(entry.job_id, entry.project_id, importing ? SESSION_LEARN_KIND : "filter", admitting ? "running" : "waiting");
+    const enabled = importing ? importLearningOn(writer) : sessionLearningOn(writer) && writer.setting("global", "learning.statements") === "on";
+    if (!job || !enabled || !consent
+      || consent.revision !== pricing.sessionRunner?.revision || consent.mode !== (api ? "api" : "cli"))
+      return { allowed: false, reason: "off" as ModelWaitReason };
+  }
+  if (api) {
+    const used = writer.db.prepare(`SELECT coalesce(sum(CASE WHEN state='running' THEN reserved_units ELSE charged_units END),0) units
+      FROM model_batches WHERE agent=? AND admitted_at>=?`).get(SESSION_API_AGENT, day(now));
+    return entry.requested_model === SESSION_API_MODEL && Number(used?.units) <= SESSION_API_DAILY_UNITS - entry.reserved_units
+      ? { allowed: true, nextReset: undefined } : { allowed: false, reason: "cap" as ModelWaitReason };
+  }
+  const measured = pricing.measuredUsageOnly === true;
   if (measured && !snapshot.ownUsageReadable) return { allowed: false, reason: "cap" as ModelWaitReason, nextReset: undefined };
   const parameters = measured ? { ...PARAMETERS, floorBatches: 0 } : PARAMETERS;
   return decideAdmission(snapshot, entry.reserved_units, parameters, windows(read(writer), entry.agent, now), now);
@@ -138,6 +159,7 @@ export function enqueueModelBatch(writer: RecordWriter, request: BatchRequest, n
   const job = request.job ?? context.getStore();
   const projectId = job?.projectId ?? writer.checkout(request.projectPath)?.project_id ?? null;
   if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(request.agent) || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/.test(request.model)) throw new ModelWaitError("pricing");
+  if (request.agent === SESSION_API_AGENT && (!request.automatic || request.model !== SESSION_API_MODEL)) throw new ModelWaitError("off", SESSION_RUNNER_WAIT);
   if (request.consented && (request.automatic || !job?.jobId || !job.projectId
     || !Number.isSafeInteger(request.consented.ceiling) || request.consented.ceiling < 1)) throw new ModelWaitError("storage");
   const estimate = request.automatic?.estimate ?? request.consented?.estimate;
@@ -157,6 +179,8 @@ export function enqueueModelBatch(writer: RecordWriter, request: BatchRequest, n
       VALUES(?,?,?,'queued',?,?,?,?,?,?,?,?)`).run(request.agent, request.model, Number(!!request.automatic), owner, process.pid,
         projectId, job?.jobId ?? null, job?.batch ?? null, new Date(now).toISOString(), reserved,
         JSON.stringify({ profile: PRICE_PROFILE, weights, estimated: true, ...(reservation ? { tokenReservation: reservation } : {}),
+          ...(request.automatic?.sessionRunner ? { sessionRunner: request.automatic.sessionRunner } : {}),
+          ...(request.automatic?.sessionImport ? { sessionImport: true } : {}),
           ...(request.automatic?.measuredUsageOnly ? { measuredUsageOnly: true, automaticTokens: tokenCount(request.automatic.estimate) } : {}) }));
     return row(writer, Number(result.lastInsertRowid))!;
   });
@@ -218,9 +242,12 @@ export function modelJobReady(writer: RecordWriter, jobId: string, batch: number
   const entry = writer.db.prepare("SELECT * FROM model_batches WHERE job_id=? AND job_batch=? ORDER BY id DESC LIMIT 1").get(jobId, batch) as unknown as ModelBatchRow | undefined;
   if (reason === CEILING_WAIT) return false;
   if (!entry?.wait_reason) return reason !== REASONS.pricing;
+  // A newer consent can authorize a new reservation, never the old request.
+  const consent = JSON.parse(entry.pricing).sessionRunner;
+  if (consent && sessionRunner(writer)?.revision !== consent.revision) return true;
   if (entry.wait_reason === "queue" && writer.db.prepare("SELECT 1 FROM model_batches WHERE state='running'").get()) return false;
   if (!entry.automatic) return !consentHold(writer, entry, Date.now());
-  return eligibility(writer, entry, modelBudgetSnapshot(read(writer)), Date.now()).allowed;
+  return eligibility(writer, entry, modelBudgetSnapshot(read(writer)), Date.now(), false).allowed;
 }
 export interface ModelAdmission {
   id: number;
@@ -249,7 +276,9 @@ export async function acquireModelAdmission(request: BatchRequest, signal?: Abor
       if (!reason) break;
       if (reason !== "queue" || request.automatic || request.consented || Date.now() >= deadline) {
         cancelModelBatch(writer, entry, reason);
-        throw new ModelWaitError(reason, reason === "cap" && request.consented ? CEILING_WAIT : undefined);
+        const message = reason === "cap" ? (request.consented ? CEILING_WAIT : request.agent === SESSION_API_AGENT ? SESSION_API_CAP_WAIT : undefined)
+          : reason === "off" && request.automatic?.sessionRunner ? SESSION_RUNNER_WAIT : undefined;
+        throw new ModelWaitError(reason, message);
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     }

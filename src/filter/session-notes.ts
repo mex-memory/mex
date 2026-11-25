@@ -36,7 +36,7 @@ type Scope = z.infer<typeof Scope>;
 type Reason = z.infer<typeof Reason>;
 type Candidate = Extract<StageOneVerdict, { verdict: "candidate" }>;
 interface StoredNote { scope: string; key: string; value?: string; note: Note; }
-interface NoteInput { session: string; sourcePosition?: SessionPosition; verdicts: readonly Candidate[]; }
+interface NoteInput { session: string; sourcePosition?: SessionPosition; verdicts: readonly Candidate[]; corroborated?: ReadonlySet<string>; }
 export type NoteChanges = Map<string, StoredNote>;
 export const sessionNoteId = (project: string, session: string, id: string) => claimHash(JSON.stringify([project, session, id]));
 
@@ -108,12 +108,13 @@ function noteFromVerdict(project: string, source: NoteInput, verdict: Candidate)
   else if (marker && !changesClaim && subject.replace(/[.!?]+$/u, "").endsWith(" " + marker))
     subject = subject.replace(/[.!?]+$/u, "").slice(0, -(marker.length + 1));
   const claim = verdict.kind === "approval" ? id : claimHash(subject.replace(/[.!?]+$/u, "") || quote);
-  const lasts = verdict.outcome === "personal" ? verdict.lasts : "seen";
+  const corroborated = source.corroborated?.has(verdict.id) ? "host-memory" : undefined;
+  const lasts = corroborated ? "repo" : verdict.outcome === "personal" ? verdict.lasts : "seen";
   const origin = lasts === "branch" ? capturedPositionAt(source.sourcePosition, verdict.at) : undefined;
   let scope: Scope = { kind: "seen" };
   if (origin) scope = { kind: "branch", origin: { name: origin.branch, head: origin.head, unmerged_head: "" } };
   else if (lasts !== "branch") scope = { kind: lasts };
-  return Note.parse({ version: 1, id, claim, scope, at: Date.parse(verdict.at), session: source.session, row: verdict.id, quote });
+  return Note.parse({ version: 1, id, claim, scope, at: Date.parse(verdict.at), session: source.session, row: verdict.id, quote, corroborated });
 }
 
 /** Plan changes before the job transaction so Git work never holds the record lock. */

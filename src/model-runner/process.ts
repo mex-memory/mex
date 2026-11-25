@@ -7,6 +7,7 @@ import type { ConsentedModelBatch } from "./consent.js";
 import { createPopulationActivityDecoder, USAGE_LIMIT_PATTERN, usageLimitResetTime, type PopulationActivitySignal, type PopulationAgentUsage } from "./activity.js";
 import { createPopulationTranscriptDecoder, type PopulationTranscriptSignal } from "./transcript.js";
 import { ModelRunError, type ModelFailure } from "./errors.js";
+import { SESSION_API_KEY } from "./session-api-policy.js";
 
 export const MAX_PROCESS_TIMEOUT_MS = 15 * 60_000;
 const TERMINATE_GRACE_MS = 500;
@@ -63,6 +64,7 @@ function runOwnedProcess(
     let child: ChildProcess;
     try {
       const env: NodeJS.ProcessEnv = { ...process.env, ...invocation.env, MEX_BACKGROUND: "1" };
+      delete env[SESSION_API_KEY];
       if (options.consented) for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN"]) delete env[name];
       child = (options.__internal?.spawn ?? crossSpawn)(invocation.command, invocation.args, {
         cwd: options.executionDirectory ?? cwd,
