@@ -25,6 +25,32 @@ export function buildReviewCommand(): Command {
       }
       if (result.hidden) console.log(`${result.hidden} more will appear as these cards leave Review.`);
     }));
+  const choices = command.command("choices").description("Review recent weak personal approvals from clicked choices")
+    .option("--json", "Print the approvals as JSON")
+    .option("--limit <count>", "Number of recent tool calls to show", "5");
+  choices.action(async () => {
+    const { json, limit } = choices.optsWithGlobals();
+    await run(json, async () => {
+      if (!/^\d+$/u.test(limit) || Number(limit) < 1 || Number(limit) > 128) {
+        throw new KnowledgeError("INVALID_OPTION", "Use a limit between 1 and 128.");
+      }
+      const { clickedApprovals } = await import("../filter/clicked-approvals.js");
+      const approvals = clickedApprovals({ projectPath: process.cwd() });
+      const items = approvals.slice(0, Number(limit));
+      if (json) { console.log(JSON.stringify({ ok: true, items, total: approvals.length })); return; }
+      if (!items.length) { console.log("No recent clicked choices to review."); return; }
+      for (const item of items) {
+        const label = item.tool === "ExitPlanMode" ? "plan" : "option";
+        for (const choice of item.choices) {
+          const text = [choice.label, choice.text, choice.preview].filter(Boolean).join("\n");
+          const indented = text.split(/\r\n?|[\n\u2028\u2029]/u).map(line => `  ${line}`).join("\n");
+          console.log(`Agent-written ${label} (${item.agent}, ${item.at.slice(0, 10)})\n${indented}\n`);
+        }
+      }
+      if (approvals.length > items.length) console.log(`Showing ${items.length} of ${approvals.length} recent tool calls. Use --limit to show more.`);
+      console.log('These choices are weak personal approvals. To save a rule, restate it with mex note "your wording".');
+    });
+  });
   for (const action of ["share", "keep", "edit", "use"] as const) {
     const child = command.command(action).description(action === "share" ? "Preview sharing a rule in this working tree" : action === "keep" ? "Keep a claim personal and never ask again" : action === "use" ? "Use a proposed rule in a contradiction" : "Save a corrected rule personally")
       .argument("<card>", "Visible card id or number (1-5)");

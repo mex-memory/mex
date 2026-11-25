@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { writeHookCheckout } from "../record/hook-checkouts.js";
+import { SESSION_LEARNING_SETTING, sessionLearningRefusal } from "../knowledge/session-learning.js";
 import { publishControlMirrors } from "./mirrors.js";
 
 /** A duration is explicit and bounded; malformed input must never turn into a permanent off. */
@@ -61,6 +62,17 @@ export function setLearningSharing(writer: RecordWriter, value: string, director
   if (!project) throw new Error("MEX is not registered here. Run mex first.");
   setPolicy(writer, project, "learning.sharing", value);
   return project;
+}
+
+export function setStatementLearning(writer: RecordWriter, value: string): void {
+  if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
+  setPolicy(writer, "global", "learning.statements", value);
+}
+
+export function setSessionLearning(writer: RecordWriter, value: string): void {
+  const refused = sessionLearningRefusal(value);
+  if (refused) throw new Error(refused);
+  setPolicy(writer, "global", SESSION_LEARNING_SETTING, value);
 }
 
 /** Whether typed-prompt ranking uses entries' written aliases and asks. Machine-wide. */

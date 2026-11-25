@@ -2,13 +2,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setSessionLearning } from "../../controls/index.js";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import "../../record/job-kinds.js";
 import { enqueueJob, jobKind } from "../../record/jobs.js";
 import { dueOffer, registerOffer, type Offer } from "../../repo-start/offers.js";
 import { listProducers } from "../producers.js";
 import {
-  SESSION_LEARN_KIND, SESSION_LEARNING_UNAVAILABLE, sessionLearningAvailable, sessionLearningOn, sessionLearningRefusal, setSessionLearning,
+  SESSION_LEARN_KIND, SESSION_LEARNING_UNAVAILABLE, sessionLearningAvailable, sessionLearningOn, sessionLearningRefusal,
 } from "../session-learning.js";
 
 let home: string, writer: RecordWriter;

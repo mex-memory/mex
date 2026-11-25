@@ -313,7 +313,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	captureOn := captureEnabled(recordDirectory, ev.ProjectID, global)
 	holdout := ledgerHoldout(ev, h, recordDirectory, global.LedgerHoldout, captureOn, now)
 	// Both study arms keep the local capture and filter inputs.
-	captureEnv := capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env}
+	captureEnv := capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env, ClickedApprovals: global.ClickedApprovals}
 	captureLifecycle := ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact
 	if captureOn {
 		capture.Hook(ev, captureEnv)
