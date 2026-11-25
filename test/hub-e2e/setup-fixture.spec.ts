@@ -31,10 +31,10 @@ test("Setup has a keyboard consent path and passes axe across its fixture states
     await page.emulateMedia({ reducedMotion: "reduce" });
     await open(storefront);
     await scan();
-    const start = page.getByRole("button", { name: "Start learn deeper" });
+    const start = page.getByRole("button", { name: "Learn deeper", exact: true });
     await start.focus();
     await page.keyboard.press("Enter");
-    const confirm = page.getByRole("alertdialog", { name: "Start learn deeper?" });
+    const confirm = page.getByRole("alertdialog", { name: "Learn from your team’s reviews?" });
     await expect(confirm.getByRole("button", { name: "Back" })).toBeFocused();
     await expect(confirm.getByText("72,000 tokens")).toBeVisible();
     await expect(confirm).toHaveCSS("opacity", "1");
@@ -45,7 +45,7 @@ test("Setup has a keyboard consent path and passes axe across its fixture states
     await page.keyboard.press("Enter");
     await expect(confirm.getByRole("button", { name: "Back" })).toBeFocused();
     await page.keyboard.press("Tab");
-    await expect(confirm.getByRole("button", { name: "Confirm and start" })).toBeFocused();
+    await expect(confirm.getByRole("button", { name: "Start learning" })).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("heading", { name: "Setup steps" })).toBeFocused();
     await expect(page.getByText("Starts after the code map and other setup work.")).toBeVisible();
