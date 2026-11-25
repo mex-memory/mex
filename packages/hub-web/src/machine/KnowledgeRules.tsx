@@ -129,7 +129,7 @@ export function KnowledgeRules({ project, projects, tools }: {
   return (
     <div className={`${page.page} ${styles.page}`}>
       <Link className={`${shared.textLink} ${page.back}`} to={`${pathname}${back.size ? `?${back}` : ""}`}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
-      <HubPageHeader subtitle={project?.name ?? "All repos"} title="Rules" titleRef={title} />
+      <HubPageHeader subtitle={project?.name ?? "All repos"} title="Rule files" titleRef={title} />
       {project ? checkout ? (
         <RulesCheckout scope={{ repoId: project.id, checkout }} tools={tools}>
           {checkouts.length > 1 ? <CheckoutField onChange={setSelected} path={checkout} paths={checkouts} /> : (

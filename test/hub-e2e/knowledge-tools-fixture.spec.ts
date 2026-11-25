@@ -51,7 +51,7 @@ test("opens Rules with the keyboard and passes axe with stale, refreshed and emp
   await scan(page);
   await link.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("heading", { level: 1, name: "Rules" })).toBeFocused();
+  await expect(page.getByRole("heading", { level: 1, name: "Rule files" })).toBeFocused();
   await expect(page.getByText("Rule files changed since the last refresh.")).toBeVisible();
   await scan(page);
 

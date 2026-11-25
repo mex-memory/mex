@@ -152,3 +152,7 @@
   width: 14px;
   height: 14px;
 }
+
+.checkoutBar [data-slot="button"] {
+  font-size: 13px;
+}

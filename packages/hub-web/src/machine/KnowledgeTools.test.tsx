@@ -27,7 +27,7 @@ describe("Knowledge rules", () => {
     const entry = await screen.findByRole("link", { name: "Rule files" });
     entry.focus();
     await user.keyboard("{Enter}");
-    expect(await screen.findByRole("heading", { level: 1, name: "Rules" })).toHaveFocus();
+    expect(await screen.findByRole("heading", { level: 1, name: "Rule files" })).toHaveFocus();
     expect(window.location.search).toBe("?fixture=home&view=rules");
     const files = screen.getByRole("list", { name: "Rule files" });
     const rows = within(files).getAllByRole("listitem").filter(({ parentElement }) => parentElement === files);
