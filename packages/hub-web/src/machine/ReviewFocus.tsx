@@ -25,6 +25,9 @@ const actions = {
 } as const;
 const actionOrder: ReviewAction[] = ["share", "use", "keep", "keepCurrent", "edit", "retire"];
 const editedActions: readonly ReviewAction[] = ["share", "keep"];
+// An edit clears the rule's checks, and sharing needs checks that hold, so an
+// edited rule is kept for you first. The server enforces the same rule.
+const EDITED_SHARE_REASON = "Keep this correction for you first. Sharing needs its checks recorded.";
 
 export function ReviewFocus({ card, now, repo, review, titleRef, leaving, live, onApplied, onHandled }: {
   card: MachineReviewCard;
@@ -150,7 +153,8 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, live, 
               {available.map((action) => {
                 const control = actions[action];
                 const key = !draft && "key" in control ? control.key : undefined;
-                const why = status ? statusId : invalid ? invalidId : card.disabled?.[action] ? id + "-" + action : undefined;
+                const why = status ? statusId : invalid ? invalidId : card.disabled?.[action] ? id + "-" + action
+                  : draft && action === "share" ? id + "-edited-share" : undefined;
                 return (
                   <Button aria-describedby={why} aria-haspopup={"dialog" in control ? "dialog" : undefined} aria-keyshortcuts={key}
                     disabled={Boolean(why)} key={action} onClick={() => begin(action)} ref={action === "edit" ? editButton : undefined}
@@ -172,6 +176,9 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, live, 
       {status && !dialog && <p className={styles.actionNote} id={statusId} role="status">{status}</p>}
       {status && dialog && <span className={shared.srOnly} id={statusId}>{status}</span>}
       {invalid && <p className={styles.actionNote} id={invalidId}>{invalid}</p>}
+      {draft && available.includes("share") && !card.disabled?.share && (
+        <p className={styles.actionNote} id={id + "-edited-share"}>{EDITED_SHARE_REASON}</p>
+      )}
       {available.map((action) => card.disabled?.[action] && (
         <p className={styles.actionNote} id={id + "-" + action} key={action}>{card.disabled[action]}</p>
       ))}

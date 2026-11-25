@@ -178,16 +178,15 @@ describe("Review fixtures", () => {
     expect(note).toHaveTextContent("Applies to apps/api");
   });
 
-  it("previews the edited text before sharing", async () => {
+  it("keeps an edited rule for you first and says why it can't be shared yet", async () => {
     const user = await openReview("/review/storefront%3Atype-check?fixture=home");
     await user.click(action("Edit"));
     const text = await screen.findByRole("textbox", { name: "Note text" });
     await user.clear(text);
     await user.type(text, "Check all workspace imports before opening the pull request.");
-    await user.click(action("Share with team"));
-    const dialog = await screen.findByRole("alertdialog", { name: "Share with team" });
-    expect(within(dialog).getByRole("region", { name: "File diff" })).toHaveTextContent("+Check all workspace imports");
-    await user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    expect(action("Share with team")).toBeDisabled();
+    expect(action("Share with team")).toHaveAccessibleDescription("Keep this correction for you first. Sharing needs its checks recorded.");
+    await user.click(action("Keep for me"));
     await movedTo(judged);
   });
 
