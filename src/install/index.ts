@@ -318,7 +318,7 @@ async function repairSelfTest(path: string): Promise<boolean> {
 }
 
 /** A repair of a recorded install must leave that original undo valid. */
-function repairCoveredByJournal(writer: RecordWriter | undefined, location: LocationOptions, change: InstallChange, owned: readonly HookCommand[]): boolean {
+function repairJournalSnapshot(writer: RecordWriter | undefined, location: LocationOptions, change: InstallChange, owned: readonly HookCommand[]): Snapshot | undefined {
   const sql = `SELECT CASE WHEN length(old_value)+length(new_value)<=? THEN old_value END old_value,
     CASE WHEN length(old_value)+length(new_value)<=? THEN new_value END new_value
     FROM installs WHERE path=? AND key=? ORDER BY id DESC LIMIT 1`;
@@ -327,18 +327,21 @@ function repairCoveredByJournal(writer: RecordWriter | undefined, location: Loca
   try {
     if (reader?.diagnostic) throw new Error(reader.diagnostic);
     const row = writer ? writer.db.prepare(sql).get(...params) : reader?.get<{ old_value: string; new_value: string }>(sql, ...params);
-    if (!row) return false;
+    if (!row) return undefined;
     const before = snapshotBytes(decodeSnapshot(String(row.old_value)));
-    const after = snapshotBytes(decodeSnapshot(String(row.new_value)));
+    const journaled = decodeSnapshot(String(row.new_value));
+    const after = snapshotBytes(journaled);
     const repaired = snapshotBytes(change.after)!;
-    if (change.kind === "runtime" && equalSnapshot(decodeSnapshot(String(row.new_value)), change.after)) return true;
+    if (change.kind === "runtime" && equalSnapshot(journaled, change.after)) return journaled;
     if (change.kind === "settings" && after) {
       const saved = parseSettings(after), planned = parseSettings(repaired);
       const normalize = (settings: ReturnType<typeof parseSettings>) => JSON.parse(JSON.stringify(ownedHookGroups(settings, owned)));
       if (isDeepStrictEqual(normalize(saved), normalize(planned))) {
         // Ensure the original install can still be reversed around user's other settings.
         undoSettings(repaired, before, after);
-        return true;
+        // Reuse the installed bytes when only the recorded hook was lost so
+        // uninstall can still restore the exact original bytes and order.
+        return journaled.mode === change.after.mode && isDeepStrictEqual(saved, planned) ? journaled : change.after;
       }
     }
     throw new Error("The original install record needs to be reviewed before changing this file.");
@@ -377,17 +380,17 @@ async function repairAgent(options: InstallOptions, repair: NonNullable<InstallO
       next = installSettings(bytes, agent, command, platform, owned);
     }
     if (next.length > MAX_SETTINGS_BYTES) throw new Error("The repaired configuration would exceed its bound.");
-    const after = { data: next.toString("base64"), mode: agent === "opencode" && !bytes ? 0o644 : before.mode };
-    const planRevision = createHash("sha256").update(JSON.stringify([path, before, after])).digest("hex");
+    const change: InstallChange = { path, agent, kind: agent === "opencode" ? "runtime" : "settings", before,
+      after: { data: next.toString("base64"), mode: agent === "opencode" && !bytes ? 0o644 : before.mode } };
+    const different = !equalSnapshot(before, change.after);
+    const journaled = different ? repairJournalSnapshot(writer, location, change, owned) : undefined;
+    if (journaled) change.after = journaled;
+    const planRevision = createHash("sha256").update(JSON.stringify([path, before, change.after])).digest("hex");
     if (expected && planRevision !== expected.planRevision) throw new InstallRevisionConflict("The repair plan changed.");
-    const changes: InstallChange[] = equalSnapshot(before, after) ? [] : [{
-      path, agent, kind: agent === "opencode" ? "runtime" : "settings", before, after,
-    }];
-    if (changes.length) {
-      const covered = repairCoveredByJournal(writer, location, changes[0], owned);
+    if (different) {
       try {
-        if (writer && covered) replaceFile(path, before, after);
-        else if (writer) recordChange(writer, changes[0], options);
+        if (writer && journaled) replaceFile(path, before, change.after);
+        else if (writer) recordChange(writer, change, options);
       }
       catch (error) {
         if (error instanceof Error && /^File changed (?:before|during) installation/u.test(error.message)) {
@@ -396,7 +399,7 @@ async function repairAgent(options: InstallOptions, repair: NonNullable<InstallO
         throw error;
       }
     }
-    return { agents: [agent], changes, notices: [], legacyTracked: [], runner: "native", repair: { path, revision, planRevision } };
+    return { agents: [agent], changes: different ? [change] : [], notices: [], legacyTracked: [], runner: "native", repair: { path, revision, planRevision } };
   };
   if (options.dryRun) return plan();
   const writer = openRecord({ ...location, busyTimeoutMs: 0 });

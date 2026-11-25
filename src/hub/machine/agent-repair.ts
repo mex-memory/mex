@@ -63,7 +63,7 @@ export class AgentRepair {
       if (error instanceof Error && error.message === "This configuration is tracked by Git.") {
         return terminal(agent, "Git tracks this configuration. Review the file in your dotfiles or repo before running install.");
       }
-      return terminal(agent, "The Hub couldn’t verify the configuration, installed hook, or MEX launcher. Run MEX’s installer in your terminal.");
+      return terminal(agent, "The Hub couldn’t verify the configuration, installed hook, or MEX launcher. Check the agent’s configuration and permissions, then run MEX’s installer in your terminal.");
     }
   }
 
