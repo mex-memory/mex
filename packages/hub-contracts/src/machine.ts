@@ -287,3 +287,24 @@ export type MachineHome = z.infer<typeof MachineHomeSchema>;
 export type MachineJob = z.infer<typeof MachineJobSchema>;
 export type MachineJobActionRequest = z.infer<typeof MachineJobActionRequestSchema>;
 export type MachineChangeEvent = z.infer<typeof MachineChangeEventSchema>;
+
+// Knowledge write bodies use the item in the route and the preview in the reply.
+const fileRevision = z.string().regex(/^[a-f0-9]{64}$/u);
+const teamApply = {
+  checkout: z.string().min(1).max(4_096).optional(),
+  apply: z.literal(true).optional(),
+  previewRevision: fileRevision.optional(),
+};
+export const MachineKnowledgeNoteBodySchema = knowledgeContentSchema.partial({ oneLine: true, scope: true })
+  .extend({ repoId: z.string().min(1).max(64) }).strict();
+export const MachineKnowledgeEditBodySchema = knowledgeContentSchema.partial({ oneLine: true, kind: true, scope: true })
+  .extend({ expectedRevision: fileRevision, ...teamApply }).strict()
+  .refine(({ apply, previewRevision }) => Boolean(apply) === Boolean(previewRevision));
+export const MachineKnowledgeForgetBodySchema = MachineKnowledgeForgetRequestSchema.pick({ reason: true })
+  .extend({ expectedRevision: fileRevision.optional(), ...teamApply }).strict()
+  .refine(({ apply, previewRevision }) => Boolean(apply) === Boolean(previewRevision));
+export const MachineKnowledgePreviewReplySchema = z.object({ preview: MachineKnowledgeWritePreviewSchema.omit({ type: true }) });
+export const MachineKnowledgeConflictSchema = MachineProblemSchema.extend({
+  current: MachineKnowledgeDetailSchema,
+  attempted: z.union([MachineKnowledgeEditBodySchema, MachineKnowledgeForgetBodySchema]),
+});

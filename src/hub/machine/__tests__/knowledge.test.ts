@@ -1,4 +1,4 @@
-import { MachineForgottenPageSchema, MachineKnowledgeDetailSchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
+import { MachineForgottenPageSchema, MachineKnowledgeConflictSchema, MachineKnowledgeDetailSchema, MachineKnowledgePreviewReplySchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
 import { setImmediate } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -66,7 +66,7 @@ function project(name: string, track = false) {
     git(path, "init", "-b", "main");
     git(path, "config", "user.name", "Test Author");
     git(path, "config", "user.email", "test-author@example.test");
-    git(path, "commit", "--allow-empty", "-m", "Initial commit");
+    git(path, "commit", "--allow-empty", "-m", "Initial commit for " + name);
   }
   const { id } = writer.register(projectIdentity(path));
   return { id, path };
@@ -391,4 +391,146 @@ it("pages across dated retirement markers and retired team files, with metadata 
   expect(second.items.at(-1)).toEqual({ id: "mx_zzzzteam", repoId: repo.id, audience: "team", at: "2026-11-22T00:00:00.000Z" });
   expect(second.nextCursor).toBeNull();
   expect(JSON.stringify([first, second])).not.toMatch(/Private reason|retired (?:team|personal) claim|claim_hash|revision/u);
+});
+
+function post(path: string, body: unknown, idempotency?: string, overrides: Record<string, string> = {}) {
+  return app.request(ORIGIN + "/api/v1/knowledge" + path, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { host: new URL(ORIGIN).host, origin: ORIGIN, cookie, "x-mex-csrf": csrf, "content-type": "application/json",
+      ...(idempotency ? { "Idempotency-Key": idempotency } : {}), ...overrides },
+  });
+}
+
+describe("Knowledge writes", () => {
+  it("creates a note in the selected home and replays identical concurrent requests once", async () => {
+    const repo = project("repo");
+    const payload = { repoId: repo.id, text: "Keep fixtures in the package that uses them.", kind: "rule", scope: ["tests/**"] };
+    const [first, replay] = await Promise.all([post("/notes", payload, "create"), post("/notes", payload, "create")]);
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(201);
+    const saved = MachineKnowledgeDetailSchema.parse(await first.json());
+    expect(await replay.json()).toEqual(saved);
+    expect(saved).toMatchObject({ ...payload, revision: /^[a-f0-9]{64}$/u, audience: "onlyYou" });
+    expect(readdirSync(join(home, "projects", repo.id, "notes"))).toEqual([saved.id + ".md"]);
+    expect((await page()).items.map(({ id }) => id)).toEqual([saved.id]);
+    expect(writer.db.prepare("SELECT project_id FROM jobs WHERE kind='native-files'").all()).toContainEqual({ project_id: repo.id });
+    expect((await post("/notes", { ...payload, text: "Different." }, "create")).status).toBe(409);
+  });
+
+  it("edits a personal note and returns the current bytes when the file changes between open and save", async () => {
+    const repo = project("repo");
+    const id = "mx_editme";
+    const file = save(repo, "onlyYou", entry(id, "First version"));
+    const opened = await detail(repo, "onlyYou", id);
+    save(repo, "onlyYou", entry(id, "Newer version", {}, "This change was saved by the terminal."));
+    const path = itemPath(repo, "onlyYou", id) + "/edit";
+    const request = { expectedRevision: opened.revision, text: "My browser edit.", oneLine: "Keep the new rule" };
+    const response = await post(path, request, "conflict");
+    expect(response.status).toBe(409);
+    const conflict = MachineKnowledgeConflictSchema.parse(await response.json());
+    expect(conflict).toMatchObject({ code: "REVISION_CONFLICT", current: { oneLine: "Newer version" }, attempted: request });
+    expect(readFileSync(file, "utf8")).toContain("This change was saved by the terminal.");
+    const success = await post(path, { ...request, expectedRevision: conflict.current.revision }, "resolve");
+    expect(success.status).toBe(200);
+    expect(MachineKnowledgeDetailSchema.parse(await success.json())).toMatchObject({ text: request.text, oneLine: request.oneLine, source: { edited: true } });
+  });
+
+  it("previews exact team bytes, then applies only the approved revision in a registered checkout", async () => {
+    const repo = project("repo", true);
+    const other = project("another", true);
+    const id = "mx_editteam";
+    const file = save(repo, "team", entry(id, "Current rule"), "rule");
+    writeFileSync(file, "\ufeff" + readFileSync(file, "utf8"));
+    const before = readFileSync(file);
+    const opened = await detail(repo, "team", id);
+    const path = itemPath(repo, "team", id) + "/edit";
+    const body = { expectedRevision: opened.revision, text: "The reviewed rule and its explanation.", checkout: repo.path };
+    const unregistered = await post(path, { ...body, checkout: other.path });
+    expect(unregistered.status).toBe(404);
+    const preview = MachineKnowledgePreviewReplySchema.parse(await (await post(path, body, "preview")).json()).preview;
+    expect(preview).toMatchObject({ path: ".mex/learned/rule/mx_editteam.md", checkout: repo.path });
+    expect(preview.diff).toContain("+  one_line: The reviewed rule and its explanation.");
+    expect(readFileSync(file)).toEqual(before);
+
+    const apply = { ...body, apply: true, previewRevision: preview.revision };
+    const success = await post(path, apply, "apply");
+    expect(success.status).toBe(200);
+    expect(MachineKnowledgeDetailSchema.parse(await success.json()).text).toBe(body.text);
+    const updated = await detail(repo, "team", id);
+    const next = { ...body, expectedRevision: updated.revision, text: "A second reviewed change." };
+    const nextPreview = MachineKnowledgePreviewReplySchema.parse(await (await post(path, next)).json()).preview;
+    save(repo, "team", entry(id, "Terminal update"), "rule");
+    const stale = await post(path, { ...next, apply: true, previewRevision: nextPreview.revision });
+    expect(stale.status).toBe(409);
+    expect(MachineKnowledgeConflictSchema.parse(await stale.json())).toMatchObject({ code: "STALE_PREVIEW", current: { oneLine: "Terminal update" } });
+  });
+
+  it("confirms hints as personal notes through the hint service", async () => {
+    const repo = project("repo");
+    const id = hint(repo).mex.id;
+    const opened = await detail(repo, "hint", id);
+    const response = await post(itemPath(repo, "hint", id) + "/edit", { expectedRevision: opened.revision, text: "Keep build outputs disposable." });
+    expect(response.status).toBe(200);
+    expect(MachineKnowledgeDetailSchema.parse(await response.json())).toMatchObject({ id, audience: "onlyYou", kind: "rule" });
+    expect((await get(itemPath(repo, "hint", id))).status).toBe(404);
+  });
+
+  it("forgets personal notes and hints and reviews a team retirement before applying", async () => {
+    const repo = project("repo");
+    const personalId = "mx_personal", teamId = "mx_teamrule";
+    const file = save(repo, "onlyYou", entry(personalId, "A personal note"));
+    const raw = readFileSync(file);
+    const hintId = hint(repo).mex.id;
+    const teamFile = save(repo, "team", entry(teamId, "A team note"));
+    for (const [audience, id] of [["onlyYou", personalId], ["hint", hintId], ["team", teamId]] as const) {
+      const opened = await detail(repo, audience, id);
+      const path = itemPath(repo, audience, id) + "/forget";
+      const body = { reason: "Private retirement reason.", expectedRevision: opened.revision };
+      let response = await post(path, body);
+      if (audience === "team") {
+        const { preview } = MachineKnowledgePreviewReplySchema.parse(await response.json());
+        expect(preview.diff).toContain("+  status: retired");
+        expect(readFileSync(teamFile, "utf8")).toContain("status: active");
+        response = await post(path, { ...body, apply: true, previewRevision: preview.revision });
+      }
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ id, repoId: repo.id, audience, at: "2026-11-24T00:00:00.000Z" });
+      expect((await get(itemPath(repo, audience, id))).status).toBe(404);
+    }
+    expect(readFileSync(file)).toEqual(raw);
+    expect(readFileSync(teamFile, "utf8")).toContain("status: retired");
+    expect((await page()).total).toBe(0);
+    const forgotten = MachineForgottenPageSchema.parse(await (await get("/forgotten")).json());
+    expect(forgotten.items.map(({ audience }) => audience).sort()).toEqual(["hint", "onlyYou", "team"]);
+    expect(JSON.stringify(forgotten)).not.toContain("Private retirement reason.");
+  });
+
+  it("maps a real busy writer to a retryable 503 and lets the same key try again", async () => {
+    const repo = project("repo");
+    const id = "mx_personal";
+    save(repo, "onlyYou", entry(id, "A personal note"));
+    const opened = await detail(repo, "onlyYou", id);
+    const path = itemPath(repo, "onlyYou", id) + "/edit";
+    const body = { expectedRevision: opened.revision, text: "Keep the scoped note." };
+    writer.db.exec("BEGIN IMMEDIATE");
+    try {
+      const response = await post(path, body, "retry");
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ code: "MEX_BUSY", detail: "MEX is busy. Try again in a moment." });
+    } finally { writer.db.exec("ROLLBACK"); }
+    expect((await post(path, body, "retry")).status).toBe(200);
+  });
+
+  it("requires cookie, same-origin CSRF, valid IDs and bounded JSON on writes", async () => {
+    const repo = project("repo");
+    const body = { repoId: repo.id, kind: "fact", text: "A test note" };
+    expect((await post("/notes", body, undefined, { cookie: "" })).status).toBe(401);
+    expect((await post("/notes", body, undefined, { origin: "https://example.test" })).status).toBe(403);
+    expect((await post("/notes", body, undefined, { "x-mex-csrf": "" })).status).toBe(403);
+    expect((await post("/notes", { ...body, repoId: "f-" + "a".repeat(24) })).status).toBe(404);
+    expect((await post("/notes", { ...body, repoId: "../elsewhere" })).status).toBe(400);
+    expect((await post("/notes", { ...body, text: "A".repeat(70_000) })).status).toBe(400);
+    expect((await post(itemPath(repo, "onlyYou", "../outside") + "/forget", {})).status).toBe(400);
+  });
 });

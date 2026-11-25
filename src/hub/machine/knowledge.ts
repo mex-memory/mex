@@ -24,6 +24,7 @@ export class KnowledgeData {
   #snapshot: KnowledgeSnapshot | undefined;
   #updatingSince: string | undefined;
   #lastStart = -Infinity;
+  #lastFullStart = -Infinity;
   #lastActivity = -Infinity;
   #lastSignal: string | undefined;
   #generation = 0;
@@ -37,7 +38,7 @@ export class KnowledgeData {
 
   get() {
     this.touch();
-    if (!this.#refreshing && this.now() - this.#lastStart >= REFRESH_MS) void this.#refresh();
+    if (!this.#refreshing && this.now() - this.#lastFullStart >= REFRESH_MS) void this.#refresh();
     return {
       snapshot: this.#snapshot, generation: `${this.#instance}:${this.#generation}`, updatingSince: this.#updatingSince,
       generatedAt: this.#snapshot?.generatedAt ?? new Date(this.now()).toISOString(),
@@ -54,8 +55,7 @@ export class KnowledgeData {
 
   async refreshProject(repoId: string) {
     while (this.#refreshing) await this.#refreshing;
-    // A write can be the first Knowledge request to this worker.
-    await this.#refresh(this.#snapshot && new Set([repoId]));
+    await this.#refresh(new Set([repoId]));
   }
 
   close() {
@@ -74,7 +74,7 @@ export class KnowledgeData {
         this.#watchers.clear();
         return;
       }
-      if (!this.#refreshing && (this.#dirty || this.#signal() !== this.#lastSignal || this.now() - this.#lastStart >= REFRESH_MS)) {
+      if (!this.#refreshing && (this.#dirty || this.#signal() !== this.#lastSignal || this.now() - this.#lastFullStart >= REFRESH_MS)) {
         void this.#refresh();
       }
       this.#schedule();
@@ -89,6 +89,7 @@ export class KnowledgeData {
   #refresh(only?: ReadonlySet<string>): Promise<void> {
     if (this.#stop.signal.aborted) return Promise.resolve();
     this.#lastStart = this.now();
+    if (!only) this.#lastFullStart = this.#lastStart;
     this.#updatingSince = new Date(this.#lastStart).toISOString();
     this.#refreshing = (async () => {
       try {
