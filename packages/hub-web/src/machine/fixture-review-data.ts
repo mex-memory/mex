@@ -1,4 +1,5 @@
-import type { MachineReviewCard, MachineReviewQueue } from "@mex/hub-contracts/machine";
+import type { FixtureReviewQueue } from "./types";
+import type { MachineReviewCard } from "@mex/hub-contracts/machine";
 import { reviewReason } from "../../../../src/review/reasons";
 import type { FixtureVariant } from "./fixtures";
 import type { HomeOverview, KnowledgeDetail } from "./types";
@@ -7,7 +8,7 @@ const day = 86_400_000;
 const normalActions = ["share", "keep", "edit"] as const;
 type Details = Partial<Pick<MachineReviewCard, "kind" | "scope" | "sources" | "contradiction" | "retireTarget" | "disabled">>;
 
-export function fixtureReviewQueue(now: number, notes: readonly KnowledgeDetail[], variant: FixtureVariant): MachineReviewQueue | undefined {
+export function fixtureReviewQueue(now: number, notes: readonly KnowledgeDetail[], variant: FixtureVariant): FixtureReviewQueue | undefined {
   if (variant === "review-loading") return;
   if (variant === "empty" || variant === "review-empty") return reviewSnapshot([]);
   const fromNow = (days: number) => new Date(now + days * day).toISOString();
@@ -19,6 +20,7 @@ export function fixtureReviewQueue(now: number, notes: readonly KnowledgeDetail[
     const actions = details.contradiction ? ["keepCurrent", "use"] as const
       : checkedByModel ? [...normalActions, "retire"] as const : normalActions;
     return {
+      checkout: "/work/" + repoId,
       key: repoId + ":" + cardId, cardId, repoId, revision: "fixture-card",
       kind: "rule", claim, text, scope: ["**"], reason: reviewReason(reason), checkedByModel,
       sources: {
@@ -81,17 +83,17 @@ export function fixtureReviewQueue(now: number, notes: readonly KnowledgeDetail[
   return reviewSnapshot(cards, variant === "updating" || variant === "stale" ? fromNow(0) : undefined);
 }
 
-export function reviewSnapshot(cards: readonly MachineReviewCard[], updatingSince?: string): MachineReviewQueue {
-  const byRepo: MachineReviewQueue["byRepo"] = {};
+export function reviewSnapshot(cards: readonly MachineReviewCard[], updatingSince?: string): FixtureReviewQueue {
+  const byRepo: FixtureReviewQueue["byRepo"] = {};
   let oldest: string | null = null;
   for (const card of cards) {
     byRepo[card.repoId] = (byRepo[card.repoId] ?? 0) + 1;
     if (!oldest || Date.parse(card.createdAt) < Date.parse(oldest)) oldest = card.createdAt;
   }
-  return { cards, total: cards.length, byRepo, oldest, updatingSince };
+  return { cards, total: cards.length, byRepo, oldest, updatingSince, nextCursor: null };
 }
 
-export function fixtureHomeReview(queue: MachineReviewQueue | undefined): Pick<HomeOverview, "needs" | "needsCount"> {
+export function fixtureHomeReview(queue: FixtureReviewQueue | undefined): Pick<HomeOverview, "needs" | "needsCount"> {
   const needs = (queue?.cards ?? []).map(({ repoId, cardId, claim, createdAt }) => (
     { id: cardId, repoId, rule: claim, waitingSince: createdAt }
   )).sort((a, b) => Date.parse(a.waitingSince) - Date.parse(b.waitingSince));

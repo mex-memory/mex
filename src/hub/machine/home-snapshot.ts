@@ -1,5 +1,4 @@
 import type { MachineHome } from "@mex/hub-contracts/machine";
-import { lstatSync } from "node:fs";
 import { setImmediate } from "node:timers/promises";
 import { KNOWLEDGE_LIMITS, type KnowledgeEntry } from "../../knowledge/entry.js";
 import { containedDirectory } from "../../knowledge/files.js";
@@ -8,23 +7,17 @@ import { retiredIds } from "../../knowledge/state.js";
 import { openHooksReadOnly, openRecordReadOnly, recordLocation, type RecordReader } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
 import { registeredProjectIds } from "./home-metrics.js";
-import { checkoutCollation, readStore } from "./read.js";
+import { activeCheckouts, checkoutCollation, knowledgeStatus, mostRecentCheckout, readStore } from "./read.js";
 import { compareReview, emptyReview, projectReview, REVIEW_BYTES, REVIEW_PROJECT_BYTES, REVIEW_READ_NOTE, type ProjectReview, type ReviewPoint } from "./review-snapshot.js";
 
 export const NEEDS_LIMIT = 20;
-const CHECKOUT_LIMIT = 128;
-export { checkoutCollation } from "./read.js";
+
 
 type NeedsCount = MachineHome["needsCount"][string];
 type Knowledge = MachineHome["knowledge"][string];
 type StatusCounts = Omit<Knowledge, "total" | "onlyYou" | "team" | "updatingSince" | "byKind">;
 type Kind = keyof Knowledge["byKind"];
 type ScopedEntry = { id: string; kind: Kind; level: "onlyYou" | "team" };
-const knowledgeStatuses = { held: "upToDate", changed: "codeChanged", broken: "outOfDate", unknown: "notChecked" } as const;
-export function knowledgeStatus(verdict: string | undefined) {
-  return Object.hasOwn(knowledgeStatuses, verdict ?? "") ? knowledgeStatuses[verdict as keyof typeof knowledgeStatuses] : "notChecked";
-}
-
 interface ProjectSnapshot {
   review: ProjectReview;
   knowledge?: Knowledge;
@@ -38,21 +31,6 @@ export interface HomeSnapshot {
 
 function emptyCounts(): StatusCounts {
   return { upToDate: 0, codeChanged: 0, outOfDate: 0, notChecked: 0 };
-}
-
-export function activeCheckouts(reader: RecordReader, project: string, now: number): string[] {
-  const rows = reader.all<{ path: string }>(`SELECT path FROM checkouts WHERE project_id=?
-    AND (state='on' OR (state='off until' AND off_until<=?)) ORDER BY path LIMIT ?`, project, new Date(now).toISOString(), CHECKOUT_LIMIT + 1);
-  if (rows.length > CHECKOUT_LIMIT) throw new Error("Home checkout scan limit exceeded");
-  return rows.map(({ path }) => path).filter((path) => lstatSync(path, { throwIfNoEntry: false })?.isDirectory());
-}
-
-export function mostRecentCheckout(hooks: RecordReader | undefined, project: string, paths: string[]) {
-  if (paths.length < 2) return paths[0];
-  const last = hooks?.get<{ checkout: string }>(`SELECT checkout FROM sessions WHERE project_id=?
-    AND checkout ${checkoutCollation} IN (SELECT value FROM json_each(?))
-    ORDER BY last_seen_at DESC,session_id DESC LIMIT 1`, project, JSON.stringify(paths));
-  return paths.find((path) => checkoutCollation ? path.toLowerCase() === last?.checkout.toLowerCase() : path === last?.checkout) ?? paths[0];
 }
 
 function readKnowledge(reader: RecordReader, hooks: RecordReader | undefined, project: string, home: string, checkout: string | undefined): Knowledge {

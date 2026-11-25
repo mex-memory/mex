@@ -21,6 +21,7 @@ import type {
   MachineKnowledgeWritePreviewSchema,
   MachineReviewActionRequest,
   MachineReviewActionResponse,
+  MachineReviewCard,
   MachineReviewQueue,
 } from "@mex/hub-contracts/machine";
 
@@ -56,8 +57,10 @@ export type ReviewWritePreview = Extract<MachineReviewActionResponse, { type: "p
 export type ReviewApplied = Extract<MachineReviewActionResponse, { type: "applied" }>;
 export type ReviewHandled = Extract<MachineReviewActionResponse, { type: "alreadyHandled" }>;
 
+export type FixtureReviewQueue = Omit<MachineReviewQueue, "cards"> & { cards: readonly MachineReviewCard[] };
+
 export interface ReviewPreview {
-  queue?: MachineReviewQueue;
+  queue?: FixtureReviewQueue;
   act: (key: string, request: MachineReviewActionRequest, onRetry: () => void) => Promise<MachineReviewActionResponse>;
   removeCompleted: (key: string) => void;
 }

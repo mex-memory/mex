@@ -1,4 +1,5 @@
-import type { MachineProject, MachineReviewQueue, MachineSession } from "@mex/hub-contracts/machine";
+import type { FixtureReviewQueue } from "./types";
+import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
 import { fixtureHomeReview, fixtureReviewQueue } from "./fixture-review-data";
 import type { ForgottenItem, HomeOverview, HubJob, KnowledgeDetail, KnowledgeStatusCounts } from "./types";
 
@@ -18,7 +19,7 @@ interface HubFixture {
   overview: HomeOverview;
   jobs: readonly HubJob[];
   knowledge: KnowledgeFixture;
-  review?: MachineReviewQueue;
+  review?: FixtureReviewQueue;
 }
 
 const session = {

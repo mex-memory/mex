@@ -17,6 +17,7 @@ import { readForgotten } from "./knowledge-forgotten.js";
 import { readKnowledgeLanding } from "./knowledge-landing.js";
 import { readKnowledgePage } from "./knowledge-list.js";
 import { KnowledgeConflict, KnowledgeReplays, KnowledgeWrites, knowledgeReadProblem, knowledgeWriteProblem } from "./knowledge-writes.js";
+import { readReviewCard, readReviewPage, reviewUnavailable } from "./review.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { consumeBootstrap, keepHubOpen, TAB_KEEPALIVE_MS, type HubMode } from "./state.js";
 
@@ -149,6 +150,17 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.get("/api/v1/projects", (context) => context.json({ projects: listProjects(location) }));
 
   app.get("/api/v1/home", (context) => context.json(home.get(context.req.query("tz"))));
+
+  app.get("/api/v1/review", (context) => {
+    const query = readStrictQuery(context.req.raw, ["repo", "cursor", "limit"]);
+    try { return context.json(readReviewPage(home, location, query)); }
+    catch (error) { throw error instanceof HubRequestError ? error : reviewUnavailable(); }
+  });
+
+  app.get("/api/v1/review/cards/:key", async (context) => {
+    try { return context.json((await readReviewCard(home, location, context.req.param("key"), now(), options.env)).card); }
+    catch (error) { throw error instanceof HubRequestError ? error : reviewUnavailable(); }
+  });
 
   app.get("/api/v1/knowledge", (context) => context.json(readKnowledgePage(knowledge,
     readStrictQuery(context.req.raw, ["repo", "q", "kind", "audience", "status", "area", "cursor", "limit"])),

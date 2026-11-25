@@ -9,9 +9,8 @@ import { openHooksReadOnly, openRecordReadOnly, recordLocation, type RecordReade
 import type { LocationOptions } from "../../record/location.js";
 import { absolutePath, realPath } from "../../record/project.js";
 import { registeredProjectIds } from "./home-metrics.js";
-import { activeCheckouts, checkoutCollation, knowledgeStatus, mostRecentCheckout } from "./home-snapshot.js";
 import { knowledgeRanking, useKey, useWindow, USAGE_UNAVAILABLE, type UseWindow } from "./knowledge-usage.js";
-import { knowledgeKey, readStore } from "./read.js";
+import { activeCheckouts, checkoutCollation, knowledgeKey, knowledgeStatus, mostRecentCheckout, readStore } from "./read.js";
 
 export const PROJECT_ID = /^[gf]-[a-f0-9]{24}$/u;
 export const RETIRED_PREFIX = "knowledge.retired.";

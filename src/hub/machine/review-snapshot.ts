@@ -1,4 +1,4 @@
-import type { MachineReviewCard } from "@mex/hub-contracts/machine";
+import type { MachineReviewRow } from "@mex/hub-contracts/machine";
 import { setImmediate } from "node:timers/promises";
 import { sharingEnabled } from "../../filter/repository.js";
 import { hash } from "../../judge/evidence.js";
@@ -8,6 +8,8 @@ import type { RecordReader } from "../../record/index.js";
 import { snapshotReview, type ReviewGroup } from "../../review/queue.js";
 import { reviewReason } from "../../review/reasons.js";
 import { checkoutCollation, knowledgeKey } from "./read.js";
+import { conflictNote } from "./review-notes.js";
+import { assertNoSecrets, stripHidden } from "../../knowledge/gates.js";
 import { realPath } from "../../record/project.js";
 
 export const REVIEW_BYTES = 8 << 20;
@@ -15,15 +17,17 @@ export const REVIEW_PROJECT_BYTES = 4 << 20;
 export const reviewLimits = { retainedBytes: 8 << 20, vocabularyBytes: 48 << 20 };
 export const REVIEW_SCAN_NOTE = "Some cards are missing because Review reached its reading limit.";
 export const REVIEW_READ_NOTE = "Some Review cards couldn’t be read. Try refreshing.";
+const MAX_LIST_NOTE_READS = 128;
 const CHECKS_REQUIRED = "Record the checks before sharing this rule.";
 const producers = new Map(listProducers().map(({ id, name }) => [id, name]));
 
-export type ReviewRow = Omit<MachineReviewCard, "text" | "contradiction"> & { contradiction?: true };
+export type ReviewRow = MachineReviewRow;
 
 export interface ReviewPoint {
   row: ReviewRow;
   /** From the active registered checkouts. Never supplied by the browser. */
   checkout: string;
+  bytes: number;
 }
 
 export interface ProjectReview {
@@ -47,32 +51,35 @@ export function judgeMember(group: ReviewGroup) {
   return group.members.find(({ item }) => item.source.producer === "judge");
 }
 
-export function reviewPoint(repoId: string, group: ReviewGroup, checkout: string, sources: string[], active: ReadonlySet<string>): ReviewPoint {
+export function reviewPoint(
+  repoId: string, group: ReviewGroup, checkout: string, sources: string[], active: ReadonlySet<string>,
+  contradiction?: ReviewRow["contradiction"],
+): ReviewPoint {
   const { id, entry: { mex }, conflict } = group;
   const judge = judgeMember(group);
   const target = judge?.item.source;
   const audience = target?.level === "team" ? "team" : "onlyYou";
-  const retireTarget: MachineReviewCard["retireTarget"] = judge && { key: knowledgeKey(repoId, audience, judge.row.entry_id), audience };
+  const retireTarget: MachineReviewRow["retireTarget"] = judge && { key: knowledgeKey(repoId, audience, judge.row.entry_id), audience };
   const producer = entryProducer(mex);
   const source = producers.get(producer === "unknown" ? judge ? "judge" : "session-ongoing" : producer);
   const shareBlocked = !mex.checks.length || mex.checks.some(({ kind }) => kind === "legacy-grounding");
-  return {
-    checkout,
-    row: {
-      key: repoId + ":" + id, repoId, cardId: id, claim: mex.one_line, kind: mex.kind, scope: mex.scope,
-      revision: hash(JSON.stringify([checkout, reviewGroupRevision(group)])),
-      reason: conflict ? "contradiction" : reviewReason(group.reason) || "this rule needs your decision",
-      createdAt: new Date(group.createdAt).toISOString(), expiresAt: group.expiresAt, checkedByModel: group.checkedByModel,
-      sources: { count: group.sources, producer: source ?? "MEX", checkouts: sources },
-      ...(conflict ? { contradiction: true } : {}),
-      retireTarget,
-      actions: conflict ? ["use", "keepCurrent"] : target ? ["share", "keep", "edit", "retire"] : ["share", "keep", "edit"],
-      disabled: conflict ? undefined : {
-        ...(shareBlocked ? { share: CHECKS_REQUIRED } : {}),
-        ...(target && !active.has(target.checkout) ? { retire: "Turn on MEX in the checkout with this note before retiring it." } : {}),
-      },
+  const reason = conflict ? "contradiction" : reviewReason(group.reason);
+  const row: ReviewRow = {
+    key: repoId + ":" + id, repoId, cardId: id, checkout, claim: stripHidden(mex.one_line).trim() || "Rule for Review",
+    kind: mex.kind, scope: mex.scope,
+    revision: hash(JSON.stringify([checkout, reviewGroupRevision(group)])),
+    reason: stripHidden(reason).trim() || "this rule needs your decision",
+    createdAt: new Date(group.createdAt).toISOString(), expiresAt: group.expiresAt, checkedByModel: group.checkedByModel,
+    sources: { count: group.sources, producer: source ?? "MEX", checkouts: sources },
+    contradiction,
+    retireTarget,
+    actions: conflict ? ["use", "keepCurrent"] : target ? ["share", "keep", "edit", "retire"] : ["share", "keep", "edit"],
+    disabled: conflict ? undefined : {
+      ...(shareBlocked ? { share: CHECKS_REQUIRED } : {}),
+      ...(target && !active.has(target.checkout) ? { retire: "Turn on MEX in the checkout with this note before retiring it." } : {}),
     },
   };
+  return { checkout, row, bytes: JSON.stringify(row).length * 2 + 512 };
 }
 
 export const emptyReview = (partial?: string): ProjectReview => ({ cards: new Map(), bytes: 0, partial });
@@ -102,6 +109,9 @@ export async function projectReview(
   const recentShared = recent.filter((path) => shared.has(path));
   const result = emptyReview();
   let failed = false;
+  // The list needs only a few claims. Full effects are read with the selected card.
+  let reads = 0;
+  const claims = new Map<string, ReturnType<typeof conflictNote>["note"]>();
   for (const path of paths) {
     await setImmediate(undefined, { signal });
     try {
@@ -110,8 +120,25 @@ export async function projectReview(
         const sourcePaths = new Set(group.members.map(({ item }) => item.source.checkout));
         const sources = group.conflict ? [path] : recent.filter((source) => sourcePaths.has(source));
         const checkout = group.conflict ? path : sources.find((source) => shared.has(source)) ?? recentShared[0] ?? path;
-        const point = reviewPoint(repoId, group, checkout, sources.length ? sources : [checkout], active);
-        const bytes = JSON.stringify(point).length * 2 + 512;
+        if (group.conflict) {
+          try { assertNoSecrets(group.entry); } catch { result.partial = REVIEW_READ_NOTE; continue; }
+        }
+        const current = group.conflict?.conflicts.slice(0, 8).map((other): ReturnType<typeof conflictNote>["note"] => {
+          const audience = other.level === "personal" ? "onlyYou" : other.level;
+          const key = knowledgeKey(repoId, audience, other.id);
+          const cached = claims.get(checkout + "\0" + key);
+          if (cached) return cached;
+          if (reads >= MAX_LIST_NOTE_READS) {
+            result.partial ??= REVIEW_SCAN_NOTE;
+            return { key, audience, claim: "Current note unavailable" };
+          }
+          reads++;
+          const { note } = conflictNote(reader, { home, repoId, checkout }, other, now);
+          claims.set(checkout + "\0" + key, note);
+          return note;
+        });
+        const point = reviewPoint(repoId, group, checkout, sources.length ? sources : [checkout], active, current && { current });
+        const bytes = point.bytes;
         if (result.bytes + bytes > budget || result.cards.size >= KNOWLEDGE_LIMITS.entries) {
           result.partial = REVIEW_SCAN_NOTE;
           return result;

@@ -209,11 +209,12 @@ const reviewAction = z.enum(["share", "keep", "edit", "use", "keepCurrent", "ret
 const reviewContent = knowledgeContentSchema.omit({ oneLine: true }).extend({ claim: knowledgeContentSchema.shape.oneLine });
 const reviewNote = z.object({ key: knowledgeKeySchema, audience: MachineKnowledgeAudienceSchema });
 
-export const MachineReviewCardSchema = reviewContent.extend({
+const reviewRowSchema = reviewContent.omit({ text: true }).extend({
   key: z.string().min(3).max(512),
   cardId: z.string().min(1),
   repoId: z.string().min(1),
   revision: knowledgeRevisionSchema,
+  checkout: z.string().min(1),
   reason: z.string().min(1),
   checkedByModel: z.boolean(),
   sources: z.object({ count: countSchema, producer: z.string().min(1), checkouts: z.array(z.string().min(1)) }),
@@ -223,14 +224,19 @@ export const MachineReviewCardSchema = reviewContent.extend({
   retireTarget: reviewNote.optional(),
   actions: z.array(reviewAction),
   disabled: z.record(reviewAction, z.string().min(1)).optional(),
-}).refine(({ key, repoId, cardId }) => key === `${repoId}:${cardId}`);
+});
+const reviewKeyMatches = ({ key, repoId, cardId }: z.infer<typeof reviewRowSchema>) => key === `${repoId}:${cardId}`;
+export const MachineReviewRowSchema = reviewRowSchema.refine(reviewKeyMatches);
+export const MachineReviewCardSchema = reviewRowSchema.extend({ text: reviewContent.shape.text }).refine(reviewKeyMatches);
 
 export const MachineReviewQueueSchema = z.object({
-  cards: z.array(MachineReviewCardSchema).readonly(),
+  cards: z.array(MachineReviewRowSchema).max(100).readonly(),
+  nextCursor: z.string().nullable(),
   total: countSchema,
   byRepo: z.record(countSchema),
   oldest: isoTimeSchema.nullable(),
   updatingSince: isoTimeSchema.optional(),
+  partial: knowledgeReadState.partial,
 });
 
 export const MachineReviewActionRequestSchema = z.object({
@@ -262,6 +268,7 @@ const reviewHandled = z.object({
 });
 export const MachineReviewActionResponseSchema = z.discriminatedUnion("type", [MachineReviewPreviewSchema, reviewApplied, reviewHandled]);
 
+export type MachineReviewRow = z.infer<typeof MachineReviewRowSchema>;
 export type MachineReviewCard = z.infer<typeof MachineReviewCardSchema>;
 export type MachineReviewQueue = z.infer<typeof MachineReviewQueueSchema>;
 export type MachineReviewActionRequest = z.infer<typeof MachineReviewActionRequestSchema>;

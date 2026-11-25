@@ -1,7 +1,8 @@
+import type { FixtureReviewQueue } from "./types";
 import { useRef, useState } from "react";
 import {
   MachineReviewActionRequestSchema,
-  type MachineReviewActionRequest, type MachineReviewActionResponse, type MachineReviewCard, type MachineReviewQueue,
+  type MachineReviewActionRequest, type MachineReviewActionResponse, type MachineReviewCard,
 } from "@mex/hub-contracts/machine";
 import { HubProblemError } from "./api";
 import { reviewSnapshot } from "./fixture-review-data";
@@ -46,7 +47,7 @@ function reviewNote(card: MachineReviewCard, fields: ReviewDraft, at: string, au
 }
 
 export function useFixtureReview(
-  initial: MachineReviewQueue | undefined, knowledge: FixtureKnowledge, variant: FixtureVariant,
+  initial: FixtureReviewQueue | undefined, knowledge: FixtureKnowledge, variant: FixtureVariant,
 ): ReviewPreview {
   const [queue, setQueue] = useState(initial);
   const current = useRef(initial);
