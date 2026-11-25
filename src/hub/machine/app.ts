@@ -12,6 +12,7 @@ import { HubEvents } from "./events.js";
 import { HomeData } from "./home.js";
 import { changeHubJob, readHubJobs } from "./jobs.js";
 import { KnowledgeData } from "./knowledge.js";
+import { readKnowledgeLanding } from "./knowledge-landing.js";
 import { readKnowledgePage } from "./knowledge-list.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { consumeBootstrap, keepHubOpen, TAB_KEEPALIVE_MS, type HubMode } from "./state.js";
@@ -132,6 +133,8 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.get("/api/v1/home", (context) => context.json(home.get(context.req.query("tz"))));
 
   app.get("/api/v1/knowledge", (context) => context.json(readKnowledgePage(knowledge, context.req.query())));
+
+  app.get("/api/v1/knowledge/landing", (context) => context.json(readKnowledgeLanding(knowledge, context.req.query("repo"))));
 
   app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
 

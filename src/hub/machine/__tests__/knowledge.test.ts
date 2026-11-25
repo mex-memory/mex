@@ -1,4 +1,4 @@
-import { MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
+import { MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
 import { setImmediate } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { hash } from "../../../judge/evidence.js";
+import { ruleChangeKey } from "../../../judge/rule-change.js";
 import { KNOWLEDGE_LIMITS, serializeEntry, type KnowledgeEntry } from "../../../knowledge/entry.js";
 import { readHints, refreshHints } from "../../../knowledge/hints.js";
 import { openRecord, projectIdentity, type RecordWriter } from "../../../record/index.js";
@@ -244,4 +246,33 @@ describe("Knowledge list", () => {
     expect((await get("?repo=f-" + "a".repeat(24))).status).toBe(404);
     expect((await get("?limit=101")).status).toBe(400);
   });
+});
+
+it("groups by kind and all scopes and reads a reason bound to the current team file", async () => {
+  const repo = project("repo");
+  const other = project("other");
+  const file = save(repo, "team", entry("mx_teamrule", "Code detail", { scope: ["apps/api/**", "tests/**", "tests/**"] }));
+  save(repo, "onlyYou", entry("mx_personal", "Broken note"));
+  save(repo, "onlyYou", entry("mx_otherrule", "Aardvark"));
+  save(repo, "onlyYou", entry("mx_evenmore", "Zebra"));
+  save(other, "onlyYou", entry("mx_another", "Rule from another repo", { scope: ["tests/**"] }));
+  verdict(repo, "mx_teamrule", "changed");
+  verdict(repo, "mx_personal", "broken");
+  receipt(repo, "mx_teamrule", at(-1_000));
+  receipt(repo, "mx_evenmore", at(-2_000));
+  writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(repo.id, ruleChangeKey(repo.path), JSON.stringify({
+    version: 1, checkout: repo.path,
+    entries: [{ id: "mx_teamrule", entry_hash: hash(readFileSync(file, "utf8")), reasons: ["Code changed in apps/api/main.ts"] }],
+  }));
+  await page();
+  const data = MachineKnowledgeLandingSchema.parse(await (await get("/landing")).json());
+  expect(data.needsLook.total).toBe(2);
+  expect(data.needsLook.items.map(({ why }) => why)).toEqual(["A check no longer holds", "Code changed in apps/api/main.ts"]);
+  expect(data.groups.byKind[0].topItems.map(({ id }) => id)).toEqual(["mx_teamrule", "mx_evenmore", "mx_otherrule"]);
+  expect(data.groups.byArea.map(({ pattern, repoId, count }) => [pattern, repoId, count])).toEqual([
+    ["**", undefined, 3], ["apps/api/**", repo.id, 1], ...[repo.id, other.id].sort().map((id) => ["tests/**", id, 1]),
+  ]);
+  const scoped = MachineKnowledgeLandingSchema.parse(await (await get("/landing?repo=" + other.id)).json());
+  expect(scoped.groups.byKind[0].count).toBe(1);
+  expect(scoped.needsLook.total).toBe(0);
 });
