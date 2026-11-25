@@ -190,7 +190,7 @@ describe("machine Agents and Settings", () => {
     const installerPaths = new Set([...installationChanges(location()).map(row => row.path), exclude]);
     expect(new Set(uninstall.changes.map(row => row.path))).toEqual(installerPaths);
     expect(uninstall.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: claude(), mexValue: expect.stringContaining("SessionStart") }),
+      expect.objectContaining({ path: claude(), mexValue: expect.stringMatching(/^MEX hook on 12 events: .*SessionStart/) }),
       expect.objectContaining({ path: exclude, mexValue: expect.stringContaining("/.mex/*"), restores: null }),
     ]));
     expect(JSON.stringify(uninstall)).not.toContain("KEEP_ME");

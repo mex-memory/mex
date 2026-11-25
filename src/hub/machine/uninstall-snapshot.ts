@@ -55,8 +55,14 @@ function projectedSettings(
 ): Pick<Change, "before" | "mexValue" | "restores" | "note"> {
   const before = decodeSnapshot(oldValue), after = decodeSnapshot(newValue);
   const diff = hookChanges(snapshotBytes(before), snapshotBytes(after), installHookCommands(home, process.platform));
-  const value = (side: Record<string, unknown>, snapshot: Snapshot): string | null =>
-    Object.values(side).some(v => v !== undefined) ? visibleValue(side, 4096) : snapshot.data === null ? null : "No MEX entries in this change";
+  // Name the hook events rather than print every handler: the full JSON is
+  // long, repeats the hook path, and is already in the file itself.
+  const value = (side: Record<string, unknown>, snapshot: Snapshot): string | null => {
+    const events = Object.keys(side).filter(key => key !== "version" && side[key] !== undefined);
+    const parts = events.length ? [`MEX hook on ${events.length} event${events.length === 1 ? "" : "s"}: ${events.join(", ")}`] : [];
+    if (side.version !== undefined) parts.push(`"version": ${visibleValue(side.version, 64)}`);
+    return parts.length ? visibleValue(parts.join("; "), 4096) : snapshot.data === null ? null : "No MEX entries in this change";
+  };
   const prior = value(diff.before, before), written = value(diff.after, after) ?? ABSENT;
   try {
     let live = current.get(row.path);
