@@ -1380,21 +1380,21 @@ configCmd
       } else if (key === "learning.statements") {
         if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
         const { openRecord } = await import("./record/index.js");
+        const { setStatementLearning } = await import("./controls/index.js");
         const writer = openRecord({ create: true });
-        try {
-          writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES('global','learning.statements',?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(value);
-        } finally { writer.close(); }
+        try { setStatementLearning(writer, value); } finally { writer.close(); }
         console.log(value === "on"
           ? "MEX now learns lasting statements from what you type, in the background with your agent's smallest model, at most 3% of your usage. Turn off: mex config set learning.statements off"
           : "MEX no longer learns from what you type. Notes you save with mex note still get their checks.");
       } else if (key === "learning.sessions") {
-        const { sessionLearningRefusal, setSessionLearning } = await import("./knowledge/session-learning.js");
+        const { sessionLearningRefusal } = await import("./knowledge/session-learning.js");
         const refused = sessionLearningRefusal(value);
         if (refused) throw new Error(refused);
         const { openRecord } = await import("./record/index.js");
+        const { setSessionLearning } = await import("./controls/index.js");
         const writer = openRecord({ create: true });
         try { setSessionLearning(writer, value); } finally { writer.close(); }
-        console.log("Learning from past sessions is off.");
+        console.log(`Learning from past sessions is ${value}.`);
       } else if (key === "levers.output") {
         const { openRecord } = await import("./record/index.js");
         const { setOutputLevers } = await import("./controls/index.js");

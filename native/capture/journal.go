@@ -1,9 +1,7 @@
-// Package capture saves what a person typed, what commands returned and which
-// files the agent edited, and nothing else (plan sheets 21-23). The prompt
-// hook saves typed text before the reply starts, so an interrupt or a
-// terminal closed mid-reply loses nothing. Tool hooks save the command and its
-// exit code, or an edited file's repo-relative path: never agent text, file
-// contents or tool output.
+// Package capture records local hook evidence. The prompt hook saves typed
+// text before the reply starts, so interrupting a reply loses no text. The
+// journal keeps command exit codes and edit paths without tool output. Clicked
+// options stay in a separate private store with their agent authorship intact.
 //
 // Everything here fails open. A capture that can't be saved is skipped; the
 // agent call always goes on.
@@ -41,9 +39,10 @@ const (
 
 // Env is what capture needs from the hook.
 type Env struct {
-	RecordDirectory string
-	Now             time.Time
-	Getenv          func(string) string
+	RecordDirectory  string
+	Now              time.Time
+	Getenv           func(string) string
+	ClickedApprovals bool
 }
 
 func (e Env) getenv(k string) string {
@@ -415,6 +414,9 @@ func Hook(ev contract.Event, env Env) {
 	}
 	_ = Save(ev, env)
 	_ = filterMetadata(ev, env)
+	if env.ClickedApprovals {
+		_ = saveClickedApproval(ev, env)
+	}
 	_ = keepContinuity(ev, env)
 	_ = track(ev, env, func(session, entryID string) bool {
 		h, err := openHooks(env.RecordDirectory)

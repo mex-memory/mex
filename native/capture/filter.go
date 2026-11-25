@@ -3,6 +3,7 @@ package capture
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -72,6 +73,10 @@ func filterMetadata(ev contract.Event, env Env) error {
 
 // Root-relative atomic replacement refuses symlinks and never writes Node tables.
 func filterFile(directory, folder, name string, value any) error {
+	return writeFilterFile(directory, folder, name, value, false)
+}
+
+func writeFilterFile(directory, folder, name string, value any, keepExisting bool) error {
 	data, err := json.Marshal(value)
 	if err != nil || len(data) > 16<<10 {
 		return errRedirected
@@ -81,6 +86,14 @@ func filterFile(directory, folder, name string, value any) error {
 		return err
 	}
 	defer root.Close()
+	if parent := filepath.Dir(folder); parent != "." {
+		if err := root.MkdirAll(parent, 0o700); err != nil {
+			return err
+		}
+		if info, err := root.Lstat(parent); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errRedirected
+		}
+	}
 	if err := root.MkdirAll(folder, 0o700); err != nil {
 		return err
 	}
@@ -102,5 +115,13 @@ func filterFile(directory, folder, name string, value any) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return root.Rename(tmp, filepath.Join(folder, name+".json"))
+	target := filepath.Join(folder, name+".json")
+	if keepExisting {
+		// Crash-safe first write wins, including overlapping duplicate hooks.
+		if err := root.Link(tmp, target); !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		return nil
+	}
+	return root.Rename(tmp, target)
 }
