@@ -1,12 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
-import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Search } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Plus, Search } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "../components/primitives/dropdown-menu";
 import { Input } from "../components/primitives/input";
+import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
 import { KnowledgeDate, KnowledgeDetailPanel } from "./KnowledgeDetail";
 import { audienceLabels, kindLabels } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
@@ -150,10 +151,11 @@ function KnowledgeRow({ item, href, repo, active, now }: {
   );
 }
 
-function KnowledgeHeader({ scope, updating, titleRef }: {
+function KnowledgeHeader({ scope, updating, titleRef, action }: {
   scope: string;
   updating?: string;
   titleRef?: React.Ref<HTMLHeadingElement>;
+  action?: ReactNode;
 }) {
   return (
     <header className={styles.header}>
@@ -162,6 +164,7 @@ function KnowledgeHeader({ scope, updating, titleRef }: {
         <span title={scope}>· {scope}</span>
         {updating && <span className={styles.updating} role="status">Updating…</span>}
       </div>
+      {action}
     </header>
   );
 }
@@ -211,6 +214,9 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const q = params.get("q") ?? "";
   const [query, setQuery] = useState(q);
   const [notice, setNotice] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addSession, setAddSession] = useState(0);
+  const addTrigger = useRef<HTMLButtonElement | null>(null);
   const activeStatus = knowledgeStatuses.find(({ slug }) => slug === params.get("status"));
   const filters: KnowledgeFilters = {
     scopeId: project?.id,
@@ -284,12 +290,23 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     navigate(linkTo(basePath, next));
   }
 
+  function startAdd(event: MouseEvent<HTMLButtonElement>) {
+    addTrigger.current = event.currentTarget;
+    setAddSession((session) => session + 1);
+    setAddOpen(true);
+  }
+
   if (isForgotten) return <ForgottenView backHref={listHref} items={forgotten} repoNames={repoNames} titleRef={detailTitle} />;
 
   return (
     <div className={styles.page} data-detail={Boolean(entryKey)} ref={browser}>
       <div className={styles.overview}>
-        <KnowledgeHeader scope={project?.name ?? "All repos"} titleRef={title} updating={first.updatingSince} />
+        <KnowledgeHeader
+          action={<Button aria-haspopup="dialog" className={styles.addButton} onClick={startAdd} type="button"><Plus aria-hidden="true" /> Add a note</Button>}
+          scope={project?.name ?? "All repos"}
+          titleRef={title}
+          updating={first.updatingSince}
+        />
         <KnowledgeSummary
           active={activeStatus?.slug}
           counts={first.statusCounts}
@@ -344,7 +361,11 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         ) : (
           <section aria-label="Knowledge items" className={`${styles.listCard} ${styles.empty}`}>
             {total === 0 ? (
-              <><BookOpen aria-hidden="true" /><p>Nothing learned yet. Add a note, or let MEX learn from your sessions.</p></>
+              <>
+                <BookOpen aria-hidden="true" />
+                <p>Nothing learned yet. Add a note, or let MEX learn from your sessions.</p>
+                <Button aria-haspopup="dialog" onClick={startAdd} size="sm" type="button" variant="outline">Add a note</Button>
+              </>
             ) : (
               <><Search aria-hidden="true" /><p role="status">No items match these filters.</p><Button onClick={clearFilters} size="sm" variant="outline">Clear filters</Button></>
             )}
@@ -368,6 +389,24 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           <div className={styles.detailPlaceholder}><BookOpen aria-hidden="true" /><p>Select an item to read it.</p></div>
         )}
       </div>
+      <KnowledgeAddDialog
+        finalFocus={() => addTrigger.current?.isConnected ? addTrigger.current : false}
+        key={addSession}
+        onClose={() => setAddOpen(false)}
+        onSave={(request) => {
+          const { item } = knowledge.createNote(request);
+          const next = new URLSearchParams(params);
+          filterNames.forEach((name) => next.delete(name));
+          setQuery("");
+          addTrigger.current = null;
+          setAddOpen(false);
+          navigate(linkTo(`${basePath}/${encodeURIComponent(item.key)}`, next));
+        }}
+        open={addOpen}
+        preferredRepo={filters.repoId}
+        project={project}
+        projects={projects}
+      />
     </div>
   );
 }

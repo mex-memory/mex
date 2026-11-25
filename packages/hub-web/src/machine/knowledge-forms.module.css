@@ -14,6 +14,33 @@
   gap: 6px;
 }
 
+.fieldRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.fieldRow > :only-child {
+  grid-column: 1 / -1;
+}
+
+.visibility {
+  padding: 8px 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.visibility p:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .field label,
 .scopeFields legend {
   color: var(--foreground);
