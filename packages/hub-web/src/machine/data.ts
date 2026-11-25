@@ -29,8 +29,8 @@ export function useReviewCount(events: HubEventState) {
   return useQuery({ queryKey: ["review", "counts"], queryFn: getReviewCounts, ...queryOptions(events) });
 }
 
-export function useJobs(events: HubEventState) {
-  return useQuery({ queryKey: JOBS_KEY, queryFn: getJobs, ...queryOptions(events) });
+export function useJobs(events: HubEventState, job?: string) {
+  return useQuery({ queryKey: job ? [...JOBS_KEY, job] : JOBS_KEY, queryFn: () => getJobs(job), ...queryOptions(events) });
 }
 
 const agentsKey = ["agents"] as const;
@@ -202,7 +202,7 @@ export function useJobActions(csrfToken: string, reportDataError: (error: unknow
   const { mutateAsync } = useMutation({
     mutationFn: ({ job, action }: { job: HubJob; action: JobAction }) => postJobAction(job.id, action, expectedState(job), csrfToken),
     onSuccess: (updated) => {
-      client.setQueryData<readonly HubJob[]>(JOBS_KEY, (jobs) => jobs?.map((job) => job.id === updated.id ? updated : job));
+      client.setQueriesData<readonly HubJob[]>({ queryKey: JOBS_KEY }, (jobs) => jobs?.map((job) => job.id === updated.id ? updated : job));
       void client.invalidateQueries({ queryKey: JOBS_KEY });
     },
     networkMode: "always",

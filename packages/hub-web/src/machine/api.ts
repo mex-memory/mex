@@ -116,8 +116,8 @@ export function getReviewCounts() {
   return requestJson("/review?limit=1", MachineReviewCountsSchema);
 }
 
-export function getJobs() {
-  return requestJson("/jobs", MachineJobsSchema);
+export function getJobs(job?: string) {
+  return requestJson(job ? `/jobs?${new URLSearchParams({ job })}` : "/jobs", MachineJobsSchema);
 }
 
 export function postJobAction(

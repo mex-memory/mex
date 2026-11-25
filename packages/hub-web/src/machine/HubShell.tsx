@@ -9,6 +9,7 @@ import { Separator } from "../components/primitives/separator";
 import { cn } from "../lib/utils";
 import shell from "../styles/shell.module.css";
 import { useAgents, useHome, useHubEvents, useJobActions, useJobs, useReviewCount, type ControlConnection, type HubEventState } from "./data";
+import { jobIdFromHash } from "./job-links";
 import type { ReviewConnection } from "./ReviewPage";
 import type { KnowledgeConnection } from "./KnowledgePage";
 import { UnknownRepoPage } from "./pages";
@@ -80,7 +81,8 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
 }) {
   const events = useHubEvents(checkSession);
   const home = useHome(events);
-  const jobs = useJobs(events);
+  const { pathname, hash } = useLocation();
+  const jobs = useJobs(events, pathname.endsWith("/jobs") ? jobIdFromHash(hash) : undefined);
   const waiting = useReviewCount(events);
   const agents = useAgents(events);
   const changeJob = useJobActions(props.session.csrfToken, reportDataError);

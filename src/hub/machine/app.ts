@@ -392,7 +392,13 @@ export function createMachineHubApp(options: MachineHubOptions) {
     return step;
   }));
 
-  app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
+  app.get("/api/v1/jobs", (context) => {
+    const { job } = readStrictQuery(context.req.raw, ["job"]);
+    if (job !== undefined && !/^[A-Za-z0-9._-]{1,128}$/u.test(job)) {
+      throw new HubRequestError(400, "INVALID_REQUEST", "Invalid job", "Open a job from the Hub.");
+    }
+    return context.json(readHubJobs(location, job));
+  });
 
   app.post("/api/v1/jobs/:id/actions", async (context) => {
     const parsed = MachineJobActionRequestSchema.safeParse(await readBoundedJson(context.req.raw, 1_024));
