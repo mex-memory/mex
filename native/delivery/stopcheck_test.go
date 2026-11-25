@@ -433,7 +433,7 @@ func TestStopChecksTiming(t *testing.T) {
 		if r != (contract.Reply{}) {
 			t.Fatalf("run %d: want an empty reply, got %+v", i+1, r)
 		}
-		if got := loadStopCursor(cursor); got != lastRow {
+		if got := loadStopCursor(cursor).Last; got != lastRow {
 			t.Fatalf("run %d: stopped reading at journal row %d, want %d", i+1, got, lastRow)
 		}
 	}
