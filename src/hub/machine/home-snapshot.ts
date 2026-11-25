@@ -7,17 +7,14 @@ import { entryInventory } from "../../knowledge/inventory.js";
 import { retiredIds } from "../../knowledge/state.js";
 import { openHooksReadOnly, openRecordReadOnly, recordLocation, type RecordReader } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
-import { snapshotReview } from "../../review/queue.js";
 import { registeredProjectIds } from "./home-metrics.js";
-import { readStore } from "./read.js";
+import { checkoutCollation, readStore } from "./read.js";
+import { compareReview, emptyReview, projectReview, REVIEW_BYTES, REVIEW_PROJECT_BYTES, REVIEW_READ_NOTE, type ProjectReview, type ReviewPoint } from "./review-snapshot.js";
 
 export const NEEDS_LIMIT = 20;
 const CHECKOUT_LIMIT = 128;
-const REVIEW_PREVIEW_LENGTH = KNOWLEDGE_LIMITS.oneLineCharacters;
-const reviewLimits = { retainedBytes: 8 << 20, vocabularyBytes: 48 << 20 };
-export const checkoutCollation = process.platform === "win32" ? "COLLATE NOCASE" : "";
+export { checkoutCollation } from "./read.js";
 
-type Need = MachineHome["needs"][number] & { contradiction: boolean };
 type NeedsCount = MachineHome["needsCount"][string];
 type Knowledge = MachineHome["knowledge"][string];
 type StatusCounts = Omit<Knowledge, "total" | "onlyYou" | "team" | "updatingSince" | "byKind">;
@@ -29,20 +26,14 @@ export function knowledgeStatus(verdict: string | undefined) {
 }
 
 interface ProjectSnapshot {
-  needs: Need[];
-  needsCount?: NeedsCount;
-  knowledge: Knowledge;
+  review: ProjectReview;
+  knowledge?: Knowledge;
 }
 
 export interface HomeSnapshot {
   generatedAt: string;
-  needs: Need[];
+  review: { cards: ReviewPoint[]; partial?: string };
   projects: Map<string, ProjectSnapshot>;
-}
-
-function compareNeeds(a: Need, b: Need): number {
-  return Number(b.contradiction) - Number(a.contradiction) || a.waitingSince.localeCompare(b.waitingSince)
-    || a.id.localeCompare(b.id) || a.repoId.localeCompare(b.repoId);
 }
 
 function emptyCounts(): StatusCounts {
@@ -89,58 +80,55 @@ function readKnowledge(reader: RecordReader, hooks: RecordReader | undefined, pr
   return knowledge;
 }
 
-async function projectSnapshot(location: LocationOptions, reader: RecordReader, project: string, home: string, now: number, signal: AbortSignal): Promise<ProjectSnapshot> {
-  const paths = activeCheckouts(reader, project, now);
-  const knowledge = readStore(openHooksReadOnly, location, (hooks) => (
-    readKnowledge(reader, hooks, project, home, mostRecentCheckout(hooks, project, paths))
-  ));
-  const seen = new Map<string, Need>();
-  let oldest: string | undefined;
-  for (const path of paths) {
-    await setImmediate(undefined, { signal });
-    if (!lstatSync(path, { throwIfNoEntry: false })?.isDirectory()) continue;
-    for (const card of snapshotReview(reader, project, home, path, now, reviewLimits)) {
-      const waitingSince = new Date(card.createdAt).toISOString();
-      const need: Need = {
-        id: card.id, repoId: project, waitingSince, contradiction: card.reason === "contradiction",
-        rule: (card.entry.mex.one_line || card.entry.text.split(/\r?\n/u, 1)[0]).slice(0, REVIEW_PREVIEW_LENGTH),
-      };
-      const previous = seen.get(need.id);
-      if (!previous || compareNeeds(need, previous) < 0) seen.set(need.id, need);
-      if (!oldest || waitingSince < oldest) oldest = waitingSince;
-      if (seen.size > KNOWLEDGE_LIMITS.entries) throw new Error("Home Review scan limit exceeded");
-    }
-  }
-  return {
-    knowledge,
-    needsCount: oldest ? { count: seen.size, oldest } : undefined,
-    needs: [...seen.values()].sort(compareNeeds).slice(0, NEEDS_LIMIT),
-  };
-}
-
 /** Project failures retain that project's last sample. Only small aggregates survive each iteration. */
-export async function takeHomeSnapshot(location: LocationOptions, previous: HomeSnapshot | undefined, now: () => number, signal: AbortSignal): Promise<HomeSnapshot> {
+export async function takeHomeSnapshot(
+  location: LocationOptions, previous: HomeSnapshot | undefined, now: () => number, signal: AbortSignal, only?: string,
+): Promise<HomeSnapshot> {
   await setImmediate(undefined, { signal });
   const start = now();
   const { home } = recordLocation({ ...location, create: false });
-  const projects = new Map<string, ProjectSnapshot>();
-  const ids = readStore(openRecordReadOnly, location, registeredProjectIds);
+  const projects = only ? new Map(previous?.projects) : new Map<string, ProjectSnapshot>();
+  let ids: string[];
+  let partial: string | undefined;
+  try {
+    ids = readStore(openRecordReadOnly, location, (reader) => only ? (reader?.project(only) ? [only] : []) : registeredProjectIds(reader));
+  } catch {
+    return {
+      generatedAt: previous?.generatedAt ?? new Date(start).toISOString(),
+      review: { cards: previous?.review.cards ?? [], partial: REVIEW_READ_NOTE },
+      projects: previous?.projects ?? projects,
+    };
+  }
+  if (only) projects.delete(only);
+  let available = REVIEW_BYTES;
+  for (const { review } of projects.values()) available -= review.bytes;
   for (const id of ids) {
     await setImmediate(undefined, { signal });
+    const prior = previous?.projects.get(id);
+    const budget = Math.min(available, REVIEW_PROJECT_BYTES);
     let reader: RecordReader | undefined;
+    let hooks: RecordReader | undefined;
+    let review: ProjectReview;
+    let knowledge = prior?.knowledge;
     try {
       reader = openRecordReadOnly(location);
       if (!reader || reader.diagnostic) throw new Error("Home record unavailable");
-      projects.set(id, await projectSnapshot(location, reader, id, home, start, signal));
+      const paths = activeCheckouts(reader, id, start);
+      try { hooks = openHooksReadOnly(location); } catch { /* Keep Review available when hooks cannot be read. */ }
+      const usableHooks = hooks?.diagnostic ? undefined : hooks;
+      try { knowledge = readKnowledge(reader, usableHooks, id, home, mostRecentCheckout(usableHooks, id, paths)); }
+      catch { /* Keep the last good Knowledge counts. */ }
+      review = await projectReview(reader, usableHooks, id, home, paths, start, budget, signal, prior?.review);
     } catch {
       if (signal.aborted) throw signal.reason;
-      const prior = previous?.projects.get(id);
-      if (prior) projects.set(id, prior);
-    } finally { reader?.close(); }
+      review = prior && prior.review.bytes <= budget ? { ...prior.review, partial: REVIEW_READ_NOTE } : emptyReview(REVIEW_READ_NOTE);
+    } finally { hooks?.close(); reader?.close(); }
+    available -= review.bytes;
+    projects.set(id, { review, knowledge });
   }
-  let needs: Need[] = [];
-  for (const project of projects.values()) needs = [...needs, ...project.needs].sort(compareNeeds).slice(0, NEEDS_LIMIT);
-  return { generatedAt: new Date(now()).toISOString(), needs, projects };
+  if (only) partial = previous?.review.partial;
+  const cards = [...projects.values()].flatMap(({ review }) => [...review.cards.values()]).sort(compareReview);
+  return { generatedAt: new Date(now()).toISOString(), review: { cards, partial }, projects };
 }
 
 export function snapshotFields(snapshot: HomeSnapshot | undefined, updatingSince: string | undefined, byRepo: MachineHome["byRepo"]) {
@@ -148,11 +136,10 @@ export function snapshotFields(snapshot: HomeSnapshot | undefined, updatingSince
   const knowledge: Record<string, Knowledge> = Object.create(null);
   for (const [id, project] of snapshot?.projects ?? []) {
     if (!Object.hasOwn(byRepo, id)) continue;
-    if (project.needsCount) needsCount[id] = project.needsCount;
-    knowledge[id] = updatingSince ? { ...project.knowledge, updatingSince } : project.knowledge;
+    if (project.review.oldest) needsCount[id] = { count: project.review.cards.size, oldest: project.review.oldest };
+    if (project.knowledge) knowledge[id] = updatingSince ? { ...project.knowledge, updatingSince } : project.knowledge;
   }
-  return {
-    needs: (snapshot?.needs ?? []).filter(({ repoId }) => Object.hasOwn(byRepo, repoId)).map(({ contradiction: _contradiction, ...need }) => need),
-    needsCount, knowledge,
-  };
+  const needs = (snapshot?.review.cards ?? []).filter(({ row }) => Object.hasOwn(byRepo, row.repoId)).slice(0, NEEDS_LIMIT)
+    .map(({ row }) => ({ id: row.cardId, repoId: row.repoId, rule: row.claim, waitingSince: row.createdAt }));
+  return { needs, needsCount, knowledge };
 }

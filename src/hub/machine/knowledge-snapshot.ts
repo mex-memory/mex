@@ -11,7 +11,7 @@ import { absolutePath, realPath } from "../../record/project.js";
 import { registeredProjectIds } from "./home-metrics.js";
 import { activeCheckouts, checkoutCollation, knowledgeStatus, mostRecentCheckout } from "./home-snapshot.js";
 import { knowledgeRanking, useKey, useWindow, USAGE_UNAVAILABLE, type UseWindow } from "./knowledge-usage.js";
-import { readStore } from "./read.js";
+import { knowledgeKey, readStore } from "./read.js";
 
 export const PROJECT_ID = /^[gf]-[a-f0-9]{24}$/u;
 export const RETIRED_PREFIX = "knowledge.retired.";
@@ -56,7 +56,7 @@ export interface KnowledgeSnapshot {
 }
 
 export const searchText = (text: string) => text.normalize("NFKC").toLowerCase();
-export const knowledgeKey = (repoId: string, audience: Audience, id: string) => `${repoId}:${audience}:${id}`;
+export { knowledgeKey } from "./read.js";
 export const midnight = (day: string) => `${day}T00:00:00.000Z`;
 
 export function registeredCheckout(reader: RecordReader, repoId: string, path: string): boolean {

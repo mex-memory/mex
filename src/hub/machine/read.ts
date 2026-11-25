@@ -17,3 +17,7 @@ export function boundedSetting(reader: RecordReader, scope: string, key: string,
     "SELECT value FROM settings WHERE scope=? AND key=? AND length(CAST(value AS BLOB))<=?", scope, key, maxBytes,
   )?.value;
 }
+
+export const checkoutCollation = process.platform === "win32" ? "COLLATE NOCASE" : "";
+
+export const knowledgeKey = (repoId: string, audience: "onlyYou" | "team" | "hint", id: string) => `${repoId}:${audience}:${id}`;
