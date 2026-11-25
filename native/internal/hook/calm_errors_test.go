@@ -90,6 +90,33 @@ func TestClaudeShowsNewHookErrorsAtSessionStart(t *testing.T) {
 	start("third", true)
 }
 
+func TestSubagentStartLeavesHookErrorForCodexSessionStart(t *testing.T) {
+	h, env := fakeHome(t, true)
+	root := repo(t, t.TempDir())
+	register(t, h, root, projectID, "on", "")
+	noteHookError(h.mex, "claude-code", "Stop", errPanic, "test panic", time.Now().Add(-time.Minute))
+	shownAt := readHookErrorRecord(t, h.mex).ShownAt
+
+	payload, err := json.Marshal(map[string]string{
+		"hook_event_name": "SubagentStart",
+		"session_id":      "claude-parent-session",
+		"agent_id":        "a1",
+		"agent_type":      "Explore",
+		"cwd":             root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out := run(t, []string{"claude-code", "SubagentStart"}, bytes.NewReader(payload), env)
+	assertHookErrorNotice(t, code, out, false)
+	if got := readHookErrorRecord(t, h.mex).ShownAt; got != shownAt {
+		t.Fatalf("SubagentStart changed shown_at from %q to %q", shownAt, got)
+	}
+
+	code, out = run(t, []string{"codex", "SessionStart"}, strings.NewReader(sessionStart(root)), env)
+	assertHookErrorNotice(t, code, out, true)
+}
+
 func assertHookErrorNotice(t *testing.T, code int, out string, wantNotice bool) {
 	t.Helper()
 	if code != 0 {
