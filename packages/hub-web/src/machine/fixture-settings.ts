@@ -30,7 +30,9 @@ function uninstallPreview(dataSize: number): MachineUninstallPreview {
     changes: [
       {
         id: "claude-session", group: "Claude Code", path: claude, entry: "Session hooks",
-        before: null, mexValue: "mex-hook claude-code · SessionStart, SessionEnd, Stop", restores: "Remove 3 MEX entries",
+        before: "~/.local/bin/session-log",
+        mexValue: "~/.local/bin/session-log + mex-hook for SessionStart, SessionEnd, Stop",
+        restores: "~/.local/bin/session-log",
       },
       {
         id: "claude-tools", group: "Claude Code", path: claude, entry: "Tool hooks",

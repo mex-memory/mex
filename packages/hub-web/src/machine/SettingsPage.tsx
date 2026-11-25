@@ -4,6 +4,7 @@ import { NativeSelect, NativeSelectOption } from "../components/primitives/nativ
 import { BrowserSettings, PowerSettings, SharingSettings, type SettingsEdits } from "./SettingsControls";
 import { AboutSettings, AISettings, HintsSettings, PrivacySettings, StorageSettings } from "./SettingsReadouts";
 import type { SettingsPreview } from "./types";
+import { UninstallSettings } from "./UninstallPreviewDialog";
 import { HubPageHeader } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./settings.module.css";
@@ -16,6 +17,7 @@ const sections = [
   { id: "privacy", label: "Privacy" },
   { id: "hints", label: "Hints from your agent" },
   { id: "storage", label: "Storage" },
+  { id: "uninstall", label: "Uninstall" },
   { id: "about", label: "About" },
 ] as const;
 type SectionId = typeof sections[number]["id"];
@@ -123,6 +125,7 @@ function SettingsWorkspace({ preview }: { preview: SettingsPreview }) {
         <PrivacySettings edits={edits} outbound={settings.outbound} telemetry={settings.telemetry} />
         <HintsSettings hints={settings.hints} />
         <StorageSettings storage={settings.storage} />
+        <UninstallSettings preview={preview.uninstall} />
         <AboutSettings about={settings.about} />
       </div>
     </div>
