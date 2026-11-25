@@ -265,6 +265,29 @@ describe("machine Agents and Settings", () => {
     expect(MachineAgentRepairPreviewSchema.parse(await response.json())).toMatchObject({ type: "terminal", command: "mex install" });
   });
 
+  it("sends hooks on the fallback runner to the installer and says why", async () => {
+    const fallback = join(base, "fallback.cjs");
+    const shim = join(base, "shim");
+    writeFileSync(fallback, "// fallback fixture");
+    writeFileSync(shim, '#!/bin/sh\nprintf \'{"ok":true}\'', { mode: 0o755 });
+    // Installed before the native hook existed, so every event runs the fallback.
+    await installAgents({ ...location(), entry, fallbackFile: fallback, nativeBinary: null, env, userHome: base,
+      selfTest: () => ({ ok: true }), available: () => true, cwd: base });
+    writeFileSync(join(home, "bin", process.platform === "win32" ? "mex-hook.exe" : "mex-hook"), readFileSync(shim), { mode: 0o755 });
+
+    const claudeAgent = (await waitAgents()).agents?.find(agent => agent.id === "claude-code");
+    expect(claudeAgent).toMatchObject({ state: "needsRepair", repair: "terminal", statusNote: expect.stringContaining("fallback runner") });
+    expect(claudeAgent?.hooks.events.every(({ status }) => status === "installed")).toBe(true);
+
+    breakClaude();
+    const before = readFileSync(claude());
+    const response = await post(repairPreviewPath, {});
+    expect(MachineAgentRepairPreviewSchema.parse(await response.json())).toMatchObject({
+      type: "terminal", command: "mex install", reason: expect.stringContaining("recorded at install"),
+    });
+    expect(readFileSync(claude())).toEqual(before);
+  });
+
   it("reports other mex executables in PATH order alongside the Hub entry", async () => {
     const first = join(base, "agents", process.platform === "win32" ? "mex.exe" : "mex");
     const second = join(base, "old-install", process.platform === "win32" ? "mex.exe" : "mex");

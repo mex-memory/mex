@@ -148,8 +148,15 @@ export function readAgent(agent: AgentId, options: MachineAgentOptions, evidence
       if (evidence.tracked) statusNote = "Git tracks this configuration. Review the hook changes in your dotfiles or repo.";
       else {
         state = "needsRepair";
-        repair = hooks.terminal || !options.entry || !existingRepairCommand(home, process.platform, options.entry) ? "terminal" : "browser";
-        if (complete) statusNote = "The installed MEX hook or launcher couldn’t be verified.";
+        const shimReady = Boolean(options.entry && existingRepairCommand(home, process.platform, options.entry));
+        // Every event is registered but runs the fallback runner. Switching
+        // runners changes more than the recorded hook entries, so it belongs
+        // to the installer in the terminal.
+        repair = hooks.terminal || complete || !shimReady ? "terminal" : "browser";
+        if (complete) {
+          statusNote = shimReady ? "These hooks use MEX’s fallback runner, which delivers no knowledge. Run mex install to switch them to the native hook."
+            : "The installed MEX hook or launcher couldn’t be verified.";
+        }
       }
     } else if (agent === "codex" && !firedSinceInstall && !otherCodexHome && !hooksUnavailable) {
       state = "needsApproval";

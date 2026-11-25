@@ -17,6 +17,15 @@ function stale(): HubRequestError {
   return new HubRequestError(409, "STALE_PREVIEW", "The repair preview changed", "Open a new repair preview and review the current changes.");
 }
 
+/** Installer refusals with a cause the person can act on. Anything else gets the general reason. */
+const TERMINAL_REASONS: Record<string, string> = {
+  "The original install record needs to be reviewed before changing this file.":
+    "This repair would change more than the hook entries MEX recorded at install. Run MEX’s installer in your terminal so uninstall can still restore your original file.",
+  "The existing plugin needs to be reviewed in the terminal.": "The OpenCode plugin file isn’t one MEX wrote. Review it, then run MEX’s installer in your terminal.",
+  "The Copilot hook file needs its format checked.": "The Copilot CLI hook file uses a format MEX doesn’t edit from the Hub. Run MEX’s installer in your terminal.",
+  "The install record is too large to repair here.": "The install record is too large to change from the Hub. Run MEX’s installer in your terminal.",
+};
+
 function terminal(agentId: AgentId, reason: string): Preview {
   return { type: "terminal", agentId, command: "mex install", reason };
 }
@@ -63,6 +72,8 @@ export class AgentRepair {
       if (error instanceof Error && error.message === "This configuration is tracked by Git.") {
         return terminal(agent, "Git tracks this configuration. Review the file in your dotfiles or repo before running install.");
       }
+      const reason = error instanceof Error ? TERMINAL_REASONS[error.message] : undefined;
+      if (reason) return terminal(agent, reason);
       return terminal(agent, "The Hub couldn’t verify the configuration, installed hook, or MEX launcher. Check the agent’s configuration and permissions, then run MEX’s installer in your terminal.");
     }
   }
