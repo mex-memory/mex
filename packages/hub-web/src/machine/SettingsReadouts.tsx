@@ -36,7 +36,7 @@ export function AISettings({ ai, repos }: Pick<MachineSettings, "ai" | "repos">)
           <strong>{ai.percent === null ? "—" : decimal.format(ai.percent) + "%"}</strong>
         </div>
         <UsageMeter week={ai} />
-        <p>Automatic AI work stays under {decimal.format(ai.capPercent)}% of your usage. The cap isn’t editable in this version.</p>
+        <p>Automatic AI work uses a budget target of {decimal.format(ai.capPercent)}% of your usage. The cap isn’t editable in this version.</p>
       </div>
       <h3 className={styles.rowGroup}>Learn deeper weekly schedule</h3>
       {repos.length === 0 && <p className={styles.sectionNote}>No registered repos.</p>}
@@ -118,7 +118,7 @@ function OutboundHistory({ outbound, live }: { outbound: MachineOutbound; live?:
 export function PrivacySettings({ telemetry, outbound, edits, live }: Pick<MachineSettings, "telemetry" | "outbound"> & { edits: SettingsEdits; live?: boolean }) {
   return (
     <SettingsSection icon={Shield} id="privacy" title="Privacy">
-      <ToggleSetting disabled={edits.disabled} description="Send anonymous usage counts to help improve MEX." onChange={(enabled) => edits.save("telemetry", { type: "telemetry", enabled })}
+      <ToggleSetting disabled={edits.disabled} description={telemetry.explanation ?? "Send anonymous usage counts to help improve MEX."} onChange={(enabled) => edits.save("telemetry", { type: "telemetry", enabled })}
         saved={edits.savedFor("telemetry")} setting={telemetry} title="Telemetry" />
       <OutboundHistory live={live} outbound={outbound} />
     </SettingsSection>

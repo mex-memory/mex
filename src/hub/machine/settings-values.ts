@@ -5,7 +5,7 @@ import type { z } from "zod";
 import { checkoutOn } from "../../controls/index.js";
 import { readGlobalConfig, readTelemetryPreference } from "../../global-config.js";
 import type { CheckoutRow, RecordReader } from "../../record/index.js";
-import { telemetryEnabled } from "../../telemetry/policy.js";
+import { TELEMETRY_NOTICE_VERSION, telemetryEnabled } from "../../telemetry/policy.js";
 import { machineTime } from "./machine-projects.js";
 
 export type MachineSettings = z.infer<typeof MachineSettingsSchema>;
@@ -62,7 +62,10 @@ export function telemetrySetting(home: string, env: NodeJS.ProcessEnv, writable:
     : reason === "dev" ? "Telemetry is off in the MEX development checkout."
     : reason && reason !== "config" ? "Telemetry is off because " + reason + " is set."
     : !writable ? "Use mex telemetry on or mex telemetry off in the terminal for this MEX home." : undefined;
+  const config = readGlobalConfig(home);
   const source = disabledReason && reason !== "config" ? reason === "dev" ? "policy" : ["DO_NOT_TRACK", "MEX_TELEMETRY", "MEX_OFFLINE"].includes(reason ?? "") ? "environment" : "global"
-    : preference === "off" || readGlobalConfig(home).telemetry === "on" ? "global" : "default";
-  return { enabled, source, disabledReason, revision: revision("telemetry", preference) };
+    : preference === "off" || config.telemetry === "on" ? "global" : "default";
+  const explanation = enabled && config.telemetryNoticeVersion !== TELEMETRY_NOTICE_VERSION
+    ? "Sending begins after MEX shows its telemetry notice in the terminal." : undefined;
+  return { enabled, source, disabledReason, explanation, revision: revision("telemetry", preference) };
 }

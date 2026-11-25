@@ -405,7 +405,10 @@ const machineSnapshot = {
 export const MachineAgentsSnapshotSchema = z.object({
   ...machineSnapshot,
   agents: z.array(MachineAgentSchema).max(4).optional(),
-  pathWarning: z.array(machinePathSchema).min(2).max(8).optional(),
+  pathWarning: z.object({
+    paths: z.array(machinePathSchema).min(1).max(8),
+    hubEntry: machinePathSchema,
+  }).optional(),
 });
 export const MachineAgentSnapshotSchema = MachineAgentsSnapshotSchema.omit({ agents: true }).extend({ agent: MachineAgentSchema.optional() });
 
@@ -507,7 +510,7 @@ export const MachineSettingsSchema = z.object({
     weeklyUnavailable: z.boolean().optional(),
   })).max(128),
   ai: homeMetricsSchema.shape.week,
-  telemetry: machineToggleSchema,
+  telemetry: machineToggleSchema.extend({ explanation: machineLabelSchema.optional() }),
   outbound: MachineOutboundSchema,
   hints: z.object({
     active: countSchema.nullable(),

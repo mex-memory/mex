@@ -164,6 +164,7 @@ export function readAgent(agent: AgentId, options: MachineAgentOptions, evidence
     }
   }
   if (!hooks.canVerify && !path) statusNote ??= "Check the agent’s configuration directory in your terminal.";
+  else if (state === "notSetUp" && !known) statusNote ??= "Run mex install from your terminal to set up hooks.";
   return { id: agent, name: AGENT_NAMES[agent], detected, state, trust, lastFiredAt, errors: [], files, repair,
     statusNote: statusNote ?? (hooksUnavailable ? HOOKS_UNREADABLE : undefined), hooks: { canVerify: hooks.canVerify, events: hooks.events } };
 }
@@ -186,12 +187,14 @@ export function refreshedAgent(agent: AgentId, options: MachineAgentOptions, fil
   return readAgent(agent, options, { installs, lastFiredAt: at, hooksUnavailable, files });
 }
 
-function pathWarning(entry: string | undefined, env: NodeJS.ProcessEnv): string[] | undefined {
-  if (!entry || !lstatSync(entry, { throwIfNoEntry: false })?.isFile()) return;
-  const paths = [...new Set(executablesOnPath("mex", process.platform, env, 8).map(path => resolve(path)))];
-  const first = paths[0];
-  if (!first || !machinePath(first)) return;
+function pathWarning(entry: string | undefined, env: NodeJS.ProcessEnv): AgentSnapshot["pathWarning"] {
+  if (!entry || !machinePath(entry)) return;
   try {
+    if (!lstatSync(entry, { throwIfNoEntry: false })?.isFile()) return;
+    const candidates = executablesOnPath("mex", process.platform, env, 16).map(path => resolve(path)).filter(machinePath);
+    const paths = [...new Set(candidates.filter(path => process.platform !== "win32" || /\.[a-z0-9]+$/iu.test(basename(path))))].slice(0, 8);
+    const first = paths[0];
+    if (!first) return;
     const target = realpathSync(first);
     if (samePath(target, entry)) return;
     if (process.platform === "win32" && /\.(?:bat|cmd)$/iu.test(first)) {
@@ -199,7 +202,7 @@ function pathWarning(entry: string | undefined, env: NodeJS.ProcessEnv): string[
       const script = readBoundedTextFile(target, 16 << 10);
       if (samePath(npmEntry, entry) && script?.includes("mex-agent\\dist\\cli.js") && statSync(npmEntry).isFile()) return;
     }
-    return [...new Set([...paths.filter(machinePath), entry])].slice(0, 8);
+    return { paths, hubEntry: entry };
   } catch { return undefined; }
 }
 

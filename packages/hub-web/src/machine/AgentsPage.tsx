@@ -11,7 +11,7 @@ import { AgentDetail } from "./AgentDetail";
 import { AgentRepairDialog } from "./AgentRepairDialog";
 import { localDateTime, relativeTime } from "./local-time";
 import type { AgentRepairPreview, AgentsPreview, MachineAgent } from "./types";
-import { CommandCard, ControlToast, HubPageHeader, PageRequestState, type PageLoad } from "./ui";
+import { ControlToast, HubPageHeader, PageRequestState, type PageLoad } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./agents.module.css";
 
@@ -131,7 +131,7 @@ function ConnectedAgents({ live }: { live: ControlConnection }) {
 }
 
 function AgentsView({ preview, load, issue, pathWarning, updating }: {
-  preview?: AgentsPreview; load?: PageLoad; issue?: string; pathWarning?: string[]; updating?: boolean;
+  preview?: AgentsPreview; load?: PageLoad; issue?: string; pathWarning?: { paths: string[]; hubEntry: string }; updating?: boolean;
 }) {
   const { search } = useLocation();
   const { agent: agentId } = useParams();
@@ -207,9 +207,8 @@ function AgentsView({ preview, load, issue, pathWarning, updating }: {
           <TriangleAlert aria-hidden="true" />
           <div>
             <h2>Another mex is first on PATH</h2>
-            <p>Your terminal finds these paths in order. This Hub runs from <code>{pathWarning.at(-1)}</code>.</p>
-            <ol>{pathWarning.slice(0, -1).map(path => <li key={path}><code>{path}</code></li>)}</ol>
-            <CommandCard command="mex hub" compact />
+            <p>This Hub runs from <code>{pathWarning.hubEntry}</code>. These are the matches on PATH, in order.</p>
+            <ol>{pathWarning.paths.map(path => <li key={path}><code>{path}</code></li>)}</ol>
           </div>
         </aside>
       )}
