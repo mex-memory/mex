@@ -288,6 +288,23 @@ describe("machine Agents and Settings", () => {
     expect(readFileSync(claude())).toEqual(before);
   });
 
+  it("signs this browser out, and signs every browser out by replacing the secret", async () => {
+    const other = sessions.create();
+    const otherCookie = `${sessions.cookieName}=${other.cookie}`;
+    expect((await waitSettings()).browser).toEqual({ signOut: { source: "default" }, signOutEverywhere: { source: "default" } });
+
+    const local = await post("/session/sign-out", {});
+    expect(local.status).toBe(204);
+    expect(local.headers.get("set-cookie")).toMatch(new RegExp(`^${sessions.cookieName}=; Max-Age=0; Path=/api/v1; HttpOnly; SameSite=Strict`));
+    expect((await request("/session", {}, false)).status).toBe(401);
+    expect((await post("/session/sign-out-everywhere", {}, undefined, { "x-mex-csrf": "wrong" })).status).toBe(403);
+
+    const everywhere = await post("/session/sign-out-everywhere", {});
+    expect(everywhere.status).toBe(204);
+    expect((await request("/session")).status).toBe(401);
+    expect((await request("/session", { headers: { cookie: otherCookie } })).status).toBe(401);
+  });
+
   it("reports other mex executables in PATH order alongside the Hub entry", async () => {
     const first = join(base, "agents", process.platform === "win32" ? "mex.exe" : "mex");
     const second = join(base, "old-install", process.platform === "win32" ? "mex.exe" : "mex");

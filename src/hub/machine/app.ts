@@ -26,6 +26,7 @@ import { invalidReview, readReviewCard, readReviewPage, reviewUnavailable } from
 import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes.js";
 import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
+import { rotateHubSecret } from "./secret.js";
 import { takeSettingsSnapshot } from "./settings-snapshot.js";
 import { applyRecordSetting, applyTelemetrySetting, refreshCheckoutRules } from "./settings-writes.js";
 import { takeUninstallSnapshot } from "./uninstall-snapshot.js";
@@ -199,6 +200,23 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.post("/api/v1/session/heartbeat", (context) => {
     keepOpen();
     return context.body(null, 204);
+  });
+
+  // Cookies are signed, not stored, so this browser forgets its cookie, and
+  // signing out everywhere replaces the secret every cookie and link is signed with.
+  const signedOut = (context: Context<{ Variables: Variables }>, cookieName: string) => {
+    context.header("set-cookie", generateCookie(cookieName, "", { httpOnly: true, sameSite: "Strict", path: "/api/v1", maxAge: 0 }));
+    return context.body(null, 204);
+  };
+
+  app.post("/api/v1/session/sign-out", (context) => signedOut(context, options.sessions.cookieName));
+
+  app.post("/api/v1/session/sign-out-everywhere", (context) => {
+    requireHome();
+    const cookieName = options.sessions.cookieName;
+    rotateHubSecret(options.sessions.home);
+    options.sessions.refresh();
+    return signedOut(context, cookieName);
   });
 
   app.get("/api/v1/projects", (context) => context.json({ projects: listProjects(location) }));

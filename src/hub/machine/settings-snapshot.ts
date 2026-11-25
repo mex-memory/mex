@@ -97,8 +97,8 @@ export async function takeSettingsSnapshot(options: MachineSettingsOptions, sign
   const settings: MachineSettings = {
     ...values,
     browser: {
-      signOut: { source: "policy", disabledReason: "This browser’s sign-in expires automatically." },
-      signOutEverywhere: { source: "policy", disabledReason: "Signing out every browser isn’t available in Settings." },
+      signOut: { source: "default" },
+      signOutEverywhere: { source: "default" },
     },
     telemetry: telemetrySetting(location.home, env, cliTelemetryHome(options)),
     storage: await storageSnapshot(location, scope.projects, scope.partial, signal),
