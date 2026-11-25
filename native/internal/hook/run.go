@@ -58,6 +58,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 		if r := recover(); r != nil {
 			code = 0
 			_, _ = stdout.Write(emptyReply)
+			if len(args) >= 2 {
+				notePanic(getenv, args[0], args[1], r)
+			}
 		}
 	}()
 
@@ -220,6 +223,9 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	if err != nil {
 		failed = true
+		if !errors.Is(err, adapter.ErrUnknownEvent) {
+			noteHookError(h.recordDirectory(), agent, nativeEvent, errParse, err.Error(), now)
+		}
 		return profile.EmptyReply(nativeEvent)
 	}
 	sessionStart = ev.Kind == contract.SessionStart
@@ -366,6 +372,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		if h.deliveryError != nil {
 			h.deliveryError(deliveryErr)
 		}
+		noteHookError(recordDirectory, ev.Agent, nativeEvent, errorKind(deliveryErr), deliveryErr.Error(), now)
 		failed = true
 		reply = contract.Reply{}
 	}
@@ -437,7 +444,24 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			reply.PersonLine += text
 		}
 	}
+	// Calm errors: one line at a session start names hook errors since the
+	// line last ran, and points to mex doctor.
+	errorsMark := ""
+	if ev.Kind == contract.SessionStart && ev.AgentID == "" && !failed {
+		if support, ok := profile.Capabilities().Support(ev.Kind); ok && support.PersonLine {
+			if line, mark := errorsNotice(recordDirectory, now); line != "" {
+				errorsMark = mark
+				if reply.PersonLine != "" {
+					reply.PersonLine += "\n"
+				}
+				reply.PersonLine += line
+			}
+		}
+	}
 	out, dropped := profile.Render(ev, reply)
+	if errorsMark != "" && !slices.Contains(dropped, "person_line") && !slices.Contains(dropped, "all") {
+		markErrorsShown(recordDirectory, errorsMark)
+	}
 	if captureOn && h.afterOutput != nil && !failed {
 		first := ev.Kind == contract.SessionStart && ev.Source == "startup"
 		context := reply.Context
