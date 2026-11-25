@@ -148,6 +148,7 @@ describe("machine Hub", () => {
       screen.getByRole("link", { name: "Knowledge" }),
       screen.getByRole("link", { name: "Jobs" }),
       screen.getByRole("link", { name: "Agents" }),
+      screen.getByRole("link", { name: "Settings" }),
     ]);
     await user.selectOptions(switcher, "repo-birch");
     expect(window.location.pathname).toBe("/repos/repo-birch");

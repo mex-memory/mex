@@ -492,3 +492,24 @@
 @media (max-width: 720px) {
   .commandInline [data-slot="button"] { width: 44px; height: 44px; }
 }
+
+.machineNav {
+  min-height: 100%;
+}
+
+.machineNav > ul {
+  flex: 1;
+}
+
+.settingsNavItem {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.settingsNavItem::before {
+  display: block;
+  height: 1px;
+  margin-bottom: 8px;
+  background: var(--sidebar-border);
+  content: "";
+}
