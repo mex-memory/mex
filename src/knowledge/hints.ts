@@ -74,10 +74,13 @@ function readHint(directory: string, state: HintState): { entry: KnowledgeEntry;
   const content = readEntryFile(join(directory, `${state.id}.md`));
   if (!content) return undefined;
   const entry = parseEntry(content);
+  checkHintEntry(entry, state);
+  return { entry, content };
+}
+function checkHintEntry(entry: KnowledgeEntry, state: HintState): void {
   if (entry.mex.id !== state.id || entry.mex.kind !== "hint" || entry.mex.source.type !== "agent-memory"
     || entry.mex.evidence !== "observed" || entry.mex.source.ref !== state.ref || entry.mex.checks.length !== 0
     || claimHash(entry.text) !== state.claimHash) throw new KnowledgeError("INVALID_STATE", "A hint does not match its local source observation.");
-  return { entry, content };
 }
 function removeHintFile(home: string, projectId: string, id: string): boolean {
   const directory = containedDirectory(home, ["projects", projectId, "hints"]);
@@ -133,6 +136,44 @@ export function readHints(options: MemoryOptions, now = new Date()): HintRead {
     }
     return { entries, withheld, partial };
   } finally { reader.close(); }
+}
+
+/** Read a local hint for a person, without the recipient-agent filtering used for delivery. */
+export function localHintReader(reader: RecordReader, projectId: string, options: MemoryOptions, now: number) {
+  const checked = new Map<string, boolean>();
+  let sourceBytes = 0;
+  let roots: ReturnType<typeof memoryRoots> | undefined;
+  let context: ReturnType<typeof references> | undefined;
+  let months: number | undefined;
+  let forgotten: Set<string> | undefined;
+  return (entry: KnowledgeEntry): Pick<HintEntry, "origin" | "observations"> & { entry: KnowledgeEntry } | undefined => {
+    const { id } = entry.mex;
+    const row = reader.get<{ value: string | null }>(`SELECT CASE WHEN length(CAST(value AS BLOB))<=32768 THEN value END AS value
+      FROM settings WHERE scope=? AND key=?`, projectId, stateKey(id));
+    if (row?.value === null) throw new KnowledgeError("STORE_LIMIT", "A hint observation record exceeds its size limit.");
+    const state = parseState(row?.value, id);
+    if (!state || state.confirmed || entry.mex.status !== "active") return undefined;
+    if (hintExpiresAt(state.lastSeen, months ??= expiryMonths(reader, projectId)) <= now
+      || (forgotten ??= retiredClaimHashes(reader, projectId)).has(state.claimHash)) return undefined;
+    checkHintEntry(entry, state);
+    const key = JSON.stringify([state.agent, state.sourceRoot, state.sourcePath, state.sourceHash]);
+    if (!checked.has(key)) {
+      sourceBytes += state.sourceBytes;
+      if (sourceBytes > MEMORY_LIMITS.bytes) throw new KnowledgeError("STORE_LIMIT", "Hints exceed the source read limit.");
+      roots ??= memoryRoots(options);
+      checked.set(key, checkMemorySource(state, options, roots));
+    }
+    if (!checked.get(key)) return undefined;
+    return { entry: gateEntry(entry, context ??= references(options.projectPath)), origin: state.agent, observations: state.observations.length };
+  };
+}
+
+/** A confirmed hint keeps its ID when it becomes a personal note. */
+export function isObservedHint(reader: RecordReader, projectId: string, id: string): boolean {
+  const row = reader.get<{ hint: number }>(`SELECT CASE WHEN length(CAST(value AS BLOB))<=32768 AND json_valid(value)
+    THEN json_extract(value,'$.id')=? AND json_extract(value,'$.confirmed')=0 ELSE 0 END AS hint
+    FROM settings WHERE scope=? AND key=?`, id, projectId, stateKey(id));
+  return row?.hint === 1;
 }
 
 /**
