@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MachineChangeEventSchema, type MachineJobActionRequest } from "@mex/hub-contracts/machine";
 import { getHome, getJobs, getReviewCounts, HubProblemError, postJobAction } from "./api";
-import type { SettingsChange } from "./control-api";
+import { changeSetting, getAgent, getAgents, getSettings, getUninstallPreview, previewAgentRepair, repairAgent, type SettingsChange } from "./control-api";
 import { retryKnowledgeBusy } from "./knowledge-write-state";
 import type { BrowserAgentRepair, HubJob, JobAction, MachineAgent } from "./types";
 
@@ -44,25 +44,25 @@ export interface ControlConnection {
 }
 
 export function useAgents(events: HubEventState, enabled = true) {
-  return useQuery({ queryKey: agentsKey, queryFn: ({ signal }) => import("./control-api").then(api => api.getAgents(signal)),
+  return useQuery({ queryKey: agentsKey, queryFn: ({ signal }) => getAgents(signal),
     ...queryOptions(events), placeholderData: undefined, enabled });
 }
 
 export function useAgent(events: HubEventState, agent: string | undefined) {
-  return useQuery({ queryKey: agentKey(agent), queryFn: ({ signal }) => import("./control-api").then(api => api.getAgent(agent!, signal)),
+  return useQuery({ queryKey: agentKey(agent), queryFn: ({ signal }) => getAgent(agent!, signal),
     ...queryOptions(events), placeholderData: undefined, enabled: agent !== undefined });
 }
 
 export function useSettings(events: HubEventState) {
   return useQuery({
-    queryKey: settingsKey, queryFn: ({ signal }) => import("./control-api").then(api => api.getSettings(signal)),
+    queryKey: settingsKey, queryFn: ({ signal }) => getSettings(signal),
     ...queryOptions(events), placeholderData: undefined,
   });
 }
 
 export function useUninstallPreview(events: HubEventState) {
   return useQuery({
-    queryKey: ["settings", "uninstall"], queryFn: ({ signal }) => import("./control-api").then(api => api.getUninstallPreview(signal)),
+    queryKey: ["settings", "uninstall"], queryFn: ({ signal }) => getUninstallPreview(signal),
     ...queryOptions(events), placeholderData: undefined,
   });
 }
@@ -71,10 +71,9 @@ export function useAgentRepair({ csrfToken, reportDataError }: ControlConnection
   const client = useQueryClient();
   const prepare = useMutation({
     networkMode: "always", retry: false,
-    mutationFn: async ({ id, onRetry }: { id: MachineAgent["id"]; onRetry: () => void }) => {
-      const api = await import("./control-api");
+    mutationFn: ({ id, onRetry }: { id: MachineAgent["id"]; onRetry: () => void }) => {
       const credentials = { csrfToken, idempotencyKey: crypto.randomUUID() };
-      return retryKnowledgeBusy(() => api.previewAgentRepair(id, credentials), onRetry);
+      return retryKnowledgeBusy(() => previewAgentRepair(id, credentials), onRetry);
     },
     onError: (error) => {
       reportDataError(error);
@@ -83,13 +82,12 @@ export function useAgentRepair({ csrfToken, reportDataError }: ControlConnection
   });
   const repair = useMutation({
     networkMode: "always", retry: false,
-    mutationFn: async ({ preview, onRetry }: { preview: BrowserAgentRepair; onRetry: () => void }) => {
-      const api = await import("./control-api");
+    mutationFn: ({ preview, onRetry }: { preview: BrowserAgentRepair; onRetry: () => void }) => {
       const credentials = { csrfToken, idempotencyKey: crypto.randomUUID() };
-      return retryKnowledgeBusy(() => api.repairAgent(preview, credentials), onRetry);
+      return retryKnowledgeBusy(() => repairAgent(preview, credentials), onRetry);
     },
     onSuccess: ({ agent }) => {
-      client.setQueryData<Awaited<ReturnType<typeof import("./control-api").getAgents>>>(agentsKey, current => current
+      client.setQueryData<Awaited<ReturnType<typeof getAgents>>>(agentsKey, current => current
         ? { ...current, agents: current.agents?.map(item => item.id === agent.id ? agent : item) } : undefined);
       client.setQueryData(agentKey(agent.id), { agent });
       void client.invalidateQueries({ queryKey: agentsKey });
@@ -107,10 +105,9 @@ export function useSettingChange({ csrfToken, reportDataError }: ControlConnecti
   const client = useQueryClient();
   return useMutation({
     networkMode: "always", retry: false,
-    mutationFn: async ({ change, revision, onRetry }: { change: SettingsChange; revision: string; onRetry: () => void }) => {
-      const api = await import("./control-api");
+    mutationFn: ({ change, revision, onRetry }: { change: SettingsChange; revision: string; onRetry: () => void }) => {
       const credentials = { csrfToken, idempotencyKey: crypto.randomUUID() };
-      return retryKnowledgeBusy(() => api.changeSetting(change, revision, credentials), onRetry);
+      return retryKnowledgeBusy(() => changeSetting(change, revision, credentials), onRetry);
     },
     onSuccess: () => {
       for (const queryKey of [settingsKey, ["home"], ["machine", "projects"]]) void client.invalidateQueries({ queryKey });
@@ -169,7 +166,6 @@ export function useHubEvents(checkSession: () => void): HubEventState {
         const topics = new Set(parsed.data.topics);
         if (topics.has("home") || topics.has("knowledge")) topics.add("review");
         for (const topic of topics) refresh(topic);
-        if (topics.has("settings")) void client.invalidateQueries({ queryKey: ["machine", "projects"] }, { cancelRefetch: false });
       }
     };
     source.addEventListener("change", onChange);
