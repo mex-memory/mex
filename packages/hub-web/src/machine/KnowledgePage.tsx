@@ -7,7 +7,7 @@ import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { HubProblemError } from "./api";
 import type { HubEventState } from "./data";
-import { useForgotten, useKnowledgeActions, useKnowledgeItem, useKnowledgeLanding, useKnowledgePage } from "./knowledge-data";
+import { liveBriefPreview, useForgotten, useKnowledgeActions, useKnowledgeItem, useKnowledgeLanding, useKnowledgePage } from "./knowledge-data";
 import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
 import { KnowledgeBrief } from "./KnowledgeBrief";
 import { KnowledgeDate, KnowledgeDetailPanel, type KnowledgeItemAction } from "./KnowledgeDetail";
@@ -17,7 +17,7 @@ import { KnowledgeRules } from "./KnowledgeRules";
 import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
-import type { ForgottenItem, KnowledgeActions, KnowledgeDetail, KnowledgeFilters, KnowledgeItem, KnowledgeLandingData, KnowledgePreview, KnowledgeStatusCounts } from "./types";
+import type { ForgottenItem, KnowledgeActions, KnowledgeDetail, KnowledgeFilters, KnowledgeItem, KnowledgeLandingData, KnowledgePreview, KnowledgeStatusCounts, KnowledgeToolsPreview } from "./types";
 import type { PageLoad } from "./ui";
 import styles from "./knowledge.module.css";
 import shared from "./machine.module.css";
@@ -318,15 +318,15 @@ function useKnowledgeRoute({ project, projects }: KnowledgeScope) {
 
 type KnowledgeRoute = ReturnType<typeof useKnowledgeRoute>;
 
-function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: KnowledgeScope & {
+function KnowledgeBrowser({ project, projects, route, view, knowledge, live, previewBrief }: KnowledgeScope & {
   route: KnowledgeRoute;
   view: KnowledgeView;
   knowledge: KnowledgeActions | KnowledgePreview;
   live?: boolean;
+  previewBrief: KnowledgeToolsPreview["previewBrief"];
 }) {
   const { entryKey, params, showList, filters, statusFilter, q } = route;
   const { items, landing, detail, forgotten, load, detailLoad } = view;
-  const tools = "tools" in knowledge ? knowledge.tools : undefined;
   const narrow = useSyncExternalStore(subscribeToLayout, isNarrow);
   const navigate = useNavigate();
   const basePath = project ? `/repos/${encodeURIComponent(project.id)}/knowledge` : "/knowledge";
@@ -446,7 +446,7 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
         <KnowledgeHeader
           action={(
             <div className={styles.headerActions}>
-              {tools && <KnowledgeBrief preferredRepo={filters.repoId} previewBrief={tools.previewBrief} project={project} projects={projects} />}
+              <KnowledgeBrief preferredRepo={filters.repoId} previewBrief={previewBrief} project={project} projects={projects} />
               <Button aria-haspopup="dialog" className={styles.addButton} onClick={startAdd} type="button"><Plus aria-hidden="true" /> Add a note</Button>
             </div>
           )}
@@ -496,7 +496,7 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
             navigate(linkTo(basePath, next));
           }} value={grouping} />}
           <div className={styles.relatedLinks}>
-            {tools && <Link className={shared.textLink} to={linkTo(basePath, rulesParams)}>Rule files</Link>}
+            <Link className={shared.textLink} to={linkTo(basePath, rulesParams)}>Rule files</Link>
             <Link className={shared.textLink} to={linkTo(`${basePath}/forgotten`)}>
               Forgotten{view.forgottenCount !== undefined && ` (${number.format(view.forgottenCount)})`}
             </Link>
@@ -635,7 +635,7 @@ function FixtureKnowledgePage({ knowledge, ...scope }: KnowledgeScope & { knowle
     detail: !scope.project || item?.repoId === scope.project.id ? item : undefined,
     loadMore: entryKey !== "forgotten" && page.nextCursor ? () => setPaging({ filterKey, pageCount: paging.filterKey === filterKey ? paging.pageCount + 1 : 2 }) : undefined,
   };
-  return <KnowledgeBrowser {...scope} knowledge={knowledge} route={route} view={view} />;
+  return <KnowledgeBrowser {...scope} knowledge={knowledge} previewBrief={knowledge.tools.previewBrief} route={route} view={view} />;
 }
 
 function LiveKnowledgePage({ live, ...scope }: KnowledgeScope & { live: KnowledgeConnection }) {
@@ -682,11 +682,13 @@ function LiveKnowledgePage({ live, ...scope }: KnowledgeScope & { live: Knowledg
     loadMore: paging.hasNextPage ? () => void paging.fetchNextPage({ cancelRefetch: false }) : undefined,
     fetching: paging.isFetching,
   };
-  return <KnowledgeBrowser {...scope} knowledge={actions} live route={route} view={view} />;
+  return <KnowledgeBrowser {...scope} knowledge={actions} live previewBrief={liveBriefPreview(live)} route={route} view={view} />;
 }
 
 export default function KnowledgePage({ knowledge, live, ...scope }: KnowledgePageProps) {
   const [params] = useSearchParams();
-  if (knowledge && params.get("view") === "rules") return <KnowledgeRules {...scope} tools={knowledge.tools} />;
+  if (params.get("view") === "rules") return knowledge
+    ? <KnowledgeRules {...scope} tools={knowledge.tools} />
+    : <KnowledgeRules {...scope} live={live} />;
   return knowledge ? <FixtureKnowledgePage {...scope} knowledge={knowledge} /> : <LiveKnowledgePage {...scope} live={live} />;
 }
