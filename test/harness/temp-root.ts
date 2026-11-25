@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { AGENT_VARIABLES } from "../../src/repo-start/caller.js";
@@ -7,7 +7,8 @@ import { AGENT_VARIABLES } from "../../src/repo-start/caller.js";
 export default function setup(): () => void {
   const keys = ["TMPDIR", "TMP", "TEMP", "GIT_CEILING_DIRECTORIES", "MEX_HOME"] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  const root = mkdtempSync(join(tmpdir(), "mex-vitest-"));
+  // Node and Go resolve the same record paths even when macOS supplies /var via TMPDIR.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mex-vitest-")));
   for (const key of ["TMPDIR", "TMP", "TEMP"]) process.env[key] = root;
   // Accounting in real fake-agent launches must never open the user's record.
   process.env.MEX_HOME = join(root, "user-home");
