@@ -361,6 +361,86 @@ export const MachineJobActionRequestSchema = z.object({
 export const MachineJobActionResponseSchema = MachineJobSchema;
 export const MachineJobConflictSchema = MachineProblemSchema.extend({ job: MachineJobSchema });
 
+export const MachineSetupStepKindSchema = z.enum(["file-index", "code-facts", "graph-build", "learn-deeper"]);
+export const MachineSetupStepSchema = z.object({
+  kind: MachineSetupStepKindSchema,
+  jobId: z.string().min(1),
+  label: z.string().min(1),
+  scope: z.string().nullable(),
+  state: z.enum(["queued", "running", "paused", "waiting", "done", "done with gaps", "failed", "cancelled"]),
+  pending: z.enum(["pause", "cancel"]).optional(),
+  estimate: z.object({ tokens: countSchema.optional(), seconds: countSchema.optional() }).optional(),
+  progress: z.object({
+    done: countSchema.optional(),
+    total: countSchema.optional(),
+    unit: z.string().optional(),
+    message: z.string(),
+  }).optional(),
+  summary: z.string().optional(),
+  cost: z.object({ uncachedInput: countSchema, cacheWrite: countSchema, cacheRead: countSchema, output: countSchema }),
+  startedAt: isoTimeSchema,
+  finishedAt: isoTimeSchema.nullable(),
+  error: z.string().optional(),
+});
+
+export const MachineSetupQuoteSchema = z.object({
+  agent: z.enum(["Claude Code", "Codex"]),
+  tokens: z.number().int().positive(),
+  seconds: z.number().int().positive(),
+  ceilingTokens: z.number().int().positive(),
+  recentUse: z.string().optional(),
+  weekly: z.boolean(),
+  privateRepo: z.boolean(),
+});
+
+const setupLearningSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("offered"), quote: MachineSetupQuoteSchema }),
+  z.object({ state: z.literal("no-review-remote") }),
+  z.object({ state: z.literal("unavailable"), reason: z.string().min(1) }),
+  z.object({ state: z.literal("skipped") }),
+]);
+
+export const MachineSetupQuestionSchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(["rule-conflict", "test-command", "layer-exception", "hand-edited"]),
+  question: z.string().min(1),
+  details: z.array(z.string()),
+  choices: z.array(z.object({ key: z.string().min(1), label: z.string().min(1) })).min(2).max(3),
+  suggested: z.string().optional(),
+  outcome: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("skipped") }),
+    z.object({ status: z.literal("saved"), line: z.string() }),
+    z.object({ status: z.literal("noted"), line: z.string() }),
+    z.object({ status: z.literal("not saved"), line: z.string() }),
+  ]).optional(),
+});
+
+export const MachineSetupSummarySchema = z.object({
+  elapsedMs: countSchema,
+  findings: z.array(z.object({ label: z.string(), text: z.string() })).max(16),
+  commandsSaved: z.boolean().optional(),
+});
+
+export const MachineRepoSetupSchema = z.object({
+  repoId: z.string().min(1),
+  checkout: z.string().min(1),
+  steps: z.array(MachineSetupStepSchema).max(4),
+  unavailableSteps: z.array(z.object({
+    kind: MachineSetupStepKindSchema.exclude(["learn-deeper"]),
+    reason: z.string().min(1),
+  })).max(3).optional(),
+  learnDeeper: setupLearningSchema.optional(),
+  questions: z.array(MachineSetupQuestionSchema).max(5),
+  summary: MachineSetupSummarySchema,
+});
+
+export const MachineSetupSchema = z.object({ repos: z.array(MachineRepoSetupSchema).max(128).readonly() });
+export type MachineSetup = z.infer<typeof MachineSetupSchema>;
+export type MachineRepoSetup = z.infer<typeof MachineRepoSetupSchema>;
+export type MachineSetupStep = z.infer<typeof MachineSetupStepSchema>;
+export type MachineSetupQuote = z.infer<typeof MachineSetupQuoteSchema>;
+export type MachineSetupQuestion = z.infer<typeof MachineSetupQuestionSchema>;
+
 export const MachineChangeEventSchema = z.object({ topics: z.array(z.enum(["jobs", "home", "knowledge", "review", "agents", "settings"])).min(1).max(6) });
 
 export type MachineHome = z.infer<typeof MachineHomeSchema>;
