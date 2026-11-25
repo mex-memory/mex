@@ -374,14 +374,21 @@ func TestStopDirectTestsSpendOneBudgetPerEpoch(t *testing.T) {
 }
 
 func TestStopChecksTiming(t *testing.T) {
+	f := rescueFixture(t)
+	f.start("startup")
+	checkStopTiming(f, nil)
+}
+
+func checkStopTiming(f *fixture, generatedVerdicts []record.Verdict) {
+	t := f.t
+	t.Helper()
 	const (
 		obligationCount = 64
 		rowCount        = 2000
 		runCount        = 5
 	)
-	f := rescueFixture(t)
-	f.start("startup")
-	verdicts := make([]record.Verdict, 0, obligationCount)
+	verdicts := make([]record.Verdict, 0, obligationCount+len(generatedVerdicts))
+	verdicts = append(verdicts, generatedVerdicts...)
 	for i := range obligationCount {
 		id := fmt.Sprintf("mx_stop%02d", i)
 		folder := fmt.Sprintf("packages/ci-%02d", i)
@@ -421,11 +428,9 @@ func TestStopChecksTiming(t *testing.T) {
 	cursor := stopCursorPath(f.dir, ev)
 	timings := make([]time.Duration, runCount)
 	for i := range timings {
-		if i > 0 {
-			// Reread the full turn on every sample.
-			if err := os.Remove(cursor); err != nil {
-				t.Fatal(err)
-			}
+		// Reread the full turn on every sample.
+		if err := os.Remove(cursor); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
 		}
 		start := time.Now()
 		r := StopChecks(ev, env)
@@ -439,8 +444,17 @@ func TestStopChecksTiming(t *testing.T) {
 	}
 
 	snap, err := entries.LoadLight(f.dir, f.home, f.project, f.root)
-	if err != nil || len(snap.Items) != obligationCount {
-		t.Fatalf("entry fixture has %d obligations, want %d (load error: %v)", len(snap.Items), obligationCount, err)
+	if err != nil || len(snap.Items) != len(verdicts) {
+		t.Fatalf("entry fixture has %d entries, want %d (load error: %v)", len(snap.Items), len(verdicts), err)
+	}
+	generated := 0
+	for _, item := range snap.Items {
+		if item.Entry.Kind == "pitfall" && item.Generated {
+			generated++
+		}
+	}
+	if generated != len(generatedVerdicts) {
+		t.Fatalf("entry fixture has %d generated-file pitfalls, want %d", generated, len(generatedVerdicts))
 	}
 	slices.Sort(timings)
 	median, slowest := timings[runCount/2], timings[runCount-1]

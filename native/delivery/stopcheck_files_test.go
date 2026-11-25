@@ -1,6 +1,8 @@
 package delivery
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +15,23 @@ import (
 
 // generatedPitfall is knowledge-08's pitfall for files with a generated header.
 func generatedPitfall(f *fixture) {
-	f.entry(spec{id: "mx_factgen", kind: "pitfall", scope: "src/gen/**", evidence: "mined", source: "mined", ref: "src/gen/**",
-		oneLine: "Files under `src/gen/` are generated; don't edit them by hand.",
-		checks:  []string{"    - kind: pattern\n      role: supporting\n      target: {scope: \"src/gen/**\", pattern: \"DO NOT EDIT\", match: literal}\n      saw: {count: 2}\n      files: {}\n"}})
-	f.verdict("mx_factgen", held)
+	const id = "mx_factgen"
+	f.entry(generatedPitfallSpec(id, "src/gen"))
+	f.verdict(id, held)
+}
+
+func generatedPitfallSpec(id, folder string) spec {
+	scope := folder + "/**"
+	return spec{
+		id: id, kind: "pitfall", scope: scope, evidence: "mined", source: "mined", ref: scope,
+		oneLine: fmt.Sprintf("Files under `%s/` are generated; don't edit them by hand.", folder),
+		checks: []string{fmt.Sprintf(`    - kind: pattern
+      role: supporting
+      target: {scope: %q, pattern: "DO NOT EDIT", match: literal}
+      saw: {count: 2}
+      files: {}
+`, scope)},
+	}
 }
 
 // The ticket's demo: a generated file edited by hand is sent back once, with
@@ -170,4 +185,35 @@ func TestStopLockfileSilentCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStopChecksTimingWithFileChecks(t *testing.T) {
+	const (
+		generatedCount = 64
+		packageCount   = 63
+	)
+	f := rescueFixture(t)
+	f.start("startup")
+	generatedVerdicts := make([]record.Verdict, 0, generatedCount)
+	for i := range generatedCount {
+		id := fmt.Sprintf("mx_stopgen%02d", i)
+		folder := fmt.Sprintf("src/gen-%02d", i)
+		f.entry(generatedPitfallSpec(id, folder))
+		generatedVerdicts = append(generatedVerdicts, record.Verdict{EntryID: id, Verdict: held, InputsHash: "x", CheckedAt: f.now.UTC().Format(time.RFC3339Nano)})
+	}
+
+	packages := make([]map[string]string, 0, packageCount)
+	for i := range packageCount {
+		name := fmt.Sprintf("node-%02d", i)
+		folder := "packages/" + name
+		f.file(folder+"/package.json", fmt.Sprintf("{\"name\":%q}\n", name))
+		packages = append(packages, map[string]string{"path": folder, "name": name, "kind": "node"})
+	}
+	facts, err := json.Marshal(map[string]any{"version": 1, "manager": "pnpm", "packages": packages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipesFacts(f, string(facts))
+
+	checkStopTiming(f, generatedVerdicts)
 }
