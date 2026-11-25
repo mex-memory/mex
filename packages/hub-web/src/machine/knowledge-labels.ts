@@ -15,3 +15,9 @@ export const audienceLabels = {
   team: "Your team",
   hint: "Hint from your agent",
 } satisfies Record<KnowledgeAudience, string>;
+
+export function scopeLabel(scope: readonly string[]) {
+  if (scope.length !== 1) return scope.join(", ");
+  if (scope[0] === "**") return "Whole repo";
+  return scope[0].match(/^([^*?\[\]{}!]+)\/\*\*$/u)?.[1] ?? scope[0];
+}

@@ -1,12 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
-import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Search, X } from "lucide-react";
+import { BookOpen, Check, ChevronDown, ChevronRight, Search } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "../components/primitives/dropdown-menu";
 import { Input } from "../components/primitives/input";
+import { KnowledgeDetailPanel } from "./KnowledgeDetail";
 import { audienceLabels, kindLabels } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
@@ -17,6 +18,14 @@ import shared from "./machine.module.css";
 const number = new Intl.NumberFormat();
 const filterNames = ["q", "kind", "audience", "status", "repo"] as const;
 type FilterName = typeof filterNames[number];
+
+const narrowLayout = "(max-width: 1023px)";
+function subscribeToLayout(listener: () => void) {
+  const media = window.matchMedia(narrowLayout);
+  media.addEventListener("change", listener);
+  return () => media.removeEventListener("change", listener);
+}
+const isNarrow = () => window.matchMedia(narrowLayout).matches;
 
 interface KnowledgePageProps {
   project?: MachineProject;
@@ -159,6 +168,7 @@ function KnowledgeHeader({ scope, updating, titleRef }: {
 
 function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePageProps, "knowledge"> & { knowledge: KnowledgePreview }) {
   const { entryKey } = useParams();
+  const narrow = useSyncExternalStore(subscribeToLayout, isNarrow);
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const basePath = project ? `/repos/${encodeURIComponent(project.id)}/knowledge` : "/knowledge";
@@ -197,7 +207,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
 
   useLayoutEffect(() => {
     if (entryKey) {
-      if (window.matchMedia("(max-width: 1023px)").matches) window.scrollTo(0, 0);
+      if (narrow) window.scrollTo(0, 0);
       detailTitle.current?.focus({ preventScroll: true });
     } else if (!browser.current?.contains(document.activeElement)) {
       const row = Array.from(browser.current?.querySelectorAll<HTMLAnchorElement>("[data-item-key]") ?? [])
@@ -298,19 +308,8 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           </section>
         )}
         {entryKey ? (
-          <div className={styles.detailColumn}>
-            <Link className={`${shared.textLink} ${styles.back}`} to={listHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
-            <section aria-labelledby="knowledge-item-title" className={styles.detailCard}>
-              <div className={styles.detailHeader}>
-                <h2 id="knowledge-item-title" ref={detailTitle} tabIndex={-1}>{detail?.oneLine ?? "Item unavailable"}</h2>
-                <Button aria-label="Close item" className={styles.closeItem} render={<Link to={listHref} />} nativeButton={false} size="icon-sm" variant="ghost">
-                  <X aria-hidden="true" />
-                </Button>
-              </div>
-              <p className={styles.detailText}>{detail?.text ?? "This item may have been forgotten or moved to another repo."}</p>
-            </section>
-          </div>
-        ) : total > 0 && (
+          <KnowledgeDetailPanel backHref={listHref} item={detail} key={entryKey} narrow={narrow} now={now} titleRef={detailTitle} />
+        ) : items.length > 0 && (
           <div className={styles.detailPlaceholder}><BookOpen aria-hidden="true" /><p>Select an item to read it.</p></div>
         )}
       </div>
