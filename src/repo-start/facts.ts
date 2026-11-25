@@ -15,10 +15,12 @@ const MAX_FACT_BYTES = 8 << 20;
 export interface SetupRun {
   version: 1;
   last_run: string;
+  checkout?: string;
+  commands_saved?: boolean;
   ms: number;
   caller: Caller;
   found: { packages: number; recipes: number; rule_files: number; rule_conflicts: number; hints: number };
-  exclude: { file: string; block: boolean };
+  exclude: { file: string | null; block: boolean };
 }
 
 export function writeFactFile(location: RecordLocation, projectId: string, name: "setup.json" | "recipes.json" | "code-facts.json" | "setup-answers.json", value: unknown): string {

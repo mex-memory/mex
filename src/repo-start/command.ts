@@ -372,7 +372,8 @@ export async function runRepoStart(options: RepoStartOptions = {}): Promise<Repo
       const { writeFactFile } = await import("./facts.js");
       try {
         writeFactFile(recordLocation(), projectId, "setup.json", {
-          version: 1, last_run: new Date().toISOString(), ms: Math.round(elapsed()), caller,
+          version: 1, last_run: new Date().toISOString(), checkout: checkout.path, ms: Math.round(elapsed()), caller,
+          commands_saved: commandsSaved,
           found: {
             packages: new Set(recipes?.recipes.map(recipe => recipe.package) ?? []).size, recipes: recipes?.recipes.length ?? 0,
             rule_files: rules?.files ?? 0, rule_conflicts: rules?.conflicts ?? 0, hints: memory?.count ?? 0,

@@ -27,6 +27,7 @@ import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes
 import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { rotateHubSecret } from "./secret.js";
+import { SetupData } from "./setup-data.js";
 import { takeSettingsSnapshot } from "./settings-snapshot.js";
 import { applyRecordSetting, applyTelemetrySetting, refreshCheckoutRules } from "./settings-writes.js";
 import { takeUninstallSnapshot } from "./uninstall-snapshot.js";
@@ -83,10 +84,11 @@ export function createMachineHubApp(options: MachineHubOptions) {
     "The machine settings couldn’t be read. Try again or run mex doctor.");
   const uninstallRead = new ControlSnapshot(now, async signal => ({ ...await takeUninstallSnapshot(location, signal), issue: undefined }),
     "The install record couldn’t be read. Run mex uninstall --dry-run in your terminal.");
+  const setup = new SetupData(location, now, options.env ?? process.env);
   const repair = new AgentRepair(agentOptions, now);
   const followUps = new Set<NodeJS.Immediate>();
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
-  const events = new HubEvents(location, home, knowledge, now, keepOpen, { agents: agentRead, settings: settingsRead, uninstall: uninstallRead });
+  const events = new HubEvents(location, home, knowledge, now, keepOpen, { agents: agentRead, settings: settingsRead, uninstall: uninstallRead, setup });
   const changed = async (repoId: string, notesChanged: boolean) => {
     await home.refreshProject(repoId);
     if (notesChanged) await knowledge.refreshProject(repoId);
@@ -174,10 +176,12 @@ export function createMachineHubApp(options: MachineHubOptions) {
       checkWrite(context.req.raw.headers, context.get("address"), session);
     }
     context.set("session", session);
-    home.touch();
-    agentRead.touch();
-    settingsRead.touch();
-    uninstallRead.touch();
+    if (context.req.path !== "/api/v1/setup") {
+      home.touch();
+      agentRead.touch();
+      settingsRead.touch();
+      uninstallRead.touch();
+    }
     await next();
   });
 
@@ -343,6 +347,11 @@ export function createMachineHubApp(options: MachineHubOptions) {
     return { saved: true, notice };
   }));
 
+  app.get("/api/v1/setup", (context) => {
+    const { repo } = readStrictQuery(context.req.raw, ["repo"]);
+    return context.json(setup.get(repo));
+  });
+
   app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
 
   app.post("/api/v1/jobs/:id/actions", async (context) => {
@@ -384,6 +393,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
     agentRead.close();
     settingsRead.close();
     uninstallRead.close();
+    setup.close();
     for (const followUp of followUps) clearImmediate(followUp);
   } });
 }

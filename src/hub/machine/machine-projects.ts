@@ -21,14 +21,18 @@ export interface MachineProject {
   checkouts: CheckoutRow[];
 }
 
+export function machineCheckouts(reader: Pick<RecordReader, "all">, projectId: string): { checkouts: CheckoutRow[]; partial: boolean } {
+  const rows = reader.all<CheckoutRow>("SELECT project_id,path,state,off_until,provisional FROM checkouts WHERE project_id=? ORDER BY path LIMIT ?", projectId, CHECKOUT_LIMIT + 1);
+  return { checkouts: rows.slice(0, CHECKOUT_LIMIT).filter(({ path }) => machinePath(path)), partial: rows.length > CHECKOUT_LIMIT };
+}
+
 export function machineProjects(reader: RecordReader | undefined): { projects: MachineProject[]; partial: boolean } {
   const rows = reader?.all<ProjectRow>("SELECT id,root_path,kind FROM projects ORDER BY root_path,id LIMIT ?", MACHINE_PROJECT_LIMIT + 1) ?? [];
   let partial = rows.length > MACHINE_PROJECT_LIMIT;
   const projects = rows.slice(0, MACHINE_PROJECT_LIMIT).filter(({ id }) => PROJECT_ID.test(id)).map(row => {
-    const checkouts = reader!.all<CheckoutRow>("SELECT project_id,path,state,off_until,provisional FROM checkouts WHERE project_id=? ORDER BY path LIMIT ?", row.id, CHECKOUT_LIMIT + 1);
-    if (checkouts.length > CHECKOUT_LIMIT) partial = true;
-    return { id: row.id, name: (basename(row.root_path) || row.id).slice(0, 512), kind: row.kind,
-      checkouts: checkouts.slice(0, CHECKOUT_LIMIT).filter(({ path }) => machinePath(path)) };
+    const sample = machineCheckouts(reader!, row.id);
+    partial ||= sample.partial;
+    return { id: row.id, name: (basename(row.root_path) || row.id).slice(0, 512), kind: row.kind, checkouts: sample.checkouts };
   });
   return { projects, partial };
 }

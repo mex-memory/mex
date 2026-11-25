@@ -33,7 +33,7 @@ export class HubEvents {
   #activity: string | undefined;
   #generation: number | undefined;
   #knowledge: string | undefined;
-  #controlsVersion: [number, number, number] | undefined;
+  #controlsVersion: [number, number, number, number] | undefined;
   #closed = false;
 
   constructor(
@@ -42,7 +42,7 @@ export class HubEvents {
     private readonly knowledge: KnowledgeData,
     private readonly now: () => number,
     private readonly keepOpen: () => void,
-    private readonly controls?: { agents: SnapshotSignal; settings: SnapshotSignal; uninstall: SnapshotSignal },
+    private readonly controls?: { agents: SnapshotSignal; settings: SnapshotSignal; uninstall: SnapshotSignal; setup: SnapshotSignal },
   ) {}
 
   open(signal: AbortSignal, authorized: () => boolean, head: boolean): Response {
@@ -155,11 +155,12 @@ export class HubEvents {
     if (this.#knowledge !== undefined && this.#knowledge !== knowledge) topics.push("knowledge");
     this.#knowledge = knowledge;
     if (this.controls) {
-      const { agents, settings, uninstall } = this.controls;
+      const { agents, settings, uninstall, setup } = this.controls;
       const previous = this.#controlsVersion;
       if (previous && previous[0] !== agents.version) topics.push("agents");
       if (previous && (previous[1] !== settings.version || previous[2] !== uninstall.version)) topics.push("settings");
-      this.#controlsVersion = [agents.version, settings.version, uninstall.version];
+      if (previous && previous[3] !== setup.version) topics.push("setup");
+      this.#controlsVersion = [agents.version, settings.version, uninstall.version, setup.version];
     }
     this.#sendChange(topics);
   }

@@ -67,11 +67,17 @@ function lastSummary(reader: Reader, jobId: string): string | undefined {
   return reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1", jobId)[0]?.summary;
 }
 
+export function setupStepCheckout(row: Pick<JobRow, "params">): string | null {
+  try {
+    const params = JSON.parse(row.params || "{}") as { checkout?: unknown } | null;
+    return typeof params?.checkout === "string" ? params.checkout : null;
+  } catch { return null; }
+}
+
 /** One step from its job row. */
 export function stepFromRow(reader: Reader, row: JobRow): SetupStep {
   const kind = row.kind as SetupStepKind;
-  let scope: string | null = null;
-  try { scope = (JSON.parse(row.params || "{}") as { checkout?: string }).checkout ?? null; } catch { /* no scope */ }
+  const scope = setupStepCheckout(row);
   const terminal = TERMINAL_STATES.includes(row.state);
   const summary = lastSummary(reader, row.id);
   const estimate = row.tokens_estimate ? { tokens: row.tokens_estimate, seconds: Math.max(1, Math.ceil(row.tokens_estimate / QUOTE_TOKENS_PER_MINUTE)) * 60 } : undefined;
@@ -89,14 +95,18 @@ export function stepFromRow(reader: Reader, row: JobRow): SetupStep {
  * over a newer finished one, so a step the person can still pause or stop is the one shown.
  * A step with no row was never queued here (skipped, or not reached yet).
  */
-export function readSetupSteps(reader: Reader, projectId: string): SetupStep[] {
-  const steps: SetupStep[] = [];
+export function readSetupStepRows(reader: Reader, projectId: string): JobRow[] {
+  const steps: JobRow[] = [];
   for (const kind of SETUP_STEP_KINDS) {
     const row = reader.all<JobRow>(`SELECT * FROM jobs WHERE project_id=? AND kind=?
       ORDER BY CASE WHEN state IN ('done','done with gaps','failed','cancelled') THEN 1 ELSE 0 END, created_at DESC, id DESC LIMIT 1`, projectId, kind)[0];
-    if (row) steps.push(stepFromRow(reader, row));
+    if (row) steps.push(row);
   }
   return steps;
+}
+
+export function readSetupSteps(reader: Reader, projectId: string): SetupStep[] {
+  return readSetupStepRows(reader, projectId).map(row => stepFromRow(reader, row));
 }
 
 export type StepAction = "pause" | "resume" | "cancel";
