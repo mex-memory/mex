@@ -82,6 +82,7 @@ function KnowledgeSummary({ counts, total, active, browseHref, onToggle }: {
   onToggle: (status: string) => void;
 }) {
   const activeLegend = useRef<HTMLButtonElement>(null);
+  const focusAfterClear = active === needsLookFilter ? "out-of-date" : active;
   return (
     <section aria-label="Knowledge status totals" className={styles.summary}>
       <div className={styles.summaryTop}>
@@ -117,7 +118,7 @@ function KnowledgeSummary({ counts, total, active, browseHref, onToggle }: {
       <ul aria-label="Status legend" className={styles.legend} role="list">
         {knowledgeStatuses.map(({ key, slug }) => (
           <li key={key}>
-            <button aria-pressed={active === slug} onClick={() => onToggle(slug)} ref={active === slug ? activeLegend : undefined} type="button">
+            <button aria-pressed={active === slug} onClick={() => onToggle(slug)} ref={focusAfterClear === slug ? activeLegend : undefined} type="button">
               <KnowledgeStatusLabel className={styles.status} status={key} />
               <strong>{number.format(counts[key])}</strong>
             </button>

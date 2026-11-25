@@ -64,9 +64,10 @@
 }
 
 .reviewRow {
+  position: relative;
   display: grid;
   min-height: 56px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 268px) auto;
   align-items: center;
   column-gap: 12px;
 }
@@ -79,7 +80,7 @@
 .reviewLink {
   display: grid;
   min-width: 0;
-  grid-template-columns: 16px minmax(0, 1fr) minmax(0, 268px);
+  grid-template-columns: 16px minmax(0, 1fr);
   align-items: center;
   column-gap: 9px;
   padding-block: 7px;
@@ -88,12 +89,23 @@
   text-underline-offset: 3px;
 }
 
+.reviewLink::after {
+  position: absolute;
+  inset: 1px -4px;
+  border-radius: var(--radius-sm);
+  content: "";
+}
+
 .reviewLink:hover strong {
   text-decoration: underline;
 }
 
 .reviewLink:focus-visible {
-  outline-offset: 1px;
+  outline: none;
+}
+
+.reviewLink:focus-visible::after {
+  outline: 2px solid var(--focus);
 }
 
 .reviewLink .reviewIcon svg {
@@ -128,12 +140,14 @@
 }
 
 .reviewActions {
+  position: relative;
   display: flex;
   gap: 2px;
 }
 
 .reviewActions button {
   color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .reviewActions button:last-child:hover {
@@ -315,13 +329,29 @@
 }
 
 @media (max-width: 960px) {
-  .reviewLink {
-    grid-template-columns: 16px minmax(0, 1fr);
-    row-gap: 3px;
+  .reviewRow {
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    gap: 2px 9px;
+    padding-block: 7px;
   }
 
+  .reviewLink,
+  .reviewIdentity {
+    grid-template-columns: subgrid;
+    grid-template-rows: subgrid;
+  }
+
+  .reviewLink {
+    grid-area: 1 / 1 / 3 / -1;
+    padding-block: 0;
+  }
+
+  .reviewIdentity { grid-area: 1 / 2 / 3 / -1; }
+  .reviewIdentity strong { grid-column: 1 / -1; }
+  .reviewActions { grid-area: 2 / 3; }
+
   .reviewWhy {
-    grid-column: 2;
+    grid-area: 3 / 2 / 4 / -1;
     overflow-wrap: anywhere;
     white-space: normal;
   }
@@ -329,8 +359,4 @@
 
 @media (max-width: 560px) {
   .card { padding: 14px 15px; }
-
-  .reviewRow { grid-template-columns: minmax(0, 1fr); }
-  .reviewLink { padding-block: 7px 2px; }
-  .reviewActions { justify-self: end; padding-bottom: 3px; }
 }

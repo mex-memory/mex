@@ -35,19 +35,20 @@ export function KnowledgeNeedsLook({ summary, listHref, itemHref, repoNames, onA
         <h2 id={heading}>Needs a look <span>({number.format(summary.total)})</span></h2>
       </div>
       <ul className={styles.reviewItems} role="list">
-        {summary.items.map((item) => {
+        {summary.items.map((item, index) => {
           const repo = repoNames ? repoNames.get(item.repoId) ?? "Unknown repo" : undefined;
           const identity = [kindLabels[item.kind], repo, audienceLabels[item.audience]].filter(Boolean).join(" · ");
+          const whyId = `${heading}-why-${index}`;
           return (
             <li className={styles.reviewRow} key={item.key}>
-              <Link className={styles.reviewLink} data-item-key={item.key} to={itemHref(item)}>
+              <Link aria-describedby={whyId} className={styles.reviewLink} data-item-key={item.key} to={itemHref(item)}>
                 <KnowledgeStatusLabel className={`${pageStyles.status} ${styles.reviewIcon}`} iconOnly status={item.status} />
                 <span className={styles.reviewIdentity}>
                   <strong title={item.oneLine}>{item.oneLine}</strong>
                   <span title={identity}>{identity}</span>
                 </span>
-                <span className={styles.reviewWhy} title={item.why}>{item.why}</span>
               </Link>
+              <span className={styles.reviewWhy} id={whyId} title={item.why}>{item.why}</span>
               <div className={styles.reviewActions}>
                 <Button aria-label={`Edit ${item.oneLine}`} disabled={item.audience === "hint"} onClick={() => onAction(item, "edit")} size="xs" type="button" variant="ghost">Edit</Button>
                 <Button aria-haspopup="dialog" aria-label={`Forget ${item.oneLine}`} onClick={() => onAction(item, "forget")} size="xs" type="button" variant="ghost">Forget</Button>
