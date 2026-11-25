@@ -16,7 +16,9 @@ import { evaluate } from "../judge/native.js";
 import { judgeActor } from "../judge/ownership.js";
 import { wakeNotice } from "../judge/notices.js";
 import { withCheckoutPublication } from "../judge/publication.js";
-import { filterAllowed, filterSession, type FilterParams } from "./input.js";
+import { filterAllowed, filterSession, recordedTranscript, type FilterParams } from "./input.js";
+import { typedCapture } from "./profiles.js";
+import { sourceModelAgent } from "./runner.js";
 import { contextSource, hostCorroborated, learningMetadata, type SourceRecord } from "./metadata.js";
 import { typedQuote } from "./transcript.js";
 import { promotionDecision, type Evidence } from "./evidence.js";
@@ -94,7 +96,7 @@ export function verifySources(writer: RecordWriter, project: string, entry: Know
     }
     if (!hooks || hooks.diagnostic || !s.session || !s.row || !s.message_hash) return result;
     const session = hooks.get<{ checkout: string; agent: string; paused: number }>("SELECT checkout,agent,paused FROM sessions WHERE session_id=? AND project_id=?", s.session, project);
-    if (!session || !["claude-code", "codex"].includes(session.agent)) return result;
+    if (!session || !typedCapture(session.agent)) return result;
     const host = hostCorroborated(entry);
     if (host && session.paused) return result;
     const info = filterSession(writer, project, session.checkout, s.session);
@@ -104,8 +106,9 @@ export function verifySources(writer: RecordWriter, project: string, entry: Know
     result.delivered ||= !!hooks.get("SELECT 1 FROM deliveries WHERE session_id=? AND entry_id=? AND action IN ('given','replaced')", s.session, entry.mex.id);
     // Host-backed Stage 2 kept the typed journal bytes as its sole wording
     // authority. The host's hint is never replayed as a source for Review.
+    const transcript = recordedTranscript(info, session.agent);
     result.verified = host && !!live && Array.from(live.text).slice(0, 1200).join("").includes(record.quote)
-      || typedQuote(info.transcript, session.agent === "claude-code" ? "claude" : "codex", record.quote, s.message_hash);
+      || !!transcript && typedQuote(transcript.path, transcript.agent, record.quote, s.message_hash);
     return result;
   }); } finally { hooks?.close(); }
 }
@@ -211,13 +214,14 @@ export async function publishNext(writer: RecordWriter, project: string, params:
   if (decision.destination !== "team") return hold(decision.reason, decision.destination === "review");
   if (!found.entry.mex.source.quote || !sources.some((s, index) => s.quote === found.entry.mex.source.quote && observations[index]?.verified && !observations[index]?.marked && !observations[index]?.delivered)) return hold("current-quote-unverified");
   if (contextSource(metadata)) return hold("context-assisted", true);
-  if (!params.sessionId) return hold("preview-session-unavailable", true);
+  const source = params.sourceAgent ? sourceModelAgent(params.sourceAgent) : params.agent;
+  if (!params.sessionId || !source) return hold("preview-session-unavailable", true);
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
-    const host = params.agent === "claude" ? "claude-code" : params.agent;
+    const host = source === "claude" ? "claude-code" : source;
     if (!hooks || hooks.diagnostic || !hooks.get("SELECT 1 FROM sessions WHERE session_id=? AND agent=? AND project_id=? AND checkout=? AND paused=0", params.sessionId, host, project, params.checkout)) return hold("preview-session-unavailable", true);
   } finally { hooks?.close(); }
-  const actor = judgeActor(params.checkout, params.agent, params.sessionId);
+  const actor = judgeActor(params.checkout, source, params.sessionId);
   if (offer.state === "preview" && (offer.actor !== actor || offer.session !== params.sessionId || offer.metadata_hash !== metadataHash || offer.after !== preview.after)) return hold("preview-context-changed", true);
   if (preview.before !== null && preview.before !== preview.after) return hold("team-conflict", true);
   if (offer.state !== "preview") {

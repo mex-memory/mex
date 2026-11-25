@@ -177,9 +177,17 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   await cliTelemetry.finish(process.exitCode);
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
+  if (family.name() === "status" || family.name() === "doctor") {
+    try {
+      if (existsSync(join(mexHomeDir(), "controls.json"))) {
+        const { restartSessionLearningIfPending } = await import("./record/background.js");
+        restartSessionLearningIfPending();
+      }
+    } catch { /* the read already completed */ }
+    return;
+  }
   // Uninstall must not recreate the launcher or restart pending jobs.
   if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture" || family.name() === "compact"
-    || family.name() === "status" || family.name() === "doctor"
     || (family.name() === "report" && (family.opts().ledger || family.opts().holdout))
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
     || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
@@ -192,7 +200,8 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   try {
     // Default sync decides whether its own accepted work may continue. A held
     // or paused invocation must not wake an unrelated host's queued judge.
-    if (!(family.name() === "sync" && !family.opts().deep) && existsSync(join(mexHomeDir(), "jobs-pending"))) {
+    if (!(family.name() === "sync" && !family.opts().deep)
+      && (existsSync(join(mexHomeDir(), "jobs-pending")) || existsSync(join(mexHomeDir(), "controls.json")))) {
       const { restartIfPending } = await import("./record/background.js");
       restartIfPending();
     }

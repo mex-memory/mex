@@ -245,6 +245,17 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	path, isFile := eventPath(ev)
 	checkout, state := findCheckout(recordDirectory, path, isFile, now)
 	ev.ProjectID, ev.Checkout = checkout.ProjectID, checkout.Root
+	if global.SessionLearning && ev.Kind == contract.PreTool && profile.Capabilities().Learning().Cache && ev.AgentID == "" && ev.Cwd != "" {
+		sessionCheckout, sessionState := checkout, state
+		if path != ev.Cwd {
+			sessionCheckout, sessionState = findCheckout(recordDirectory, ev.Cwd, false, now)
+		}
+		if sessionState == switchedOn && captureEnabled(recordDirectory, sessionCheckout.ProjectID, global) && !sessionPaused(recordDirectory, agent, ev.SessionID) {
+			fromSession := ev
+			fromSession.ProjectID, fromSession.Checkout = sessionCheckout.ProjectID, sessionCheckout.Root
+			_ = capture.MarkReplyOutside(fromSession, capture.Env{RecordDirectory: recordDirectory, Now: now})
+		}
+	}
 	if whatPrompt(ev) && state != unregistered {
 		observeAllowed = false
 		support, _ := profile.Capabilities().Support(contract.Prompt)
@@ -313,14 +324,23 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	captureOn := captureEnabled(recordDirectory, ev.ProjectID, global)
 	holdout := ledgerHoldout(ev, h, recordDirectory, global.LedgerHoldout, captureOn, now)
 	// Both study arms keep the local capture and filter inputs.
-	captureEnv := capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env, ClickedApprovals: global.ClickedApprovals}
+	captureEnv := capture.Env{RecordDirectory: recordDirectory, Now: now, Getenv: h.env, ClickedApprovals: global.ClickedApprovals, SessionLearning: global.SessionLearning}
 	captureLifecycle := ev.Kind == contract.SessionStart || ev.Kind == contract.SessionEnd || ev.Kind == contract.PreCompact
 	if captureOn {
 		capture.Hook(ev, captureEnv)
 	}
+	learningWake := global.SessionLearning && filterWakeDue(recordDirectory, now)
+	if ev.CaptureOnly {
+		if learningWake {
+			startBackground(h, recordDirectory)
+		}
+		return profile.EmptyReply(nativeEvent)
+	}
 	if holdout {
 		if captureOn && captureLifecycle {
 			capture.StageLedgerFinish(ev, captureEnv, global.LedgerHoldout)
+		}
+		if captureOn && captureLifecycle || learningWake {
 			startBackground(h, recordDirectory)
 		}
 		return profile.EmptyReply(nativeEvent)
@@ -470,7 +490,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	// SessionEnd too: rule files waiting for this session can be rebuilt now.
 	offerReady := captureOn && requestCompactOffer(ev, h, recordDirectory)
 	ledgerReady := captureOn && capture.StageLedgerFinish(ev, captureEnv, global.LedgerHoldout)
-	if captureLifecycle || judgeReady ||
+	if captureLifecycle || learningWake || judgeReady ||
 		offerReady || ledgerReady || (ev.Kind == contract.PostCompact && watchingCompaction(recordDirectory)) {
 		startBackground(h, recordDirectory)
 	}

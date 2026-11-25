@@ -6,6 +6,7 @@ import { hasSecret, stripHidden } from "../knowledge/gates.js";
 import { filterSession } from "./input.js";
 import type { StageTwoSource } from "./stage-two-input.js";
 import { codexRolloutSession } from "./transcript.js";
+import { captureProfiles } from "./profiles.js";
 
 const TAIL_MS = 15 * 60_000;
 export const HOST_HINT_LIMIT = 16;
@@ -30,7 +31,7 @@ function codexMatch(memory: MemoryCandidate, session: string, rollout: string | 
 
 /** Discover only for a due batch. A host fact is usable solely beside a typed, weak candidate. */
 export function hostRecallMatches(writer: RecordWriter, project: string, checkout: string, sources: readonly StageTwoSource[], now: number): HostMatch[] {
-  const weak = sources.filter(source => source.activeNote?.scope.kind === "seen" && source.note && source.verdict.verdict === "candidate"
+  const weak = sources.filter(source => captureProfiles[source.agent].memory && source.activeNote?.scope.kind === "seen" && source.note && source.verdict.verdict === "candidate"
     && source.verdict.outcome === "unsure" && source.verdict.kind !== "approval");
   if (!weak.length) return [];
   let hooks: ReturnType<typeof openHooksReadOnly>;

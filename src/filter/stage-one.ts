@@ -12,6 +12,7 @@ import { stageContinuity } from "./continuity.js";
 import { parseStageOne, repeatsDeliveredNote, StageOneVerdict, stageOnePrompt, verbatimNote, VerdictCoverage } from "./verdicts.js";
 import { planSessionNotes, saveSessionNotes } from "./session-notes.js";
 import type { ReplyContextMode, TranscriptIssue } from "./transcript.js";
+import { removeReplyCache } from "./reply-cache.js";
 
 const ROWS = z.array(z.number().int().positive().safe()).max(FILTER_LIMITS.messages);
 const Batch = z.object({
@@ -155,7 +156,7 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
   const retry = pending && { session: pending.session, retryRows: pending.retry };
   const scan: ScanWindow = { after };
   const mode = deps.contextMode ?? "design";
-  const selected = stageOneInput(writer, project, checkout, scan, mode, retry);
+  const selected = stageOneInput(writer, project, checkout, scan, mode, retry, deps.clock());
   if (!selected) {
     if (scan.more) return { after: scan.through!, summary: "Scanning for finished sessions; active sessions remain unread" };
     const changes = await planSessionNotes(writer, project, checkout, deps.clock());
@@ -172,6 +173,7 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
   const prompt = input.messages.some(message => !message.marks) ? stageOnePrompt(input) : undefined;
   if (prompt && Buffer.byteLength(prompt) > FILTER_LIMITS.promptBytes) throw new Error("The session verdict prompt exceeds its limit.");
   const response = prompt ? await deps.model({ agent: params.agent, role: "cheap", projectRoot: checkout, purpose: "filter", prompt,
+    allowNonGit: project.startsWith("f-"),
     automatic: { estimate: { input: Buffer.byteLength(prompt), cache_read: 0, cache_write: 0, output: 8192 } } }) : undefined;
   const parsed = parseStageOne(response?.text ?? '{"verdicts":[]}', input);
   const discarded = { after, summary: "Session verdicts discarded because the inputs or consent changed" };
@@ -181,7 +183,7 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
   const now = deps.clock();
   const changes = await planSessionNotes(writer, project, checkout, now, { session, sourcePosition: selected.sourcePosition, verdicts: notes });
   if (!samePosition(at, await position(checkout)) || !allowed()
-    || JSON.stringify(stageOneInput(writer, project, checkout, { after }, mode, retry ?? { session })) !== JSON.stringify(selected))
+    || JSON.stringify(stageOneInput(writer, project, checkout, { after }, mode, retry ?? { session }, now)) !== JSON.stringify(selected))
     return discarded;
 
   const verdicts = [...(pending?.verdicts ?? []), ...parsed.verdicts].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
@@ -212,6 +214,7 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
       const key = batchKey(checkout, batch.rows[0]);
       settleStageOne(writer, project, [{ key, value: writer.setting(project, key)!, batch }], new Set());
     }
+    if (selected.cache) removeReplyCache(writer, selected.cache);
   });
   const noteCandidates = notes.filter(verdict => verbatimNote(verdict)).length;
   const tokens = response?.usage;

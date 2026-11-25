@@ -1,0 +1,16 @@
+{
+  "agent": "opencode",
+  "agent_version": "",
+  "kind": "prompt",
+  "session_id": "ses_01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "prompt": {
+    "text": "Keep the cart discount local.",
+    "typed": true
+  },
+  "transcript": "",
+  "background": false
+}

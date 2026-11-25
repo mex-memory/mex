@@ -824,6 +824,8 @@ describe("no unscoped scaffold writes", () => {
       "src/knowledge/handoff.ts": "writes or deletes only .mex/handoffs/<branch>.md in the working tree, after a shown preview (mex handoff) or an explicit mex handoff done; refuses redirected folders and files, stages through an exclusive temporary file, and never commits or pushes",
       "src/knowledge/hints.ts": "removes only disposable hint copies under the MEX project-data home after durable retirement or personal confirmation; refuses overlap with host memory and never writes host or repository files",
       "src/file-index/pending.ts": "removes and restores only the index-pending marker in the machine record directory; never a repo file",
+      "src/filter/pending.ts": "removes only immutable session request generations under the contained machine record filter-pending directory",
+      "src/filter/reply-cache.ts": "removes only a consumed reply generation and its empty session slot under the contained machine record filter-replies directory",
       "src/judge/pending.ts": "consumes and restores bounded judge requests inside a checked machine-record directory after verifying checkout ownership; never an entry or repo file",
       "src/judge/notices.ts": "atomically publishes only bounded notice-ID hints inside the contained machine-record judge-notices directory; never entry text or a repository file",
       "src/judge/advice.ts": "atomically publishes only bounded advisory-ID hints inside the contained machine-record judge-advice directory; stores advisory text in record.db and never changes repository files",
@@ -906,6 +908,17 @@ describe("no unscoped scaffold writes", () => {
     expect(judgeNotices).toContain('containedDirectory(writer.location.directory, ["judge-notices"], true)');
     expect(judgeNotices).toContain('flag: "wx"');
     expect([...judgeNotices.matchAll(/\brenameSync\s*\(/g)]).toHaveLength(1);
+
+    const filterPending = withoutComments(read("src/filter/pending.ts"));
+    expect(filterPending).toContain('containedDirectory(writer.location.directory, ["filter-pending"])');
+    expect([...filterPending.matchAll(WRITE_CALLS)].map(call => call[1])).toEqual(["unlinkSync", "unlinkSync"]);
+    expect([...filterPending.matchAll(FD_WRITE_CALLS)]).toHaveLength(0);
+
+    const replyCache = withoutComments(read("src/filter/reply-cache.ts"));
+    expect(replyCache).toContain('folder !== containedDirectory(writer.location.directory, ["filter-replies", slot])');
+    expect([...replyCache.matchAll(WRITE_CALLS)].map(call => call[1])).toEqual(["unlinkSync"]);
+    expect([...replyCache.matchAll(/\brmdirSync\s*\(/g)]).toHaveLength(1);
+    expect([...replyCache.matchAll(FD_WRITE_CALLS)]).toHaveLength(0);
   });
 
   it("does not constrain code outside the wiki engine", () => {

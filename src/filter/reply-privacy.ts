@@ -2,13 +2,27 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { object } from "../record/usage.js";
+import type { TranscriptAgent } from "./profiles.js";
 
 const webTools = new Set(["WebSearch", "WebFetch", "web_search", "web_fetch", "web.run", "web__run"]);
 const remoteItems = new Set(["web_search_call", "web_search", "WebSearch", "mcp_tool_call", "McpToolCall"]);
 const remoteEvents = new Set(["web_search_begin", "web_search_end", "mcp_tool_call_begin", "mcp_tool_call_end"]);
 
 function outsideName(name: unknown): boolean {
-  return typeof name === "string" && (webTools.has(name) || /^mcp__.+__.+$/u.test(name));
+  return typeof name === "string" && (webTools.has(name) || name === "google_web_search" || /^(?:mcp__.+__.+|MCP:.+|mcp_.+_.+)$/u.test(name));
+}
+
+/** Recognize only literal one-file reads. The command is never run. */
+export function codexRead(call: Record<string, unknown>): { path: string; cwd?: string } | undefined {
+  if (typeof call.arguments !== "string" || call.arguments.length > 8192) return;
+  let args;
+  try { args = object(JSON.parse(call.arguments)); } catch { return; }
+  const cwd = typeof args?.workdir === "string" ? args.workdir : undefined;
+  const path = args?.file_path ?? args?.path;
+  if (call.name === "read_file" && typeof path === "string") return { path, cwd };
+  if (call.name !== "exec_command" || typeof args?.cmd !== "string") return;
+  const read = /^(?:cat(?: --)?|sed -n (?:'\d+(?:,\d+)?p'|"\d+(?:,\d+)?p")) ([A-Za-z0-9_./~:\\-]+)$/u.exec(args.cmd.trim());
+  if (read) return { path: read[1]!, cwd: cwd ?? "" };
 }
 
 function canonical(path: string): string {
@@ -26,20 +40,35 @@ function outsideRead(root: string, cwd: unknown, path: unknown): boolean {
 }
 
 /** A recognized outside call taints the entire reply, including text before the call. */
-export function outsideTool(agent: "claude" | "codex", checkout?: string): (row: Record<string, unknown>) => boolean {
+export function outsideTool(agent: TranscriptAgent, checkout?: string): (row: Record<string, unknown>) => boolean {
+  const root = checkout && canonical(checkout);
   if (agent === "codex") return row => {
     const payload = object(row.payload);
-    if (row.type === "response_item") return typeof payload?.type === "string" && (remoteItems.has(payload.type)
-      || ["function_call", "custom_tool_call"].includes(payload.type) && outsideName(payload.name));
+    if (row.type === "response_item" && typeof payload?.type === "string") {
+      if (remoteItems.has(payload.type)) return true;
+      if (payload.type !== "function_call" && payload.type !== "custom_tool_call") return false;
+      const read = codexRead(payload);
+      return outsideName(payload.name) || !!(root && read && outsideRead(root, read.cwd, read.path));
+    }
     if (row.type !== "event_msg" || typeof payload?.type !== "string") return false;
     if (remoteEvents.has(payload.type)) return true;
     const item = object(payload.item);
     return (payload.type === "item_started" || payload.type === "item_completed") && typeof item?.type === "string" && remoteItems.has(item.type);
   };
-  const root = checkout && canonical(checkout);
+  if (agent === "copilot") return row => {
+    const data = object(row.data);
+    if (row.type !== "tool.execution_start" || !data) return false;
+    const args = object(data.arguments);
+    return !!data.mcpServerName || outsideName(data.toolName)
+      || !!(root && data.toolName === "view" && outsideRead(root, undefined, args?.path));
+  };
+  if (agent === "gemini") return row => Array.isArray(row.toolCalls) && row.toolCalls.some(value => {
+    const call = object(value), args = object(call?.args);
+    return outsideName(call?.name) || !!(root && call?.name === "read_file" && outsideRead(root, undefined, args?.file_path));
+  });
   return row => {
-    if (row.type !== "assistant") return false;
-    const blocks = object(row.message)?.content;
+    if ((row.role ?? row.type) !== "assistant") return false;
+    const blocks = object(row.message)?.content ?? row.content;
     if (!Array.isArray(blocks)) return false;
     return blocks.some(value => {
       const call = object(value);

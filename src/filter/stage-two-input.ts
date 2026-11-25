@@ -4,15 +4,15 @@ import { hash } from "../judge/evidence.js";
 import { sessionWorkEnabled } from "../judge/session.js";
 import { hasSecret, stripHidden } from "../knowledge/gates.js";
 import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
-import type { MemoryAgent } from "../knowledge/host-memory.js";
 import { readNotes } from "../knowledge/personal-store.js";
 import { learningMetadata } from "./metadata.js";
 import { deliveredContext, deliveredNoteLookup } from "./delivered.js";
-import { contextFiles, FILTER_LIMITS, filterSession, type FilterInput, type Message } from "./input.js";
+import { contextFiles, FILTER_LIMITS, filterSession, recordedTranscript, type FilterInput, type Message } from "./input.js";
 import { replyContextDigest, replyContexts, type ReplyContextMode } from "./transcript.js";
 import { sessionNoteHistory, sessionNoteId, type SessionNote } from "./session-notes.js";
 import { stageOneBatchNeedsDecision, stageOneBatches, type StageOneBatch } from "./stage-one.js";
 import { repeatsDeliveredNote, type StageOneVerdict } from "./verdicts.js";
+import { typedCapture, type CaptureAgent } from "./profiles.js";
 
 type Candidate = Extract<StageOneVerdict, { verdict: "candidate" }>;
 type Verdict = Candidate | Extract<StageOneVerdict, { verdict: "unsure" }>;
@@ -24,7 +24,7 @@ interface Selection {
   current: boolean;
   hostOnly?: boolean;
 }
-export interface StageTwoSource extends Selection { message: Message; agent: MemoryAgent; }
+export interface StageTwoSource extends Selection { message: Message; agent: CaptureAgent; }
 export interface ExistingNote { entry: KnowledgeEntry; at: string; raw: string; }
 export interface StageTwoInput {
   batches: StageOneBatch[];
@@ -66,7 +66,7 @@ function sourceRows(writer: RecordWriter, project: string, checkout: string, sel
     for (const source of selected) {
       const { verdict, note } = source, row = rows.get(Number(verdict.id.slice(1)));
       if (!row || row.session_id !== source.batch.batch.session || row.marks || row.paused || !Number.isFinite(Date.parse(row.ts))
-        || (row.agent !== "claude-code" && row.agent !== "codex")) continue;
+        || !typedCapture(row.agent)) continue;
       const text = Array.from(row.text).slice(0, FILTER_LIMITS.characters).join("");
       if (!text || hasSecret(text)) continue;
       if (verdict.verdict === "candidate" && (verdict.at !== row.ts || hash(text) !== verdict.message_hash
@@ -79,16 +79,17 @@ function sourceRows(writer: RecordWriter, project: string, checkout: string, sel
     const out: StageTwoSource[] = [];
     const lookup = deliveredNoteLookup(writer.location.home, project, checkout);
     for (const [session, items] of bySession) {
-      const agent = rows.get(items[0]!.message.row)!.agent;
-      if (!sessionWorkEnabled(writer, agent === "claude-code" ? "claude" : "codex", session)) continue;
+      const agent = items[0]!.agent;
+      if (!sessionWorkEnabled(writer, agent, session)) continue;
       const { ids, masks } = deliveredContext(hooks, session, lookup);
       const delivered = ids.map(id => ({ id, text: lookup(id)[0]?.text ?? null }));
       const trusted = items.filter(({ batch, verdict }) => isDeepStrictEqual(batch.batch.delivered, ids)
         && !(verdict.verdict === "candidate" && repeatsDeliveredNote(verdict.quote.text, delivered)));
       const meta = filterSession(writer, project, checkout, session);
       const mode = contextMode ?? "design";
-      if (contextMode !== undefined && mode !== "none" && masks && meta?.transcript && meta.agent === agent) {
-        replyContexts(meta.transcript, meta.agent === "claude-code" ? "claude" : "codex", trusted.filter(item => !item.hostOnly).map(item => item.message), mode,
+      const transcript = recordedTranscript(meta, agent);
+      if (contextMode !== undefined && mode !== "none" && masks && transcript) {
+        replyContexts(transcript.path, transcript.agent, trusted.filter(item => !item.hostOnly).map(item => item.message), mode,
           { checkout, notes: masks, maxFullReplyBytes: 12_000, includeOptions: true });
       }
       for (const item of trusted) {

@@ -18,6 +18,7 @@ type controls struct {
 	Off              bool   `json:"off"`
 	Capture          bool   `json:"capture"`
 	ClickedApprovals bool   `json:"clicked_approvals,omitempty"`
+	SessionLearning  bool   `json:"session_learning,omitempty"`
 	LedgerHoldout    string `json:"ledger_holdout,omitempty"`
 	Levers           string `json:"levers,omitempty"`
 }
@@ -64,6 +65,7 @@ func (h home) controls() controls {
 		Off              *bool  `json:"off"`
 		Capture          *bool  `json:"capture"`
 		ClickedApprovals bool   `json:"clicked_approvals"`
+		SessionLearning  bool   `json:"session_learning"`
 		LedgerHoldout    string `json:"ledger_holdout"`
 		Levers           string `json:"levers"`
 	}
@@ -77,7 +79,7 @@ func (h home) controls() controls {
 	if !localrecord.ValidLedgerTrial(value.LedgerHoldout) {
 		value.LedgerHoldout = ""
 	}
-	return controls{Version: 1, Off: *value.Off, Capture: *value.Capture, ClickedApprovals: value.ClickedApprovals, LedgerHoldout: value.LedgerHoldout, Levers: value.Levers}
+	return controls{Version: 1, Off: *value.Off, Capture: *value.Capture, ClickedApprovals: value.ClickedApprovals, SessionLearning: value.SessionLearning, LedgerHoldout: value.LedgerHoldout, Levers: value.Levers}
 }
 
 func captureEnabled(recordDirectory, projectID string, global controls) bool {

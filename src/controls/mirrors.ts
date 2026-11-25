@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { RecordLocation } from "../record/location.js";
 import { readSnapshot, replaceFile } from "../install/files.js";
-import { clickedApprovalsOn } from "../knowledge/session-learning.js";
+import { ongoingLearningOn } from "../knowledge/session-learning.js";
 
 function publish(file: string, value: unknown): void {
   const before = readSnapshot(file, 4096);
@@ -19,9 +19,9 @@ export function publishControlMirrors(db: DatabaseSync, location: RecordLocation
   if ((onlyScope === undefined || onlyScope === "global") && (global.size || existsSync(file))) {
     const surfaces = Object.fromEntries([...global].filter(([key]) => key.startsWith("delivery.surface.")).map(([key, value]) => [key.slice(17), value]));
     const trial = global.get("ledger.holdout");
-    const choices = clickedApprovalsOn({ setting: (scope, key) => scope === "global" ? global.get(key) : undefined });
+    const learning = ongoingLearningOn({ setting: (scope, key) => scope === "global" ? global.get(key) : undefined });
     publish(file, { version: 1, off: global.get("enabled") === "false", capture: global.get("capture.enabled") !== "false",
-      ...(choices ? { clicked_approvals: true } : {}), ...(global.has("delivery.scorer") ? { scorer: global.get("delivery.scorer") } : {}),
+      ...(learning ? { session_learning: true, clicked_approvals: true } : {}), ...(global.has("delivery.scorer") ? { scorer: global.get("delivery.scorer") } : {}),
       ...(global.has("delivery.aliases") ? { aliases: global.get("delivery.aliases") } : {}), ...(Object.keys(surfaces).length ? { surfaces } : {}),
       ...(trial ? { ledger_holdout: trial } : {}), ...(global.has("levers.output") ? { levers: global.get("levers.output") } : {}) });
   }

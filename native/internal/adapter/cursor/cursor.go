@@ -47,6 +47,7 @@ var caps = adapter.Capabilities{
 		{Kind: contract.SubagentStart, NativeEvent: "subagentStart", Context: adapter.ChannelNone, Deny: true, TimeoutSeconds: 10},
 		// followup_message continues the turn with text the model reads.
 		{Kind: contract.Stop, NativeEvent: "stop", Context: adapter.ChannelNone, Deny: true, TimeoutSeconds: 10},
+		{Kind: contract.Stop, NativeEvent: "afterAgentResponse", Context: adapter.ChannelNone, TimeoutSeconds: 5},
 		{Kind: contract.SessionEnd, NativeEvent: "sessionEnd", Context: adapter.ChannelNone, TimeoutSeconds: 5},
 	},
 	// Crashes and timeouts fail open unless failClosed is set, which MEX never
@@ -90,10 +91,11 @@ type payload struct {
 	SessionID      string          `json:"session_id"`
 	CursorVersion  string          `json:"cursor_version"`
 	Model          string          `json:"model"`
-	TranscriptPath *string         `json:"transcript_path"`
+	TranscriptPath json.RawMessage `json:"transcript_path"`
 	WorkspaceRoots []string        `json:"workspace_roots"`
 	Cwd            string          `json:"cwd"`
 	Prompt         string          `json:"prompt"`
+	Response       *string         `json:"text"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
 	ToolOutput     json.RawMessage `json:"tool_output"`
@@ -125,8 +127,17 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 	if ev.Cwd == "" && len(p.WorkspaceRoots) > 0 {
 		ev.Cwd = p.WorkspaceRoots[0]
 	}
-	if p.TranscriptPath != nil {
-		ev.Transcript = *p.TranscriptPath
+	if len(p.TranscriptPath) != 0 {
+		ev.TranscriptDisabled = string(p.TranscriptPath) == "null"
+		if !ev.TranscriptDisabled {
+			if err := json.Unmarshal(p.TranscriptPath, &ev.Transcript); err != nil {
+				return contract.Event{}, err
+			}
+		}
+	}
+	if nativeName(nativeEvent) == "afterAgentResponse" {
+		ev.FinalReply, ev.CaptureOnly, ev.AgentID = p.Response, true, p.SubagentID
+		return ev, nil
 	}
 	switch kind {
 	case contract.SessionStart:

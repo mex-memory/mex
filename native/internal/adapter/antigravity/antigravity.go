@@ -84,6 +84,7 @@ type payload struct {
 	ToolCall       *toolCall `json:"toolCall"`
 	Error          string    `json:"error"`
 	InvocationNum  *int      `json:"invocationNum"`
+	FullyIdle      bool      `json:"fullyIdle"`
 }
 
 func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
@@ -114,6 +115,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 			return contract.Event{}, adapter.ErrSkip
 		}
 		ev.Prompt = &contract.PromptIn{Text: p.LastUserInput, Typed: true}
+	case contract.Stop:
+		ev.IncompleteTurn = !p.FullyIdle
 	case contract.PreTool:
 		t := parseTool(p.ToolCall)
 		ev.Tool = &t

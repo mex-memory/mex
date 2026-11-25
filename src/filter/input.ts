@@ -1,4 +1,5 @@
 import { lstatSync, opendirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { automaticWorkEnabled } from "../controls/index.js";
@@ -9,14 +10,18 @@ import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { repoFile } from "../knowledge/references.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
 import { hash } from "../judge/evidence.js";
-import { replyContexts, type ReplyContextMode, type ReplyOption, type TranscriptIssue } from "./transcript.js";
+import { cachedReplyContext, replyContexts, type ReplyContextMode, type ReplyOption, type TranscriptIssue } from "./transcript.js";
 import { deliveredContext, deliveredNoteLookup } from "./delivered.js";
 import { sessionWorkEnabled } from "../judge/session.js";
 import { NOTE_ATTEMPT_LIMIT, noteAttempt, type NoteAttempt } from "./note-attempts.js";
+import { captureProfiles, typedCapture, type CaptureAgent, type TranscriptAgent } from "./profiles.js";
+import { readReplyCache, type ReplyCache } from "./reply-cache.js";
+import { timestampNs } from "./time.js";
+export { timestampNs } from "./time.js";
 
 export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, inputBytes: 200 << 10, promptBytes: 256 << 10,
   files: 16, fileBytes: 16 << 10, idleMs: 10 * 60_000, ageMs: 24 * 60 * 60_000 } as const;
-export interface FilterParams { checkout: string; agent: "claude" | "codex"; generation?: string; sessionId?: string; }
+export interface FilterParams { checkout: string; agent: "claude" | "codex"; sourceAgent?: CaptureAgent; generation?: string; sessionId?: string; request?: string; }
 export interface Message { id: string; row: number; session: string; at: string; text: string; marks: string;
   previous_reply: string | null; previous_options?: ReplyOption[]; delivered: string[]; }
 export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; attempt?: NoteAttempt; }
@@ -26,11 +31,12 @@ export interface ScanWindow { after: number; carry?: number[]; deferred?: number
   contextIssues?: TranscriptIssue[]; messagesWithheld?: number; }
 interface Journal { id: number; session_id: string; ts: string; text: string; marks: string; last_seen_at: string; paused: number; agent: string; }
 type CaptureSession = Pick<Journal, "session_id" | "last_seen_at" | "paused" | "agent">;
-type Transcript = { path: string; agent: "claude" | "codex" };
+type Transcript = { path: string; agent: TranscriptAgent };
 type Hooks = ReturnType<typeof openHooksReadOnly>;
 const Metadata = z.object({ version: z.literal(1), project_id: z.string(), checkout: z.string(), agent: z.string(),
   session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096),
-  branch: z.string().min(1).max(1024).optional(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).optional(), position_at: z.string().datetime({ offset: true }).optional() }).strict();
+  branch: z.string().min(1).max(1024).optional(), head: z.string().regex(/^[a-f0-9]{40,64}$/u).optional(), position_at: z.string().datetime({ offset: true }).optional(),
+  idle: z.boolean().optional(), prompt_at: z.string().datetime({ offset: true }).optional(), outside_at: z.string().datetime({ offset: true }).optional() }).strict();
 export const ackKey = (session: string) => `filter.session.${shortHash(session)}`;
 export function acknowledged(writer: RecordWriter, project: string, session: string): number {
   const n = Number(writer.setting(project, ackKey(session)) ?? 0);
@@ -41,7 +47,7 @@ export function filterAllowed(writer: RecordWriter, project: string, params: Fil
   return !!checkout && checkout.project_id === project && checkout.state !== "off"
     && !(checkout.state === "off until" && Date.parse(checkout.off_until ?? "") > Date.now())
     && automaticWorkEnabled(writer, project) && writer.setting("global", "capture.enabled") !== "false"
-    && writer.setting(project, "capture.enabled") !== "false" && sessionWorkEnabled(writer, params.agent, params.sessionId);
+    && writer.setting(project, "capture.enabled") !== "false" && sessionWorkEnabled(writer, params.sourceAgent ?? params.agent, params.sessionId);
 }
 export function filterSession(writer: Pick<RecordWriter, "location">, project: string, checkout: string, session: string) {
   const dir = containedDirectory(writer.location.directory, ["filter-sessions"]);
@@ -53,11 +59,16 @@ export function filterSession(writer: Pick<RecordWriter, "location">, project: s
   const parsed = Metadata.safeParse(value);
   return parsed.success && parsed.data.project_id === project && parsed.data.checkout === checkout && parsed.data.session_id === session ? parsed.data : undefined;
 }
-export function timestampNs(value: string): bigint | undefined {
-  const milliseconds = Date.parse(value);
-  if (!Number.isFinite(milliseconds)) return undefined;
-  const fraction = (value.match(/\.(\d+)(?:Z|[+-]\d{2}:\d{2})$/u)?.[1] ?? "").padEnd(9, "0").slice(3, 9);
-  return BigInt(milliseconds) * 1_000_000n + BigInt(fraction || "0");
+
+export function recordedTranscript(meta: ReturnType<typeof filterSession>, agent: CaptureAgent): Transcript | undefined {
+  const dialect = captureProfiles[agent].transcript;
+  if (!dialect || meta?.agent !== agent) return;
+  if (meta.transcript) return { path: meta.transcript, agent: dialect };
+  // Copilot hooks can omit transcriptPath. Its local event file is scoped by a single validated session id.
+  if (agent === "copilot" && /^[A-Za-z0-9_-]{1,128}$/u.test(meta.session_id)) {
+    const root = process.env.COPILOT_HOME ?? join(homedir(), ".copilot");
+    return { path: join(root, "session-state", meta.session_id, "events.jsonl"), agent: dialect };
+  }
 }
 export interface SessionPosition { branch?: string; head?: string; position_at?: string; seen_at: string; }
 export function capturedPositionAt(meta: SessionPosition | undefined, at: string) {
@@ -67,7 +78,7 @@ export function capturedPositionAt(meta: SessionPosition | undefined, at: string
     return { branch: meta.branch, head: meta.head };
 }
 function heartbeat(writer: RecordWriter, agent: string, session: string): bigint | undefined {
-  if (agent !== "codex" && agent !== "claude-code") return 0n;
+  if (!typedCapture(agent)) return 0n;
   const directory = containedDirectory(writer.location.home, ["heartbeats", agent]);
   if (!directory) return 0n;
   const name = Buffer.from(session).map(c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || [45, 46, 95].includes(c) ? c : 95).toString();
@@ -81,16 +92,37 @@ function heartbeat(writer: RecordWriter, agent: string, session: string): bigint
     return lstatSync(path, { bigint: true }).mtimeNs;
   } catch { return undefined; }
 }
-function sessionActivity(writer: RecordWriter, project: string, checkout: string, row: CaptureSession) {
-  if (row.paused) return;
+function sessionActivity(writer: RecordWriter, project: string, checkout: string, row: CaptureSession, now: number) {
+  if (row.paused || !typedCapture(row.agent)) return;
   const meta = filterSession(writer, project, checkout, row.session_id);
+  const agent = row.agent;
+  // Older journal rows can name one of the two original agents while the
+  // session metadata records the other adapter that supplied the transcript.
+  let transcriptHost: CaptureAgent = agent;
+  if (meta && meta.agent !== agent) {
+    if ((agent !== "claude-code" && agent !== "codex") || (meta.agent !== "claude-code" && meta.agent !== "codex")) return;
+    transcriptHost = meta.agent;
+  }
   const lastSeen = timestampNs(row.last_seen_at), beat = heartbeat(writer, row.agent, row.session_id);
   if (lastSeen === undefined || beat === undefined) return;
   const activity = lastSeen > beat ? lastSeen : beat, recorded = meta ? timestampNs(meta.seen_at) : undefined;
-  const agent: Transcript["agent"] = row.agent === "claude-code" ? "claude" : "codex";
-  const transcript: Transcript | undefined = meta?.transcript ? { path: meta.transcript, agent: meta.agent === "claude-code" ? "claude" : "codex" } : undefined;
-  return { seen: recorded !== undefined && recorded > activity ? recorded : activity,
-    finished: meta?.finished && recorded !== undefined && recorded >= activity, agent, transcript, meta };
+  const profile = captureProfiles[agent];
+  const transcript = recordedTranscript(meta, transcriptHost);
+  const seen = recorded !== undefined && recorded > activity ? recorded : activity;
+  const ended = recorded !== undefined && (meta?.finished && recorded >= activity
+    || profile.finish === "idle" && meta?.idle && seen <= BigInt(Math.trunc(now - FILTER_LIMITS.idleMs)) * 1_000_000n);
+  return { seen,
+    finished: ended, agent, transcript, meta };
+}
+
+export function finishedCaptureSession(writer: RecordWriter, project: string, checkout: string, session: string, now: number): boolean {
+  const hooks = openHooksReadOnly({ home: writer.location.home });
+  try {
+    if (!hooks || hooks.diagnostic) return false;
+    const row = hooks.get<CaptureSession>("SELECT session_id,agent,last_seen_at,paused FROM sessions WHERE project_id=? AND checkout=? AND session_id=?",
+      project, checkout, session);
+    return !!row && !!sessionActivity(writer, project, checkout, row, now)?.finished;
+  } finally { hooks?.close(); }
 }
 function personalNotes(writer: RecordWriter, project: string): NoteInput[] {
   const check = personalReadGuard(join(writer.location.home, "projects", project, "notes"));
@@ -165,7 +197,7 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
     }
     const eligible = rows.filter(row => {
       if (row.id <= acknowledged(writer, project, row.session_id)) return false;
-      const activity = sessionActivity(writer, project, params.checkout, row);
+      const activity = sessionActivity(writer, project, params.checkout, row, now);
       if (!activity || (!activity.finished && activity.seen > BigInt(Math.trunc(now - FILTER_LIMITS.idleMs)) * 1_000_000n)) return false;
       if (activity.transcript) transcripts.set(row.session_id, activity.transcript);
       return true;
@@ -185,7 +217,7 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
 interface SessionSelection { session: string; retryRows?: readonly number[]; }
 /** Select one finished session, with a bounded page for unusually long sessions. */
 export function stageOneInput(writer: RecordWriter, project: string, checkout: string, scan: ScanWindow, contextMode: ReplyContextMode,
-  selection?: SessionSelection): { session: string; input: FilterInput; sourcePosition?: SessionPosition } | undefined {
+  selection?: SessionSelection, now = Date.now()): { session: string; input: FilterInput; sourcePosition?: SessionPosition; cache?: string } | undefined {
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
     if (hooks?.diagnostic) throw new Error("The filter needs a compatible capture journal.");
@@ -199,7 +231,7 @@ export function stageOneInput(writer: RecordWriter, project: string, checkout: s
     if (session) {
       const row = select(session);
       if (!row && !retryRows) return;
-      activity = row && sessionActivity(writer, project, checkout, row);
+      activity = row && sessionActivity(writer, project, checkout, row, now);
       if (row && (!activity?.finished || !sessionWorkEnabled(writer, activity.agent, session))) return;
     } else {
       const rows = hooks.all<CaptureSession & { id: number }>("SELECT j.id,s.session_id,s.agent,s.last_seen_at,s.paused FROM journal j JOIN sessions s ON s.session_id=j.session_id WHERE s.project_id=? AND s.checkout=? AND j.kind='typed' AND j.id>? ORDER BY j.id LIMIT ?",
@@ -210,7 +242,7 @@ export function stageOneInput(writer: RecordWriter, project: string, checkout: s
       for (const row of rows) {
         if (visited.has(row.session_id) || row.id <= acknowledged(writer, project, row.session_id)) continue;
         visited.add(row.session_id);
-        activity = sessionActivity(writer, project, checkout, row);
+        activity = sessionActivity(writer, project, checkout, row, now);
         if (activity?.finished && sessionWorkEnabled(writer, activity.agent, row.session_id)) { session = row.session_id; break; }
       }
     }
@@ -224,16 +256,19 @@ export function stageOneInput(writer: RecordWriter, project: string, checkout: s
     if (!rows.length && !retryRows) return;
     const transcripts = new Map<string, Transcript>();
     if (activity?.transcript) transcripts.set(session, activity.transcript);
+    const profile = activity && captureProfiles[activity.agent];
+    const cache = activity && profile?.cache ? readReplyCache(writer, project, checkout, activity.agent, session, now) : undefined;
     const input = completeInput(writer, project, checkout, hooks, rows.map(row => capturedMessage(row, !row.marks)), [], transcripts, contextMode, scan,
-      retryRows ? "retry" : "page");
+      retryRows ? "retry" : "page", activity?.agent, cache);
     const meta = activity?.meta;
     const sourcePosition = meta && { branch: meta.branch, head: meta.head, position_at: meta.position_at, seen_at: meta.seen_at };
-    return { session, input, sourcePosition };
+    return { session, input, sourcePosition, cache: cache?.file };
   } finally { hooks?.close(); }
 }
 
 function completeInput(writer: RecordWriter, project: string, checkout: string, hooks: Hooks, messages: Message[], notes: NoteInput[],
-  transcripts: ReadonlyMap<string, Transcript>, contextMode: ReplyContextMode, scan?: ScanWindow, stageOne?: "page" | "retry"): FilterInput {
+  transcripts: ReadonlyMap<string, Transcript>, contextMode: ReplyContextMode, scan?: ScanWindow, stageOne?: "page" | "retry",
+  agent?: CaptureAgent, cache?: ReplyCache): FilterInput {
   const delivered = new Set<string>();
   // Read each selected session once. Reply context is transient and never supplies a saved quote.
   const bySession = new Map<string, Message[]>();
@@ -252,9 +287,16 @@ function completeInput(writer: RecordWriter, project: string, checkout: string, 
     for (const message of group) message.delivered = ids;
     if (contextMode === "none") continue;
     const transcript = transcripts.get(session);
-    const issue = masks === null ? "delivered-notes" : transcript
+    if (agent && !captureProfiles[agent].transcript && !captureProfiles[agent].cache) continue;
+    let issue: TranscriptIssue | undefined = masks === null ? "delivered-notes" : transcript
       ? replyContexts(transcript.path, transcript.agent, group, contextMode,
         { checkout, notes: masks, withheld, maxFullReplyBytes: FILTER_LIMITS.inputBytes, includeOptions: !!stageOne }) : "unavailable";
+    if (cache && masks && (!transcript || issue === "unavailable")) {
+      const at = timestampNs(cache.at)!;
+      const next = messages.find(message => message.at === cache.promptAt && (timestampNs(message.at) ?? 0n) > at);
+      if (next && !next.marks && !withheld.has(next.row)) cachedReplyContext(next, cache.text, contextMode, masks);
+      issue = undefined;
+    }
     if (issue) {
       contextIssues.set(session, issue);
       for (const message of group) withheld.add(message.row);
