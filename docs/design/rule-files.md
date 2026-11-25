@@ -67,6 +67,9 @@ entries go into shared files; personal notes into local files.
 Entries with checks need a held result from the current native evaluator;
 cached verdicts do not authorize publication after the source changes. If
 current checks are unavailable, checked entries are left out.
+Learned entries for the whole repo share a budget of 300 tokens: the ones
+learned from the most PRs go first, then by kind and id, and the first one
+that doesn't fit ends the list. The rest stay available through `mex recall`.
 
 ## Which files (who loads what)
 
