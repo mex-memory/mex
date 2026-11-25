@@ -2,6 +2,7 @@ import { Fragment, useId } from "react";
 import type { MachineProject, MachineRepoSetup, MachineSetup } from "@mex/hub-contracts/machine";
 import { ArrowRight } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
+import { JobStateBadge } from "./JobStatus";
 import { repoPrefix } from "./review-model";
 import { SetupQuestions } from "./SetupQuestions";
 import { SetupSteps } from "./SetupSteps";
@@ -10,16 +11,19 @@ import { CommandCard, HubPageHeader } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./setup.module.css";
 
-function setupStatus(repo: MachineRepoSetup | undefined): string {
-  if (!repo) return "No setup run";
-  if (repo.steps.some(({ state }) => state === "failed")) return "Needs attention";
+type SetupPhase = Parameters<typeof JobStateBadge>[0]["phase"];
+
+/** The repo list uses the same badges as the step rows. */
+function setupStatus(repo: MachineRepoSetup | undefined): [SetupPhase, string] {
+  if (!repo) return ["stopped", "No setup run"];
+  if (repo.steps.some(({ state }) => state === "failed")) return ["failed", "Needs attention"];
   const questions = repo.questions.filter(({ outcome }) => !outcome).length;
-  if (questions) return questions === 1 ? "1 question waiting" : `${questions} questions waiting`;
-  if (repo.steps.some(({ state }) => ["queued", "running", "paused", "waiting"].includes(state))) return "In progress";
-  if (repo.learnDeeper?.state === "offered") return "Learn deeper available";
-  if (repo.steps.some(({ state }) => state === "cancelled")) return "Stopped";
-  if (repo.steps.some(({ state }) => state === "done with gaps")) return "Done with gaps";
-  return "Done";
+  if (questions) return ["waiting", questions === 1 ? "1 question waiting" : `${questions} questions waiting`];
+  if (repo.steps.some(({ state }) => ["queued", "running", "paused", "waiting"].includes(state))) return ["running", "In progress"];
+  if (repo.learnDeeper?.state === "offered") return ["queued", "Learn deeper available"];
+  if (repo.steps.some(({ state }) => state === "cancelled")) return ["stopped", "Stopped"];
+  if (repo.steps.some(({ state }) => state === "done with gaps")) return ["doneWithGaps", "Done with gaps"];
+  return ["done", "Done"];
 }
 
 function SetupCommand({ project }: { project?: MachineProject }) {
@@ -50,7 +54,7 @@ function SetupRepos({ projects, setup, search }: { projects: MachineProject[]; s
                 </Link>
                 {checkout && <code>{checkout}</code>}
               </div>
-              <span className={styles.repoStatus}>{setupStatus(repo)}</span>
+              <span className={styles.repoStatus}><JobStateBadge phase={setupStatus(repo)[0]}>{setupStatus(repo)[1]}</JobStateBadge></span>
             </li>
           );
         })}
