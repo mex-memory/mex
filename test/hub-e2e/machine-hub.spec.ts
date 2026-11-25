@@ -133,6 +133,15 @@ test("reads every main page from a real empty MEX home with no accessibility vio
     await expect(page.getByText("Nothing learned yet. Add a note, or let MEX learn from your sessions.")).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 
+    const setupResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/setup");
+    await page.getByRole("link", { name: "Setup", exact: true }).click();
+    await expect(page).toHaveURL(`${origin}/setup`);
+    expect((await setupResponse).status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "Set up your first repo" })).toBeVisible();
+    await expect(page.getByText("mex", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy command" })).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
     await page.getByRole("link", { name: "Agents", exact: true }).click();
     await expect(page).toHaveURL(`${origin}/agents`);
     const claude = page.getByRole("article", { name: "Claude Code" });

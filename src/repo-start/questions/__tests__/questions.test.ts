@@ -18,7 +18,7 @@ import type { CodeFactsFile } from "../../history/job.js";
 import type { RecipesFile } from "../../recipes/index.js";
 import { answeredHandEdits, answeredTestCommands, readAnswers } from "../answers.js";
 import { findGaps, MAX_QUESTIONS, type Gap } from "../gaps.js";
-import { pendingGaps, runSetupQuestions, type AskQuestion } from "../index.js";
+import { applySetupAnswers, pendingGaps, runSetupQuestions, type AskQuestion } from "../index.js";
 
 let base: string, root: string, home: string, location: RecordLocation, projectId: string;
 const write = (path: string, text: string) => { const file = join(root, path); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); };
@@ -138,6 +138,21 @@ describe("answers", () => {
     const chosen = await runSetupQuestions(input({ recipes: two, ask: always("1") }));
     expect(saved(chosen.outcomes).mex.checks.map(check => check.kind)).toEqual(["command"]);
     expect([...answeredTestCommands(location, projectId)]).toEqual([""]);
+  });
+
+  it("applies just the selected gap and leaves the terminal's next prompt and skip behavior intact", async () => {
+    const options = input({ scan: conflictScan("`npm test`", "`make test`"), recipes: layerRecipes, facts: layerFacts });
+    const [first, other] = pendingGaps(options);
+    expect((await applySetupAnswers(options, [{ gap: first!, reply: "skip" }]))?.map(outcome => outcome.status)).toEqual(["skipped"]);
+    expect(pendingGaps(options).map(gap => gap.id)).toEqual([other!.id]);
+    const seen: Array<[string, number, number]> = [];
+    const result = await runSetupQuestions({ ...options, ask: async (gap, index, total) => {
+      seen.push([gap.id, index, total]);
+      return "skip-all";
+    } });
+    expect(seen).toEqual([[other!.id, 0, 1]]);
+    expect(result).toMatchObject({ asked: 1, outcomes: [{ status: "skipped" }] });
+    expect(pendingGaps(options)).toEqual([]);
   });
 
   it("saves a rule-file answer as a decision that fires on the out-of-date command", async () => {
