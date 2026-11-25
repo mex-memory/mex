@@ -130,6 +130,6 @@ export interface AgentsPreview {
 
 export interface SettingsPreview {
   settings: MachineSettings;
-  uninstall: MachineUninstallPreview;
-  write: (request: SettingsWrite) => void;
+  uninstall?: MachineUninstallPreview;
+  write: (request: SettingsWrite, onRetry?: () => void) => void | Promise<{ notice?: string }>;
 }

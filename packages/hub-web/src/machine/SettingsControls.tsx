@@ -122,14 +122,16 @@ export function BrowserSettings({ settings, write }: {
 
 type SettingChange = Exclude<SettingsWrite, { type: "signOut" }>;
 export interface SettingsEdits {
+  disabled?: boolean;
   save: (target: string, request: SettingChange) => void;
   savedFor: (target: string) => number | undefined;
 }
 
-export function ToggleSetting({ title, label, description, setting, saved, onChange }: {
+export function ToggleSetting({ title, label, description, setting, saved, disabled, onChange }: {
   title: string;
   label?: string;
   description: string;
+  disabled?: boolean;
   setting: MachineSettings["capture"];
   saved?: number;
   onChange: (enabled: boolean) => void;
@@ -140,7 +142,7 @@ export function ToggleSetting({ title, label, description, setting, saved, onCha
       <div className={styles.switchField}>
         <span aria-hidden="true">{setting.enabled ? "On" : "Off"}</span>
         <Switch.Root aria-describedby={helpId} aria-label={label ?? title} checked={setting.enabled} className={styles.switch}
-          disabled={Boolean(setting.disabledReason)} onCheckedChange={onChange}>
+          disabled={disabled || Boolean(setting.disabledReason)} onCheckedChange={onChange}>
           <Switch.Thumb className={styles.switchThumb} />
         </Switch.Root>
       </div>
@@ -167,8 +169,9 @@ function Deadline({ until }: { until: string }) {
   );
 }
 
-function CheckoutSetting({ checkout, repoName, saved, onPower, onCustom }: {
+function CheckoutSetting({ checkout, repoName, saved, disabled, onPower, onCustom }: {
   checkout: Checkout;
+  disabled?: boolean;
   repoName: string;
   saved?: number;
   onPower: (power: CheckoutPower) => void;
@@ -197,7 +200,7 @@ function CheckoutSetting({ checkout, repoName, saved, onPower, onCustom }: {
       </>
     )} descriptionId={helpId} saved={saved} title={repoName}>
       <NativeSelect aria-describedby={helpId} aria-label={"MEX for " + path} className={shared.switcher + " " + styles.checkoutSelect}
-        disabled={Boolean(disabledReason)} onChange={(event) => change(event.currentTarget)} value={activePower.state}>
+        disabled={disabled || Boolean(disabledReason)} onChange={(event) => change(event.currentTarget)} value={activePower.state}>
         <NativeSelectOption value="on">On</NativeSelectOption>
         <NativeSelectOption value="off">Off</NativeSelectOption>
         <NativeSelectOption value="hour">Off for 1 hour</NativeSelectOption>
@@ -264,7 +267,7 @@ export function PowerSettings({ settings, edits }: { settings: MachineSettings; 
   return (
     <SettingsSection icon={Power} id="power" title="MEX on or off">
       <ToggleSetting
-        description={settings.everywhere.enabled ? "Let MEX run on this machine." : "Shared rule files may still be loaded by your agent."}
+        disabled={edits.disabled} description={settings.everywhere.enabled ? "Let MEX run on this machine." : "Shared rule files may still be loaded by your agent."}
         label="MEX everywhere" onChange={(enabled) => edits.save("globalPower", { type: "globalPower", enabled })}
         saved={edits.savedFor("globalPower")} setting={settings.everywhere} title="Everywhere"
       />
@@ -273,7 +276,7 @@ export function PowerSettings({ settings, edits }: { settings: MachineSettings; 
           <h3 className={styles.rowGroup}>Checkouts</h3>
           {settings.repos.length === 0 && <p className={styles.sectionNote}>No registered checkouts.</p>}
           {settings.repos.flatMap(({ name, checkouts }) => checkouts.map((checkout) => (
-            <CheckoutSetting checkout={checkout} key={checkout.path} onCustom={(element) => {
+            <CheckoutSetting checkout={checkout} disabled={edits.disabled} key={checkout.path} onCustom={(element) => {
               select.current = element;
               setDeadline((current) => ({ path: checkout.path, cycle: current.cycle + 1 }));
             }} onPower={(power) => setPower(checkout.path, power)} repoName={name} saved={edits.savedFor(checkout.path)} />
@@ -281,10 +284,10 @@ export function PowerSettings({ settings, edits }: { settings: MachineSettings; 
         </div>
         <div className={styles.powerGroup}>
           <h3 className={styles.rowGroup}>Capture</h3>
-          <ToggleSetting description="Delivery has its own off switches." onChange={(enabled) => edits.save("capture", { type: "capture", enabled })}
+          <ToggleSetting disabled={edits.disabled} description="Delivery has its own off switches." onChange={(enabled) => edits.save("capture", { type: "capture", enabled })}
             saved={edits.savedFor("capture")} setting={settings.capture} title="Capture everywhere" />
           {settings.repos.map(({ id, name, capture }) => (
-            <ToggleSetting description="Applies across this repo’s checkouts." key={id} label={"Capture for " + name}
+            <ToggleSetting disabled={edits.disabled} description="Applies across this repo’s checkouts." key={id} label={"Capture for " + name}
               onChange={(enabled) => edits.save("capture-" + id, { type: "capture", repoId: id, enabled })}
               saved={edits.savedFor("capture-" + id)} setting={capture} title={name} />
           ))}
@@ -317,7 +320,7 @@ function RepoSharing({ repo: { id, name, sharing }, edits }: { repo: RepoSetting
     <SettingRow description={<>{description}{sharing.disabledReason && <span className={styles.settingNote}>{sharing.disabledReason}</span>}</>}
       descriptionId={helpId} saved={edits.savedFor("sharing-" + id)} stack title={name}>
       <RadioGroup aria-describedby={helpId} aria-label={"Sharing for " + name} className={styles.segmented}
-        disabled={Boolean(sharing.disabledReason)}
+        disabled={edits.disabled || Boolean(sharing.disabledReason)}
         onValueChange={(mode: typeof sharing.mode) => edits.save("sharing-" + id, { type: "sharing", repoId: id, mode })}
         value={sharing.mode}>
         <Radio.Root className={styles.segment} value="automatic">Automatic</Radio.Root>

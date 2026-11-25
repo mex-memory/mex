@@ -677,6 +677,13 @@ main:has(.page) {
   overflow-wrap: anywhere;
 }
 
+.storePath {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .storageBreakdown dd {
   margin: 0;
   font-variant-numeric: tabular-nums;

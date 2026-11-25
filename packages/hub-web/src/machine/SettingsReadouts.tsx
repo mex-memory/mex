@@ -30,7 +30,7 @@ export function AISettings({ ai, repos }: Pick<MachineSettings, "ai" | "repos">)
       <div className={styles.usage}>
         <div className={styles.usageValue}>
           <div>
-            <h3>This week’s share</h3>
+            <h3 title="The last seven UTC calendar days">This week’s share</h3>
             <p>{ai.percent === null ? "Share of your usage unknown" : "Estimated from your agent’s usage"}</p>
           </div>
           <strong>{ai.percent === null ? "—" : decimal.format(ai.percent) + "%"}</strong>
@@ -40,13 +40,13 @@ export function AISettings({ ai, repos }: Pick<MachineSettings, "ai" | "repos">)
       </div>
       <h3 className={styles.rowGroup}>Learn deeper weekly schedule</h3>
       {repos.length === 0 && <p className={styles.sectionNote}>No registered repos.</p>}
-      {repos.map(({ id, name, weekly }) => (
-        <SettingRow description={weekly ? "Runs when this machine is idle." : "No weekly run is scheduled."} key={id} title={name}>
+      {repos.map(({ id, name, weekly, weeklyUnavailable }) => (
+        <SettingRow description={weekly ? "Runs when this machine is idle." : weeklyUnavailable ? "The saved schedule couldn’t be read." : "No weekly run is scheduled."} key={id} title={name}>
           {weekly ? (
             <span className={styles.inlineValue}>
               <CalendarClock aria-hidden="true" /><span>Next run around <ShortDate at={weekly.nextRunAt} /></span>
             </span>
-          ) : <span className={styles.inlineValue}><CircleMinus aria-hidden="true" />Off</span>}
+          ) : <span className={styles.inlineValue}><CircleMinus aria-hidden="true" />{weeklyUnavailable ? "Unavailable" : "Off"}</span>}
         </SettingRow>
       ))}
       <div className={styles.commandFoot}>
@@ -63,7 +63,7 @@ const sentEventLabels: Record<string, string> = {
   "install.first_run": "First run",
 };
 
-function OutboundHistory({ outbound }: { outbound: MachineOutbound }) {
+function OutboundHistory({ outbound, live }: { outbound: MachineOutbound; live?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const initialRows = 3;
   const canExpand = outbound.telemetry.length > initialRows || outbound.modelCalls.length > initialRows;
@@ -74,6 +74,7 @@ function OutboundHistory({ outbound }: { outbound: MachineOutbound }) {
       <header>
         <h3>What MEX sent</h3>
         <p>The Hub itself sends nothing.</p>
+        {live && <p>GitHub fetch history is unavailable. Run <code>mex telemetry inspect</code> to see the values sent in telemetry reports.</p>}
       </header>
       <div className={styles.historyTables} id="outbound-history">
         <table className={styles.reportTable}>
@@ -114,12 +115,12 @@ function OutboundHistory({ outbound }: { outbound: MachineOutbound }) {
   );
 }
 
-export function PrivacySettings({ telemetry, outbound, edits }: Pick<MachineSettings, "telemetry" | "outbound"> & { edits: SettingsEdits }) {
+export function PrivacySettings({ telemetry, outbound, edits, live }: Pick<MachineSettings, "telemetry" | "outbound"> & { edits: SettingsEdits; live?: boolean }) {
   return (
     <SettingsSection icon={Shield} id="privacy" title="Privacy">
-      <ToggleSetting description="Send anonymous usage counts to help improve MEX." onChange={(enabled) => edits.save("telemetry", { type: "telemetry", enabled })}
+      <ToggleSetting disabled={edits.disabled} description="Send anonymous usage counts to help improve MEX." onChange={(enabled) => edits.save("telemetry", { type: "telemetry", enabled })}
         saved={edits.savedFor("telemetry")} setting={telemetry} title="Telemetry" />
-      <OutboundHistory outbound={outbound} />
+      <OutboundHistory live={live} outbound={outbound} />
     </SettingsSection>
   );
 }
@@ -132,31 +133,34 @@ export function HintsSettings({ hints }: Pick<MachineSettings, "hints">) {
         <div><dt>Confirmed</dt><dd>{hints.confirmed === null ? "Unavailable" : number.format(hints.confirmed)}</dd></div>
       </dl>
       <SettingRow description="Unconfirmed hints expire after this long." title="Hint expiry">
-        <strong className={styles.readOnlyValue}>{hints.expiryMonths === null ? "Varies by repo" : hints.expiryMonths + (hints.expiryMonths === 1 ? " month" : " months")}</strong>
+        <strong className={styles.readOnlyValue}>{hints.expiryMonths === null ? (hints.repos?.length ? "Per repo" : "Unavailable") : hints.expiryMonths + (hints.expiryMonths === 1 ? " month" : " months")}</strong>
       </SettingRow>
+      {hints.expiryMonths === null && hints.repos?.map(({ id, name, expiryMonths }) => (
+        <SettingRow key={id} title={name}><strong className={styles.readOnlyValue}>{expiryMonths} {expiryMonths === 1 ? "month" : "months"}</strong></SettingRow>
+      ))}
       <div className={styles.commandFoot}>
         <p>Set the expiry when refreshing hints from a repo’s terminal.</p>
-        <CommandCard command={"mex hints refresh --expiry-months " + (hints.expiryMonths ?? "<months>")} compact />
+        <CommandCard command={"mex hints refresh --expiry-months " + (hints.expiryMonths ?? 6)} compact />
       </div>
     </SettingsSection>
   );
 }
 
 export function StorageSettings({ storage }: { storage: MachineStorage }) {
-  const { recordBytes, hooksBytes, indexes, notesBytes, telemetryBytes, totalBytes, retention } = storage;
+  const { recordBytes, hooksBytes, indexes, notesBytes, telemetryBytes, totalBytes, retention, paths, partial } = storage;
   const stores = [
-    { label: "Record", bytes: recordBytes, key: "record" },
-    { label: "Hooks", bytes: hooksBytes, key: "hooks" },
-    { label: "Indexes", bytes: indexes.reduce((sum, repo) => sum + repo.bytes, 0), key: "indexes" },
-    { label: "Notes", bytes: notesBytes, key: "notes" },
-    { label: "Telemetry", bytes: telemetryBytes, key: "telemetry" },
+    { label: "Record", bytes: recordBytes, key: "record", paths: paths && [paths.record] },
+    { label: "Hooks", bytes: hooksBytes, key: "hooks", paths: paths && [paths.hooks] },
+    { label: "Indexes", bytes: indexes.reduce((sum, repo) => sum + repo.bytes, 0), key: "indexes", paths: paths && [paths.indexes] },
+    { label: paths ? "Personal notes and hints" : "Notes", bytes: notesBytes, key: "notes", paths: paths && [paths.notes] },
+    { label: paths ? "Telemetry ID and local queue" : "Telemetry", bytes: telemetryBytes, key: "telemetry", paths: paths?.telemetry },
   ];
   return (
     <SettingsSection icon={Archive} id="storage" title="Storage">
       <div className={styles.storageSummary}>
         <div>
           <strong>{storageSize(totalBytes)}</strong>
-          <span>Total on disk</span>
+          <span>{partial ? "At least this much on disk" : paths ? "Measured stores on disk" : "Total on disk"}</span>
         </div>
         <div aria-hidden="true" className={styles.storageBar}>
           {stores.map(({ key, bytes }) => <span data-store={key} key={key} style={{ flexGrow: bytes }} />)}
@@ -166,9 +170,11 @@ export function StorageSettings({ storage }: { storage: MachineStorage }) {
         <div>
           <h3>Stores</h3>
           <dl>
-            {stores.map(({ label, key, bytes }) => (
+            {stores.map(({ label, key, bytes, paths }) => (
               <div key={key}>
-                <dt><span aria-hidden="true" className={styles.storeSwatch} data-store={key} />{label}</dt>
+                <dt><span aria-hidden="true" className={styles.storeSwatch} data-store={key} />
+                  <span>{label}{paths?.map(path => <code className={styles.storePath} key={path}>{path}</code>)}</span>
+                </dt>
                 <dd>{storageSize(bytes)}</dd>
               </div>
             ))}
@@ -178,18 +184,18 @@ export function StorageSettings({ storage }: { storage: MachineStorage }) {
           <h3>Indexes by repo</h3>
           {indexes.length > 0 ? (
             <dl>
-              {indexes.map(({ repoId, repo, bytes }) => <div key={repoId}><dt>{repo}</dt><dd>{storageSize(bytes)}</dd></div>)}
+              {indexes.map(({ repoId, repo, bytes, path }) => <div key={repoId}><dt><span>{repo}{path && <code className={styles.storePath}>{path}</code>}</span></dt><dd>{storageSize(bytes)}</dd></div>)}
             </dl>
           ) : <p>No indexes on disk.</p>}
         </div>
       </div>
-      <p className={styles.retention}>Delivery history is kept for {retention.deliveryDays} days. Capture keeps {retention.captureDays} days or {retention.captureMegabytes} MB.</p>
+      <p className={styles.retention}>Delivery history is kept for {retention.deliveryDays} days. Capture keeps {retention.captureDays} days or {retention.captureMegabytes} {paths ? "MiB" : "MB"}.</p>
     </SettingsSection>
   );
 }
 
 export function AboutSettings({ about }: Pick<MachineSettings, "about">) {
-  const { version, background, homePath, hubMode } = about;
+  const { version, background, backgroundUnavailable, homePath, hubMode } = about;
   return (
     <SettingsSection icon={Info} id="about" title="About">
       <SettingRow description="Installed on this machine." title="MEX version"><code className={styles.path}>{version}</code></SettingRow>
@@ -199,8 +205,9 @@ export function AboutSettings({ about }: Pick<MachineSettings, "about">) {
             <CircleCheck aria-hidden="true" />
             <span>Running since <time dateTime={background.startedAt}>{formatLocalClock(new Date(background.startedAt))}</time>, version {background.version}</span>
           </span>
-        ) : <span className={styles.inlineValue}><CircleMinus aria-hidden="true" />Stopped</span>}
+        ) : <span className={styles.inlineValue}><CircleMinus aria-hidden="true" />{backgroundUnavailable ? "Unavailable" : "Stopped"}</span>}
       </SettingRow>
+      {background && background.version !== version && <p className={styles.sectionNote}>Restart MEX with <code>mex hub</code> to use the same version in the terminal and background.</p>}
       <SettingRow description="Local files, notes and indexes." stack title="MEX home">
         <code className={styles.path}>{homePath}</code><CopyButton path text={homePath} />
       </SettingRow>

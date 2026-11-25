@@ -1,5 +1,5 @@
 import { useState, type ReactNode, type Ref } from "react";
-import { Check, Copy, Monitor, Moon, RefreshCw, Sun, Terminal, WifiOff, X } from "lucide-react";
+import { Check, CircleCheck, Copy, Monitor, Moon, RefreshCw, Sun, Terminal, WifiOff, X } from "lucide-react";
 import type { HubEventState } from "./data";
 import { nextThemePreference, useThemePreference } from "./theme";
 import { Alert, AlertTitle } from "../components/primitives/alert";
@@ -134,6 +134,20 @@ export function HubBanners({ stopped, updated = false, terminal = false, events 
           <Terminal aria-hidden="true" />
           <AlertTitle>Running from this terminal; closing it stops the Hub.</AlertTitle>
         </Alert>
+      )}
+    </div>
+  );
+}
+
+export function ControlToast({ message, dismissLabel, onDismiss }: { message: string; dismissLabel: string; onDismiss: () => void }) {
+  return (
+    <div aria-live="polite" className={styles.toastRegion}>
+      {message && (
+        <div className={styles.toast}>
+          <CircleCheck aria-hidden="true" />
+          <span>{message}</span>
+          <Button aria-label={dismissLabel} onClick={onDismiss} size="icon-sm" type="button" variant="ghost"><X aria-hidden="true" /></Button>
+        </div>
       )}
     </div>
   );

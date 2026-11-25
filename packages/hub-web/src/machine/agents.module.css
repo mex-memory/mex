@@ -442,34 +442,3 @@ main:has(.page) {
   color: var(--muted-foreground);
   font-size: 12px;
 }
-
-.toastRegion {
-  position: fixed;
-  z-index: 5;
-  inset: auto 20px 20px auto;
-  max-width: calc(100vw - 32px);
-}
-
-.toast {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px 7px 12px;
-  color: var(--foreground);
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--overlay-shadow);
-  font-size: 13px;
-}
-
-.toast > svg {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  color: var(--success);
-}
-
-@media (max-width: 720px) {
-  .toastRegion { inset: auto 16px 16px auto; }
-}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { ArrowRight, Bot, CircleCheck, CircleMinus, Code2, Plug, ShieldAlert, Sparkle, Terminal, TriangleAlert, X } from "lucide-react";
+import { ArrowRight, Bot, CircleCheck, CircleMinus, Code2, Plug, ShieldAlert, Sparkle, Terminal, TriangleAlert } from "lucide-react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
 import { Button } from "../components/primitives/button";
@@ -11,7 +11,7 @@ import { AgentDetail } from "./AgentDetail";
 import { AgentRepairDialog } from "./AgentRepairDialog";
 import { localDateTime, relativeTime } from "./local-time";
 import type { AgentRepairPreview, AgentsPreview, MachineAgent } from "./types";
-import { CommandCard, HubPageHeader, PageRequestState, type PageLoad } from "./ui";
+import { CommandCard, ControlToast, HubPageHeader, PageRequestState, type PageLoad } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./agents.module.css";
 
@@ -223,17 +223,7 @@ function AgentsView({ preview, load, issue, pathWarning, updating }: {
         progress={applying.status}
         preview={review?.preview ?? null}
       />
-      <div aria-live="polite" className={styles.toastRegion}>
-        {toast && (
-          <div className={styles.toast}>
-            <CircleCheck aria-hidden="true" />
-            <span>{toast}</span>
-            <Button aria-label="Dismiss repair message" onClick={() => setToast("")} size="icon-sm" type="button" variant="ghost">
-              <X aria-hidden="true" />
-            </Button>
-          </div>
-        )}
-      </div>
+      <ControlToast dismissLabel="Dismiss repair message" message={toast} onDismiss={() => setToast("")} />
     </div>
   );
 }
