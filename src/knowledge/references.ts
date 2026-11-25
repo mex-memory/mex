@@ -55,7 +55,8 @@ class Full extends Error {}
  * stops discovery (in priority order: package scripts, CI, docs, root files)
  * and marks the result `truncated` instead of failing. An unfound command or
  * link is treated as unverified and removed, so truncation can only make the
- * gates stricter. Redirected or linked sources still fail.
+ * gates stricter. A link under docs or CI is skipped with a gap; other
+ * redirected or linked sources still fail.
  */
 /** Anchors in a workflow or repo config are ordinary YAML. An alias bomb stops at this count. */
 const REPO_YAML_ALIASES = 100;
@@ -159,11 +160,24 @@ export function references(root: string): References {
       for (const child of safeDirectory(parent) ?? []) if (child.isDirectory() && !child.isSymbolicLink()) packageFile(`${parent}/${child.name}/package.json`);
     }
   };
+  // A link committed under docs or CI is skipped, never followed or read, so
+  // nothing outside the repository is reached through it. One gap says so.
+  let linked = false;
+  const skipLink = (): void => { if (!linked) { linked = true; result.gaps.push("Some linked files in docs or CI were skipped."); } };
+  const linkedFolder = (path: string): boolean => {
+    let current = root;
+    for (const part of path.split("/")) {
+      current = join(current, part);
+      try { if (lstatSync(current).isSymbolicLink()) return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT" || (e as NodeJS.ErrnoException).code === "ENOTDIR") return false; throw e; }
+    }
+    return false;
+  };
   const walk = (path: string, kind: "docs" | "ci", depth = 0): void => {
+    if (depth === 0 && linkedFolder(path)) { skipLink(); return; }
     const children = safeDirectory(path);
     for (const child of children ?? []) {
       const name = path ? `${path}/${child.name}` : child.name;
-      if (child.isSymbolicLink()) throw new KnowledgeError("UNSAFE_SOURCE", "Knowledge references may not follow links.");
+      if (child.isSymbolicLink()) { skipLink(); continue; }
       if (child.isDirectory()) { if (depth < REFERENCE_LIMITS.depth) walk(name, kind, depth + 1); continue; }
       if (!(kind === "ci" ? /\.ya?ml$/iu : /\.md$/iu).test(child.name)) continue;
       const text = read(name);

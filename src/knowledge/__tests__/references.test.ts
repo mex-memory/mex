@@ -98,10 +98,40 @@ describe("knowledge references", () => {
     expect(source.truncated).toBe(false);
   });
 
-  it("still refuses linked sources", () => {
-    write("real/guide.md", "`make all`");
-    mkdirSync(join(root, "docs"));
-    try { symlinkSync(join(root, "real"), join(root, "docs", "linked"), "junction"); } catch { return; }
-    expect(() => references(root)).toThrow(/link|redirected/u);
+  it("skips linked files and folders in docs with one gap and never reads through them", ctx => {
+    const outside = realPath(mkdtempSync(join(tmpdir(), "mex-references-outside-")));
+    try {
+      writeFileSync(join(outside, "secret.md"), "`make outside` https://outside.example/link");
+      write("docs/guide.md", "`make inside` https://inside.example/link");
+      try {
+        symlinkSync(outside, join(root, "docs", "linked"), "junction");
+        symlinkSync(join(outside, "secret.md"), join(root, "docs", "secret.md"), "file");
+      } catch (e) { ctx.skip(`symlinks need extra privilege here: ${(e as Error).message}`); }
+      const source = references(root);
+      expect(source.gaps).toEqual(["Some linked files in docs or CI were skipped."]);
+      expect(commandExists("make inside", source)).toBe(true);
+      expect(commandExists("make outside", source)).toBe(false);
+      expect([...source.links]).toEqual(["https://inside.example/link"]);
+    } finally { rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  it("skips a docs or CI folder that is itself a link", () => {
+    write("real/guide.md", "`make outside`");
+    write("real/ci.yml", "jobs:\n  t:\n    steps:\n      - run: make ci\n");
+    mkdirSync(join(root, ".github"));
+    try {
+      symlinkSync(join(root, "real"), join(root, "docs"), "junction");
+      symlinkSync(join(root, "real"), join(root, ".github", "workflows"), "junction");
+    } catch { return; }
+    const source = references(root);
+    expect(source.gaps).toEqual(["Some linked files in docs or CI were skipped."]);
+    expect(commandExists("make outside", source)).toBe(false);
+    expect(commandExists("make ci", source)).toBe(false);
+  });
+
+  it("still refuses other linked sources", () => {
+    write("real/package.json", JSON.stringify({ scripts: { test: "x" } }));
+    try { symlinkSync(join(root, "real", "package.json"), join(root, "package.json"), "file"); } catch { return; }
+    expect(() => references(root)).toThrow(/redirected/u);
   });
 });
