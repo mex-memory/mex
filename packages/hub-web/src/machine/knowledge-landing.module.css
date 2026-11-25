@@ -357,6 +357,41 @@
   }
 }
 
+@media (max-width: 639px) {
+  .reviewRow {
+    grid-template-columns: 16px minmax(0, 1fr);
+    row-gap: 0;
+  }
+
+  .reviewLink {
+    grid-area: 1 / 1 / 2 / -1;
+    grid-template-columns: 16px minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+
+  .reviewIdentity {
+    grid-area: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+
+  .reviewWhy {
+    grid-area: 2 / 2 / 3 / -1;
+    margin-block-start: 3px;
+  }
+
+  .reviewActions {
+    grid-area: 3 / 2 / 4 / -1;
+    justify-self: start;
+    gap: 4px;
+  }
+
+  .reviewActions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 @media (max-width: 560px) {
   .card { padding: 14px 15px; }
 }

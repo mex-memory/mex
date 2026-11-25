@@ -239,7 +239,7 @@ describe("Knowledge fixtures", () => {
     await user.type(search, "declined-card");
     expect(params().has("q")).toBe(false);
     await waitFor(() => expect(params().get("q")).toBe("declined-card"));
-    expect(list().getAllByRole("link")).toHaveLength(1);
+    expect(within(await screen.findByRole("list", { name: "Items" })).getAllByRole("link")).toHaveLength(1);
     expect(row("Reproduce a checkout failure with the payment sandbox")).toBeVisible();
     expect(search).toHaveFocus();
     expect(params().get("fixture")).toBe("home");
