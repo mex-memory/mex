@@ -68,6 +68,7 @@ test("opens Rules with the keyboard and passes axe with stale, refreshed and emp
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.setViewportSize({ width: 360, height: 780 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(360);
+  await expect(page.getByRole("list", { name: "Rule files" }).locator("code").first()).toHaveCSS("color", "oklch(0.95 0 0)");
   await scan(page);
 
   await page.goto(`${origin}${designKit}?fixture=home&view=rules`);

@@ -22,6 +22,7 @@ test("opens the machine Hub, keeps bookmarks signed in across restarts, and reje
     GIT_CEILING_DIRECTORIES: root,
     GIT_CONFIG_GLOBAL: join(root, "empty-gitconfig"),
     GIT_CONFIG_NOSYSTEM: "1",
+    MEX_HOOK_BINARY: join(root, "missing-evaluator"),
   };
   let hub: Awaited<ReturnType<typeof startHub>> | undefined;
 
@@ -69,6 +70,31 @@ test("opens the machine Hub, keeps bookmarks signed in across restarts, and reje
     expect(pathFont).toContain("IBM Plex Mono");
     await page.reload();
     await expect(page.getByText("· birch", { exact: true })).toBeVisible();
+
+    writeFileSync(join(root, "birch", "AGENTS.md"), "# Testing\n\nKeep fixtures local to the feature.\n");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.getByRole("link", { name: "Knowledge", exact: true }).click();
+    const rulesResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/knowledge/rules");
+    await page.getByRole("link", { name: "Rule files" }).click();
+    expect((await rulesResponse).status()).toBe(200);
+    await expect(page.getByText("Rule files haven’t been scanned.")).toBeVisible();
+    const refresh = page.getByRole("button", { name: "Refresh" });
+    await expect(refresh).toHaveCSS("font-size", "13px");
+    await refresh.click();
+    await expect(page.getByText("Rule files refreshed.")).toBeVisible();
+    await expect(page.getByRole("list", { name: "Rule files" })).toContainText("AGENTS.md");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+    await page.getByRole("main").getByRole("link", { name: "Knowledge", exact: true }).click();
+    await page.getByRole("button", { name: "Preview brief" }).click();
+    const brief = page.getByRole("dialog", { name: "Preview brief" });
+    const briefResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/knowledge/brief");
+    await brief.getByRole("button", { name: "Preview", exact: true }).click();
+    expect((await briefResponse).status()).toBe(424);
+    await expect(brief.getByRole("alert")).toHaveText("A brief needs MEX's native check evaluator; reinstall MEX or set MEX_HOOK_BINARY.");
+    await expect(brief).toHaveCSS("opacity", "1");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.keyboard.press("Escape");
 
     await stopHub(hub.child);
     hub = await startHub(root, env, port);
@@ -132,6 +158,21 @@ test("reads every main page from a real empty MEX home with no accessibility vio
     await expect(page.getByRole("heading", { name: "Knowledge", exact: true, level: 1 })).toBeVisible();
     await expect(page.getByText("Nothing learned yet. Add a note, or let MEX learn from your sessions.")).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+    await page.getByRole("link", { name: "Rule files" }).click();
+    await expect(page.getByRole("heading", { name: "Rule files", exact: true, level: 1 })).toBeFocused();
+    await expect(page.getByText("Register a repo to see its rule files.")).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByRole("main").getByRole("link", { name: "Knowledge", exact: true }).click();
+    const briefTrigger = page.getByRole("button", { name: "Preview brief" });
+    await briefTrigger.click();
+    const brief = page.getByRole("dialog", { name: "Preview brief" });
+    await expect(brief.getByRole("combobox", { name: "Agent" })).toBeFocused();
+    await expect(brief.getByRole("button", { name: "Preview", exact: true })).toHaveAccessibleDescription("Register a repo to preview a brief.");
+    await expect(brief).toHaveCSS("opacity", "1");
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.keyboard.press("Escape");
+    await expect(briefTrigger).toBeFocused();
 
     const setupResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/setup");
     await page.getByRole("link", { name: "Setup", exact: true }).click();
