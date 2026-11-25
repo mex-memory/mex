@@ -249,9 +249,16 @@ export const MachineReviewActionRequestSchema = z.object({
   reason: z.string().trim().min(1).max(512).optional(),
 }).strict();
 
+const reviewEffectsSchema = z.object({
+  save: reviewNote.extend({ audience: z.literal("onlyYou"), claim: reviewContent.shape.claim }),
+  retire: z.array(reviewNote.extend({ claim: reviewContent.shape.claim })).max(129),
+  cost: z.literal(0),
+});
+
 export const MachineReviewPreviewReplySchema = z.object({
   preview: MachineKnowledgeWritePreviewSchema.extend({
     revision: knowledgeRevisionSchema,
+    effects: reviewEffectsSchema.optional(),
     checks: z.array(z.object({
       id: z.enum(["secrets", "repository", "checks"]),
       status: z.enum(["pass", "warn", "fail"]),
@@ -264,6 +271,7 @@ export type MachineReviewPreviewReply = z.infer<typeof MachineReviewPreviewReply
 export const MachineReviewPreviewSchema = MachineKnowledgeWritePreviewSchema.extend({
   type: z.literal("preview"),
   revision: knowledgeRevisionSchema,
+  effects: reviewEffectsSchema.optional(),
   checks: z.array(z.object({
     id: z.enum(["privacy", "repository", "checks"]),
     status: z.enum(["passed", "warning", "blocked"]),

@@ -1,9 +1,10 @@
 import { MachineReviewActionRequestSchema, type MachineReviewActionRequest, type MachineReviewActionResponse, type MachineReviewCard, type MachineReviewPreviewReply } from "@mex/hub-contracts/machine";
 import { repositoryPolicy, type RepositoryPolicy } from "../../filter/repository.js";
+import { hash } from "../../judge/evidence.js";
 import { recordChecks } from "../../judge/native.js";
 import { KnowledgeError } from "../../knowledge/entry.js";
 import { queueNativeRebuild } from "../../knowledge/native-queue.js";
-import { openRecordReadOnly, recordLocation } from "../../record/index.js";
+import { openRecord, openRecordReadOnly, recordLocation } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
 import { reviewAction, type ReviewAction, type ReviewDependencies } from "../../review/actions.js";
 import { groupRevision } from "../../review/queue.js";
@@ -109,6 +110,7 @@ export class ReviewWrites {
       if (request.expectedRevision !== detail.card.revision) throw stale(detail.card);
       if (!detail.card.actions.includes(request.action)) throw invalidReview("This action isn’t available for the card.");
       if (request.apply && !confirmation) throw stale(detail.card);
+      if (request.action === "use") return await this.#use(detail, request, session, key, confirmation);
       if (request.action === "share") return await this.#share(request, session, key, targetFor(detail), confirmation);
       if (request.action === "edit" && request.then === "share") return await this.#editedShare(detail, request);
       return await this.#decide(detail, request);
@@ -208,6 +210,46 @@ export class ReviewWrites {
     return { preview: { diff: "", path: this.#sharePath(target, ""), checkout: target.checkout, revision: "blocked",
       checks: [privacyCheck, { id: "repository", status: "warn", label: "The repository check runs when the rule is ready to share." },
         { id: "checks", status: "fail", label: "Keep this correction for you and record its checks before sharing." }] } };
+  }
+
+  #recordConsent(target: ReviewTarget, action: "use" | "retire", revision: string) {
+    const writer = openRecord(this.location);
+    try {
+      writer.db.prepare("INSERT OR IGNORE INTO settings(scope,key,value) VALUES(?,?,?)").run(
+        target.repoId, "hub.review.consent." + hash(JSON.stringify([target.cardId, action, revision])).slice(7),
+        JSON.stringify({ version: 1, source: "from the Hub", cardId: target.cardId, action, cost: 0, at: new Date(this.now()).toISOString() }),
+      );
+    } finally { writer.close(); }
+  }
+
+  async #use(detail: ReviewDetail, request: Request, session: string, key: string, confirmation?: Confirmation): Promise<Applied | MachineReviewPreviewReply> {
+    const disabled = detail.card.disabled?.use;
+    if (disabled || (confirmation && confirmation.effectsRevision !== detail.effectsRevision)) {
+      if (request.apply) throw stale(detail.card);
+      throw invalidReview(disabled ?? "Open the proposal again.");
+    }
+    const target = targetFor(detail);
+    const knowledge = knowledgeKey(target.repoId, "onlyYou", target.entryId);
+    if (!confirmation) {
+      const { preview } = await this.#call(target, "use", request);
+      const path = `personal/notes/${target.entryId}.md`;
+      const revision = this.#previews.remember(session, key, request, {
+        target, expect: preview.revision, path, effectsRevision: detail.effectsRevision,
+      });
+      return { preview: {
+        diff: preview.diff, path, checkout: target.checkout, revision, checks: [],
+        effects: { save: { key: knowledge, claim: detail.card.claim, audience: "onlyYou" }, retire: detail.retires, cost: 0 },
+      } };
+    }
+    this.#recordConsent(target, "use", confirmation.expect);
+    await this.#call(target, "use", request, confirmation.expect);
+    queueNativeRebuild(target.checkout, {}, this.location);
+    await this.changed(target.repoId, true);
+    const count = detail.retires.length;
+    return {
+      type: "applied", outcome: "used", knowledgeKey: knowledge,
+      toast: count ? `Proposal used. ${count} ${count === 1 ? "note" : "notes"} retired.` : "Proposal saved for you",
+    };
   }
 
   async #decide(detail: ReviewDetail, request: Request): Promise<Applied> {

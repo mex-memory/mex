@@ -1,6 +1,7 @@
 import type { MachineReviewCard, MachineReviewQueue } from "@mex/hub-contracts/machine";
 import { setImmediate } from "node:timers/promises";
 import { z } from "zod";
+import { hash } from "../../judge/evidence.js";
 import { assertNoSecrets, stripHidden } from "../../knowledge/gates.js";
 import { openRecordReadOnly, recordLocation } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
@@ -84,6 +85,7 @@ export interface ReviewDetail {
   group: ReviewGroup;
   checkout: string;
   retires: ReviewNote[];
+  effectsRevision: string;
 }
 
 export async function readReviewCard(
@@ -109,19 +111,25 @@ export async function readReviewCard(
     const target = { ...location, home, repoId, checkout, env };
     const current = new Map<string, ReviewNote>();
     const retires = new Map<string, ReviewNote>();
+    const retireProofs = new Map<string, string>();
     let useBlocked: string | undefined;
     if (group.conflict) {
       if (group.conflict.conflicts.length > MAX_CONFLICT_NOTES) useBlocked = "This proposal affects more notes than Review can show. Run mex review in this checkout.";
       for (const other of group.conflict.conflicts.slice(0, MAX_CONFLICT_NOTES)) {
         const { note, matches } = conflictNote(reader, target, other, now);
         current.set(note.key, note);
-        if (note.audience === "onlyYou") retires.set(note.key, note);
+        if (note.audience === "onlyYou") {
+          retires.set(note.key, note);
+          retireProofs.set(note.key, other.revision);
+        }
         if (!matches) useBlocked ??= CONFLICT_CHANGED;
       }
       if (group.conflict.replaces) {
         const { note, revision } = reviewNote(reader, target, group.conflict.replaces, "onlyYou", now);
-        if (revision) retires.set(note.key, note);
-        else useBlocked ??= CONFLICT_CHANGED;
+        if (revision) {
+          retires.set(note.key, note);
+          retireProofs.set(note.key, revision);
+        } else useBlocked ??= CONFLICT_CHANGED;
       }
     }
     assertNoSecrets(group.entry);
@@ -130,6 +138,9 @@ export async function readReviewCard(
     const { row } = reviewPoint(repoId, group, checkout, paths.length ? paths : [checkout], active,
       current.size ? { current: [...current.values()] } : undefined);
     if (useBlocked) row.disabled = { ...row.disabled, use: useBlocked };
-    return { card: { ...row, text: stripHidden(group.entry.text).trim() }, group, checkout, retires: [...retires.values()] };
+    return {
+      card: { ...row, text: stripHidden(group.entry.text).trim() }, group, checkout, retires: [...retires.values()],
+      effectsRevision: hash(JSON.stringify([...retireProofs])),
+    };
   });
 }

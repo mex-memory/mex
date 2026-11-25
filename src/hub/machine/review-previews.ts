@@ -17,7 +17,7 @@ export interface Confirmation {
   target: ReviewTarget;
   expect: string;
   path: string;
-  retireCount?: number;
+  effectsRevision?: string;
 }
 
 function signature(session: string, key: string, { action, edited, then, expectedRevision, reason }: MachineReviewActionRequest) {

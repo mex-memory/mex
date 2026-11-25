@@ -11,6 +11,8 @@ import * as repository from "../../../filter/repository.js";
 import { hash } from "../../../judge/evidence.js";
 import { parseEntry, serializeEntry, type EntryCheck, type KnowledgeEntry } from "../../../knowledge/entry.js";
 import { openRecord, type RecordWriter } from "../../../record/index.js";
+import { propose, type Proposal } from "../../../knowledge/gate.js";
+import { producerEntryId } from "../../../knowledge/producers.js";
 import { reviewAction } from "../../../review/actions.js";
 import { stageConflict } from "../../../review/conflicts.js";
 import { groupId, learningReviewId, stageReview } from "../../../review/state.js";
@@ -452,3 +454,62 @@ it("retries a real busy database with the same request key", async () => {
   const saved = await post(card.key, "keep", body, "busy-retry");
   expect(saved.status).toBe(200);
 }, 15_000);
+
+async function conflictingNotes(repo: Repo) {
+  const proposal = (key: string, type: "anti" | "required", text: string): Proposal => ({
+    producer: "code-facts", key, kind: "rule", text, source: { type: "mined", ref: "imports" },
+    model: "none", anchors: { scope: ["src/**"], when: [{ type, match: "literal", pattern: "from Internal" }] },
+  });
+  const context = { ...location(), projectPath: repo.path, now: new Date(at(-10)) };
+  const original = "Internal imports stay in the adapter.";
+  await propose([proposal("old", "anti", original)], context);
+  const personalId = producerEntryId("code-facts", "old");
+  const personalPath = join(notes(repo.id), personalId + ".md");
+  const item = parseEntry(readFileSync(personalPath, "utf8"));
+  const team = { ...item, mex: { ...item.mex, id: "mx_team000", source: { type: "docs" as const, ref: "Repository guide" } } };
+  const teamSaved = save(join(repo.path, ".mex", "learned"), team);
+  const text = "The adapter boundary uses this internal import.";
+  const [result] = await propose([proposal("pending", "required", text)], context);
+  if (result.status !== "review") throw new Error("Expected a contradiction");
+  return { key: repo.id + ":" + result.reviewId, personalId, personalPath, original, teamSaved, text };
+}
+
+it("previews exact personal effects, records consent and uses the proposal through the gate", async () => {
+  const repo = project("tools");
+  const { key, personalId, personalPath, original, teamSaved, text } = await conflictingNotes(repo);
+  const card = await detail(key);
+  expect(card.contradiction?.current.map(({ audience }) => audience)).toEqual(["onlyYou", "team"]);
+  const planned = await preview(card, "use");
+  const output = repo.id + ":onlyYou:" + producerEntryId("code-facts", "pending");
+  expect(planned.effects).toEqual({
+    save: { key: output, claim: text, audience: "onlyYou" },
+    retire: [{ key: repo.id + ":onlyYou:" + personalId, audience: "onlyYou", claim: original }], cost: 0,
+  });
+  expect(parseEntry(readFileSync(personalPath, "utf8")).mex.status).toBe("active");
+  const unconfirmed = await post(key, "use", { expectedRevision: card.revision, apply: true });
+  expect(await unconfirmed.json()).toMatchObject({ code: "STALE_PREVIEW" });
+  const apply = await post(key, "use", { expectedRevision: card.revision, previewRevision: planned.revision, apply: true });
+  expect(apply.status).toBe(200);
+  expect(await apply.json()).toMatchObject({ outcome: "used", knowledgeKey: output });
+  expect(parseEntry(readFileSync(personalPath, "utf8")).mex.status).toBe("retired");
+  expect(readFileSync(teamSaved.file, "utf8")).toBe(teamSaved.raw);
+  const consent = writer.db.prepare("SELECT value FROM settings WHERE scope=? AND key LIKE 'hub.review.consent.%'").all(repo.id);
+  expect(consent).toHaveLength(1);
+  expect(JSON.parse(String(consent[0].value))).toMatchObject({ source: "from the Hub", cost: 0, action: "use", cardId: card.cardId });
+  const handled = await post(key, "use", { expectedRevision: card.revision });
+  expect(await handled.json()).toMatchObject({ code: "ALREADY_HANDLED", outcome: "Used" });
+});
+
+it("requires a new Use preview if a conflicting note changes", async () => {
+  const repo = project("tools");
+  const { key, personalPath } = await conflictingNotes(repo);
+  const card = await detail(key);
+  const planned = await preview(card, "use");
+  const current = parseEntry(readFileSync(personalPath, "utf8"));
+  const changed = serializeEntry({ ...current, mex: { ...current.mex, one_line: "updated current note" } });
+  writeFileSync(personalPath, changed);
+  const response = await post(key, "use", { expectedRevision: card.revision, previewRevision: planned.revision, apply: true });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: "STALE_PREVIEW", current: { key, disabled: { use: expect.any(String) } } });
+  expect(readFileSync(personalPath, "utf8")).toBe(changed);
+});
