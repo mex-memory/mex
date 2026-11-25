@@ -18,7 +18,7 @@ const stopProofCommand = "npm run -w packages/api test"
 func seedStopProof(t *testing.T, h home, root, agent, session string) {
 	t.Helper()
 	const entryID = "mx_stopproof"
-	write(t, filepath.Join(root, ".mex", "learned", entryID+".md"), `---
+	hooks := seedStopEntry(t, h, root, entryID, `---
 mex:
   id: `+entryID+`
   kind: procedure
@@ -45,7 +45,12 @@ mex:
 ---
 Run the API test command for changes under packages/api.
 `)
+	appendStopEdit(t, hooks, localrecord.Session{SessionID: session, Agent: agent, ProjectID: projectID, Checkout: root}, "packages/api/src/routes.ts")
+}
 
+func seedStopEntry(t *testing.T, h home, root, entryID, body string) *localrecord.Hooks {
+	t.Helper()
+	write(t, filepath.Join(root, ".mex", "learned", entryID+".md"), body)
 	loc := localrecord.Location{Directory: h.mex, Hooks: filepath.Join(h.mex, "hooks.db")}
 	if err := localrecord.PrepareHooks(loc); err != nil {
 		t.Fatal(err)
@@ -54,15 +59,22 @@ Run the API test command for changes under packages/api.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer hooks.Close()
+	t.Cleanup(func() {
+		if err := hooks.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if err := hooks.PutVerdicts(projectID, root, []localrecord.Verdict{{EntryID: entryID, Verdict: "held", InputsHash: "x", CheckedAt: now}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := hooks.AppendJournal(
-		localrecord.Session{SessionID: session, Agent: agent, ProjectID: projectID, Checkout: root},
-		now, []localrecord.JournalRow{{Kind: "edit", Text: "packages/api/src/routes.ts"}},
-	); err != nil {
+	return hooks
+}
+
+func appendStopEdit(t *testing.T, hooks *localrecord.Hooks, session localrecord.Session, file string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := hooks.AppendJournal(session, now, []localrecord.JournalRow{{Kind: "edit", Text: file}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -132,6 +144,95 @@ func TestStopProofThroughTheHook(t *testing.T) {
 					t.Fatalf("want no Stop cursor, stat error = %v", err)
 				}
 			}
+		})
+	}
+}
+
+func TestStopGeneratedFileThroughTheHook(t *testing.T) {
+	const (
+		entryID    = "mx_stopgen"
+		editedFile = "src/gen/api.ts"
+	)
+	cases := []struct {
+		name, agent string
+		stopActive  bool
+	}{
+		{name: "claude-code/sent back once", agent: "claude-code"},
+		{name: "claude-code/already continuing", agent: "claude-code", stopActive: true},
+		{name: "codex/sent back once", agent: "codex"},
+		{name: "codex/already continuing", agent: "codex", stopActive: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, env := fakeHome(t, true)
+			root, err := place.RealPath(repo(t, t.TempDir()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			register(t, h, root, projectID, "on", "")
+			file := filepath.Join(root, filepath.FromSlash(editedFile))
+			write(t, file, "// DO NOT EDIT\nexport const x = 2\n")
+			past := time.Now().Add(-time.Hour)
+			if err := os.Chtimes(file, past, past); err != nil {
+				t.Fatal(err)
+			}
+			hooks := seedStopEntry(t, h, root, entryID, `---
+mex:
+  id: `+entryID+`
+  kind: pitfall
+  scope:
+    - "src/gen/**"
+  source:
+    type: mined
+    ref: "src/gen/**"
+  evidence: mined
+  one_line: "Files under src/gen/ are generated."
+  checks:
+    - kind: pattern
+      role: supporting
+      target: {scope: "src/gen/**", pattern: "DO NOT EDIT", match: literal}
+      saw: {count: 1}
+      files: {}
+  status: active
+  created: 2026-11-03
+---
+Regenerate files under src/gen/ after changing their inputs.
+`)
+			session := localrecord.Session{SessionID: "stop-generated-file", Agent: c.agent, ProjectID: projectID, Checkout: root}
+			appendStopEdit(t, hooks, session, editedFile)
+
+			payload, err := json.Marshal(map[string]any{
+				"session_id":       session.SessionID,
+				"cwd":              root,
+				"hook_event_name":  "Stop",
+				"stop_hook_active": c.stopActive,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := []string{c.agent, "Stop"}
+			code, out := run(t, args, bytes.NewReader(payload), env)
+			if c.stopActive {
+				assertEmptyReply(t, code, out)
+				return
+			}
+			if code != 0 {
+				t.Fatalf("first Stop exit code = %d, want 0 (reply %q)", code, out)
+			}
+			var reply struct {
+				Decision string `json:"decision"`
+				Reason   string `json:"reason"`
+			}
+			if err := json.Unmarshal([]byte(out), &reply); err != nil {
+				t.Fatalf("first Stop reply %q is not valid JSON: %v", out, err)
+			}
+			if reply.Decision != "block" || !strings.Contains(reply.Reason, "by hand") || !strings.Contains(reply.Reason, entryID) {
+				t.Fatalf("want a block with reason naming a hand edit and %q, got %s", entryID, out)
+			}
+
+			appendStopEdit(t, hooks, session, editedFile)
+			code, out = run(t, args, bytes.NewReader(payload), env)
+			assertEmptyReply(t, code, out)
 		})
 	}
 }

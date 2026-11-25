@@ -374,14 +374,21 @@ func TestStopDirectTestsSpendOneBudgetPerEpoch(t *testing.T) {
 }
 
 func TestStopChecksTiming(t *testing.T) {
+	f := rescueFixture(t)
+	f.start("startup")
+	checkStopTiming(f, nil)
+}
+
+func checkStopTiming(f *fixture, generatedVerdicts []record.Verdict) {
+	t := f.t
+	t.Helper()
 	const (
 		obligationCount = 64
 		rowCount        = 2000
 		runCount        = 5
 	)
-	f := rescueFixture(t)
-	f.start("startup")
-	verdicts := make([]record.Verdict, 0, obligationCount)
+	verdicts := make([]record.Verdict, 0, obligationCount+len(generatedVerdicts))
+	verdicts = append(verdicts, generatedVerdicts...)
 	for i := range obligationCount {
 		id := fmt.Sprintf("mx_stop%02d", i)
 		folder := fmt.Sprintf("packages/ci-%02d", i)
@@ -421,11 +428,9 @@ func TestStopChecksTiming(t *testing.T) {
 	cursor := stopCursorPath(f.dir, ev)
 	timings := make([]time.Duration, runCount)
 	for i := range timings {
-		if i > 0 {
-			// Reread the full turn on every sample.
-			if err := os.Remove(cursor); err != nil {
-				t.Fatal(err)
-			}
+		// Reread the full turn on every sample.
+		if err := os.Remove(cursor); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
 		}
 		start := time.Now()
 		r := StopChecks(ev, env)
@@ -433,14 +438,23 @@ func TestStopChecksTiming(t *testing.T) {
 		if r != (contract.Reply{}) {
 			t.Fatalf("run %d: want an empty reply, got %+v", i+1, r)
 		}
-		if got := loadStopCursor(cursor); got != lastRow {
+		if got := loadStopCursor(cursor).Last; got != lastRow {
 			t.Fatalf("run %d: stopped reading at journal row %d, want %d", i+1, got, lastRow)
 		}
 	}
 
 	snap, err := entries.LoadLight(f.dir, f.home, f.project, f.root)
-	if err != nil || len(snap.Items) != obligationCount {
-		t.Fatalf("entry fixture has %d obligations, want %d (load error: %v)", len(snap.Items), obligationCount, err)
+	if err != nil || len(snap.Items) != len(verdicts) {
+		t.Fatalf("entry fixture has %d entries, want %d (load error: %v)", len(snap.Items), len(verdicts), err)
+	}
+	generated := 0
+	for _, item := range snap.Items {
+		if item.Entry.Kind == "pitfall" && item.Generated {
+			generated++
+		}
+	}
+	if generated != len(generatedVerdicts) {
+		t.Fatalf("entry fixture has %d generated-file pitfalls, want %d", generated, len(generatedVerdicts))
 	}
 	slices.Sort(timings)
 	median, slowest := timings[runCount/2], timings[runCount-1]
@@ -502,7 +516,7 @@ func TestPruneStopCursorsKeepsThoseTheJournalStillCovers(t *testing.T) {
 	old := stopCursorPath(dir, contract.Event{Agent: "claude-code", SessionID: "old"})
 	fresh := stopCursorPath(dir, contract.Event{Agent: "claude-code", SessionID: "fresh"})
 	for _, f := range []string{old, fresh} {
-		if err := saveStopCursor(f, 7); err != nil {
+		if err := saveStopCursor(f, stopCursor{Last: 7}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -514,7 +528,7 @@ func TestPruneStopCursorsKeepsThoseTheJournalStillCovers(t *testing.T) {
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatal("a cursor past the journal's age was kept")
 	}
-	if loadStopCursor(fresh) != 7 {
+	if loadStopCursor(fresh).Last != 7 {
 		t.Fatal("a cursor the journal still covers was removed")
 	}
 	PruneStopCursors(t.TempDir(), time.Now()) // no folder yet: nothing to do

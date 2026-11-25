@@ -56,8 +56,15 @@ type stopFinding struct {
 // stopTurn is what the journal says happened since the last stop.
 type stopTurn struct {
 	rows []record.JournalEntry
-	// lastEdit is each edited file's last edit row id.
-	lastEdit map[string]int64
+	// lastEdit is each edited file's last edit row id, and lastEditAt the
+	// time that row was written, after the edit.
+	lastEdit   map[string]int64
+	lastEditAt map[string]time.Time
+	// commands is true when the turn ran a shell command.
+	commands bool
+	// since is when the turn began: the previous stop, else the session's
+	// start. Zero when neither is known.
+	since time.Time
 }
 
 // StopChecks decides one stop event. The caller passes only events from
@@ -82,17 +89,22 @@ func StopChecks(ev contract.Event, env Environment) contract.Reply {
 	// once.
 	cursorFile := stopCursorPath(env.RecordDirectory, ev)
 	cursor := loadStopCursor(cursorFile)
-	rows, err := h.JournalAfter(ev.SessionID, cursor, stopJournalRows)
+	rows, err := h.JournalAfter(ev.SessionID, cursor.Last, stopJournalRows)
 	if err != nil || len(rows) == 0 {
 		return contract.Reply{}
 	}
-	if saveStopCursor(cursorFile, rows[len(rows)-1].ID) != nil {
+	now := env.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if saveStopCursor(cursorFile, stopCursor{Last: rows[len(rows)-1].ID, At: now.UTC().Format(time.RFC3339Nano)}) != nil {
 		return contract.Reply{} // without a cursor the next stop could read this turn again
 	}
 	turn := readTurn(rows)
-	if len(turn.lastEdit) == 0 || ev.StopActive {
-		return contract.Reply{} // a turn with no edits, or a stop already sent back
+	if (len(turn.lastEdit) == 0 && !turn.commands) || ev.StopActive {
+		return contract.Reply{} // a turn that changed nothing, or a stop already sent back
 	}
+	turn.since = turnStart(h, ev, cursor)
 
 	epoch, _, err := h.CurrentEpoch(ev.SessionID, ev.AgentID)
 	if err != nil {
@@ -102,11 +114,19 @@ func StopChecks(ev contract.Event, env Environment) contract.Reply {
 	state := loadBumpState(budgetFile, epoch.Number)
 
 	var found []stopFinding
-	if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, ev.ProjectID, ev.Checkout); err == nil {
-		found = append(found, obligationFindings(ev, h, &snap, turn, state)...)
+	if len(turn.lastEdit) > 0 {
+		if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, ev.ProjectID, ev.Checkout); err == nil {
+			found = append(found, generatedFindings(ev, env, h, &snap, turn, state)...)
+			found = append(found, obligationFindings(ev, h, &snap, turn, state)...)
+		}
+		if !state.Stopped[stopTestsRule] {
+			if f, ok := directTestsFinding(ev, env, turn, found); ok {
+				found = append(found, f)
+			}
+		}
 	}
-	if !state.Stopped[stopTestsRule] {
-		if f, ok := directTestsFinding(ev, env, turn, found); ok {
+	if !state.Stopped[stopLockfileRule] {
+		if f, ok := lockfileFinding(ev, env, turn); ok {
 			found = append(found, f)
 		}
 	}
@@ -129,13 +149,44 @@ func StopChecks(ev contract.Event, env Environment) contract.Reply {
 
 // readTurn indexes a turn's edit rows. Commands are matched in order later.
 func readTurn(rows []record.JournalEntry) stopTurn {
-	t := stopTurn{rows: rows, lastEdit: map[string]int64{}}
+	t := stopTurn{rows: rows, lastEdit: map[string]int64{}, lastEditAt: map[string]time.Time{}}
 	for _, r := range rows {
-		if r.Kind == "edit" && r.Text != "" {
+		switch {
+		case r.Kind == "edit" && r.Text != "":
 			t.lastEdit[r.Text] = r.ID
+			if at, err := time.Parse(time.RFC3339Nano, r.TS); err == nil {
+				t.lastEditAt[r.Text] = at
+			}
+		case r.Kind == "command":
+			t.commands = true
 		}
 	}
 	return t
+}
+
+// turnStart is when the turn began: the previous stop's time, else the
+// session's start.
+func turnStart(h *record.Hooks, ev contract.Event, cursor stopCursor) time.Time {
+	if at, err := time.Parse(time.RFC3339Nano, cursor.At); err == nil {
+		return at
+	}
+	if s, err := h.Session(ev.SessionID); err == nil && s != nil {
+		if at, err := time.Parse(time.RFC3339Nano, s.StartedAt); err == nil {
+			return at
+		}
+	}
+	return time.Time{}
+}
+
+// supported: a rule the code no longer supports never sends the agent back,
+// and a mined one needs a verdict that it holds today (as for the speed
+// bump).
+func supported(h *record.Hooks, ev contract.Event, e *entries.Entry) bool {
+	v, ok, err := h.VerdictOf(ev.ProjectID, ev.Checkout, e.ID)
+	if err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) {
+		return false
+	}
+	return e.Evidence != "mined" || (ok && v.Verdict == held)
 }
 
 // ranAfter reports whether a command row after the row id after matches.
@@ -191,10 +242,7 @@ func obligationFindings(ev contract.Event, h *record.Hooks, snap *entries.Snapsh
 		}) {
 			continue
 		}
-		// A rule the code no longer supports never sends the agent back. A
-		// mined one needs a verdict that it holds today.
-		v, ok, err := h.VerdictOf(ev.ProjectID, ev.Checkout, e.ID)
-		if err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) || (e.Evidence == "mined" && !(ok && v.Verdict == held)) {
+		if !supported(h, ev, e) {
 			continue
 		}
 		sort.Strings(edited)
@@ -463,9 +511,11 @@ func pick(n int, one, many string) string {
 
 // ── The turn cursor ──
 
-// stopCursor is the last journal row a stop in this session has read.
+// stopCursor is the last journal row a stop in this session has read, and
+// when that stop ran.
 type stopCursor struct {
-	Last int64 `json:"last"`
+	Last int64  `json:"last"`
+	At   string `json:"at,omitempty"`
 }
 
 func stopCursorPath(recordDirectory string, ev contract.Event) string {
@@ -495,19 +545,20 @@ func PruneStopCursors(recordDirectory string, now time.Time) {
 	}
 }
 
-func loadStopCursor(file string) int64 {
+func loadStopCursor(file string) stopCursor {
 	var c stopCursor
 	if data, err := os.ReadFile(file); err == nil && len(data) < 4096 {
 		_ = json.Unmarshal(data, &c)
 	}
-	return max(c.Last, 0)
+	c.Last = max(c.Last, 0)
+	return c
 }
 
-func saveStopCursor(file string, last int64) error {
+func saveStopCursor(file string, c stopCursor) error {
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
 		return err
 	}
-	data, err := json.Marshal(stopCursor{Last: last})
+	data, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
