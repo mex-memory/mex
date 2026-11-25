@@ -117,6 +117,25 @@ func TestSubagentStartLeavesHookErrorForCodexSessionStart(t *testing.T) {
 	assertHookErrorNotice(t, code, out, true)
 }
 
+func TestHookRecordsRecoveredPanic(t *testing.T) {
+	h, env := fakeHome(t, true)
+	panicEnv := func(key string) string {
+		// Run checks MEX_OFF on its own goroutine. Recovery uses the
+		// other keys to locate the record directory.
+		if key == "MEX_OFF" {
+			panic("test panic")
+		}
+		return env(key)
+	}
+
+	code, out := run(t, []string{"claude-code", "Stop"}, nil, panicEnv)
+	assertEmptyReply(t, code, out)
+	record := readHookErrorRecord(t, h.mex)
+	if got := record.Counts["panic"]; got != 1 {
+		t.Fatalf("panic count = %d, want 1 (counts %v)", got, record.Counts)
+	}
+}
+
 func assertHookErrorNotice(t *testing.T, code int, out string, wantNotice bool) {
 	t.Helper()
 	if code != 0 {
