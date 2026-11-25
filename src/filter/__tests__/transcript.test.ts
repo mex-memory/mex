@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -157,4 +157,63 @@ it.each(["appended", "replaced"] as const)("discards context when a transcript i
     expect(replyContexts(path, "claude", [message])).toBe("changed");
     expect(message.previous_reply).toBeNull();
   } finally { watched.mockRestore(); }
+});
+
+const claudeTool = (name: string, input: object) => ({ type: "assistant", message: { content: [{ type: "tool_use", name, input }] } });
+const codexTool = (name: string) => ({ type: "response_item", payload: { type: "function_call", name, arguments: "{}" } });
+it.each([
+  { agent: "claude", tool: "web", call: () => claudeTool("WebFetch", { url: "https://example.test" }) },
+  { agent: "claude", tool: "MCP", call: () => claudeTool("mcp__docs__search", {}) },
+  { agent: "claude", tool: "outside Read", call: () => claudeTool("Read", { file_path: join(base, "outside.txt") }) },
+  { agent: "claude", tool: "outside Grep", call: () => claudeTool("Grep", { path: "..", pattern: "anything" }) },
+  { agent: "claude", tool: "outside Glob", call: () => claudeTool("Glob", { path: base, pattern: "*.ts" }) },
+  { agent: "claude", tool: "Glob from outside", call: () => ({ ...claudeTool("Glob", { pattern: "*.ts" }), cwd: base }) },
+  { agent: "codex", tool: "web", call: () => ({ type: "response_item", payload: { type: "web_search_call", action: { type: "search", query: "example" } } }) },
+  { agent: "codex", tool: "web event", call: () => ({ type: "event_msg", payload: { type: "web_search_end", call_id: "search-1", action: { type: "search", query: "example" } } }) },
+  { agent: "codex", tool: "MCP", call: () => codexTool("mcp__docs__search") },
+  { agent: "codex", tool: "MCP event", call: () => ({ type: "event_msg", payload: { type: "mcp_tool_call_begin", invocation: { server: "docs", tool: "search" } } }) },
+] satisfies Array<{ agent: Agent; tool: string; call: () => unknown }>)
+("withholds only the affected turn for $agent $tool", ({ agent, call }) => {
+  const path = transcript(agent), checkout = join(base, "repo"); mkdirSync(checkout);
+  const first = captured("yes, 2"), next = captured("keep 1");
+  writeFileSync(path, jsonl([
+    turn(agent, "assistant", "Text before the outside call"), call(), ...toolRows(agent),
+    turn(agent, "assistant", "Text after the outside call"), turn(agent, "user", first.text),
+    turn(agent, "assistant", "Fresh local options"), turn(agent, "user", next.text),
+  ]));
+  expect(replyContexts(path, agent, [first, next], "design", { checkout })).toBeUndefined();
+  expect(first.previous_reply).toBeNull();
+  expect(next.previous_reply).toBe("Fresh local options");
+  expect(typedQuote(path, agent, first.text, hash(first.text))).toBe(true);
+});
+
+it("keeps reply context for an in-checkout read and unknown tool shapes", () => {
+  const path = transcript("claude"), checkout = join(base, "repo"); mkdirSync(checkout);
+  writeFileSync(join(checkout, "README.md"), "fixture");
+  const message = captured("use the first option");
+  writeFileSync(path, jsonl([
+    claudeTool("Read", { file_path: join(checkout, "README.md") }), claudeTool("Read", { future_path: "../outside.txt" }),
+    { type: "unknown", name: "WebFetch", input: {} },
+    turn("claude", "assistant", "Allowed local options"), turn("claude", "user", message.text),
+  ]));
+  expect(replyContexts(path, "claude", [message], "design", { checkout })).toBeUndefined();
+  expect(message.previous_reply).toBe("Allowed local options");
+});
+
+it.skipIf(process.platform === "win32")("withholds a reply if a read follows an in-checkout link outside", () => {
+  const path = transcript("claude"), checkout = join(base, "repo"), target = join(base, "outside.txt"); mkdirSync(checkout);
+  writeFileSync(target, "fixture");
+  symlinkSync(target, join(checkout, "linked.txt"));
+  const message = captured("use the first option");
+  writeFileSync(path, jsonl([claudeTool("Read", { file_path: "linked.txt" }), turn("claude", "assistant", "The outside text"), turn("claude", "user", message.text)]));
+  expect(replyContexts(path, "claude", [message], "design", { checkout })).toBeUndefined();
+  expect(message.previous_reply).toBeNull();
+});
+
+it("masks a note split across assistant rows and clipped by the excerpt boundary", () => {
+  const path = transcript("codex"), message = captured("x".repeat(301));
+  const first = "Private body prefix. ".repeat(28), end = "Private body suffix.", tail = "t".repeat(575);
+  writeFileSync(path, jsonl([turn("codex", "assistant", first), turn("codex", "assistant", end + "\n" + tail), turn("codex", "user", message.text)]));
+  expect(replyContexts(path, "codex", [message], "design", { notes: [first + "\n" + end] })).toBeUndefined();
+  expect(message.previous_reply).toBe("[MEX note]\n" + tail);
 });

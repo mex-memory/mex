@@ -10,6 +10,7 @@ import { repoFile } from "../knowledge/references.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
 import { hash } from "../judge/evidence.js";
 import { replyContexts, type ReplyContextMode, type TranscriptIssue } from "./transcript.js";
+import { deliveredContext, deliveredNoteLookup } from "./delivered.js";
 import { sessionWorkEnabled } from "../judge/session.js";
 
 export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, promptBytes: 256 << 10,
@@ -111,9 +112,8 @@ function contextFiles(checkout: string, messages: Message[], notes: NoteInput[])
   }
   return files;
 }
-// Use the live tail until the expanded mode has outside-content withholding and note masking.
 export function filterInput(writer: RecordWriter, project: string, params: FilterParams, cheap: boolean, now = Date.now(), scan?: ScanWindow,
-  contextMode: ReplyContextMode = "tail600"): FilterInput | undefined {
+  contextMode: ReplyContextMode = "design"): FilterInput | undefined {
   const hooks = openHooksReadOnly({ home: writer.location.home });
   const messages: Message[] = [];
   const transcripts = new Map<string, { path: string; agent: "claude" | "codex" }>();
@@ -149,12 +149,9 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
     if (!notes.length && (!eligible.length || (!cheap && eligible.length < 20 && Date.parse(eligible[0]!.ts) > now - FILTER_LIMITS.ageMs))) return undefined;
     const readyMessages = cheap || eligible.length >= 20 || (eligible.length > 0 && Date.parse(eligible[0]!.ts) <= now - FILTER_LIMITS.ageMs);
     for (const row of (readyMessages ? eligible : []).slice(0, FILTER_LIMITS.messages)) {
-      const given = hooks?.all<{ entry_id: string }>("SELECT DISTINCT entry_id FROM deliveries WHERE session_id=? AND action='given' LIMIT 129", row.session_id).map(d => d.entry_id) ?? [];
-      if (given.length > 128) throw new Error("The filter's delivered-note limit was reached.");
-      given.forEach(id => delivered.add(id));
       messages.push({ id: `m${row.id}`, row: row.id, session: row.session_id, at: row.ts,
         text: Array.from(row.text).slice(0, FILTER_LIMITS.characters).join(""), marks: row.marks,
-        previous_reply: null, delivered: given });
+        previous_reply: null, delivered: [] });
     }
     // Read each selected session once. Reply context is transient and never supplies a saved quote.
     const bySession = new Map<string, Message[]>();
@@ -163,29 +160,21 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
       group.push(message);
       bySession.set(message.session, group);
     }
+    const lookup = deliveredNoteLookup(writer.location.home, project, params.checkout);
     const contextIssues = new Map<string, TranscriptIssue>();
     for (const [session, group] of bySession) {
+      const { ids, masks } = deliveredContext(hooks!, session, lookup);
+      ids.forEach(id => delivered.add(id));
+      for (const message of group) message.delivered = ids;
       const transcript = transcripts.get(session);
-      const issue = transcript ? replyContexts(transcript.path, transcript.agent, group, contextMode)
-        : contextMode === "design" ? "unavailable" : undefined;
+      const issue = masks === null ? "delivered-notes" : transcript
+        ? replyContexts(transcript.path, transcript.agent, group, contextMode, { checkout: params.checkout, notes: masks }) : "unavailable";
       if (issue) contextIssues.set(session, issue);
-    }
-    const known = new Map<string, string>();
-    const personal = containedDirectory(writer.location.home, ["projects", project, "notes"]);
-    // A delivered id is retained even when its original text is no longer available.
-    if (personal) for (const id of delivered) if (/^mx_[a-z0-9]{6,64}$/u.test(id)) {
-      const raw = readEntryFile(join(personal, `${id}.md`));
-      if (raw) known.set(id, parseEntry(raw).text);
-    }
-    for (const id of delivered) if (!known.has(id) && /^mx_[a-z0-9]{6,64}$/u.test(id)) {
-      const file = repoFile(params.checkout, `.mex/learned/${id}.md`);
-      const raw = file && readEntryFile(file);
-      if (raw) known.set(id, parseEntry(raw).text);
     }
     let deliveredBytes = 0;
     const input = { messages, notes, files: contextFiles(params.checkout, messages, notes),
       delivered_notes: [...delivered].sort().map(id => {
-        const text = known.get(id), bounded = text ? Array.from(text).slice(0, 1200).join("") : null;
+        const text = lookup(id)[0]?.text, bounded = text ? Array.from(text).slice(0, 1200).join("") : null;
         deliveredBytes += bounded ? Buffer.byteLength(bounded) : 0;
         return { id, text: deliveredBytes <= 16 << 10 ? bounded : null };
       }) };

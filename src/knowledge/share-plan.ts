@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { contextSource, learningMetadata } from "../filter/metadata.js";
 import { approvedCoverage, coverageKey, MANIFEST_PATH, noteKey, parseManifest, type SharedCoverage } from "../learn-deeper/coverage.js";
 import { repositoryFromRemote } from "../learn-deeper/source.js";
 import { openRecordReadOnly } from "../record/index.js";
@@ -108,6 +109,7 @@ export function prepareShare(options: KnowledgeOptions, choose: { skip?: string[
       else if (onBase.has(id)) plan.skipped.push({ id, reason: `already shared on ${base.name}` });
       else if (baseClaims.has(claimHash(c.entry.text))) plan.skipped.push({ id, reason: `the rule is already recorded on ${base.name}` });
       else if (!STRONG.has(c.entry.mex.evidence)) plan.skipped.push({ id, reason: "evidence too weak for the team" });
+      else if (reader && contextSource(learningMetadata(reader, project.projectId, id))) plan.skipped.push({ id, reason: "agent-written context needs Review" });
       else if (verdict === "broken" || verdict === "changed") plan.skipped.push({ id, reason: `verdict is ${verdict}` });
       else if (c.entry.mex.checks.length && verdict !== "held") plan.skipped.push({ id, reason: "current checks have not held" });
       else {

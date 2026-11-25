@@ -4,6 +4,7 @@ import { join, relative, isAbsolute, sep } from "node:path";
 import type { Message } from "./input.js";
 import { hash } from "../judge/evidence.js";
 import { object } from "../record/usage.js";
+import { maskReply, outsideTool } from "./reply-privacy.js";
 
 /** Identify simple file reads without running or interpreting shell programs. */
 export function codexRead(call: Record<string, unknown>): { path: string; cwd?: string } | undefined {
@@ -30,9 +31,11 @@ const SHORT_MESSAGE_CONTEXT = 12_000;
 
 type TranscriptAgent = "claude" | "codex";
 export type ReplyContextMode = "design" | "tail600";
-export type TranscriptIssue = "unavailable" | "too-large" | "changed" | "invalid-format";
+export type TranscriptIssue = "unavailable" | "too-large" | "changed" | "invalid-format" | "delivered-notes";
 type TranscriptRead<T> = { value: T } | { issue: TranscriptIssue };
 type TranscriptMessage = { role: "user" | "assistant"; text: string };
+type TranscriptRow = Record<string, unknown>;
+type VisitRow = (row: TranscriptRow, message: TranscriptMessage | undefined) => void;
 
 // Limit the string before splitting it into code points. Each takes at most two UTF-16 code units.
 const typedPrefix = (value: string) => Array.from(value.slice(0, TYPED_LIMIT * 2)).slice(0, TYPED_LIMIT).join("");
@@ -44,12 +47,13 @@ function text(value: unknown): string | undefined {
   return value.filter(v => v && ["text", "input_text", "output_text"].includes(v.type) && typeof v.text === "string").map(v => v.text).join("\n");
 }
 
-function messageRow(line: string, agent: TranscriptAgent, wholeSession: boolean): TranscriptMessage | "invalid-format" | undefined {
+function parseRow(line: string): TranscriptRow | "invalid-format" | undefined {
   if (!line.trim()) return;
-  let value: unknown;
-  try { value = JSON.parse(line); } catch { return "invalid-format"; }
-  const row = object(value);
-  if (!row || (wholeSession && (row.isCompactSummary === true || row.isMeta === true))) return;
+  try { return object(JSON.parse(line)); } catch { return "invalid-format"; }
+}
+
+function messageRow(row: TranscriptRow, agent: TranscriptAgent, wholeSession: boolean): TranscriptMessage | "invalid-format" | undefined {
+  if (wholeSession && (row.isCompactSummary === true || row.isMeta === true)) return;
   const payload = object(row.type === "response_item" ? row.payload : row.message);
   if (wholeSession && agent === "codex" && row.type === "response_item"
     && payload?.type !== undefined && payload.type !== "message") return;
@@ -60,7 +64,7 @@ function messageRow(line: string, agent: TranscriptAgent, wholeSession: boolean)
   }
   const blocks = payload?.content;
   if (wholeSession && agent === "claude" && role === "user" && Array.isArray(blocks)
-    && blocks.some(block => object(block)?.type === "tool_result")) return;
+    && blocks.some(block => ["tool_result", "mcp_tool_result", "web_search_tool_result", "web_fetch_tool_result"].some(type => object(block)?.type === type))) return;
   const content = text(blocks);
   return content === undefined ? "invalid-format" : { role, text: content };
 }
@@ -140,17 +144,17 @@ function scanLines(fd: number, size: number, visit: (line: string) => Transcript
   if (fragments.length) return visitLine(Buffer.concat(fragments));
 }
 
-function scanSession(path: string, agent: TranscriptAgent, visit: (message: TranscriptMessage) => void): TranscriptIssue | undefined {
+function scanSession(path: string, agent: TranscriptAgent, visit: VisitRow): TranscriptIssue | undefined {
   const result = readTranscript(path, agent, (fd, size) => {
     if (size > BigInt(SESSION_BYTES)) return { issue: "too-large" };
     let sawMessage = false;
     const issue = scanLines(fd, Number(size), line => {
-      const message = messageRow(line, agent, true);
+      const row = parseRow(line);
+      if (!row || row === "invalid-format") return row;
+      const message = messageRow(row, agent, true);
       if (message === "invalid-format") return message;
-      if (message?.text) {
-        sawMessage = true;
-        visit(message);
-      }
+      sawMessage ||= !!message?.text;
+      visit(row, message);
     });
     if (issue) return { issue };
     return sawMessage ? { value: undefined } : { issue: "invalid-format" };
@@ -162,52 +166,66 @@ function scanSession(path: string, agent: TranscriptAgent, visit: (message: Tran
 export function typedQuote(path: string, agent: TranscriptAgent, quote: string, messageHash: string): boolean {
   if (!quote) return false;
   let matches = 0;
-  const issue = scanSession(path, agent, message => {
-    if (message.role !== "user") return;
+  const issue = scanSession(path, agent, (_row, message) => {
+    if (message?.role !== "user") return;
     const typed = typedPrefix(message.text);
     if (typed.includes(quote) && hash(typed) === messageHash) matches++;
   });
   return !issue && matches === 1;
 }
 
-function scanTail(path: string, agent: TranscriptAgent, visit: (message: TranscriptMessage) => void): TranscriptIssue | undefined {
+function scanTail(path: string, agent: TranscriptAgent, visit: VisitRow): TranscriptIssue | undefined {
   const result = readTail(path, agent);
   if ("issue" in result) return result.issue;
   let sawMessage = false;
   for (const line of result.value.split("\n")) {
-    const message = messageRow(line, agent, false);
-    if (message && message !== "invalid-format" && message.text) {
-      sawMessage = true;
-      visit(message);
-    }
+    const row = parseRow(line);
+    if (!row || row === "invalid-format") continue;
+    const message = messageRow(row, agent, false);
+    if (message === "invalid-format") continue;
+    sawMessage ||= !!message?.text;
+    visit(row, message);
   }
   if (!sawMessage) return "invalid-format";
 }
 
 /** Only an exact, unambiguous user-message match associates reply context with journal text. */
-export function replyContexts(path: string, agent: TranscriptAgent, messages: Message[], mode: ReplyContextMode = "design"): TranscriptIssue | undefined {
+export function replyContexts(path: string, agent: TranscriptAgent, messages: Message[], mode: ReplyContextMode = "design",
+  context: { checkout?: string; notes?: readonly string[] } = {}): TranscriptIssue | undefined {
   if (!messages.length) return;
   const targets = new Set(messages.map(message => message.text));
   const contexts = new Map<string, string | null>();
   let previous = "";
+  let withheld = false;
   const wholeSession = mode === "design";
-  const contextUnits = SHORT_MESSAGE_CONTEXT * 2;
-  const visit = (message: TranscriptMessage) => {
+  const notes = context.notes ?? [];
+  // Keep enough leading text to recognize a note that overlaps the retained tail.
+  const contextUnits = (wholeSession ? SHORT_MESSAGE_CONTEXT : REPLY_TAIL) * 2 + notes.reduce((longest, note) => Math.max(longest, note.length), 0);
+  const outside = outsideTool(agent, context.checkout);
+  const visit: VisitRow = (row, message) => {
+    if (outside(row)) { withheld = true; previous = ""; }
+    if (!message?.text) return;
     if (message.role === "assistant") {
-      if (wholeSession) {
-        const next = message.text.slice(-contextUnits);
-        previous = (previous ? `${previous}\n${next}` : next).slice(-contextUnits);
-      } else previous = tail(message.text, REPLY_TAIL);
+      if (withheld) return;
+      const next = message.text.replaceAll("\r\n", "\n").slice(-contextUnits);
+      previous = (wholeSession && previous ? `${previous}\n${next}` : next).slice(-contextUnits);
       return;
     }
     const key = typedPrefix(message.text);
     if (targets.has(key)) {
       const limit = wholeSession && Array.from(key).length <= SHORT_MESSAGE ? SHORT_MESSAGE_CONTEXT : REPLY_TAIL;
-      contexts.set(key, contexts.has(key) || !previous ? null : tail(previous, limit));
+      const excerpt = withheld || contexts.has(key) || !previous ? null : tail(maskReply(previous, tail(previous, limit), notes), limit);
+      contexts.set(key, excerpt);
     }
     previous = "";
+    withheld = false;
   };
   const issue = wholeSession ? scanSession(path, agent, visit) : scanTail(path, agent, visit);
   for (const message of messages) message.previous_reply = issue ? null : contexts.get(message.text) ?? null;
   return issue;
+}
+
+/** The persisted proof binds the context of a short typed reply, without retaining agent text. */
+export function replyContextDigest(message: Pick<Message, "text" | "previous_reply">): string | undefined {
+  return message.previous_reply && Array.from(message.text).length <= SHORT_MESSAGE ? hash(message.previous_reply) : undefined;
 }

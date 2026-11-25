@@ -17,7 +17,7 @@ import { judgeActor } from "../judge/ownership.js";
 import { wakeNotice } from "../judge/notices.js";
 import { withCheckoutPublication } from "../judge/publication.js";
 import { filterAllowed, filterSession, type FilterParams } from "./input.js";
-import { learningMetadata, type SourceRecord } from "./metadata.js";
+import { contextSource, learningMetadata, type SourceRecord } from "./metadata.js";
 import { typedQuote } from "./transcript.js";
 import { promotionDecision, type Evidence } from "./evidence.js";
 import { repositoryPolicy, sharingEnabled } from "./repository.js";
@@ -189,6 +189,7 @@ export async function publishNext(writer: RecordWriter, project: string, params:
   const decision = promotionDecision({ evidence: { source: "person", observations }, shared: true, manual: false, ...policy, privacyHolds: metadata.holds ?? [], checksHold, conflict });
   if (decision.destination !== "team") return hold(decision.reason, decision.destination === "review");
   if (!found.entry.mex.source.quote || !sources.some((s, index) => s.quote === found.entry.mex.source.quote && observations[index]?.verified && !observations[index]?.marked && !observations[index]?.delivered)) return hold("current-quote-unverified");
+  if (contextSource(metadata)) return hold("context-assisted", true);
   if (!params.sessionId) return hold("preview-session-unavailable", true);
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {

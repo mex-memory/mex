@@ -3,9 +3,14 @@ import type { RecordWriter } from "../record/index.js";
 import { KnowledgeError } from "../knowledge/entry.js";
 import { sourceSchema } from "./provenance.js";
 import type { FilterCandidate } from "./job.js";
+const RecordedSource = z.object({ source: sourceSchema, quote: z.string().min(1).max(8192), label: z.enum(["lasting", "unsure"]) }).strict();
 export const LearningMetadata = z.object({ at: z.string().max(64), holds: z.array(z.string().max(64)).max(16), sessions: z.array(z.string().max(512)).max(128), needs_checks: z.boolean().optional(),
-  sources: z.array(z.object({ source: sourceSchema, quote: z.string().min(1).max(8192), label: z.enum(["lasting", "unsure"]) }).strict()).max(128).optional() }).strict();
+  sources: z.array(RecordedSource).max(128).optional(),
+  context_source: RecordedSource.refine(record => !!record.source.reply_context_hash).optional() }).strict();
 export interface SourceRecord { source: FilterCandidate["source"]; quote: string; label: "lasting" | "unsure"; }
+export function contextSource(meta: Partial<z.infer<typeof LearningMetadata>>): SourceRecord | undefined {
+  return meta.context_source ?? meta.sources?.find(record => record.source.reply_context_hash);
+}
 export function learningMetadata(writer: Pick<RecordWriter, "setting">, project: string, id: string): Partial<z.infer<typeof LearningMetadata>> {
   const raw = writer.setting(project, `learning.note.${id}`);
   if (!raw) return {};

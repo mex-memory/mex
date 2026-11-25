@@ -1,12 +1,19 @@
 import { Command } from "commander";
 import { KnowledgeError } from "../knowledge/entry.js";
 import type { ReviewAction } from "./actions.js";
+import type { AgentReply } from "../filter/review-context.js";
+
+function replyContext(context?: AgentReply): string {
+  if (!context) return "";
+  const indent = (text: string) => text.split("\n").map(line => `  ${line}`).join("\n");
+  return `Typed quote\n${indent(context.quote)}\nAgent-written reply context\n${indent(context.text ?? "Unavailable")}\n`;
+}
 
 export function buildReviewCommand(): Command {
   const command = new Command("review").description("Review rules that need your decision")
     .option("--json", "Print the visible queue as JSON")
     .action(async opts => run(opts.json, async () => {
-      const { reviewQueue } = await import("./queue.js"), result = reviewQueue({ projectPath: process.cwd() });
+      const { reviewQueue } = await import("./queue.js"), result = reviewQueue({ projectPath: process.cwd() }, Date.now(), true);
       if (opts.json) { console.log(JSON.stringify({ ok: true, ...result })); return; }
       if (!result.items.length) { console.log("No rules waiting for Review."); return; }
       for (const [index, card] of result.items.entries()) {
@@ -14,7 +21,7 @@ export function buildReviewCommand(): Command {
           console.log(`${index + 1}. ${card.entry.text}\nContradicts ${card.conflictsWith.join(", ")}.\nKeep current: mex review keep ${card.id}\nUse proposal: mex review use ${card.id}\n`);
           continue;
         }
-        console.log(`${index + 1}. ${card.entry.text}\nAsking because ${card.reason.replace(/\.$/u, "")}.\n${card.checkedByModel ? "Checked by model.\n" : ""}Share: mex review share ${card.id}\nKeep for me: mex review keep ${card.id}\nEdit: mex review edit ${card.id} "corrected rule"\n`);
+        console.log(`${index + 1}. ${card.entry.text}\nAsking because ${card.reason.replace(/\.$/u, "")}.\n${card.checkedByModel ? "Checked by model.\n" : ""}${replyContext(card.agentContext)}Share: mex review share ${card.id}\nKeep for me: mex review keep ${card.id}\nEdit: mex review edit ${card.id} "corrected rule"\n`);
       }
       if (result.hidden) console.log(`${result.hidden} more will appear as these cards leave Review.`);
     }));
@@ -31,7 +38,7 @@ export function buildReviewCommand(): Command {
       if (result.applied && action !== "share") (await import("../knowledge/native-queue.js")).queueNativeRebuild(process.cwd());
       if (opts.json) console.log(JSON.stringify({ ok: true, ...result }));
       else if (result.applied) console.log(action === "share" ? "Shared in this working tree. Include the diff in your next commit." : action === "keep" ? result.preview.conflict ? "Kept the current entries." : "Kept for you. This claim will not return to Review." : action === "use" ? "Saved the proposal personally." : "Saved personally. Its checks must be recorded before sharing.");
-      else console.log(`${result.preview.message}\n${result.preview.diff}\nRepeat with --apply --expect ${result.preview.revision}`);
+      else console.log(`${result.preview.message}\n${replyContext(result.preview.agentContext)}${result.preview.diff}\nRepeat with --apply --expect ${result.preview.revision}`);
       });
     };
     if (action === "edit") child.action((card, text, opts) => perform(card, text, opts));

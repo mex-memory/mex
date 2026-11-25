@@ -20,10 +20,11 @@ import { recordChecks } from "../judge/native.js";
 import { repositoryPolicy, sharingEnabled } from "../filter/repository.js";
 import { backgroundEnvironment } from "../filter/environment.js";
 import { learningMetadata } from "../filter/metadata.js";
+import type { AgentReply } from "../filter/review-context.js";
 import { verifySources } from "../filter/publication.js";
 import { claimHash } from "../knowledge/state.js";
 import { entryProducer } from "../knowledge/producers.js";
-import { canonicalBytes, memberRevision, snapshotReview, type ReviewGroup } from "./queue.js";
+import { canonicalBytes, memberRevision, reviewAgentContext, snapshotReview, type ReviewGroup } from "./queue.js";
 import { legacyJudge, put, rows, storedItems, ReviewItem, REVIEW_VISIBLE } from "./state.js";
 
 export type ReviewAction = "share" | "keep" | "edit" | "use";
@@ -33,8 +34,8 @@ const ShareIntent = z.object({ version: z.literal(1), root: z.string().max(4096)
   group: z.object({ id: z.string(), entry: EntrySchema, reason: z.string(), sources: z.number(), createdAt: z.string(), expiresAt: z.string(), checkedByModel: z.boolean(),
     members: z.array(z.object({ row: z.object({ id: z.string(), project_id: z.string(), entry_id: z.string(), reason: z.string(), state: z.literal("pending"), created_at: z.string() }).strict(), item: ReviewItem, revision: z.string() }).strict()).min(1).max(10000) }).strict() }).strict();
 const intentKey = (revision: string) => `review.share.${revision.slice(7)}`;
-export interface ReviewPreview { id: string; action: ReviewAction; revision: string; diff: string; message: string; conflict?: true; }
-interface Prepared { preview: ReviewPreview; group: ReviewGroup; entry: KnowledgeEntry; team?: TeamPreview; at: Position; names?: string; notes: ReturnType<typeof readNotes>; }
+export interface ReviewPreview { id: string; action: ReviewAction; revision: string; diff: string; message: string; conflict?: true; agentContext?: AgentReply; }
+interface Prepared { preview: ReviewPreview; group: ReviewGroup; entry: KnowledgeEntry; team?: TeamPreview; at: Position; names?: string; contextProof?: string; notes: ReturnType<typeof readNotes>; }
 const stale = () => new KnowledgeError("STALE_PREVIEW", "Review inputs changed; preview the action again.");
 function trackedNames(root: string): string {
   return execFileSync("git", ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
@@ -61,7 +62,11 @@ async function prepare(selector: string, action: ReviewAction, text: string | un
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
   if (!reader) throw new KnowledgeError("NOT_FOUND", "There are no rules waiting for Review.");
   let group: ReviewGroup;
-  try { group = choose(snapshotReview(reader, project.projectId, project.location.home, project.root, deps.clock()), selector); }
+  let context: ReturnType<typeof reviewAgentContext>;
+  try {
+    group = choose(snapshotReview(reader, project.projectId, project.location.home, project.root, deps.clock()), selector);
+    if (action === "share") context = reviewAgentContext(reader, project.location, project.projectId, group);
+  }
   finally { reader.close(); }
   const notes = readNotes(project.location.home, project.projectId);
   let entry = group.entry, team: TeamPreview | undefined, names: string | undefined;
@@ -81,6 +86,7 @@ async function prepare(selector: string, action: ReviewAction, text: string | un
     if (entry.mex.source.quote !== text) throw new KnowledgeError("UNVERIFIED_SOURCE", "The correction's quote changed during validation.");
   }
   if (action === "share") {
+    if (context?.display.text === null) throw new KnowledgeError("UNVERIFIED_SOURCE", "The agent-written reply context is unavailable. Edit the rule in your own words or keep it personal.");
     if (projectIdentity(project.root).rootPath !== realPath(project.root)) throw stale();
     if (!(await deps.repository(project.root)).authorized) throw new KnowledgeError("TEAM_AUTHORITY", "Repository write access or a merged contribution could not be verified.");
     if (!entry.mex.checks.length || entry.mex.checks.some(c => c.kind === "legacy-grounding")) throw new KnowledgeError("CHECKS_REQUIRED", "The rule needs current code checks before it can be shared. Edit it or keep it personal.");
@@ -94,9 +100,9 @@ async function prepare(selector: string, action: ReviewAction, text: string | un
   }
   const after = serializeEntry(entry), path = `personal/notes/${entry.mex.id}.md`;
   const diff = team?.diff ?? canonicalFileDiff(path as RepoRelativePath, notes.files.get(entry.mex.id) ?? null, after);
-  const revision = hash(JSON.stringify({ project: project.projectId, root: project.root, action, group: groupRevision(group), after, team, notes: notes.digest, at, names }));
+  const revision = hash(JSON.stringify({ project: project.projectId, root: project.root, action, group: groupRevision(group), after, team, notes: notes.digest, at, names, context: context?.proof }));
   const message = action === "share" ? "Share this rule in the current working tree." : action === "keep" ? "Keep this rule personal; never ask about this claim again." : "Save this correction personally. Its checks must be recorded before sharing.";
-  return { preview: { id: group.id, action, revision, diff, message }, group, entry, team, notes, at, names };
+  return { preview: { id: group.id, action, revision, diff, message, ...(context ? { agentContext: context.display } : {}) }, group, entry, team, notes, at, names, contextProof: context?.proof };
 }
 function finish(writer: RecordWriter, project: string, prepared: Pick<Prepared, "group" | "entry">, action: ReviewAction): void {
   const { group, entry } = prepared;
@@ -187,6 +193,7 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
         const raw = readSource(project.root, path); if (raw === null || hash(raw) !== baseline) throw stale();
       }
       sourceProof(writer, project.projectId, current);
+      if (reviewAgentContext(writer, project.location, project.projectId, current)?.proof !== prepared.contextProof) throw stale();
     }
   };
   if (prepared.group.conflict) {
@@ -228,7 +235,8 @@ export async function reviewAction(selector: string, action: ReviewAction, optio
           validate(writer);
           // Persist the approved output before filesystem publication. A crash
           // can acknowledge only these exact bytes, never invent a new diff.
-          put(writer, project.projectId, intentKey(input.expect!), ShareIntent.parse({ version: 1, root: project.root, preview: prepared.preview, group: prepared.group }));
+          const { agentContext: _context, ...intentPreview } = prepared.preview;
+          put(writer, project.projectId, intentKey(input.expect!), ShareIntent.parse({ version: 1, root: project.root, preview: intentPreview, group: prepared.group }));
           writer.db.exec("COMMIT"); writer.db.exec("BEGIN IMMEDIATE"); validate(writer);
           applyTeamWrite(prepared.team!, prepared.team!.revision, { ...options, projectPath: project.root }, prepared.entry.mex.source.quote);
           finish(writer, project.projectId, prepared, action);

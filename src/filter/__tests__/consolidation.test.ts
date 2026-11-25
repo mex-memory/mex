@@ -59,6 +59,21 @@ it("drains a completed staged batch through the filter before finishing, without
   expect(JSON.parse(writer.setting(project, `learning.note.${notes()[0]!.mex.id}`)!)).toMatchObject({ sources: [{ quote: "Tests use vitest.", label: "lasting", source: { session: "s1", row: 1, at: old } }] });
   await apply(); expect(deps.model).toHaveBeenCalledTimes(1);
 });
+it("keeps the context proof when a plain repeat replaces the observation from the same session", async () => {
+  const first = candidate();
+  first.quote = "yes, 2";
+  first.source.reply_context_hash = hash("The second option uses vitest.");
+  batch("a".repeat(64), [first]); grouping([{ members: [0], target: null, relation: "duplicate" }]);
+  await apply();
+  const id = notes()[0]!.mex.id;
+  const repeat = candidate(first.text, first.source.session!, recent);
+  repeat.source.row = 2;
+  batch("b".repeat(64), [repeat]); grouping([{ members: [0], target: id, relation: "duplicate" }]);
+  await apply();
+  const meta = JSON.parse(writer.setting(project, `learning.note.${id}`)!);
+  expect(meta.sources).toEqual([{ quote: repeat.quote, label: "lasting", source: repeat.source }]);
+  expect(meta.context_source).toEqual({ quote: first.quote, label: "lasting", source: first.source });
+});
 it("classifies an explicit note under its original id and retains recorded checks", async () => {
   const original = note({ text: "Tests use vitest." }, { home, projectPath: root }, new Date(old));
   const id = original.entry.mex.id, before = snapshotNotes(writer, project);

@@ -10,6 +10,7 @@ import { shortHash } from "../../record/project.js";
 import { note } from "../../knowledge/store.js";
 import { serializeEntry, type KnowledgeEntry } from "../../knowledge/entry.js";
 import { teamEntry } from "../../knowledge/team.js";
+import { prepareShare } from "../../knowledge/share-plan.js";
 import { evaluate } from "../../judge/native.js";
 import { hash, position } from "../../judge/evidence.js";
 import { publishNext, stagePromotion, publicationReady, PUBLICATION_WAIT, type PublicationDependencies } from "../publication.js";
@@ -18,6 +19,9 @@ import { setLearningSharing } from "../../controls/index.js";
 import "../job.js";
 import { claimHash, saveTombstone } from "../../knowledge/state.js";
 import { stageReview, learningReviewId } from "../../review/state.js";
+import { reviewQueue } from "../../review/queue.js";
+import { reviewAction } from "../../review/actions.js";
+import { buildReviewCommand } from "../../review/cli.js";
 let suite: string, binary: string, base: string, root: string, home: string, project: string, writer: RecordWriter, hooks: DatabaseSync, job: JobRow;
 let entry: KnowledgeEntry, path: string, transcript: string, deps: Partial<PublicationDependencies>;
 const typed = "Tests use vitest because this project chose it.", at = "2026-11-15T10:00:00.000Z";
@@ -35,10 +39,10 @@ beforeAll(() => {
 }, 300_000);
 afterAll(() => rmSync(suite, { recursive: true, force: true }));
 beforeEach(async () => {
-  base = realpathSync(mkdtempSync(join(suite, "case-"))); root = join(base, "repo"); home = join(base, "home"); mkdirSync(root);
+  base = realpathSync(mkdtempSync(join(suite, "case-"))); root = join(base, "repo"); home = join(base, "user", ".mex"); mkdirSync(root);
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.test");
   writeFileSync(join(root, "package.json"), '{"scripts":{"test":"vitest"}}\n'); git("add", "."); git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture");
-  vi.stubEnv("MEX_HOME", home); vi.stubEnv("MEX_HOOK_BINARY", binary);
+  vi.stubEnv("MEX_HOME", join(base, "user")); vi.stubEnv("MEX_HOOK_BINARY", binary);
   writer = openRecord({ home, projectPath: root, isNetwork: () => false }); project = writer.checkout(root)!.project_id;
   writer.db.prepare("UPDATE projects SET shared=1 WHERE id=?").run(project);
   hooks = new DatabaseSync(join(writer.location.directory, "hooks.db"));
@@ -70,6 +74,45 @@ it("proves an early quote in a long session and shows the exact diff before addi
   expect(git("diff", "--cached", "--name-only")).toBe(""); expect(git("rev-parse", "HEAD")).toBe(head);
   expect(writer.db.prepare("SELECT id FROM notices WHERE kind LIKE 'learning-updated.%'").all()).toHaveLength(1);
   expect(await run()).toBeUndefined();
+});
+it("shows agent-written context in Review and requires that same context before sharing", async () => {
+  const reply = "The second option uses the existing test runner.", options = { home, projectPath: root };
+  writeFileSync(join(root, "README.md"), "Tests use the script in package.json.\n"); git("add", "README.md");
+  const original = readFileSync(transcript, "utf8");
+  const assistant = JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: reply } }) + "\n";
+  writeFileSync(transcript, assistant + original);
+  const value = meta();
+  value.sources[0].source.reply_context_hash = hash(reply);
+  value.context_source = value.sources[0];
+  saveMeta(value);
+  expect(await run()).toMatchObject({ results: 0, summary: "Learned entry stays personal: context-assisted" });
+  expect(saved()).toMatchObject({ state: "review", reason: "context-assisted" });
+  await run();
+  expect(existsSync(teamPath())).toBe(false);
+  expect(writer.db.prepare("SELECT id FROM notices WHERE kind LIKE 'learning-preview.%'").all()).toHaveLength(0);
+  expect(prepareShare(options).skipped).toContainEqual({ id: entry.mex.id, reason: "agent-written context needs Review" });
+
+  expect(reviewQueue(options, Date.now(), true).items[0]?.agentContext).toEqual({ quote: typed, text: reply });
+  const cwd = vi.spyOn(process, "cwd").mockReturnValue(root);
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    await buildReviewCommand().parseAsync([], { from: "user" });
+    expect(log.mock.calls[0]?.[0]).toContain(`Typed quote\n  ${typed}\nAgent-written reply context\n  ${reply}`);
+  } finally { log.mockRestore(); cwd.mockRestore(); }
+
+  const reviewDeps = { repository: deps.repository! };
+  const { preview } = await reviewAction("1", "share", options, {}, reviewDeps);
+  expect(preview.agentContext).toEqual({ quote: typed, text: reply });
+  expect(preview.diff).not.toContain(reply);
+  const outside = JSON.stringify({ type: "response_item", payload: { type: "web_search_call" } }) + "\n";
+  writeFileSync(transcript, assistant + outside + original);
+  await expect(reviewAction("1", "share", options, { apply: true, expect: preview.revision }, reviewDeps)).rejects.toMatchObject({ code: "UNVERIFIED_SOURCE" });
+  expect(existsSync(teamPath())).toBe(false);
+  expect(reviewQueue(options, Date.now(), true).items[0]?.agentContext).toEqual({ quote: typed, text: null });
+
+  writeFileSync(transcript, assistant + original);
+  expect((await reviewAction("1", "share", options, { apply: true, expect: preview.revision }, reviewDeps)).applied).toBe(true);
+  expect(readFileSync(teamPath(), "utf8")).toBe(serializeEntry(teamEntry(entry)));
 });
 it.each(["public", "unknown"] as const)("keeps %s session rules for Review", async visibility => {
   deps.repository = async () => ({ visibility, authorized: true }); expect((await run())?.summary).toContain("public-session");
