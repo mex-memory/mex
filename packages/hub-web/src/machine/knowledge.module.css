@@ -326,10 +326,6 @@ main:has(.page) {
   white-space: nowrap;
 }
 
-.forgottenBack {
-  width: fit-content;
-}
-
 .forgottenHeader {
   display: grid;
   gap: 6px;

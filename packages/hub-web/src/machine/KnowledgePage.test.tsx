@@ -8,7 +8,7 @@ const personal = "Validate checkout inputs at the API boundary";
 const team = "Keep the checkout total in integer cents";
 const hint = "Try the compact menu story when checking keyboard focus";
 
-function renderFixture(path = "/knowledge?fixture=home") {
+function renderFixture(path = "/knowledge?fixture=home&view=list") {
   window.history.replaceState(null, "", path);
   render(<BrowserRouter><MachineHub /></BrowserRouter>);
   return userEvent.setup();
@@ -59,7 +59,7 @@ describe("Knowledge fixtures", () => {
   });
 
   it("toggles status filtering from the bar and legend and clears it", async () => {
-    const user = renderFixture();
+    const user = renderFixture("/knowledge?fixture=home");
     const segment = await screen.findByRole("button", { name: "Filter by code changed (3 items)" });
     expect(segment).toHaveAttribute("aria-pressed", "false");
     await user.click(segment);
@@ -79,7 +79,7 @@ describe("Knowledge fixtures", () => {
   });
 
   it("debounces search, matches note text, and preserves the fixture in the URL", async () => {
-    const user = renderFixture();
+    const user = renderFixture("/knowledge?fixture=home");
     const search = await screen.findByRole("searchbox", { name: "Search knowledge" });
     await user.type(search, "declined-card");
     expect(params().has("q")).toBe(false);
@@ -107,7 +107,7 @@ describe("Knowledge fixtures", () => {
   });
 
   it("opens a scoped detail and shows its evidence, checks, use and history", async () => {
-    const user = renderFixture("/repos/storefront/knowledge?fixture=home");
+    const user = renderFixture("/repos/storefront/knowledge?fixture=home&view=list");
     const heading = await openItem(user, personal);
     const panel = detail(personal);
     expect(heading).toHaveFocus();
@@ -163,7 +163,7 @@ describe("Knowledge fixtures", () => {
   });
 
   it.each(["Use current", "Keep my edit", "Edit again"] as const)("resolves a stale edit with %s", async (action) => {
-    const user = renderFixture("/knowledge?fixture=conflict");
+    const user = renderFixture("/knowledge?fixture=conflict&view=list");
     await openItem(user, personal);
     await user.click(detail(personal).getByRole("button", { name: "Edit" }));
     const attempt = "Normalize the shipping address before validation.";

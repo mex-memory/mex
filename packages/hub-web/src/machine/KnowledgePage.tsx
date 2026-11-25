@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
-import { ArrowLeft, BookOpen, ChevronRight, Plus, Search } from "lucide-react";
+import { ArrowLeft, ArrowRight, BookOpen, ChevronRight, Plus, Search } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { KnowledgeAddDialog } from "./KnowledgeAddDialog";
 import { KnowledgeDate, KnowledgeDetailPanel } from "./KnowledgeDetail";
+import { KnowledgeKindGrid } from "./KnowledgeGroups";
 import { audienceLabels, kindLabels } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
@@ -68,10 +69,11 @@ function FilterMenu({ label, all, value, choices, onSelect }: {
   );
 }
 
-function KnowledgeSummary({ counts, total, active, onToggle }: {
+function KnowledgeSummary({ counts, total, active, browseHref, onToggle }: {
   counts: KnowledgeStatusCounts;
   total: number;
   active?: string;
+  browseHref?: string;
   onToggle: (status: string) => void;
 }) {
   const activeLegend = useRef<HTMLButtonElement>(null);
@@ -89,6 +91,9 @@ function KnowledgeSummary({ counts, total, active, onToggle }: {
             size="sm"
             variant="link"
           >Clear<span className={shared.srOnly}> status filter</span></Button>
+        )}
+        {browseHref && total > 0 && (
+          <Link className={shared.textLink} to={browseHref}>View all items <ArrowRight aria-hidden="true" /></Link>
         )}
       </div>
       <div aria-label="Filter by knowledge status" className={styles.segmentBar} role="group">
@@ -180,7 +185,7 @@ function ForgottenView({ items, repoNames, backHref, titleRef }: {
 }) {
   return (
     <div className={styles.page}>
-      <Link className={`${shared.textLink} ${styles.forgottenBack}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
+      <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
       <header className={styles.forgottenHeader}>
         <h1 className={shared.pageTitle} ref={titleRef} tabIndex={-1}>Forgotten</h1>
         <p className={shared.muted}>Forgotten items stay out of what MEX gives your agents. Their content isn’t shown here.</p>
@@ -214,6 +219,15 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const basePath = project ? `/repos/${encodeURIComponent(project.id)}/knowledge` : "/knowledge";
   const linkTo = (path: string, query = params) => `${path}${query.size ? `?${query}` : ""}`;
   const listHref = linkTo(basePath);
+  const landingParams = new URLSearchParams(params);
+  filterNames.forEach((name) => landingParams.delete(name));
+  landingParams.delete("view");
+  const allKnowledgeHref = linkTo(basePath, landingParams);
+  const browseParams = new URLSearchParams(landingParams);
+  browseParams.set("view", "list");
+  const browseHref = linkTo(basePath, browseParams);
+  const showList = Boolean(entryKey || params.get("view") === "list" || filterNames.some((name) => params.get(name)?.trim()));
+  const landing = showList ? undefined : knowledge.getLanding(project?.id);
   const q = params.get("q") ?? "";
   const [query, setQuery] = useState(q);
   const writtenQuery = useRef<string | null>(null);
@@ -252,11 +266,12 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const browser = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const previousKey = useRef<string | undefined>(undefined);
+  const previousList = useRef(showList);
   const firstNewRow = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     if (entryKey) {
-      if (narrow) window.scrollTo(0, 0);
+      if (narrow || !previousList.current) document.scrollingElement?.scrollTo(0, 0);
       detailTitle.current?.focus({ preventScroll: true });
     } else if (!browser.current?.contains(document.activeElement)) {
       const row = Array.from(browser.current?.querySelectorAll<HTMLAnchorElement>("[data-item-key]") ?? [])
@@ -264,7 +279,8 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
       (row ?? title.current)?.focus();
     }
     previousKey.current = entryKey;
-  }, [entryKey]);
+    previousList.current = showList;
+  }, [entryKey, showList]);
 
   useLayoutEffect(() => {
     if (firstNewRow.current !== null) {
@@ -297,15 +313,18 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     else next.delete("q");
     if (value) next.set(name, value);
     else next.delete(name);
+    if (!filterNames.some((filter) => next.has(filter))) next.set("view", "list");
     navigate(linkTo(basePath, next));
   }
 
   function clearFilters() {
-    const next = new URLSearchParams(params);
-    filterNames.forEach((name) => next.delete(name));
     setQuery("");
     searchInput.current?.focus();
-    navigate(linkTo(basePath, next));
+    navigate(browseHref);
+  }
+
+  function itemHref(item: KnowledgeItem, query = params) {
+    return linkTo(`${basePath}/${encodeURIComponent(item.key)}`, query);
   }
 
   function startAdd(event: MouseEvent<HTMLButtonElement>) {
@@ -327,6 +346,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         />
         <KnowledgeSummary
           active={activeStatus?.slug}
+          browseHref={showList ? undefined : browseHref}
           counts={first.statusCounts}
           onToggle={(slug) => changeFilter("status", activeStatus?.slug === slug ? "" : slug)}
           total={total}
@@ -336,28 +356,37 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
             <Search aria-hidden="true" />
             <Input aria-label="Search knowledge" onChange={(event) => setQuery(event.target.value)} placeholder="Search knowledge…" ref={searchInput} type="search" value={query} />
           </div>
-          <div className={styles.filters}>
+          {showList && <div className={styles.filters}>
             <FilterMenu all="All kinds" choices={kindOptions} label="Kind" onSelect={(value) => changeFilter("kind", value)} value={filters.kind} />
             <FilterMenu all="Everyone" choices={audienceOptions} label="Who sees it" onSelect={(value) => changeFilter("audience", value)} value={filters.audience} />
             <FilterMenu all="All statuses" choices={statusOptions} label="Status" onSelect={(value) => changeFilter("status", value)} value={activeStatus?.slug} />
             {!project && (
               <FilterMenu all="All repos" choices={projects.map(({ id, name }) => ({ value: id, label: name }))} label="Repo" onSelect={(value) => changeFilter("repo", value)} value={filters.repoId} />
             )}
-          </div>
+          </div>}
           <Link className={`${shared.textLink} ${styles.forgottenLink}`} to={linkTo(`${basePath}/forgotten`)}>
             Forgotten ({number.format(forgotten.length)})
           </Link>
         </div>
+        {showList && (
+          <Link className={`${shared.textLink} ${styles.back}`} to={allKnowledgeHref}><ArrowLeft aria-hidden="true" /> All knowledge</Link>
+        )}
         <span className={shared.srOnly} role="status">{notice}</span>
       </div>
-      <div className={styles.workspace}>
+      {landing?.groups.byKind.length ? (
+        <KnowledgeKindGrid groups={landing.groups.byKind} href={(kind, item) => {
+          const next = new URLSearchParams(params);
+          next.set("kind", kind);
+          return item ? itemHref(item, next) : linkTo(basePath, next);
+        }} />
+      ) : <div className={styles.workspace}>
         {items.length > 0 ? (
           <section aria-label="Knowledge items" className={styles.listCard}>
             <ul aria-label="Items" className={styles.rows} role="list">
               {items.map((item) => (
                 <KnowledgeRow
                   active={item.key === entryKey}
-                  href={linkTo(`${basePath}/${encodeURIComponent(item.key)}`)}
+                  href={itemHref(item)}
                   item={item}
                   key={item.key}
                   now={now}
@@ -409,19 +438,17 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
         ) : items.length > 0 && (
           <div className={styles.detailPlaceholder}><BookOpen aria-hidden="true" /><p>Select an item to read it.</p></div>
         )}
-      </div>
+      </div>}
       <KnowledgeAddDialog
         finalFocus={() => addTrigger.current?.isConnected ? addTrigger.current : false}
         key={addSession}
         onClose={() => setAddOpen(false)}
         onSave={(request) => {
           const { item } = knowledge.createNote(request);
-          const next = new URLSearchParams(params);
-          filterNames.forEach((name) => next.delete(name));
           setQuery("");
           addTrigger.current = null;
           setAddOpen(false);
-          navigate(linkTo(`${basePath}/${encodeURIComponent(item.key)}`, next));
+          navigate(itemHref(item, showList ? browseParams : params));
         }}
         open={addOpen}
         preferredRepo={filters.repoId}

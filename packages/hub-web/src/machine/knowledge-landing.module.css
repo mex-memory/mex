@@ -1,0 +1,132 @@
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 16px 18px;
+  color: var(--card-foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--knowledge-card-radius);
+}
+
+.cardHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cardHeading h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.cardHeading h2,
+.description,
+.groupItem > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardHeading > span,
+.description {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.description {
+  margin: 3px 0 0;
+  line-height: 1.4;
+}
+
+.groupStatus {
+  margin-block: 12px 8px;
+}
+
+.statusBar {
+  display: flex;
+  height: 8px;
+  gap: 2px;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.statusBar > span {
+  flex-basis: 0;
+}
+
+.statusCounts {
+  display: flex;
+  gap: 10px;
+  margin-top: 5px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.statusCounts > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.statusCounts svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 1.8;
+}
+
+.groupItems {
+  display: grid;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.groupItems > li {
+  min-width: 0;
+}
+
+.groupItem {
+  display: flex;
+  align-items: center;
+  min-height: 26px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+  text-decoration: none;
+  text-underline-offset: 3px;
+}
+
+.groupItem:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+}
+
+.groupMore {
+  width: fit-content;
+  min-height: 24px;
+  margin-top: auto;
+}
+
+@media (min-width: 700px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1100px) {
+  .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .card { padding: 14px 15px; }
+}
