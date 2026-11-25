@@ -26,8 +26,9 @@ export function readContinuityItems(reader: RecordReader | RecordWriter, project
   } catch { throw new KnowledgeError("INVALID_STATE", "Filtered continuity is invalid; it was kept private."); }
 }
 /** Called in the producer's transaction. Only position-proven sources cross. */
-export function stageContinuity(writer: RecordWriter, project: string, checkout: string, at: Position, candidates: FilterCandidate[], now = Date.now()): Set<FilterCandidate> {
-  const accepted = new Set<FilterCandidate>(), branch = at.branch?.startsWith("refs/heads/") ? at.branch.slice(11) : undefined;
+export function stageContinuity<T extends Pick<FilterCandidate, "label" | "text" | "source">>(writer: RecordWriter, project: string, checkout: string,
+  at: Position, candidates: readonly T[], now = Date.now()): Set<T> {
+  const accepted = new Set<T>(), branch = at.branch?.startsWith("refs/heads/") ? at.branch.slice(11) : undefined;
   if (!branch || !at.head) return accepted;
   const existing = readContinuityItems(writer, project, checkout, branch);
   const items = new Map((existing?.items ?? []).filter(i => now - Date.parse(i.at) < CONTINUITY_TTL && Date.parse(i.at) <= now).map(i => [i.id, i]));

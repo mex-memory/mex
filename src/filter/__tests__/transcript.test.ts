@@ -42,6 +42,21 @@ function toolRows(agent: Agent): unknown[] {
 const jsonl = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join("\n");
 const captured = (text: string, row = 1): Message => ({ id: `m${row}`, row, session: "s", at: "2000-01-01T00:00:00Z", text, marks: "", previous_reply: null, delivered: [] });
 
+it.each(["design", "tail600", "full"] as const)("returns only visible numbered options from actual reply rows in %s mode", mode => {
+  const path = transcript("codex");
+  const message = captured("yes, 2");
+  const earlier = jsonl([turn("codex", "user", "🦊 Show choices")]) + "\n";
+  const options = "1. Share the cache.\n**2.** Keep the cache local.";
+  writeFileSync(path, earlier + jsonl([turn("codex", "assistant", options), turn("codex", "user", message.text)]));
+  expect(replyContexts(path, "codex", [message], mode, { includeOptions: true, notes: ["Share the cache."] })).toBeUndefined();
+  expect(message.previous_options).toEqual([{ row: Buffer.byteLength(earlier), option: 2, text: "**2.** Keep the cache local." }]);
+  const web = { type: "response_item", payload: { type: "web_search_call" } };
+  writeFileSync(path, jsonl([turn("codex", "assistant", options), web, turn("codex", "user", message.text)]));
+  expect(replyContexts(path, "codex", [message], mode, { includeOptions: true })).toBeUndefined();
+  expect(message.previous_options).toEqual([]);
+  expect(message.previous_reply).toBeNull();
+});
+
 it.each(["claude", "codex"] as const)("finds an early reply and verifies its typed quote in a 6 MiB %s transcript", agent => {
   const path = transcript(agent);
   const options = "1. Keep the old parser.\n2. Use the new parser.";

@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openRecord, openRecordReadOnly, type RecordWriter } from "../../record/index.js";
-import { enqueueJob, listJobs, registerJobKind, runOneBatch, requeueReadyJobs, type JobRow } from "../../record/jobs.js";
+import { enqueueJob, listJobs, registerJobKind, requestJob, runOneBatch, requeueReadyJobs, type JobRow } from "../../record/jobs.js";
 import { shortHash } from "../../record/project.js";
 import { formatStatus, readStatus } from "../../status.js";
 import { ModelWaitError, runModel, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
@@ -17,9 +17,12 @@ import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
 import { note } from "../../knowledge/store.js";
 import { serializeEntry } from "../../knowledge/entry.js";
 import { createFilterKind, readFilterBatch, type FilterDependencies } from "../job.js";
-import { acknowledgeTyped, filterInput, type FilterInput, type FilterParams, type ScanWindow } from "../input.js";
+import { acknowledged, acknowledgeTyped, filterInput, FILTER_LIMITS, type FilterInput, type FilterParams, type ScanWindow } from "../input.js";
 import { filterPending, queuePendingFilters } from "../pending.js";
 import { replyContexts } from "../transcript.js";
+import { readContinuityItems } from "../continuity.js";
+import { readStageOneBatch } from "../stage-one.js";
+import { verbatimNote } from "../verdicts.js";
 
 // Extraction tests exercise the staging seam; consolidation has its own integration fixtures.
 vi.mock("../consolidation.js", () => ({ consolidateNext: async () => undefined }));
@@ -532,6 +535,137 @@ function codexTranscript(session: string, content: string): string {
 }
 
 const codexRow = (role: "user" | "assistant", content: string) => JSON.stringify({ type: "response_item", payload: { type: "message", role, content } });
+
+describe("finished-session verdicts", () => {
+  const batchInput = (request: ModelRequest): Pick<FilterInput, "messages" | "delivered_notes"> => inputOf(request);
+  const stageBatch = (first: number) => readStageOneBatch(writer, project, root, first);
+  function stageModel(label: (messages: FilterInput["messages"]) => unknown[]) {
+    deps.stageOne = true;
+    deps.model = vi.fn(async request => {
+      calls.push(request);
+      return { selectedModel: "fixture-cheap", usage, text: JSON.stringify({ verdicts: label(batchInput(request).messages) }) };
+    });
+  }
+  const received = () => calls.map(request => batchInput(request).messages.map(message => message.text));
+
+  it("makes a single cheap request per finished session and excludes active and non-person rows", async () => {
+    const text = "For this release, keep uploads local.", first = add("ended", text, { finished: true });
+    add("idle", "An old session with no finish receipt");
+    const other = add("other", "Run the tests now", { finished: true });
+    const pasted = add("ended", "Text from somewhere else", { marks: "pasted", finished: true });
+    add("ended", "Use a smaller fixture", { finished: true });
+    stageModel(messages => messages.map(({ id, text }) => text.startsWith("For this release")
+      ? { id, verdict: "candidate", quote: text, kind: "instruction", lasts: "release", marker: "For this release", reason: null }
+      : { id, verdict: "task" }));
+    deps.recordChecks = vi.fn(recordChecks);
+    const id = queue();
+    expect((await run(id)).results).toBe(2);
+    expect((await run(id)).results).toBe(3);
+    expect((await run(id)).state).toBe("done");
+    expect(received()).toEqual([[text, "Use a smaller fixture"], ["Run the tests now"]]);
+    expect(calls.every(request => request.role === "cheap" && request.automatic)).toBe(true);
+    expect(stageBatch(first)).toMatchObject({ skipped: [pasted], verdicts: [{ verdict: "candidate" }, { verdict: "task" }] });
+    expect(verbatimNote(stageBatch(first)!.verdicts[0]!)).toEqual({ lasts: "release", text: "[you said, " + old.slice(0, 10) + '] "' + text + '"' });
+    expect(stageBatch(other)?.verdicts).toEqual([{ id: "m" + other, verdict: "task" }]);
+    expect(writer.setting(project, "journal.consumed")).toBe(String(first));
+    expect(acknowledged(writer, project, "idle")).toBe(0);
+    expect(deps.recordChecks).not.toHaveBeenCalled();
+    expect(batches()).toEqual([]);
+    expect(readdirSync(root)).toEqual(["package.json"]);
+  });
+
+  it("keeps valid rows and retries only missing IDs across a cancelled and recreated job", async () => {
+    const first = add("ended", "First", { finished: true }), missing = add("ended", "Missing at first", { finished: true });
+    const unresolved = add("ended", "Never returned", { finished: true }), last = add("ended", "Last", { finished: true });
+    stageModel(messages => messages.filter(message => !["Missing at first", "Never returned"].includes(message.text))
+      .map(({ id }) => ({ id, verdict: "none" })));
+    const id = queue();
+    expect((await run(id)).results).toBe(2);
+    expect(stageBatch(first)).toMatchObject({ retry: [missing, unresolved], unresolved: [], verdicts: [{ id: "m" + first }, { id: "m" + last }],
+      attempts: [{ coverage: { missing: 2 } }] });
+    expect(acknowledged(writer, project, "ended")).toBe(0);
+    expect(writer.setting(project, "journal.consumed")).toBeUndefined();
+    expect(requestJob(writer, id, "cancel").state).toBe("cancelled");
+    stageModel(messages => messages.filter(message => message.text === "Missing at first").map(({ id }) => ({ id, verdict: "unsure" })));
+    const retry = queue();
+    expect((await run(retry)).results).toBe(1);
+    expect((await run(retry)).state).toBe("done with gaps");
+    expect(received()).toEqual([["First", "Missing at first", "Never returned", "Last"], ["Missing at first", "Never returned"]]);
+    expect(stageBatch(first)).toMatchObject({ retry: [], unresolved: [unresolved],
+      verdicts: [{ id: "m" + first, verdict: "none" }, { id: "m" + missing, verdict: "unsure" }, { id: "m" + last, verdict: "none" }],
+      attempts: [{ coverage: { missing: 2 } }, { coverage: { missing: 1 } }] });
+    expect(writer.setting(project, "journal.consumed")).toBe(String(last));
+  });
+
+  it("does not silently acknowledge rows beyond the per-call limit", async () => {
+    const ids = Array.from({ length: FILTER_LIMITS.messages + 1 }, (_, index) => add("long", "Prompt " + index, { finished: true }));
+    stageModel(messages => messages.map(({ id }) => ({ id, verdict: "none" })));
+    const id = queue();
+    await run(id);
+    expect(stageBatch(ids[0]!)?.rows).toEqual(ids.slice(0, FILTER_LIMITS.messages));
+    expect(acknowledged(writer, project, "long")).toBe(ids.at(-2));
+    await run(id);
+    expect(stageBatch(ids.at(-1)!)?.rows).toEqual(ids.slice(-1));
+    expect(received().map(messages => messages.length)).toEqual([FILTER_LIMITS.messages, 1]);
+  });
+
+  it("retains a verified option pointer and keeps the agent's reply out of the batch", async () => {
+    const typed = "Yes, option 2", options = "1. Use the shared cache\n2. Keep the cache local";
+    const file = codexTranscript("options", [codexRow("assistant", options), codexRow("user", typed)].join("\n"));
+    const first = add("options", typed, { finished: true, transcript: file });
+    stageModel(([message]) => {
+      expect(message?.previous_options).toMatchObject([{ row: 0, option: 1 }, { row: 0, option: 2 }]);
+      return [{ id: message!.id, verdict: "candidate", kind: "approval", lasts: "repo", quote: typed, marker: null, reason: null, approval: { row: 0, option: 2 } }];
+    });
+    await run(queue());
+    const saved = stageBatch(first);
+    expect(saved?.verdicts).toMatchObject([{ outcome: "unsure", approval: { row: 0, option: 2 } }]);
+    expect(JSON.stringify(saved)).not.toContain("Keep the cache local");
+  });
+
+  it("carries a next-session verdict via the existing position-guarded continuity", async () => {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe" }).trim();
+    git("init", "-q", "-b", "work");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture");
+    const typed = "Continue the parser migration next session.";
+    add("ended", typed, { finished: true });
+    const path = join(writer.location.directory, "filter-sessions", shortHash(project + "\0ended") + ".json");
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), branch: "work", head: git("rev-parse", "HEAD"), position_at: old }));
+    stageModel(messages => messages.map(({ id, text }) => ({ id, verdict: "next-session", quote: text })));
+    await run(queue());
+    expect(readContinuityItems(writer, project, root, "work")?.items).toMatchObject([{ text: typed }]);
+  });
+
+  it("discards in-flight verdicts if typed-learning consent changes", async () => {
+    const first = add("ended", "A decision", { finished: true });
+    stageModel(messages => {
+      writer.db.prepare("DELETE FROM settings WHERE scope='global' AND key='learning.statements'").run();
+      return messages.map(({ id }) => ({ id, verdict: "none" }));
+    });
+    const id = queue();
+    expect((await run(id)).results).toBe(0);
+    expect(stageBatch(first)).toBeUndefined();
+    expect(acknowledged(writer, project, "ended")).toBe(0);
+    expect((await run(id)).state).toBe("done");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("keeps a stable response when a different session finishes during its request", async () => {
+    const earlier = add("earlier", "One session", { finished: false });
+    const later = add("later", "Another session", { finished: true });
+    const path = join(writer.location.directory, "filter-sessions", shortHash(project + "\0earlier") + ".json");
+    stageModel(messages => {
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), finished: true }));
+      return messages.map(({ id }) => ({ id, verdict: "none" }));
+    });
+    const id = queue();
+    expect((await run(id)).results).toBe(1);
+    expect(stageBatch(later)?.verdicts).toEqual([{ id: "m" + later, verdict: "none" }]);
+    expect((await run(id)).results).toBe(2);
+    expect(stageBatch(earlier)?.verdicts).toEqual([{ id: "m" + earlier, verdict: "none" }]);
+    expect(received()).toEqual([["Another session"], ["One session"]]);
+  });
+});
 
 it("records completed filter counts in the job summary and checkout status", async () => {
   const first = "Use the other option.", next = "Tests use vitest.", outside = JSON.stringify({ type: "response_item", payload: { type: "web_search_call" } });
