@@ -429,11 +429,16 @@ function allTypeScriptFiles(): string[] {
 const TELEMETRY_COMPOSITION_ROOTS = ["src/cli.ts", "src/hub/command.ts"];
 // The machine worker and its existing writer use the counter/reporting layers;
 // neither accepts Wiki arguments. The update notice is a separate bounded
-// network operation at the bare interactive CLI entry point.
-const TELEMETRY_INFRASTRUCTURE_IMPORTS: Readonly<Record<string, string>> = {
-  "src/cli.ts": "src/telemetry/updates.js",
-  "src/record/background.ts": "src/telemetry/reporting.js",
-  "src/record/jobs.ts": "src/telemetry/store.js",
+// network operation at the bare interactive CLI entry point. The terminal and
+// the Hub's Settings page share the on/off switch; Settings also reads the
+// policy and the acknowledged reports. None of these can capture an event.
+const TELEMETRY_INFRASTRUCTURE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
+  "src/cli.ts": ["src/telemetry/updates.js", "src/telemetry/preference.js"],
+  "src/record/background.ts": ["src/telemetry/reporting.js"],
+  "src/record/jobs.ts": ["src/telemetry/store.js"],
+  "src/hub/machine/settings-writes.ts": ["src/telemetry/preference.js"],
+  "src/hub/machine/settings-values.ts": ["src/telemetry/policy.js"],
+  "src/hub/machine/settings-snapshot.ts": ["src/telemetry/store.js"],
 };
 
 function findTelemetryLeaks(path: string, source: string): string[] {
@@ -443,7 +448,7 @@ function findTelemetryLeaks(path: string, source: string): string[] {
   for (const specifier of importSpecifiers(code)) {
     const resolved = resolveSpecifier(path, specifier);
     if (!resolved.startsWith("src/telemetry/") || resolved === "src/telemetry/schema.js") continue;
-    if (TELEMETRY_INFRASTRUCTURE_IMPORTS[path] === resolved) continue;
+    if (TELEMETRY_INFRASTRUCTURE_IMPORTS[path]?.includes(resolved)) continue;
     if (resolved !== "src/telemetry/index.js" || !TELEMETRY_COMPOSITION_ROOTS.includes(path)) {
       violations.push(`${path} imports ${resolved}; telemetry must use the CLI/Hub projection`);
     }
@@ -462,7 +467,8 @@ describe("telemetry keeps Wiki arguments behind the shared projection", () => {
   });
 
   it("checks the real production capture entry points", () => {
-    const callers = FILES.filter((path) => importSpecifiers(withoutComments(read(path)))
+    // Telemetry's own modules are exempt here, as in findTelemetryLeaks.
+    const callers = FILES.filter((path) => !path.startsWith("src/telemetry/") && importSpecifiers(withoutComments(read(path)))
       .some((specifier) => resolveSpecifier(path, specifier) === "src/telemetry/index.js"));
     expect(callers.sort()).toEqual([...TELEMETRY_COMPOSITION_ROOTS].sort());
     expect(read("src/cli.ts")).toContain("createCliTelemetry(captureEvent, flush,");

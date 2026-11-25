@@ -21,14 +21,24 @@ export const AGENT_COMMANDS: Record<Agent, string> = { "claude-code": "claude", 
 export const FAILURE_BLOCKS: ReadonlySet<Agent> = new Set(["copilot"]);
 export const CODEX_TRUST_NOTICE = "In Codex, review and trust MEX's hooks once: /hooks in the CLI, or Review hooks beside the message box in the app. Until then Codex skips them.";
 
+const SETTINGS: Record<Agent, { variable: string; directory: string; file: string }> = {
+  "claude-code": { variable: "CLAUDE_CONFIG_DIR", directory: ".claude", file: "settings.json" },
+  codex: { variable: "CODEX_HOME", directory: ".codex", file: "hooks.json" },
+  copilot: { variable: "COPILOT_HOME", directory: ".copilot", file: "hooks.json" },
+};
+
+export function agentSettingsPath(agent: Agent, user: string, env: NodeJS.ProcessEnv): string {
+  const { variable, directory, file } = SETTINGS[agent];
+  const override = env[variable]?.trim();
+  if (override && !isAbsolute(override)) throw new Error(variable + " must name an absolute user configuration directory.");
+  return join(override || join(user, directory), file);
+}
+
 export function agentSettings(user: string, env: NodeJS.ProcessEnv): Record<Agent, string> {
-  for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME"]) {
-    if (env[key]?.trim() && !isAbsolute(env[key]!.trim())) throw new Error(`${key} must name an absolute user configuration directory.`);
-  }
   return {
-    "claude-code": join(env.CLAUDE_CONFIG_DIR?.trim() || join(user, ".claude"), "settings.json"),
-    codex: join(env.CODEX_HOME?.trim() || join(user, ".codex"), "hooks.json"),
-    copilot: join(env.COPILOT_HOME?.trim() || join(user, ".copilot"), "hooks.json"),
+    "claude-code": agentSettingsPath("claude-code", user, env),
+    codex: agentSettingsPath("codex", user, env),
+    copilot: agentSettingsPath("copilot", user, env),
   };
 }
 
@@ -101,6 +111,37 @@ function ownedHandler(ownedCommands: readonly HookCommand[]): (handler: unknown)
       || (typeof handler.commandWindows === "string" && handler.commandWindows.startsWith(`${windowsPrefix} `))
       || (typeof handler.bash === "string" && handler.bash.startsWith(`${shellPrefix} `))
       || (typeof handler.powershell === "string" && handler.powershell.startsWith(`${windowsPrefix} `));
+  }));
+}
+
+/** Inspect only MEX's definitions, including flat Copilot events and nested matcher groups. */
+export function ownedHookGroups(settings: ObjectValue, commands: readonly HookCommand[]): Record<string, unknown[]> {
+  const owns = ownedHandler(commands);
+  const groups: Record<string, unknown[]> = Object.create(null);
+  if (!object(settings.hooks)) return groups;
+  for (const [event, entries] of Object.entries(settings.hooks)) {
+    const matches = (entries as unknown[]).flatMap(entry => {
+      if (!object(entry)) return [];
+      if (!Array.isArray(entry.hooks)) return owns(entry) ? [entry] : [];
+      const hooks = entry.hooks.filter(owns);
+      return hooks.length ? [{ ...entry, hooks }] : [];
+    });
+    if (matches.length) groups[event] = matches;
+  }
+  return groups;
+}
+
+/** Compare hook definitions without depending on JSON property order or unrelated handlers. */
+export function registeredHookEvents(settings: ObjectValue, agent: Agent, command: HookCommand, platform: NodeJS.Platform): Set<string> {
+  const expected = ownedHookGroups(parseSettings(installSettings(null, agent, command, platform)), [command]);
+  const actual = ownedHookGroups(settings, [command]);
+  return new Set(EVENTS[agent].filter(event => {
+    const desired = expected[event][0];
+    return (actual[event] ?? []).some(group => {
+      if (agent === "copilot") return settings.version === 1 && canonical(group) === canonical(desired);
+      if (!object(group) || !Array.isArray(group.hooks) || (group.matcher !== undefined && group.matcher !== "")) return false;
+      return group.hooks.some(handler => canonical(handler) === canonical((desired as { hooks: unknown[] }).hooks[0]));
+    });
   }));
 }
 

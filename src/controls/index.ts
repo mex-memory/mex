@@ -15,14 +15,16 @@ export function offDeadline(duration: string, now = Date.now()): string {
 }
 
 /** Change only the registered checkout; never register a repo as a side effect. */
-export function setCheckoutEnabled(writer: RecordWriter, directory: string, enabled: boolean, until: string | null = null): CheckoutRow {
+export function setCheckoutEnabled(writer: RecordWriter, directory: string, enabled: boolean, until: string | null = null, check?: (current: CheckoutRow) => void): CheckoutRow {
   if (until !== null && (enabled || !Number.isFinite(Date.parse(until)))) throw new Error("Invalid off deadline.");
   let previous: CheckoutRow | undefined;
   writer.db.exec("BEGIN IMMEDIATE");
   try {
-    previous = writer.checkout(directory);
-    if (!previous) throw new Error("MEX is not registered here. Run `mex` first.");
-    const next: CheckoutRow = { ...previous, state: enabled ? "on" : until ? "off until" : "off", off_until: until };
+    const current = writer.checkout(directory);
+    if (!current) throw new Error("MEX is not registered here. Run `mex` first.");
+    check?.(current);
+    previous = current;
+    const next: CheckoutRow = { ...current, state: enabled ? "on" : until ? "off until" : "off", off_until: until };
     writer.db.prepare("UPDATE checkouts SET state=?,off_until=? WHERE path=?").run(next.state, next.off_until, next.path);
     writeHookCheckout(next, writer.location.directory);
     writer.db.exec("COMMIT");
@@ -37,14 +39,14 @@ export function setCheckoutEnabled(writer: RecordWriter, directory: string, enab
 }
 
 /** A separate global switch never clears checkout or session choices. */
-export function setGlobalEnabled(writer: RecordWriter, enabled: boolean): void {
-  setPolicy(writer, "global", "enabled", enabled);
+export function setGlobalEnabled(writer: RecordWriter, enabled: boolean, check?: () => void): void {
+  setPolicy(writer, "global", "enabled", enabled, check);
 }
 
-export function setCaptureEnabled(writer: RecordWriter, enabled: boolean, directory?: string): string {
+export function setCaptureEnabled(writer: RecordWriter, enabled: boolean, directory?: string, check?: (scope: string) => void): string {
   const scope = directory === undefined ? "global" : writer.checkout(directory)?.project_id;
   if (!scope) throw new Error("MEX is not registered here. Run `mex` first.");
-  setPolicy(writer, scope, "capture.enabled", enabled);
+  setPolicy(writer, scope, "capture.enabled", enabled, check);
   return scope;
 }
 
@@ -55,11 +57,11 @@ export function setDeliveryScorer(writer: RecordWriter, value: string, directory
   setPolicy(writer, scope, "delivery.scorer", value);
   return scope;
 }
-export function setLearningSharing(writer: RecordWriter, value: string, directory: string): string {
+export function setLearningSharing(writer: RecordWriter, value: string, directory: string, check?: (scope: string) => void): string {
   if (!["automatic", "manual"].includes(value)) throw new Error("Use automatic or manual for learning.sharing.");
   const project = writer.checkout(directory)?.project_id;
   if (!project) throw new Error("MEX is not registered here. Run mex first.");
-  setPolicy(writer, project, "learning.sharing", value);
+  setPolicy(writer, project, "learning.sharing", value, check);
   return project;
 }
 
@@ -88,16 +90,20 @@ export function setLedgerHoldout(writer: RecordWriter, enabled: boolean): void {
     enabled ? (previous && /^[0-9a-f]{32}$/u.test(previous) ? previous : randomBytes(16).toString("hex")) : "");
 }
 
-function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string | ((previous: string | undefined) => string)): void {
+function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string | ((previous: string | undefined) => string), check?: (scope: string) => void): void {
   writer.db.exec("BEGIN IMMEDIATE");
+  let changed = false;
   try {
+    check?.(scope);
     const value = typeof enabled === "function" ? enabled(writer.setting(scope, key)) : String(enabled);
     writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
       .run(scope, key, value);
+    changed = true;
     publishControlMirrors(writer.db, writer.location, scope);
     writer.db.exec("COMMIT");
   } catch (error) {
     writer.db.exec("ROLLBACK");
+    if (check && !changed) throw error;
     // After rollback, publish only from a fresh locked snapshot. Other commands
     // may already have made another choice while the filesystem was unavailable.
     writer.db.exec("BEGIN IMMEDIATE");

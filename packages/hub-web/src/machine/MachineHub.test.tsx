@@ -58,6 +58,7 @@ function mockHub({ anonymous = false, projectList = projects, session = liveSess
       case "/api/v1/session": return readSession();
       case "/api/v1/projects": return readProjects();
       case "/api/v1/jobs": return Response.json([]);
+      case "/api/v1/agents": return Response.json({ agents: [] });
       case "/api/v1/session/heartbeat": return heartbeat();
       default: throw new Error(`Unexpected request: ${url}`);
     }
@@ -147,6 +148,8 @@ describe("machine Hub", () => {
       screen.getByRole("link", { name: "Review" }),
       screen.getByRole("link", { name: "Knowledge" }),
       screen.getByRole("link", { name: "Jobs" }),
+      screen.getByRole("link", { name: "Agents" }),
+      screen.getByRole("link", { name: "Settings" }),
     ]);
     await user.selectOptions(switcher, "repo-birch");
     expect(window.location.pathname).toBe("/repos/repo-birch");

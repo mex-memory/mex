@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { build } from "tsup";
@@ -93,6 +93,15 @@ describe("the background process, for real", () => {
     await until(() => job(queued.id).state, state => state === "done");
     expect(resultRows(queued.id)).toEqual([...Array(8).keys()]);
   });
+  it.skipIf(process.platform === "win32")("exits and leaves the selected home absent after it is deleted", async () => {
+    const active = start();
+    if (!active.started) throw new Error("The fixture daemon did not start.");
+    await until(() => lease().pid, pid => pid === active.pid);
+    rmSync(writer.location.home, { recursive: true });
+    await until(() => alive(active.pid), running => !running);
+    expect(existsSync(writer.location.home)).toBe(false);
+  });
+
   it.each([1, 3, 5])("killed hard during batch %i leaves no partial batch and redoes at most one", async (killAt) => {
     const trace = join(home, "trace.txt");
     const queued = queueDemo({ batches: 8, delayMs: 300, traceFile: trace });

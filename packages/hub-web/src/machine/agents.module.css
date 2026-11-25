@@ -1,0 +1,444 @@
+main:has(.page) {
+  background: var(--canvas-raised);
+}
+
+.page {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+  container-type: inline-size;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.card {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+.cardHeader,
+.identity,
+.cardFooter {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.cardHeader {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 16px 18px 12px;
+}
+
+.identity {
+  gap: 10px;
+}
+
+.identity h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.glyph {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.glyph svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.65;
+}
+
+.state.state {
+  align-items: center;
+  justify-self: start;
+  gap: 4px;
+  height: auto;
+  min-height: 23px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.state svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.state[data-state="working"] {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: var(--success-border);
+}
+
+.state[data-state="needsRepair"],
+.state[data-state="needsApproval"] {
+  color: color-mix(in oklch, var(--warning), var(--foreground) 24%);
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+}
+
+.card[data-agent-state="notFound"] .identity,
+.card[data-agent-state="notFound"] dd,
+.state[data-state="notFound"] {
+  color: var(--muted-foreground);
+}
+
+.facts {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  margin: 0 18px;
+  padding: 13px 0 15px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) minmax(0, 3fr);
+  gap: 10px;
+}
+
+.facts dt {
+  color: var(--muted-foreground);
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--text-secondary);
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+.facts code {
+  padding: 1px 4px;
+  color: var(--foreground);
+  background: var(--muted);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.hookHint {
+  white-space: nowrap;
+}
+
+.timeTrigger {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: none;
+  text-decoration: underline dotted color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+.errorTime {
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.cardFooter {
+  justify-content: flex-end;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.cardFooter [data-slot="button"],
+.detailHeading [data-slot="button"] {
+  font-size: 13px;
+}
+
+.detailsLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 550;
+  text-decoration: none;
+  text-underline-offset: 3px;
+}
+
+.detailsLink:hover {
+  color: var(--link);
+  text-decoration: underline;
+}
+
+.detailsLink svg {
+  width: 13px;
+  height: 13px;
+}
+
+@container (max-width: 565px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 720px) {
+  .grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .cardHeader { padding-inline: 14px; }
+  .facts { margin-inline: 14px; }
+  .cardFooter { padding: 4px 14px; }
+  .cardFooter :is(a, button) { min-height: 44px; }
+}
+
+.detailHeader,
+.detailSide {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 14px;
+}
+
+.detailHeader > a {
+  width: fit-content;
+  min-height: 20px;
+}
+
+.detailHeading,
+.detailTitle {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.detailHeading {
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.detailTitle {
+  gap: 9px 12px;
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+.panelHeader {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 15px 17px;
+}
+
+.panelHeader h2,
+.approval h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.panelHeader span,
+.panelNote {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.panelNote {
+  margin: 0;
+  padding: 11px 17px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.hookRows,
+.fileRows,
+.errorRows {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hookRows li,
+.fileRows li,
+.errorRows li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 9px 17px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.hookRows code,
+.fileRows code,
+.approval code {
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.hookState,
+.fileMeta span,
+.fileGroup h3 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hookState {
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.hookState svg,
+.fileMeta svg,
+.fileGroup h3 svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.hookState[data-state="installed"] { color: var(--success); }
+.hookState[data-state="missing"] { color: var(--warning); }
+
+.fileGroup h3 {
+  margin: 0;
+  padding: 7px 17px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.fileRows li {
+  min-height: 60px;
+}
+
+.fileRows li > div {
+  min-width: 0;
+}
+
+.fileMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.errorRows li { flex-wrap: wrap; }
+.errorRows time {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.approval {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 15px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-lg);
+  background: var(--warning-soft);
+}
+
+.approval > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--warning);
+}
+
+.approval p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@container (max-width: 630px) {
+  .detailGrid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 720px) {
+  .fileRows [data-slot="button"] { width: 44px; height: 44px; }
+  .detailHeader > a { min-height: 36px; }
+}
+
+.repairFiles {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repairFiles li {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.repairFiles li > code {
+  color: var(--text-secondary);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.repairStatus {
+  align-self: center;
+  margin-inline-end: auto;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}

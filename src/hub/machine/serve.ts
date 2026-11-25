@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cliEntryPath } from "../../hooks/shim/launcher.js";
 import { openRecord } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
 import { VERSION } from "../../version.js";
@@ -48,7 +49,8 @@ export async function startMachineHub(options: StartMachineHubOptions): Promise<
   const sessions = new HubSessions(home, options.now);
   const assetRoot = options.assetRoot === undefined ? defaultAssetRoot() : options.assetRoot;
   const assets = assetRoot !== null && existsSync(assetRoot) ? new HubAssetManifest(assetRoot) : undefined;
-  const app = createMachineHubApp({ ...location, sessions, homeId, version: VERSION, mode: options.mode, assets, env: options.env, now: options.now });
+  const agentEntry = cliEntryPath(fileURLToPath(new URL("./cli.js", import.meta.url)));
+  const app = createMachineHubApp({ ...location, sessions, homeId, version: VERSION, mode: options.mode, assets, env: options.env, now: options.now, agentEntry });
 
   let server: RunningHubNodeServer | undefined;
   let lastError: unknown;
@@ -87,10 +89,13 @@ export async function startMachineHub(options: StartMachineHubOptions): Promise<
       if (closed) return;
       closed = true;
       app.close();
-      try {
-        const cleanup = openRecord(location);
-        try { clearBound(cleanup, bound.pid, bound.port); } finally { cleanup.close(); }
-      } catch { /* the row is advisory: a reader checks the pid and the handshake */ }
+      // Deleting the selected home while the listener is open should leave it absent.
+      if (existsSync(home)) {
+        try {
+          const cleanup = openRecord({ ...location, create: false });
+          try { clearBound(cleanup, bound.pid, bound.port); } finally { cleanup.close(); }
+        } catch { /* the row is advisory: a reader checks the pid and the handshake */ }
+      }
       await running.close();
     },
   };

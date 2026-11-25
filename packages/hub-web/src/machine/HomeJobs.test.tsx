@@ -415,6 +415,7 @@ function liveHub(path = "/", overview?: HomeOverview) {
     if (url === "/api/v1/review?limit=1") return Response.json({ total: 0, byRepo: {} });
     if (url.startsWith("/api/v1/home?")) return getHome(url);
     if (url.includes("/actions")) return postAction(url, init);
+    if (url === "/api/v1/agents") return Response.json({ agents: [] });
     if (url === "/api/v1/jobs") return getJobs();
     if (url === "/api/v1/session") return getSession();
     if (url === "/api/v1/session/heartbeat") return new Response(null, { status: 204 });

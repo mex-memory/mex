@@ -112,10 +112,10 @@ interface GlobalConfig {
 
 const MAX_GLOBAL_CONFIG_BYTES = 64 * 1024;
 
-function globalConfigResult(): { config: GlobalConfig; available: boolean } {
-  const filePath = join(mexHomeDir(), GLOBAL_CONFIG_FILE);
+function globalConfigResult(home = mexHomeDir()): { config: GlobalConfig; available: boolean } {
+  const filePath = join(home, GLOBAL_CONFIG_FILE);
   try {
-    const parent = lstatSync(mexHomeDir());
+    const parent = lstatSync(home);
     if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Unsafe preference directory");
     const before = lstatSync(filePath, { bigint: true });
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > MAX_GLOBAL_CONFIG_BYTES) throw new Error("Unsafe preference file");
@@ -137,15 +137,15 @@ function globalConfigResult(): { config: GlobalConfig; available: boolean } {
 }
 
 /** Feedback callers retain their tolerant empty-config fallback. */
-export function readGlobalConfig(): GlobalConfig { return globalConfigResult().config; }
+export function readGlobalConfig(home?: string): GlobalConfig { return globalConfigResult(home).config; }
 
 /** Missing preferences use the documented default; unreadable existing ones fail closed. */
-export function readTelemetryPreference(): "on" | "off" | "unavailable" {
+export function readTelemetryPreference(home = mexHomeDir()): "on" | "off" | "unavailable" {
   // Every existing marker fails closed, including a malformed file or link.
   // Unrelated config writers cannot erase this independent opt-out.
-  try { lstatSync(join(mexHomeDir(), TELEMETRY_DISABLED_FILE)); return "off"; }
+  try { lstatSync(join(home, TELEMETRY_DISABLED_FILE)); return "off"; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "unavailable"; }
-  const result = globalConfigResult();
+  const result = globalConfigResult(home);
   if (!result.available) return "unavailable";
   if (result.config.telemetry === undefined || result.config.telemetry === "on") return "on";
   return result.config.telemetry === "off" ? "off" : "unavailable";
@@ -230,8 +230,8 @@ export function setGlobalConfigKey(key: string, value: unknown): void {
  * `mex-agent` plus the legacy name `promexeus`. The bare `mex` name is
  * intentionally excluded (too generic — see the inline note below).
  */
-export function isDevRepo(): boolean {
-  if (process.env.MEX_DEV) return true;
+export function isDevRepo(env = process.env): boolean {
+  if (env.MEX_DEV) return true;
 
   try {
     // Walk up from cwd to find the nearest package.json

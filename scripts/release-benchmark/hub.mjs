@@ -149,6 +149,10 @@ export const RELEASE_COMMON_READ_PATHS = Object.freeze({
   knowledgeLanding: "/api/v1/knowledge/landing",
   review: "/api/v1/review",
   reviewDetail: "/api/v1/review/cards/:key",
+  agents: "/api/v1/agents",
+  agentDetail: "/api/v1/agents/claude-code",
+  settings: "/api/v1/settings",
+  uninstallPreview: "/api/v1/settings/uninstall",
 });
 
 export async function measureCommonReads(server, auth, samples) {
@@ -180,6 +184,24 @@ export async function measureCommonReads(server, auth, samples) {
   if (!key || review.partial) throw new Error("The benchmark Hub did not return its staged Review cards.");
   const paths = { ...RELEASE_COMMON_READ_PATHS, reviewDetail: RELEASE_COMMON_READ_PATHS.reviewDetail.replace(":key", encodeURIComponent(key)) };
 
+  const controls = {
+    agents: (data) => data.agents?.length === 4,
+    agentDetail: (data) => data.agent?.id === "claude-code",
+    settings: (data) => data.settings?.repos?.some((repo) => repo.id === result.projects[0].id),
+    uninstallPreview: (data) => Array.isArray(data.preview?.changes),
+  };
+  await Promise.all(Object.entries(controls).map(async ([name, ready]) => {
+    const deadline = performance.now() + 5_000;
+    while (true) {
+      const data = await hubJson(server, paths[name], auth);
+      if (ready(data) && !data.updatingSince) break;
+      if (performance.now() >= deadline || data.issue && !data.updatingSince) {
+        throw new Error(`The ${name} snapshot did not become ready.`);
+      }
+      await delay(25);
+    }
+  }));
+
   const timings = Object.fromEntries(Object.keys(paths).map((name) => [name, []]));
   for (let sample = 0; sample < samples; sample += 1) {
     for (const [name, path] of Object.entries(paths)) {
@@ -200,6 +222,9 @@ export async function measureCommonReads(server, auth, samples) {
       }
       if (name === "reviewDetail" && (data.key !== key || !data.text)) {
         throw new Error("The benchmark Hub did not return its full Review card.");
+      }
+      if (Object.hasOwn(controls, name) && !controls[name](data)) {
+        throw new Error(`The benchmark Hub did not return its ${name} snapshot.`);
       }
       if (name === "jobs" && !Array.isArray(data)) {
         throw new Error("The benchmark Hub did not return its jobs list.");

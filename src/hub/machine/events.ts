@@ -16,6 +16,8 @@ const encoder = new TextEncoder();
 const connected = encoder.encode(": connected\n\n");
 const keepalive = encoder.encode(": keepalive\n\n");
 
+type SnapshotSignal = { version: number; touch(): void };
+
 interface Subscriber {
   authorized: () => boolean;
   send: (chunk: Uint8Array) => void;
@@ -31,6 +33,7 @@ export class HubEvents {
   #activity: string | undefined;
   #generation: number | undefined;
   #knowledge: string | undefined;
+  #controlsVersion: [number, number, number] | undefined;
   #closed = false;
 
   constructor(
@@ -39,6 +42,7 @@ export class HubEvents {
     private readonly knowledge: KnowledgeData,
     private readonly now: () => number,
     private readonly keepOpen: () => void,
+    private readonly controls?: { agents: SnapshotSignal; settings: SnapshotSignal; uninstall: SnapshotSignal },
   ) {}
 
   open(signal: AbortSignal, authorized: () => boolean, head: boolean): Response {
@@ -75,6 +79,7 @@ export class HubEvents {
         this.#clients.add(client);
         this.home.touch();
         this.knowledge.touch();
+        for (const snapshot of Object.values(this.controls ?? {})) snapshot.touch();
         if (!this.#poll) this.#startTimers();
         client.send(connected);
       },
@@ -104,6 +109,7 @@ export class HubEvents {
     clearInterval(this.#ping);
     this.#poll = this.#ping = undefined;
     this.#jobs = this.#activity = this.#generation = this.#knowledge = undefined;
+    this.#controlsVersion = undefined;
   }
 
   #tick() {
@@ -115,6 +121,7 @@ export class HubEvents {
 
     this.home.touch();
     this.knowledge.touch();
+    for (const snapshot of Object.values(this.controls ?? {})) snapshot.touch();
     const now = this.now();
     if (now - this.#lastKeepOpen! >= KEEP_OPEN_MS) {
       this.#lastKeepOpen = now;
@@ -147,6 +154,13 @@ export class HubEvents {
     const knowledge = this.knowledge.eventVersion;
     if (this.#knowledge !== undefined && this.#knowledge !== knowledge) topics.push("knowledge");
     this.#knowledge = knowledge;
+    if (this.controls) {
+      const { agents, settings, uninstall } = this.controls;
+      const previous = this.#controlsVersion;
+      if (previous && previous[0] !== agents.version) topics.push("agents");
+      if (previous && (previous[1] !== settings.version || previous[2] !== uninstall.version)) topics.push("settings");
+      this.#controlsVersion = [agents.version, settings.version, uninstall.version];
+    }
     this.#sendChange(topics);
   }
 
@@ -158,6 +172,10 @@ export class HubEvents {
       this.#knowledge = this.knowledge.eventVersion;
       topics.push("knowledge");
     }
+    this.#sendChange(topics);
+  }
+
+  controlsChanged(...topics: MachineChangeEvent["topics"]) {
     this.#sendChange(topics);
   }
 

@@ -61,6 +61,42 @@ describe("machine-wide hook installation", () => {
     expect(installationChanges({ home: f.home })).toHaveLength(5);
   });
 
+  it("keeps the default install across detected agents, runtime, and legacy project hooks", async () => {
+    const f = fixture();
+    git(f.repo, "init", "-q");
+    const legacy = join(f.repo, ".claude", "settings.json");
+    write(legacy, '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"mex --mex-managed"}]}]}}');
+    const preview = await installAgents({ ...f.options, dryRun: true });
+    expect(preview.agents).toEqual(["claude-code", "codex"]);
+    expect(preview.repair).toBeUndefined();
+    expect(preview.changes.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      f.claude, f.codex, legacy, join(f.home, "bin", "launcher.json"), join(f.home, "bin", "mex-hook.cjs"),
+    ]));
+    const installed = await installAgents(f.options);
+    expect(installed.changes.map(({ path }) => path)).toEqual(preview.changes.map(({ path }) => path));
+    expect(parseSettings(readFileSync(legacy)).hooks).toBeUndefined();
+  });
+
+  it("repairs an original installation without breaking its uninstall", async () => {
+    const f = fixture();
+    const original = '{"env":{"ORIGINAL":"kept"}}';
+    write(f.claude, original);
+    await installAgents(f.options);
+    const installed = readFileSync(f.claude);
+    const broken = JSON.parse(installed.toString("utf8"));
+    delete broken.hooks.PreToolUse;
+    write(f.claude, JSON.stringify(broken));
+    const target = { agent: "claude-code" as const };
+    const reviewed = await installAgents({ ...f.options, dryRun: true, repair: target });
+    const history = installationChanges({ home: f.home });
+    expect(reviewed.changes.map(({ path }) => path)).toEqual([f.claude]);
+    await installAgents({ ...f.options, repair: { ...target, expected: reviewed.repair! } });
+    expect(readFileSync(f.claude)).toEqual(installed);
+    expect(installationChanges({ home: f.home })).toEqual(history);
+    expect((await uninstallAgents({ home: f.home })).conflicts).toEqual([]);
+    expect(readFileSync(f.claude, "utf8")).toBe(original);
+  });
+
   it("restores exact original settings and runtime bytes after an upgrade", async () => {
     const f = fixture();
     const originalClaude = Buffer.from('\uFEFF{\r\n  "env": {"FIXTURE": "keep"}, "hooks": {}\r\n}');

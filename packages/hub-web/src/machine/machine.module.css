@@ -431,3 +431,116 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+.signOutSaved {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-inline-start: 5px;
+  color: var(--success);
+  font-size: 12px;
+}
+
+.signOutSaved svg {
+  width: 12px;
+  height: 12px;
+}
+
+.machineContext {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.warningDot {
+  width: 7px;
+  height: 7px;
+  margin-inline-end: 3px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.commandInline {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px 5px 11px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.commandInline > svg {
+  width: 15px;
+  height: 15px;
+  color: var(--muted-foreground);
+}
+
+.commandInline > code {
+  color: var(--foreground);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .commandInline [data-slot="button"] { width: 44px; height: 44px; }
+}
+
+.machineNav {
+  min-height: 100%;
+}
+
+.machineNav > ul {
+  flex: 1;
+}
+
+.settingsNavItem {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.settingsNavItem::before {
+  display: block;
+  height: 1px;
+  margin-bottom: 8px;
+  background: var(--sidebar-border);
+  content: "";
+}
+
+.toastRegion {
+  position: fixed;
+  z-index: 5;
+  inset: auto 20px 20px auto;
+  max-width: calc(100vw - 32px);
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 12px;
+  color: var(--foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--overlay-shadow);
+  font-size: 13px;
+}
+
+.toast > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--success);
+}
+
+@media (max-width: 720px) {
+  .toastRegion { inset: auto 16px 16px auto; }
+}

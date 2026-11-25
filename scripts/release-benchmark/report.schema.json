@@ -114,7 +114,9 @@
                 "repo": { "$ref": "#/$defs/assetGroup" },
                 "jobs": { "$ref": "#/$defs/assetGroup" },
                 "knowledge": { "$ref": "#/$defs/assetGroup" },
-                "review": { "$ref": "#/$defs/assetGroup" }
+                "review": { "$ref": "#/$defs/assetGroup" },
+                "agents": { "$ref": "#/$defs/assetGroup" },
+                "settings": { "$ref": "#/$defs/assetGroup" }
               }
             }
           ]
@@ -271,7 +273,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["session", "projects"],
-      "dependentRequired": { "home": ["jobs"], "jobs": ["home"], "knowledge": ["knowledgeLanding"], "knowledgeLanding": ["knowledge"], "review": ["reviewDetail"], "reviewDetail": ["review"] },
+      "dependentRequired": { "home": ["jobs"], "jobs": ["home"], "knowledge": ["knowledgeLanding"], "knowledgeLanding": ["knowledge"],
+        "review": ["reviewDetail"], "reviewDetail": ["review"], "agents": ["agentDetail"], "agentDetail": ["agents"],
+        "settings": ["uninstallPreview"], "uninstallPreview": ["settings"] },
       "properties": {
         "session": { "$ref": "#/$defs/summary10" },
         "projects": { "$ref": "#/$defs/summary10" },
@@ -280,7 +284,11 @@
         "knowledge": { "$ref": "#/$defs/summary10" },
         "knowledgeLanding": { "$ref": "#/$defs/summary10" },
         "review": { "$ref": "#/$defs/summary10" },
-        "reviewDetail": { "$ref": "#/$defs/summary10" }
+        "reviewDetail": { "$ref": "#/$defs/summary10" },
+        "agents": { "$ref": "#/$defs/summary10" },
+        "agentDetail": { "$ref": "#/$defs/summary10" },
+        "settings": { "$ref": "#/$defs/summary10" },
+        "uninstallPreview": { "$ref": "#/$defs/summary10" }
       }
     },
     "maintenanceMeasurement": {

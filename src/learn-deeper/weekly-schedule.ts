@@ -9,7 +9,7 @@ import type { EnqueueOptions, EnqueueResult } from "../record/jobs.js";
 import { LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
 
 export const WEEKLY_KIND = "learn-deeper-weekly";
-const SCHEDULE = "learning.deep.weekly";
+export const WEEKLY_SCHEDULE_KEY = "learning.deep.weekly";
 const WAKE = "learning-refresh-due";
 export const DAY_MS = 86_400_000;
 const SESSION_IDLE_MS = 10 * 60_000;
@@ -23,13 +23,13 @@ export function nextWeeklyAt(now: number, random = Math.random): number {
 }
 
 export function weeklySchedule(writer: RecordWriter, project: string): string | undefined {
-  return writer.setting(project, SCHEDULE);
+  return writer.setting(project, WEEKLY_SCHEDULE_KEY);
 }
 
 /** Called in the same local transaction as a completed backfill or refresh receipt. */
 export function saveWeeklySchedule(writer: RecordWriter, project: string, schedule: WeeklySchedule): void {
   writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
-    .run(project, SCHEDULE, JSON.stringify(WeeklySchedule.parse(schedule)));
+    .run(project, WEEKLY_SCHEDULE_KEY, JSON.stringify(WeeklySchedule.parse(schedule)));
 }
 
 export function scheduleFromPlan(plan: LearningPlan, due: number): WeeklySchedule {
@@ -72,7 +72,7 @@ export function sessionsActive(writer: RecordWriter, now: number): boolean {
 function dueRows(writer: RecordWriter, until: number): Array<{ scope: string; value: string; due: number }> {
   return writer.db.prepare(`SELECT scope,value,json_extract(value,'$.due') due FROM settings
     WHERE key=? AND CASE WHEN json_valid(value) THEN json_type(value,'$.due')='integer' AND due BETWEEN 1 AND ? ELSE 0 END ORDER BY due LIMIT 32`)
-    .all(SCHEDULE, until) as unknown as Array<{ scope: string; value: string; due: number }>;
+    .all(WEEKLY_SCHEDULE_KEY, until) as unknown as Array<{ scope: string; value: string; due: number }>;
 }
 
 /** DB is authoritative. This tiny timestamp only lets the on-demand hooks wake an idle daemon. */

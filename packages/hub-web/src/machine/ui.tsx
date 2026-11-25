@@ -1,5 +1,5 @@
 import { useState, type ReactNode, type Ref } from "react";
-import { Check, Copy, Monitor, Moon, RefreshCw, Sun, Terminal, WifiOff, X } from "lucide-react";
+import { Check, CircleCheck, Copy, Monitor, Moon, RefreshCw, Sun, Terminal, WifiOff, X } from "lucide-react";
 import type { HubEventState } from "./data";
 import { nextThemePreference, useThemePreference } from "./theme";
 import { Alert, AlertTitle } from "../components/primitives/alert";
@@ -23,7 +23,11 @@ export function HubBrand() {
   );
 }
 
-export function CopyButton({ text, path = false }: { text: string; path?: boolean }) {
+export function CopyButton({ text, path = false, iconOnly = path }: {
+  text: string;
+  path?: boolean;
+  iconOnly?: boolean;
+}) {
   const [result, setResult] = useState<"Copied" | "Copy failed" | "">("");
   const Icon = result === "Copied" ? Check : result === "Copy failed" ? X : Copy;
 
@@ -39,15 +43,15 @@ export function CopyButton({ text, path = false }: { text: string; path?: boolea
   return (
     <>
       <Button
-        aria-label={path ? `Copy path ${text}` : undefined}
+        aria-label={path ? `Copy path ${text}` : iconOnly ? "Copy command" : undefined}
         onClick={copy}
-        size={path ? "icon-sm" : "default"}
-        title={path ? result || "Copy path" : undefined}
+        size={iconOnly ? "icon-sm" : "default"}
+        title={iconOnly ? result || (path ? "Copy path" : "Copy command") : undefined}
         type="button"
-        variant={path ? "ghost" : "outline"}
+        variant={iconOnly ? "ghost" : "outline"}
       >
         <Icon aria-hidden="true" />
-        {path ? null : result || "Copy command"}
+        {iconOnly ? null : result || "Copy command"}
       </Button>
       <span className={styles.srOnly} role="status">{result}</span>
     </>
@@ -71,7 +75,19 @@ export function HubPageHeader({ title, subtitle, action, titleRef }: {
   );
 }
 
-export function CommandCard({ title, children, command }: { title: string; children: ReactNode; command: string }) {
+export function CommandCard({ title, children, command, compact }: {
+  children?: ReactNode;
+  command: string;
+} & ({ compact: true; title?: never } | { compact?: false; title: string })) {
+  if (compact) {
+    return (
+      <div className={styles.commandInline}>
+        <Terminal aria-hidden="true" />
+        <code>{command}</code>
+        <CopyButton text={command} iconOnly />
+      </div>
+    );
+  }
   return (
     <Card className={styles.commandCard}>
       <CardHeader className={styles.commandHeader}>
@@ -123,13 +139,27 @@ export function HubBanners({ stopped, updated = false, terminal = false, events 
   );
 }
 
+export function ControlToast({ message, dismissLabel, onDismiss }: { message: string; dismissLabel: string; onDismiss: () => void }) {
+  return (
+    <div aria-live="polite" className={styles.toastRegion}>
+      {message && (
+        <div className={styles.toast}>
+          <CircleCheck aria-hidden="true" />
+          <span>{message}</span>
+          <Button aria-label={dismissLabel} onClick={onDismiss} size="icon-sm" type="button" variant="ghost"><X aria-hidden="true" /></Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export interface PageLoad {
   loading?: boolean;
   error?: boolean;
   retry?: () => void;
 }
 
-export function PageRequestState({ name, loading, error, retry }: PageLoad & { name: "Home" | "Review" | "jobs" }) {
+export function PageRequestState({ name, loading, error, retry }: PageLoad & { name: "Home" | "Review" | "jobs" | "Agents" | "Settings" | "the uninstall preview" }) {
   if (!loading && !error) return null;
   return (
     <div className={styles.pageState}>

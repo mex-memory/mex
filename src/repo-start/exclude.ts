@@ -114,6 +114,14 @@ function decode(value: string): string | null {
   return Buffer.from(data, "base64").toString("latin1");
 }
 
+/** The journal contains the whole file for exact undo. Project only the named block. */
+export function recordedExcludeBlock(value: string, key: string): string | null {
+  const text = decode(value);
+  if (text === null) return null;
+  const found = findBlock(text, key.slice(EXCLUDE_JOURNAL_PREFIX.length));
+  return found ? text.slice(found.start, found.end).trimEnd() : null;
+}
+
 export interface EnsureBlockResult { file: string; changed: boolean; }
 
 /**
