@@ -115,8 +115,8 @@ it("lists the five newest hook errors and adds one problem for the non-busy coun
     { minute: 42, agent: "codex", kind: "panic", detail: "\x1b[31munexpected result\x1b[0m" },
   ].map(({ minute, ...error }) => ({ at: new Date(2026, 10, 25, 10, minute).toISOString(), event: "Stop", ...error }))];
   writeFileSync(join(f.location.directory, "hook-errors.json"), JSON.stringify({ version: 1, counts, first: firstHookError, recent }));
-  const view = readStatus(f.options);
-  const doctor = formatStatus(view, { doctor: true });
+  const view = readStatus(f.options), now = new Date(2026, 10, 25, 12).getTime();
+  const doctor = formatStatus(view, { doctor: true, now });
   expect(doctor.split("\n\n").find(section => section.startsWith("Hook errors:"))).toBe([
     "Hook errors: 6 since 24 Nov (2 busy (a locked database; expected under load), 2 delivery, 1 panic, 1 parse) · your agents kept working",
     "  25 Nov 10:42  codex Stop  panic  unexpected result",
@@ -125,10 +125,15 @@ it("lists the five newest hook errors and adds one problem for the non-busy coun
     "  25 Nov 10:39  claude-code Stop  delivery  could not save result",
     "  25 Nov 10:38  claude-code Stop  busy  database deadline exceeded",
   ].join("\n"));
-  expect(formatStatus(view).split("\n\n").find(section => section.startsWith("Hook errors:"))).toBe("Hook errors: 4 since 24 Nov · see mex doctor for details");
-  const problem = "4 hook errors since 24 Nov: see the list above; if they repeat, run mex install and report the details";
-  expect(statusProblems(view)).toEqual([...statusProblems(before), problem]);
+  expect(formatStatus(view, { now }).split("\n\n").find(section => section.startsWith("Hook errors:"))).toBe("Hook errors: 4 in the last 7 days · see mex doctor for details");
+  const problem = "4 hook errors in the last 7 days, since 25 Nov: see the list above; if they repeat, run mex install and report the details";
+  expect(statusProblems(view, now)).toEqual([...statusProblems(before, now), problem]);
   expect(doctor).toContain(`  ✗ ${problem}`);
+  // A week later the errors are still listed, but no longer a problem.
+  const later = now + 8 * 86_400_000;
+  expect(statusProblems(view, later)).toEqual(statusProblems(before, later));
+  expect(formatStatus(view, { doctor: true, now: later })).toContain("Hook errors: 6 since 24 Nov");
+  expect(formatStatus(view, { now: later })).not.toContain("Hook errors:");
 });
 
 it("reads repo and capture switches, including a timed off that has ended", () => {

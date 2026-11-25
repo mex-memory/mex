@@ -173,7 +173,7 @@ export function readStatus(options: StatusOptions = {}): StatusView {
   } finally { reader?.close(); }
 }
 
-export function statusProblems(view: StatusView): string[] {
+export function statusProblems(view: StatusView, now = Date.now()): string[] {
   const problems: string[] = [];
   for (const agent of view.agents) {
     if (agent.installed === false) problems.push(`${NAMES[agent.agent]} hooks missing or incomplete: run mex install`);
@@ -184,12 +184,19 @@ export function statusProblems(view: StatusView): string[] {
   if (view.repository && !view.knowledge) problems.push("Knowledge unknown: run mex check for details");
   if (view.knowledge && !view.knowledge.checks) problems.push("Cached checks unknown: run mex check for details");
   if (!view.background || !view.modelUse) problems.push("Background records unknown: run mex jobs --json for details");
-  const errors = view.hookErrors;
-  if (errors && errors.announced > 0) {
-    const count = errors.announced;
-    problems.push(`${count} hook error${count === 1 ? "" : "s"} since ${hookErrorDate(errors.first)}: see the list above; if they repeat, run mex install and report the details`);
+  const late = lateHookErrors(view.hookErrors, now);
+  if (late.length > 0) {
+    problems.push(`${late.length} hook error${late.length === 1 ? "" : "s"} in the last 7 days, since ${hookErrorDate(late[0]!.at)}: see the list above; if they repeat, run mex install and report the details`);
   }
   return problems;
+}
+
+/** A week of hook errors makes a problem; older ones are only listed. */
+const HOOK_ERROR_WINDOW_MS = 7 * 86_400_000;
+
+/** The non-busy errors the file still holds from the last week, oldest first. */
+function lateHookErrors(errors: HookErrors | null, now: number): HookErrors["recent"] {
+  return errors ? errors.recent.filter(error => error.kind !== "busy" && now - Date.parse(error.at) <= HOOK_ERROR_WINDOW_MS) : [];
 }
 
 function hookErrorDate(at: string): string {
@@ -208,7 +215,8 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   for (const agent of view.agents) lines.push(`  ${agent.installed ? "✓" : "!"} ${NAMES[agent.agent]}: ${agent.installed === null ? "unknown" : agent.installed ? `hooks installed (${agent.events} events)` : `hooks not installed or incomplete (${agent.events} events)`}${agent.lastCall ? ` · last call ${ago(agent.lastCall, now)}` : ""}${agent.agent === "codex" && agent.installed ? " · trust them once in Codex (/hooks, or Review hooks in the app)" : ""}`);
   lines.push(`  ${view.binary.state === "native" ? "✓" : "!"} Hook binary ${view.binary.state === "native" ? `${view.binary.version || "unknown version"} (native)` : view.binary.state}`);
   const errors = view.hookErrors;
-  if (errors && (options.doctor ? errors.total : errors.announced) > 0) {
+  const late = lateHookErrors(errors, now);
+  if (errors && (options.doctor ? errors.total > 0 : late.length > 0)) {
     const since = hookErrorDate(errors.first);
     if (options.doctor) {
       const counts = Object.entries(errors.counts)
@@ -222,7 +230,7 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
         lines.push(`  ${hookErrorDate(error.at)} ${time}  ${text}`);
       }
     } else {
-      lines.push("", `Hook errors: ${errors.announced} since ${since} · see mex doctor for details`);
+      lines.push("", `Hook errors: ${late.length} in the last 7 days · see mex doctor for details`);
     }
   }
   if (view.repository) {
@@ -236,7 +244,7 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   lines.push(b ? `  ${b.waiting ? `${b.waiting} jobs waiting` : "No jobs waiting"}${b.running ? ` · ${b.running} running` : ""} · last run: ${b.lastRun ? `${b.lastRun.name}, ${ago(b.lastRun.at, now)}` : "none recorded"}` : "  Jobs: unknown");
   lines.push(u ? `  Model use for MEX this week: ${u.runs} runs, ${u.percent === null ? "share of your usage unknown" : `${u.percent.toFixed(1)}% of your usage (estimate)`} (cap ${u.capPercent}%)` : "  Model use: unknown");
   if (options.doctor) {
-    const problems = statusProblems(view);
+    const problems = statusProblems(view, now);
     lines.push("", "Problems", ...(problems.length ? problems.map(problem => `  ✗ ${problem}`) : ["  No recorded problems."]));
     if (view.agents.some(agent => agent.agent === "codex" && agent.installed && !agent.lastCall)) lines.push("  Codex hook trust is unknown: open Codex, run /hooks.");
   }
