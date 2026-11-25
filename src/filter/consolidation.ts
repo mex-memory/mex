@@ -28,7 +28,7 @@ import { stagePromotion } from "./publication.js";
 const newId = () => `mx_${randomBytes(12).toString("hex")}`;
 const normalized = (text: string) => text.normalize("NFKC").trim().replace(/\s+/gu, " ");
 const terms = (text: string) => new Set(text.toLocaleLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []);
-function currentPosition(checkout: string): Position {
+export function currentPosition(checkout: string): Position {
   const read = (args: string[]) => {
     try { return execFileSync("git", ["--literal-pathspecs", "-C", checkout, ...args], { encoding: "utf8", timeout: 1500, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"], env: backgroundEnvironment() }).trim() || null; }
     catch { return null; }

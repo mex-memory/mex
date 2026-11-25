@@ -5,6 +5,7 @@ import { shortHash } from "../record/project.js";
 import { position, samePosition, type Position } from "../judge/evidence.js";
 import { producer } from "../knowledge/producers.js";
 import { sessionLearningOn } from "../knowledge/session-learning.js";
+import { localSettings } from "../knowledge/state.js";
 import { runModel } from "../model-runner/index.js";
 import { acknowledged, ackKey, advanceConsumed, FILTER_LIMITS, filterAllowed, stageOneInput, statementsOn, type FilterParams, type ScanWindow } from "./input.js";
 import { stageContinuity } from "./continuity.js";
@@ -19,34 +20,82 @@ const Batch = z.object({
   rows: ROWS.nonempty(), skipped: ROWS, retry: ROWS, unresolved: ROWS,
   verdicts: z.array(StageOneVerdict).max(FILTER_LIMITS.messages),
   delivered: z.array(z.string().max(512)).max(128),
+  settled: ROWS.optional(),
   attempts: z.array(z.object({ model: z.string().min(1).max(128).nullable(), coverage: VerdictCoverage }).strict()).min(1).max(2),
 }).strict().refine(value => {
   const recorded = [...value.skipped, ...value.retry, ...value.unresolved, ...value.verdicts.map(verdict => Number(verdict.id.slice(1)))];
   return value.rows.every((row, index) => index === 0 || row > value.rows[index - 1]!)
     && recorded.length === value.rows.length && new Set(recorded).size === value.rows.length
-    && value.rows.every(row => recorded.includes(row)) && (!value.retry.length || value.attempts.length === 1);
+    && value.rows.every(row => recorded.includes(row)) && (!value.retry.length || value.attempts.length === 1)
+    && new Set(value.settled).size === (value.settled?.length ?? 0) && (value.settled ?? []).every(row => value.rows.includes(row));
 });
 type Batch = z.infer<typeof Batch>;
+export interface StageOneBatch { key: string; value: string; batch: Batch; }
 const BATCH_BYTES = 768 << 10;
 const STORE_BYTES = 8 << 20;
 const BATCH_LIMIT = 128;
 export const STAGE_ONE_WAIT = "Waiting: local session verdicts need consolidation";
 const batchKey = (checkout: string, first: number) => "stage-one.batch." + shortHash(checkout) + "." + first;
 const retryKey = (checkout: string) => "stage-one.retry." + shortHash(checkout);
+const reviewKey = (key: string) => key.replace(/^stage-one\.batch\./u, "stage-one.reviewed.");
+
+function parseBatch(key: string, raw: string): Batch {
+  try {
+    const batch = Batch.parse(JSON.parse(raw));
+    if (batch.rows[0] === Number(key.split(".").at(-1))) return batch;
+  } catch { /* Treat an invalid record as local state, never evidence. */ }
+  throw new Error("A local session verdict batch is invalid; it was kept private.");
+}
+
+export function stageOneBatches(writer: RecordWriter, project: string, checkout: string, history = false): StageOneBatch[] {
+  const prefix = "stage-one." + (history ? "reviewed." : "batch.") + shortHash(checkout) + ".";
+  return localSettings(writer, project, prefix, BATCH_BYTES)
+    .map(row => ({ ...row, batch: parseBatch(row.key, row.value) }))
+    .sort((a, b) => a.batch.rows[0] - b.batch.rows[0]);
+}
+
+export function stageOneBatchNeedsDecision({ batch }: StageOneBatch): boolean {
+  return batch.verdicts.some(verdict => verdict.verdict === "candidate" || verdict.verdict === "unsure");
+}
+
+/** Complete a verdict batch under the writer's transaction. Keep a bounded replay archive. */
+export function settleStageOne(writer: RecordWriter, project: string, snapshots: readonly StageOneBatch[], settled: ReadonlySet<number>) {
+  const put = writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
+  const remove = writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?");
+  let archived = false;
+  for (const { key, value, batch } of snapshots) {
+    const rows = batch.verdicts.filter(v => v.verdict === "candidate" || v.verdict === "unsure").map(v => Number(v.id.slice(1)));
+    const next = new Set(batch.settled);
+    for (const row of rows) if (settled.has(row)) next.add(row);
+    if (batch.retry.length || (next.size === (batch.settled?.length ?? 0) && !rows.every(row => next.has(row)))) continue;
+    if (writer.setting(project, key) !== value) throw new Error("Session verdicts changed during consolidation.");
+    if (rows.every(row => next.has(row))) {
+      put.run(project, reviewKey(key), JSON.stringify({ ...batch, settled: undefined }));
+      remove.run(project, key);
+      archived = true;
+    } else put.run(project, key, JSON.stringify({ ...batch, settled: [...next] }));
+  }
+  if (!archived) return;
+  let bytes = 0, kept = 0;
+  const reviewed = "stage-one.reviewed.";
+  const rows = writer.db.prepare("SELECT key,length(CAST(value AS BLOB)) bytes FROM settings WHERE scope=? AND key LIKE ? ORDER BY CAST(substr(key,?) AS INTEGER) DESC")
+    .all(project, reviewed + "%", reviewed.length + shortHash("").length + 2);
+  for (const row of rows) {
+    bytes += Number(row.bytes);
+    if (++kept > BATCH_LIMIT || bytes > STORE_BYTES) remove.run(project, row.key!);
+  }
+}
 
 export function stageOneEnabled(writer: RecordWriter): boolean {
   return producer("session-ongoing").active && sessionLearningOn(writer);
 }
 
 export function readStageOneBatch(writer: RecordWriter, project: string, checkout: string, first: number): Batch | undefined {
-  const row = writer.db.prepare("SELECT CASE WHEN length(CAST(value AS BLOB))<=? THEN value END value FROM settings WHERE scope=? AND key=?")
-    .get(BATCH_BYTES, project, batchKey(checkout, first));
+  const key = batchKey(checkout, first);
+  const read = writer.db.prepare("SELECT CASE WHEN length(CAST(value AS BLOB))<=? THEN value END value FROM settings WHERE scope=? AND key=?");
+  const row = read.get(BATCH_BYTES, project, key) ?? read.get(BATCH_BYTES, project, reviewKey(key));
   if (!row) return;
-  try {
-    const batch = Batch.parse(JSON.parse(String(row.value)));
-    if (batch.rows[0] === first) return batch;
-  } catch { /* Report an invalid local batch without exposing its contents. */ }
-  throw new Error("A local session verdict batch is invalid; it was kept private.");
+  return parseBatch(key, String(row.value));
 }
 
 function pendingBatch(writer: RecordWriter, project: string, checkout: string): Batch | undefined {
@@ -66,7 +115,7 @@ export function stageOneRoom(writer: RecordWriter, project: string): boolean {
   return Number(current.n) < BATCH_LIMIT && Number(current.bytes) + Number(pending.n) * BATCH_BYTES <= STORE_BYTES - BATCH_BYTES;
 }
 
-function ownedWrite(writer: RecordWriter, job: JobRow, commit: () => void): void {
+export function ownedFilterWrite(writer: RecordWriter, job: JobRow, commit: () => void): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {
     const owned = writer.db.prepare("SELECT 1 FROM jobs WHERE id=? AND owner=? AND state='running' AND request IS NULL").get(job.id, job.owner);
@@ -79,7 +128,7 @@ function ownedWrite(writer: RecordWriter, job: JobRow, commit: () => void): void
 function saveBatch(writer: RecordWriter, project: string, checkout: string, job: JobRow, batch: Batch, commit: () => void): void {
   const data = JSON.stringify(Batch.parse(batch));
   if (Buffer.byteLength(data) > BATCH_BYTES) throw new Error("The session verdict batch exceeds its result limit.");
-  ownedWrite(writer, job, () => {
+  ownedFilterWrite(writer, job, () => {
     const put = writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
     put.run(project, batchKey(checkout, batch.rows[0]), data);
     if (batch.retry.length) put.run(project, retryKey(checkout), String(batch.rows[0]));
@@ -111,7 +160,7 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
     if (scan.more) return { after: scan.through!, summary: "Scanning for finished sessions; active sessions remain unread" };
     const changes = await planSessionNotes(writer, project, checkout, deps.clock());
     if (!changes.size || !samePosition(at, await position(checkout)) || !allowed()) return;
-    ownedWrite(writer, job, () => {
+    ownedFilterWrite(writer, job, () => {
       if (!allowed()) throw new Error("Session note consent changed.");
       saveSessionNotes(writer, changes);
     });
@@ -159,6 +208,10 @@ export async function runStageOne(writer: RecordWriter, project: string, params:
     saveSessionNotes(writer, changes);
     if (continuations.length && samePosition(batch.position, at))
       carried = stageContinuity(writer, project, checkout, at, continuations, now).size;
+    if (!batch.retry.length && !batch.verdicts.some(v => v.verdict === "candidate" || v.verdict === "unsure")) {
+      const key = batchKey(checkout, batch.rows[0]);
+      settleStageOne(writer, project, [{ key, value: writer.setting(project, key)!, batch }], new Set());
+    }
   });
   const noteCandidates = notes.filter(verdict => verbatimNote(verdict)).length;
   const tokens = response?.usage;
