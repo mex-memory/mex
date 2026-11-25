@@ -39,14 +39,11 @@ test("opens the machine Hub, keeps bookmarks signed in across restarts, and reje
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await page.goto(usedLink);
     const switcher = page.getByRole("combobox", { name: "Repo switcher" });
-    await expect(page.getByRole("heading", { name: "All repos" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+    await expect(page.getByText("· All repos", { exact: true })).toBeVisible();
+    await expect(page.getByText("Nothing learned yet.")).toBeVisible();
     await expect(page).toHaveURL(`${origin}/`);
     await expect(switcher.getByRole("option")).toHaveText(["All repos", "alder", "birch"]);
-    await expect(page.getByRole("link", { name: "alder" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "birch" })).toBeVisible();
-    const pathFont = await page.getByRole("list", { name: "Checkouts" }).first().locator("code")
-      .evaluate((code) => getComputedStyle(code).fontFamily);
-    expect(pathFont).toContain("IBM Plex Mono");
     await expect(page.getByText("Running from this terminal; closing it stops the Hub.")).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 
@@ -63,16 +60,23 @@ test("opens the machine Hub, keeps bookmarks signed in across restarts, and reje
 
     await switcher.selectOption({ label: "birch" });
     await expect(page).toHaveURL(/\/repos\/g-[a-f0-9]{24}$/);
-    await expect(page.getByRole("heading", { level: 1, name: "birch" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
+    await expect(page.getByText("· birch", { exact: true })).toBeVisible();
+    await page.getByText("1 checkout", { exact: true }).click();
     await expect(page.getByText("MEX is on")).toBeVisible();
+    const pathFont = await page.getByRole("list", { name: "Checkouts" }).locator("code")
+      .evaluate((code) => getComputedStyle(code).fontFamily);
+    expect(pathFont).toContain("IBM Plex Mono");
     await page.reload();
-    await expect(page.getByRole("heading", { level: 1, name: "birch" })).toBeVisible();
+    await expect(page.getByText("· birch", { exact: true })).toBeVisible();
 
     await stopHub(hub.child);
     hub = await startHub(root, env, port);
     expect(new URL(hub.link).origin).toBe(origin);
     await page.goto(`${origin}/`);
-    await expect(page.getByRole("heading", { name: "All repos" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+    await expect(page.getByText("· All repos", { exact: true })).toBeVisible();
+    await expect(page.getByText("Nothing learned yet.")).toBeVisible();
     await expect(switcher.getByRole("option")).toHaveText(["All repos", "alder", "birch"]);
     expect(pageErrors).toEqual([]);
 
@@ -92,6 +96,36 @@ test("opens the machine Hub, keeps bookmarks signed in across restarts, and reje
     finally { rmSync(root, { recursive: true, force: true }); }
   }
 });
+
+test("reads Home and Jobs from a real empty MEX home with no accessibility violations", async ({ page }) => {
+  const root = mkdtempSync(join(tmpdir(), "mex-empty-hub-e2e-"));
+  const env = { ...process.env, MEX_HOME: join(root, "home"), MEX_BACKGROUND: "0", MEX_TELEMETRY: "0", MEX_OFF: "0", DO_NOT_TRACK: "1" };
+  let hub: Awaited<ReturnType<typeof startHub>> | undefined;
+  try {
+    hub = await startHub(root, env, await freePort());
+    const outbound: string[] = [];
+    const origin = new URL(hub.link).origin;
+    page.on("request", (request) => { if (new URL(request.url()).origin !== origin) outbound.push(request.url()); });
+    await page.goto(hub.link);
+    await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
+    await expect(page.getByText("No agent sessions in the last 7 days.")).toBeVisible();
+    await expect(page.getByText("share of your usage unknown")).toBeVisible();
+    await expect(page.getByText("Nothing waiting", { exact: true })).toBeVisible();
+    await expect(page.getByText("Nothing learned yet.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy command" })).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+    await page.getByRole("link", { name: "Jobs", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Jobs", exact: true, level: 1 })).toBeVisible();
+    await expect(page.getByText("No jobs to show.")).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    expect(outbound).toEqual([]);
+  } finally {
+    try { if (hub) await stopHub(hub.child); }
+    finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
 
 function registerRepo(root: string, name: string, env: NodeJS.ProcessEnv) {
   const cwd = join(root, name);

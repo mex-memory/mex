@@ -42,7 +42,7 @@ export function measureBuiltAssets(outputRoot, budgets) {
   const routes = {};
   const measuredKeys = new Set(initialKeys);
   for (const [route, hints] of Object.entries(RELEASE_ROUTE_MANIFEST_HINTS)) {
-    const closure = manifestClosure(manifest, findDynamicKeys(manifest, hints), true);
+    const closure = manifestClosure(manifest, findDynamicKeys(manifest, hints), true, initialKeys);
     for (const key of closure) measuredKeys.add(key);
     const files = filesForKeys(manifest, closure);
     for (const file of initialFiles) files.delete(file);
@@ -132,10 +132,12 @@ function compare(violations, metric, measured, budget) {
   }
 }
 
-function manifestClosure(manifest, roots, followDynamic = false) {
+function manifestClosure(manifest, roots, followDynamic = false, alreadyLoaded) {
   const seen = new Set();
   const visit = (key) => {
-    if (seen.has(key)) return;
+    // Lazy pages can import helpers from the entry chunk. That back edge
+    // shouldn't charge other pages' dynamic imports to the current route.
+    if (seen.has(key) || alreadyLoaded?.has(key)) return;
     const record = manifest[key];
     if (!record) throw new Error(`Manifest import ${key} does not resolve.`);
     seen.add(key);

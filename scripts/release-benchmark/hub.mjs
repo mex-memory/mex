@@ -143,6 +143,8 @@ export async function measureIdleProcess(server) {
 export const RELEASE_COMMON_READ_PATHS = Object.freeze({
   session: "/api/v1/session",
   projects: "/api/v1/projects",
+  home: "/api/v1/home",
+  jobs: "/api/v1/jobs",
 });
 
 export async function measureCommonReads(server, auth, samples) {
@@ -161,8 +163,14 @@ export async function measureCommonReads(server, auth, samples) {
   for (let sample = 0; sample < samples; sample += 1) {
     for (const [name, path] of Object.entries(RELEASE_COMMON_READ_PATHS)) {
       const startedAt = performance.now();
-      await hubJson(server, path, auth);
+      const data = await hubJson(server, path, auth);
       timings[name].push(performance.now() - startedAt);
+      if (name === "home" && (data.activity?.length !== 7 || !data.byRepo?.[result.projects[0].id])) {
+        throw new Error("The benchmark Hub did not return seven days of Home overview data.");
+      }
+      if (name === "jobs" && !Array.isArray(data)) {
+        throw new Error("The benchmark Hub did not return its jobs list.");
+      }
     }
   }
   return { timings, project: result.projects[0] };
@@ -184,7 +192,7 @@ export async function hubJson(server, path, auth, init = {}, requestOptions) {
 }
 
 // The legacy job-observation tests exercise the deadline and SSE bounds
-// independently. The machine Hub has no maintenance job transport.
+// independently. The machine Hub has no endpoint for enqueuing maintenance.
 export async function runMaintenanceJob(server, auth, kind, { timeoutMs = JOB_TIMEOUT_MS } = {}) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > JOB_TIMEOUT_MS) {
     throw new Error("Invalid maintenance deadline.");

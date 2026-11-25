@@ -5,6 +5,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getFixture } from "./fixtures";
+import { localDateTime } from "./local-time";
 import { MachineHub } from "./MachineHub";
 
 const liveSession = {
@@ -49,10 +51,12 @@ function mockHub({ anonymous = false, projectList = projects, session = liveSess
   const readProjects = vi.fn(async () => Response.json({ projects: projectList }));
   const heartbeat = vi.fn(async () => new Response(null, { status: 204 }));
   const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url.startsWith("/api/v1/home?")) return Response.json(getFixture("empty").overview);
     switch (url) {
       case "/api/v1/session/bootstrap": return bootstrap();
       case "/api/v1/session": return readSession();
       case "/api/v1/projects": return readProjects();
+      case "/api/v1/jobs": return Response.json([]);
       case "/api/v1/session/heartbeat": return heartbeat();
       default: throw new Error(`Unexpected request: ${url}`);
     }
@@ -112,7 +116,7 @@ describe("machine Hub", () => {
       return Response.json(liveSession);
     });
     renderHub("/#token=new-link");
-    expect(await screen.findByRole("heading", { name: "All repos" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeVisible();
     expect(api.bootstrap).toHaveBeenCalledTimes(1);
     expect(api.fetch.mock.calls[0]).toEqual(["/api/v1/session/bootstrap", expect.objectContaining({
       body: JSON.stringify({ token: "new-link" }),
@@ -126,7 +130,7 @@ describe("machine Hub", () => {
     renderHub();
     await screen.findByRole("heading", { name: "Open the Hub from the terminal" });
     act(() => { window.location.hash = "token=new-link"; });
-    expect(await screen.findByRole("heading", { name: "All repos" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeVisible();
     expect(window.location.hash).toBe("");
   });
 
@@ -134,23 +138,29 @@ describe("machine Hub", () => {
     const user = userEvent.setup();
     mockHub();
     renderHub();
-    await screen.findByRole("heading", { name: "All repos" });
+    await screen.findByRole("heading", { level: 1, name: "Home" });
     const switcher = screen.getByRole("combobox", { name: "Repo switcher" });
     expect(within(switcher).getAllByRole("option").map((option) => option.textContent)).toEqual(["All repos", "Alder", "Birch"]);
     expect(within(screen.getByRole("navigation", { name: "Primary" })).getAllByRole("link")).toEqual([
       screen.getByRole("link", { name: "Home" }),
+      screen.getByRole("link", { name: "Jobs" }),
     ]);
     await user.selectOptions(switcher, "repo-birch");
     expect(window.location.pathname).toBe("/repos/repo-birch");
-    expect(screen.getByRole("heading", { level: 1, name: "Birch" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
+    expect(screen.getByText("· Birch", { selector: "header span" })).toBeVisible();
+    const checkouts = screen.getByText("2 checkouts", { selector: "summary" });
+    expect(checkouts.closest("details")).not.toHaveAttribute("open");
+    await user.click(checkouts);
     expect(screen.getByText("MEX is off")).toBeVisible();
     const time = screen.getByText(/Off until/).querySelector("time");
-    expect(time).toHaveTextContent(new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" })
-      .format(new Date("2027-01-02T03:04:05.000Z")));
-    expect(screen.getByText("Folder not found at")).toHaveTextContent("Folder not found at /work/birch");
+    expect(time).toHaveTextContent(localDateTime.format(new Date("2027-01-02T03:04:05.000Z")));
+    expect(screen.getByText("Folder not found: Birch")).toHaveAttribute("title", "/work/birch");
+    await user.click(screen.getByRole("button", { name: "Copy path /work/birch-other" }));
+    expect(await navigator.clipboard.readText()).toBe("/work/birch-other");
     await user.selectOptions(switcher, "");
     expect(window.location.pathname).toBe("/");
-    expect(screen.getByRole("heading", { name: "All repos" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
   });
 
   it("links an unknown repo back to All repos", async () => {
@@ -159,39 +169,37 @@ describe("machine Hub", () => {
     renderHub("/repos/unknown");
     expect(await screen.findByRole("heading", { name: "This repo isn't known to MEX on this machine" })).toBeVisible();
     await user.click(screen.getByRole("link", { name: "All repos" }));
-    expect(screen.getByRole("heading", { name: "All repos" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
   });
 
-  it("shows one welcome card when no repos have been set up", async () => {
+  it("offers the setup command from Home when there are no repos", async () => {
     mockHub({ projectList: [] });
     renderHub();
-    expect(await screen.findByRole("heading", { name: "Welcome to MEX" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "What MEX did" })).toBeVisible();
     expect(screen.getByText(/inside a repo to set it up/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Copy command" })).toBeVisible();
   });
 
-  it("marks provisional repos and missing folders in the list", async () => {
-    const user = userEvent.setup();
+  it("surfaces missing folders from the live project list in Needs you", async () => {
     mockHub();
     renderHub();
-    expect(await screen.findByText("Folder not found at")).toHaveTextContent("Folder not found at /work/birch");
-    const provisional = screen.getByRole("button", { name: "provisional" });
-    await user.hover(provisional);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("History-based numbers may be incomplete (shallow or new repo)");
+    const needs = await screen.findByRole("region", { name: "Needs you" });
+    expect(within(needs).getByText("Folder not found: Birch")).toHaveAttribute("title", "/work/birch");
   });
 
   it("keeps the last repos on a network failure and recovers by checking every ten seconds", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const api = mockHub();
     const client = renderHub();
-    await screen.findByRole("heading", { name: "All repos" });
+    await screen.findByRole("heading", { level: 1, name: "Home" });
 
     api.readProjects.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     api.readSession.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     await act(() => client.refetchQueries({ queryKey: ["machine", "projects"] }));
     expect(await screen.findByText(/The Hub stopped/)).toBeVisible();
     expect(screen.getByText(/The Hub stopped/).closest("[role=status]")).toHaveAttribute("aria-live", "polite");
-    expect(screen.getByRole("link", { name: "Alder" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Alder" })).toBeInTheDocument();
     await advance(9_999);
     expect(api.readSession).toHaveBeenCalledTimes(1);
     await advance(1);
@@ -200,7 +208,7 @@ describe("machine Hub", () => {
     await advance(10_000);
     await waitFor(() => expect(screen.queryByText(/The Hub stopped/)).not.toBeInTheDocument());
     expect(api.readSession).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole("link", { name: "Alder" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Alder" })).toBeInTheDocument();
   });
 
   it("offers reload when MEX has been updated", async () => {
@@ -223,7 +231,7 @@ describe("machine Hub", () => {
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     const api = mockHub();
     renderHub();
-    await screen.findByRole("heading", { name: "All repos" });
+    await screen.findByRole("heading", { level: 1, name: "Home" });
     await advance(60_000);
     expect(api.heartbeat).not.toHaveBeenCalled();
 
@@ -248,7 +256,7 @@ describe("machine Hub", () => {
     const api = mockHub();
     api.heartbeat.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     renderHub();
-    await screen.findByRole("heading", { name: "All repos" });
+    await screen.findByRole("heading", { level: 1, name: "Home" });
     await advance(60_000);
     expect(await screen.findByText(/The Hub stopped/)).toBeVisible();
   });
@@ -259,11 +267,11 @@ describe("machine Hub", () => {
     const api = mockHub();
     api.heartbeat.mockResolvedValueOnce(problem(500));
     renderHub();
-    await screen.findByRole("heading", { name: "All repos" });
+    await screen.findByRole("heading", { level: 1, name: "Home" });
     await advance(60_000);
     await waitFor(() => expect(api.readSession.mock.calls.length).toBeGreaterThan(1));
     expect(screen.queryByText(/The Hub stopped/)).toBeNull();
-    expect(screen.getByRole("heading", { name: "All repos" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "Home" })).toBeVisible();
   });
 
   it("asks to sign in again when every browser was signed out", async () => {
@@ -271,7 +279,7 @@ describe("machine Hub", () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     const api = mockHub();
     renderHub();
-    await screen.findByRole("heading", { name: "All repos" });
+    await screen.findByRole("heading", { level: 1, name: "Home" });
     api.heartbeat.mockResolvedValueOnce(problem(401));
     api.readSession.mockImplementation(async () => problem(401));
     await advance(60_000);

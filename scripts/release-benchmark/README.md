@@ -9,16 +9,14 @@ still requires `MEX_ENFORCE_RELEASE_BUDGETS=1` on Ubuntu 24.04 x64 with Node
 ## Machine Hub
 
 The Vite manifest accounts for the initial JS and CSS closure and every built
-font. Route measurements count only bytes added by `/` and `/repos/:projectId`.
-Both pages are currently eager, so their bytes are part of the initial
-closure. The production build measured 464,914 bytes for the initial and
-largest JS chunk, 76,818 CSS bytes, and 84,724 font bytes. Asset limits use
-`ceil(built bytes * 1.05)`.
+font. Route measurements count the bytes added by each lazy Home and Jobs
+page, including their shared chunk. The initial and largest-chunk limits
+retain the previous calibration. Route limits use `ceil(built bytes * 1.05)`.
 
 Cold readiness runs `mex hub --foreground --no-open` against a new temporary
 MEX home for every sample and times through the first completed, validated
 `GET /api/v1/hello`. The warm API reads use the session cookie and time complete
-responses from `/api/v1/session` and `/api/v1/projects`. Each frozen fixture
+responses from `/api/v1/session`, `/api/v1/projects`, `/api/v1/home` and `/api/v1/jobs`. Each frozen fixture
 profile registers one Git checkout in its own temporary MEX home. Browser heap
 uses a fresh Chromium context for each sample after real fixture content appears
 on the route, and fails if the page requests any other origin. The benchmark
@@ -38,13 +36,11 @@ RSS limits remain provisional, and historical job-stream reports still
 validate. Graph and Wiki database ratios continue to use the frozen fixtures
 and their existing limits.
 
-Only the asset limits are recalibrated here. Until measurements are available
-from the pinned runner, cold readiness, idle and Home heap retain their
-previous limits. Each new API uses the smallest previous API limit for its
-profile, and Repo uses the smallest previous route heap limit. Those
-provisional limits still enforce on the pinned runner. Pinned runtime
-calibration uses `ceil(measured p95 * 1.15)`. Local macOS or Windows timing and
-heap samples are for characterization.
+Cold readiness, idle, Home heap, session, and projects retain their previous
+limits. Home and Jobs API latency have provisional caps per fixture size.
+Repo heap uses the smallest previous route heap limit. Those limits enforce
+on the pinned runner, where calibration uses `ceil(measured p95 * 1.15)`.
+Local macOS or Windows timing and heap samples are for characterization.
 
 ## Startup diagnostics
 

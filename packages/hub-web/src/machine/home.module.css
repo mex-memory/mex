@@ -1,0 +1,658 @@
+/* Scope the wider canvas to Home inside the shared shell. */
+div:has(> .page) {
+  max-width: 1200px;
+}
+
+main:has(.page) {
+  background: var(--canvas-raised);
+}
+
+@media (min-width: 721px) {
+  div:has(> main .page) {
+    background: var(--sidebar-token);
+  }
+}
+
+.page {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+  container-type: inline-size;
+  font-variant-numeric: tabular-nums;
+}
+
+.header {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.headerRow,
+.title,
+.headerMeta,
+.cardHeading,
+.tileHeading,
+.tileAction,
+.cardActions,
+.jobDetails,
+.jobActivity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.headerRow,
+.cardHeading,
+.tileHeading,
+.jobDetails {
+  justify-content: space-between;
+}
+
+.headerRow,
+.headerMeta,
+.cardHeading,
+.cardActions,
+.jobDetails {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.title {
+  align-items: baseline;
+  gap: 8px;
+}
+
+.title > span,
+.barLabels > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title > span {
+  color: var(--muted-foreground);
+  font-size: 14px;
+}
+
+.headerMeta,
+.updating,
+.cardActions,
+.tileNote,
+.ruleMeta,
+.ownership,
+.jobActivity {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.updating {
+  font-weight: 500;
+}
+
+.jobsPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--link);
+  background: var(--card);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.jobsPill:hover {
+  border-color: var(--border-strong);
+  text-decoration: underline;
+}
+
+.jobsPill > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: jobPulse 2s ease-out infinite;
+}
+
+@keyframes jobPulse {
+  55%, 100% { box-shadow: 0 0 0 4px transparent; }
+  0% { box-shadow: 0 0 0 0 var(--success-border); }
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.tile,
+.card,
+.reviewDialog {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--card-foreground);
+}
+
+.tile {
+  position: relative;
+  display: grid;
+  grid-column: span 3;
+  grid-template-rows: 22px auto 1fr 22px;
+  gap: 5px;
+}
+
+.tile:hover {
+  border-color: var(--border-strong);
+}
+
+.tileHeading {
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.tileAction {
+  width: 100%;
+  justify-content: space-between;
+  gap: 3px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.tileAction::after {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  content: "";
+}
+
+.tileAction:focus-visible::after {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.tileAction svg,
+.tileIcon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.tileAction:hover svg {
+  color: var(--link);
+}
+
+.weekInfo.weekInfo {
+  width: 24px;
+  justify-content: center;
+  margin-right: -4px;
+  color: var(--muted-foreground);
+}
+
+.tileValue {
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.045em;
+}
+
+.tileVisual {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+}
+
+.sparkline {
+  fill: var(--chart-given);
+  opacity: 0.7;
+}
+
+.sparkline .sparklineZero {
+  fill: var(--border-strong);
+}
+
+.tileBreakdown {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusTotals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 4px;
+  padding: 0;
+  list-style: none;
+}
+
+.statusTotals li {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.statusTotals strong {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.statusLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.statusLabel svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.swatch {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 2px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.activityCard { grid-column: span 8; }
+.reviewCard {
+  grid-column: span 4;
+  gap: 10px;
+}
+.knowledgeCard { grid-column: span 7; }
+.jobsCard { grid-column: span 5; }
+
+.cardHeading {
+  min-height: 20px;
+}
+
+.cardHeading h2,
+.cardHeading h3 {
+  display: inline;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.cardHeading h3,
+.cardHeading > div > span {
+  font-size: 12px;
+}
+
+.cardHeading > div > span {
+  color: var(--muted-foreground);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+  list-style: none;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.legend li > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.legend svg {
+  width: 12px;
+  height: 12px;
+  color: var(--text-secondary);
+}
+
+.activityChart {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.activityChart text,
+.usageMeter text {
+  fill: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.usageMeter text {
+  font-size: 10px;
+}
+
+.plot {
+  position: relative;
+  min-width: 0;
+}
+
+.activitySvg {
+  display: block;
+}
+
+.compactDayLabel {
+  display: none;
+}
+
+.columnMarks {
+  transform: translateX(50%);
+  transform-box: view-box;
+}
+
+.hitTargets {
+  position: absolute;
+  inset: 0 0 auto;
+  display: grid;
+}
+
+.hitTarget {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: default;
+}
+
+.hitTarget:focus-visible {
+  z-index: 1;
+  outline-offset: -2px;
+}
+
+.chartTooltip {
+  --tooltip-width: min(184px, 100%);
+  position: absolute;
+  z-index: 2;
+  top: 4px;
+  left: clamp(0px, calc(var(--anchor) + 14px), calc(100% - var(--tooltip-width)));
+  width: var(--tooltip-width);
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--card-foreground);
+  background: var(--card);
+  box-shadow: var(--shadow-sm, 0 2px 5px rgb(0 0 0 / 14%));
+  font-size: 11px;
+}
+
+.chartTooltip[data-flip="true"] {
+  left: clamp(0px, calc(var(--anchor) - var(--tooltip-width) - 14px), calc(100% - var(--tooltip-width)));
+}
+
+.chartTooltip strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chartTooltip dl {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  color: var(--muted-foreground);
+}
+
+.chartTooltip dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.chartTooltip dd {
+  margin: 0;
+  color: var(--card-foreground);
+  font-weight: 500;
+}
+
+.latest,
+.ownership {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.rows {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rows > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.sessionRow,
+.needRow,
+.homeJob {
+  padding-block: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sessionRow,
+.ruleMeta,
+.folderIssue,
+.setup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+
+.sessionRow {
+  justify-content: space-between;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.sessionRow strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.sessionResult {
+  color: var(--text-secondary);
+}
+
+.needRow {
+  padding-block: 6px;
+}
+
+.needRow > span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ruleMeta {
+  align-items: center;
+  margin-top: 4px;
+}
+
+.repoChip {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--muted);
+  font-size: 11px;
+}
+
+.folderIssue {
+  align-items: center;
+  gap: 5px 7px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.folderIssue svg,
+.quietState svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.folderIssue a {
+  margin-left: auto;
+}
+
+.setup [data-slot="button"] {
+  font-size: 12px;
+}
+
+.cardActions {
+  margin-top: auto;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.reviewDialog {
+  width: min(480px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+}
+
+.reviewDialog::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+
+.reviewDialog .needRow > span {
+  display: block;
+}
+
+.knowledgeChart {
+  display: grid;
+  grid-template-columns: minmax(60px, max-content) minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.barLabels {
+  display: grid;
+  min-width: 0;
+  max-width: 14ch;
+  grid-auto-rows: 26px;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.knowledgeChart > svg + .barLabels {
+  text-align: right;
+}
+
+.ownership {
+  margin: auto 0 0;
+}
+
+.jobDetails {
+  margin-top: 5px;
+  gap: 4px 8px;
+}
+
+.jobTitle {
+  font-weight: 500;
+}
+
+.jobTitle span {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
+.jobActivity {
+  flex: 1 0 88px;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.jobActivity [data-slot="progress-track"] {
+  flex: 1;
+}
+
+.jobActivity [data-slot="progress-indicator"] {
+  background: var(--text-secondary);
+}
+
+.jobDetails [data-slot="badge"] {
+  max-width: 62%;
+}
+
+.jobDetails [data-slot="badge"] > span {
+  color: var(--text-secondary);
+}
+
+.quietState,
+.emptyPlot {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+.quietState {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.emptyPlot {
+  display: grid;
+  min-height: 112px;
+  place-items: center;
+  padding: 8px;
+  text-align: center;
+}
+
+@container (max-width: 760px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile { grid-column: auto; }
+  .card { grid-column: 1 / -1; }
+}
+
+@container (max-width: 410px) {
+  .grid { gap: 12px; }
+  .tile { padding: 12px; }
+  .tileValue { font-size: 29px; }
+  .card { padding: 14px 15px; }
+  .dayLabel { display: none; }
+  .compactDayLabel { display: inline; }
+  .sessionRow { row-gap: 2px; }
+  .sessionRow > span { width: 100%; }
+  .statusTotals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

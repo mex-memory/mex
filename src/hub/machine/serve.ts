@@ -67,8 +67,14 @@ export async function startMachineHub(options: StartMachineHubOptions): Promise<
 
   const running = server;
   const bound = { port: running.port, pid: process.pid, version: VERSION, homeId, mode: options.mode, at: new Date((options.now ?? Date.now)()).toISOString() };
-  const publish = openRecord(location);
-  try { writeBound(publish, bound); } finally { publish.close(); }
+  try {
+    const publish = openRecord(location);
+    try { writeBound(publish, bound); } finally { publish.close(); }
+  } catch (error) {
+    app.close();
+    await running.close();
+    throw error;
+  }
 
   let closed = false;
   return {
@@ -80,6 +86,7 @@ export async function startMachineHub(options: StartMachineHubOptions): Promise<
     async close() {
       if (closed) return;
       closed = true;
+      app.close();
       try {
         const cleanup = openRecord(location);
         try { clearBound(cleanup, bound.pid, bound.port); } finally { cleanup.close(); }

@@ -5,11 +5,11 @@ export const RELEASE_ROUTE_PATTERNS = Object.freeze({
 
 export const RELEASE_ROUTE_KEYS = Object.freeze(Object.keys(RELEASE_ROUTE_PATTERNS));
 
-// Both pages are currently eager and contribute to the initial closure. If
-// Vite emits a page as its own chunk, charge it to the route that loads it.
+// The two Home routes share one lazy page. Jobs loads its own chunk.
 export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
-  home: Object.freeze(["AllReposPage", "src/machine/pages.tsx"]),
-  repo: Object.freeze(["RepoPage", "src/machine/pages.tsx"]),
+  home: Object.freeze(["HomePage", "src/machine/HomePage.tsx"]),
+  repo: Object.freeze(["HomePage", "src/machine/HomePage.tsx", "RepoPage"]),
+  jobs: Object.freeze(["JobsPage", "src/machine/JobsPage.tsx"]),
 });
 
 export function releaseWorkbenchPaths({ projectId }) {

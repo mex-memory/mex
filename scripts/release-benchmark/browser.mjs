@@ -39,7 +39,8 @@ export async function measureWorkbenchHeap({
         const page = await context.newPage();
         try {
           const response = await page.goto(`${server.origin}${path}`, {
-            waitUntil: "networkidle",
+            // The Hub keeps an event stream open for the life of the page.
+            waitUntil: "domcontentloaded",
             timeout: PAGE_READY_TIMEOUT_MS,
           });
           if (!response?.ok()) {
@@ -76,15 +77,15 @@ export async function measureWorkbenchHeap({
 
 export async function assertReleaseRouteReady(page, route, project) {
   const visible = { state: "visible", timeout: PAGE_READY_TIMEOUT_MS };
+  const attached = { ...visible, state: "attached" };
+  if (route !== "home" && route !== "repo") throw new Error(`Unknown machine Hub benchmark route: ${route}`);
+  await page.getByRole("heading", { name: "Home", exact: true, level: 1 }).waitFor(visible);
+  await page.getByRole("region", { name: "What MEX knows", exact: true }).waitFor(visible);
   if (route === "home") {
-    await page.getByRole("heading", { name: "All repos", exact: true }).waitFor(visible);
-    await page.getByRole("link", { name: project.name, exact: true }).waitFor(visible);
-  } else if (route === "repo") {
-    await page.getByRole("heading", { name: project.name, exact: true }).waitFor(visible);
-    await page.getByRole("list", { name: "Checkouts", exact: true })
-      .getByText(project.checkouts[0].path, { exact: true }).waitFor(visible);
+    await page.getByRole("combobox", { name: "Repo switcher" })
+      .getByRole("option", { name: project.name, exact: true }).waitFor(attached);
   } else {
-    throw new Error(`Unknown machine Hub benchmark route: ${route}`);
+    await page.locator("#checkouts").getByText(project.checkouts[0].path, { exact: true }).waitFor(attached);
   }
 }
 

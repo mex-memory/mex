@@ -30,27 +30,44 @@ export function canonicalBytes(home: string, project: string, item: StoredReview
   if (entry.mex.status !== "active" || entry.mex.id !== item.entry.mex.id) return undefined;
   return raw;
 }
-export function snapshotReview(reader: ReviewReader, project: string, home: string, root: string, now = Date.now()): ReviewGroup[] {
+interface ReviewScanLimits { retainedBytes: number; vocabularyBytes: number; }
+
+export function snapshotReview(reader: ReviewReader, project: string, home: string, root: string, now = Date.now(), limits?: ReviewScanLimits): ReviewGroup[] {
+  let retained = 0;
+  function account(text: string) {
+    if (!limits) return;
+    retained += Buffer.byteLength(text);
+    if (retained > limits.retainedBytes) throw new KnowledgeError("STORE_LIMIT", "Review data exceeds its scan limit.");
+  }
   const pending = rows(reader, project);
   const conflicts = pending.flatMap((row): ReviewGroup[] => {
     const created = Date.parse(row.created_at), expires = created + REVIEW_DAYS * 86400000;
     if (row.reason !== "contradiction" || !Number.isFinite(created) || created > now || now >= expires) return [];
     const conflict = readConflict(reader, project, row.id);
     if (!conflict || conflict.checkout !== root || !conflict.entry.mex.source.producer || conflict.entry.mex.id !== row.entry_id) return [];
+    if (limits) account(JSON.stringify(conflict));
     return [{ id: row.id, entry: conflict.entry, reason: row.reason, sources: 1, createdAt: row.created_at,
       expiresAt: new Date(expires).toISOString(), checkedByModel: !!conflict.entry.mex.source.model,
       conflictsWith: [...new Set(conflict.conflicts.map(other => other.id))], conflict, members: [] }];
   });
   if (!sharingEnabled(reader, project, root)) return conflicts;
   const stored = storedItems(reader, project), all = new Map<string, ReviewMember>();
-  for (const row of pending.filter(row => row.reason !== "contradiction")) { const item = stored.get(row.id) ?? legacyJudge(reader, row); if (item) all.set(row.id, { row, item, revision: memberRevision(row, item) }); }
+  for (const row of pending.filter(row => row.reason !== "contradiction")) {
+    const saved = stored.get(row.id);
+    const item = saved ?? legacyJudge(reader, row);
+    if (!item) continue;
+    if (!saved && limits) account(JSON.stringify(item));
+    all.set(row.id, { row, item, revision: memberRevision(row, item) });
+  }
+  const sourceKeys = new Set(Array.from(all.values(), ({ item }) => item.source.key));
   // Compatibility for offers created before the Review writer was installed.
   for (const value of localSettings(reader, project, "learning.offer.", 128 << 10)) {
     let offer; try { offer = ReviewOffer.parse(JSON.parse(value.value)); } catch { continue; }
     if (offer.state !== "review") continue;
-    if ([...all.values()].some(m => m.item.source.key === value.key)) continue;
+    if (sourceKeys.has(value.key)) continue;
     const path = containedDirectory(home, ["projects", project, "notes"]), raw = path && readEntryFile(join(path, offer.id + ".md"));
     if (!raw || hash(raw) !== offer.personal_hash) continue;
+    account(raw);
     const entry = parseEntry(raw), meta = learningMetadata(reader, project, offer.id);
     const created = typeof offer.review_at === "number" ? new Date(offer.review_at).toISOString() : meta.at;
     if (!created || !Number.isFinite(Date.parse(created))) continue;
@@ -59,7 +76,7 @@ export function snapshotReview(reader: ReviewReader, project: string, home: stri
     all.set(row.id, { row, item, revision: memberRevision(row, item) });
   }
   const groups = new Map<string, ReviewGroup>(), firstSeen = new Map<string, number>(), retired = retiredClaimHashes(reader, project), vocabularies = new Map<string, RepoVocabulary>();
-  let bytes = 0;
+  let bytes = 0, vocabularyBytes = 0;
   for (const member of all.values()) {
     const { item, row } = member, entry = item.entry, claim = claimHash(entry.text), id = groupId(project, entry), created = Date.parse(row.created_at);
     if (!item.eligible || entry.mex.kind === "hint" || entry.mex.status !== "active" || !["person", "docs", "ci", "review"].includes(entry.mex.evidence)
@@ -68,7 +85,11 @@ export function snapshotReview(reader: ReviewReader, project: string, home: stri
     if (meta.holds?.length) continue;
     if (!vocabularies.has(item.source.checkout)) {
       if (vocabularies.size >= 16) throw new KnowledgeError("STORE_LIMIT", "Review spans too many checkouts.");
-      vocabularies.set(item.source.checkout, repoVocabulary(item.source.checkout));
+      const vocabulary = repoVocabulary(item.source.checkout);
+      // Allow for the strings and Set storage as well as the retained source text.
+      vocabularyBytes += vocabulary.text.length * 2 + vocabulary.words.size * 64;
+      if (limits && vocabularyBytes > limits.vocabularyBytes) throw new KnowledgeError("STORE_LIMIT", "Review vocabulary exceeds its scan limit.");
+      vocabularies.set(item.source.checkout, vocabulary);
     }
     if (!reviewEligible(entry, item.source.checkout, vocabularies.get(item.source.checkout))) continue;
     firstSeen.set(id, Math.min(firstSeen.get(id) ?? Infinity, created));

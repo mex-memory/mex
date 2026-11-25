@@ -1,3 +1,4 @@
+import { MachineJobActionRequestSchema } from "@mex/hub-contracts/machine";
 import { Hono, type Context } from "hono";
 import { generateCookie, getCookie } from "hono/cookie";
 import { randomUUID } from "node:crypto";
@@ -7,6 +8,9 @@ import { openRecord, openRecordReadOnly, type RecordWriter } from "../../record/
 import { recordLocation, type LocationOptions } from "../../record/location.js";
 import { readBoundedJson } from "../http/request.js";
 import { validateHubRequestPath, type HubAssetManifest } from "../static/assets.js";
+import { HubEvents } from "./events.js";
+import { HomeData } from "./home.js";
+import { changeHubJob, readHubJobs } from "./jobs.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { consumeBootstrap, keepHubOpen, TAB_KEEPALIVE_MS, type HubMode } from "./state.js";
 
@@ -35,7 +39,7 @@ interface Variables {
   session: HubSession;
 }
 
-export function createMachineHubApp(options: MachineHubOptions): Hono<{ Variables: Variables }> {
+export function createMachineHubApp(options: MachineHubOptions) {
   const app = new Hono<{ Variables: Variables }>();
   const now = options.now ?? Date.now;
   const location: LocationOptions = { home: options.home, cache: options.cache, isNetwork: options.isNetwork };
@@ -43,6 +47,10 @@ export function createMachineHubApp(options: MachineHubOptions): Hono<{ Variable
     const writer = openRecord(location);
     try { return use(writer); } finally { writer.close(); }
   };
+
+  const home = new HomeData(location, now);
+  const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
+  const events = new HubEvents(location, home, now, keepOpen);
 
   app.use("*", async (context, next) => {
     const requestId = randomUUID();
@@ -91,6 +99,7 @@ export function createMachineHubApp(options: MachineHubOptions): Hono<{ Variable
       checkWrite(context.req.raw.headers, context.get("address"), session);
     }
     context.set("session", session);
+    home.touch();
     await next();
   });
 
@@ -111,11 +120,30 @@ export function createMachineHubApp(options: MachineHubOptions): Hono<{ Variable
   });
 
   app.post("/api/v1/session/heartbeat", (context) => {
-    withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
+    keepOpen();
     return context.body(null, 204);
   });
 
   app.get("/api/v1/projects", (context) => context.json({ projects: listProjects(location) }));
+
+  app.get("/api/v1/home", (context) => context.json(home.get(context.req.query("tz"))));
+
+  app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
+
+  app.post("/api/v1/jobs/:id/actions", async (context) => {
+    const parsed = MachineJobActionRequestSchema.safeParse(await readBoundedJson(context.req.raw, 1_024));
+    if (!parsed.success) throw new HubRequestError(400, "INVALID_REQUEST", "Invalid job action", "Choose a job action and provide its current state.");
+    const result = changeHubJob(location, withWriter, options.env, context.req.param("id"), parsed.data);
+    if (result.status === 404) throw new HubRequestError(404, "INVALID_REQUEST", "Job not found", "That job no longer exists.");
+    if (result.status === 409) return problem(context,
+      new HubRequestError(409, "JOB_CONFLICT", "The job changed", "Refresh Jobs to see its current state."), { job: result.job });
+    return context.json(result.job);
+  });
+
+  app.get("/api/v1/events", (context) => {
+    const cookie = getCookie(context, options.sessions.cookieName);
+    return events.open(context.req.raw.signal, () => options.sessions.verify(cookie) !== undefined, context.req.method === "HEAD");
+  });
 
   app.all("/api/*", () => {
     throw new HubRequestError(404, "INVALID_REQUEST", "Not found", "The Hub has no such resource.");
@@ -134,7 +162,10 @@ export function createMachineHubApp(options: MachineHubOptions): Hono<{ Variable
     return new Response(asset.bytes as BodyInit, { headers: { "content-type": asset.contentType, "cache-control": asset.cacheControl } });
   });
 
-  return app;
+  return Object.assign(app, { close() {
+    events.close();
+    home.close();
+  } });
 }
 
 export interface ProjectSummary {
@@ -175,7 +206,7 @@ function sessionCookie(sessions: HubSessions, session: HubSession, value: string
   return generateCookie(sessions.cookieName, value, { httpOnly: true, sameSite: "Strict", path: "/api/v1", maxAge: sessions.maxAgeSeconds(session) });
 }
 
-function problem(context: Context, error: unknown): Response {
+function problem(context: Context, error: unknown, extensions?: { job: import("@mex/hub-contracts/machine").MachineJob }): Response {
   const known = error instanceof HubRequestError
     || (typeof (error as { status?: unknown })?.status === "number" && typeof (error as { code?: unknown })?.code === "string");
   const status = known ? (error as { status: number }).status : 500;
@@ -186,6 +217,7 @@ function problem(context: Context, error: unknown): Response {
     code: known ? (error as { code: string }).code : "INTERNAL_ERROR",
     detail: known ? (error as Error).message : "Try again. If it keeps happening, run `mex doctor`.",
     requestId: context.get("requestId"),
+    ...extensions,
   };
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/problem+json; charset=UTF-8" } });
 }

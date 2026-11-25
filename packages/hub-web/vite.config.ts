@@ -66,6 +66,10 @@ export default defineConfig(({ command }) => ({
       ),
     },
   },
+  optimizeDeps: {
+    // Prebundle the primitives used by the Home progress bars and lazy Jobs dialog.
+    include: ["@base-ui/react/progress", "@base-ui/react/alert-dialog"],
+  },
   build: {
     outDir: "../../dist/hub",
     emptyOutDir: true,
