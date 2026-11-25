@@ -243,6 +243,8 @@ export const MachineReviewActionRequestSchema = z.object({
   action: reviewAction,
   expectedRevision: knowledgeRevisionSchema,
   edited: reviewContent.strict().optional(),
+  then: z.enum(["keep", "share"]).optional(),
+  apply: z.literal(true).optional(),
   previewRevision: knowledgeRevisionSchema.optional(),
   reason: z.string().trim().min(1).max(512).optional(),
 }).strict();

@@ -17,7 +17,9 @@ import { readForgotten } from "./knowledge-forgotten.js";
 import { readKnowledgeLanding } from "./knowledge-landing.js";
 import { readKnowledgePage } from "./knowledge-list.js";
 import { KnowledgeConflict, KnowledgeReplays, KnowledgeWrites, knowledgeReadProblem, knowledgeWriteProblem } from "./knowledge-writes.js";
-import { readReviewCard, readReviewPage, reviewUnavailable } from "./review.js";
+import { invalidReview, readReviewCard, readReviewPage, reviewUnavailable } from "./review.js";
+import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes.js";
+import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { consumeBootstrap, keepHubOpen, TAB_KEEPALIVE_MS, type HubMode } from "./state.js";
 
@@ -38,6 +40,7 @@ export interface MachineHubOptions extends LocationOptions {
   readonly assets?: HubAssetManifest;
   readonly env?: NodeJS.ProcessEnv;
   readonly now?: () => number;
+  readonly reviewDependencies?: Partial<ReviewDependencies>;
 }
 
 interface Variables {
@@ -62,6 +65,13 @@ export function createMachineHubApp(options: MachineHubOptions) {
   const knowledgeWrites = new KnowledgeWrites(location, now, options.env, async (repoId) => {
     await knowledge.refreshProject(repoId);
     events.knowledgeChanged();
+  });
+  const reviewWrites = new ReviewWrites(home, location, now, options.env, options.reviewDependencies, async (repoId, notesChanged) => {
+    await home.refreshProject(repoId);
+    if (notesChanged) {
+      await knowledge.refreshProject(repoId);
+      events.knowledgeChanged();
+    }
   });
   const knowledgeReplays = new KnowledgeReplays(now);
   const knowledgePost = async (context: Context<{ Variables: Variables }>, action: (body: unknown) => Promise<unknown>, status: 200 | 201 = 200) => {
@@ -160,6 +170,18 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.get("/api/v1/review/cards/:key", async (context) => {
     try { return context.json((await readReviewCard(home, location, context.req.param("key"), now(), options.env)).card); }
     catch (error) { throw error instanceof HubRequestError ? error : reviewUnavailable(); }
+  });
+
+  app.post("/api/v1/review/cards/:key/:action", async (context) => {
+    const idempotency = context.req.header("Idempotency-Key");
+    if (!idempotency) throw invalidReview("Provide a request key for this action.");
+    const body = await readBoundedJson(context.req.raw, 64 << 10);
+    return knowledgeReplays.run(context.get("session").id, idempotency, context.req.path, body, async () => {
+      try { return context.json(await reviewWrites.run(context.req.param("key"), context.req.param("action"), body)); }
+      catch (error) {
+        return problem(context, reviewWriteProblem(error), error instanceof ReviewProblem ? error.extensions : undefined);
+      }
+    });
   });
 
   app.get("/api/v1/knowledge", (context) => context.json(readKnowledgePage(knowledge,

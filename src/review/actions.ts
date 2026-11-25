@@ -62,7 +62,14 @@ function sourceProof(writer: RecordWriter, project: string, group: ReviewGroup):
     }
   }
 }
-async function prepare(selector: string, action: ReviewAction, text: string | undefined, options: KnowledgeOptions, deps: ReviewDependencies, selection?: ReviewSelection): Promise<Prepared> {
+interface ReviewInput {
+  text?: string;
+  fields?: { oneLine: string; kind: KnowledgeEntry["mex"]["kind"]; scope: string[] };
+  expect?: string;
+  apply?: boolean;
+}
+
+async function prepare(selector: string, action: ReviewAction, { text, fields }: ReviewInput, options: KnowledgeOptions, deps: ReviewDependencies, selection?: ReviewSelection): Promise<Prepared> {
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
   if (!reader) throw new KnowledgeError("NOT_FOUND", "There are no rules waiting for Review.");
   let group: ReviewGroup;
@@ -82,7 +89,7 @@ async function prepare(selector: string, action: ReviewAction, text: string | un
   if (action === "use") throw new KnowledgeError("INVALID_OPTION", "Only a contradiction can be resolved with use.");
   if (action === "edit") {
     if (!text) throw new KnowledgeError("INVALID_ENTRY", "Supply the corrected rule in plain words.");
-    entry = gateEntry(editedEntry(entry, { text }, new Date(deps.clock())), references(project.root));
+    entry = gateEntry(editedEntry(entry, { ...fields, text }, new Date(deps.clock())), references(project.root));
     if (entry.mex.source.quote !== text) throw new KnowledgeError("UNVERIFIED_SOURCE", "The correction's quote changed during validation.");
   }
   if (action === "share") {
@@ -174,13 +181,13 @@ async function recoverShare(selector: string, options: KnowledgeOptions, expecte
 }
 /** Every mutation is bound to a freshly computed exact preview. */
 export async function reviewAction(selector: string, action: ReviewAction, options: KnowledgeOptions,
-  input: { text?: string; expect?: string; apply?: boolean } = {}, overrides: Partial<ReviewDependencies> = {}, selection?: ReviewSelection): Promise<{ applied: boolean; preview: ReviewPreview }> {
+  input: ReviewInput = {}, overrides: Partial<ReviewDependencies> = {}, selection?: ReviewSelection): Promise<{ applied: boolean; preview: ReviewPreview }> {
   const deps = { ...defaults, ...overrides };
   if (action === "share" && input.apply && input.expect) {
     const recovered = await recoverShare(selector, options, input.expect, deps, selection);
     if (recovered) return { applied: true, preview: recovered };
   }
-  const prepared = await prepare(selector, action, input.text, options, deps, selection);
+  const prepared = await prepare(selector, action, input, options, deps, selection);
   if (!input.apply) return { applied: false, preview: prepared.preview };
   if (!input.expect || input.expect !== prepared.preview.revision) throw stale();
   const project = knowledgeProject(options);

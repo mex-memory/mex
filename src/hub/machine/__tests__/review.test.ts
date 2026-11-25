@@ -1,4 +1,5 @@
 import { MachineHomeSchema, MachineReviewCardSchema, MachineReviewQueueSchema } from "@mex/hub-contracts/machine";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,8 +9,9 @@ import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as repository from "../../../filter/repository.js";
 import { hash } from "../../../judge/evidence.js";
-import { serializeEntry, type KnowledgeEntry } from "../../../knowledge/entry.js";
+import { parseEntry, serializeEntry, type KnowledgeEntry } from "../../../knowledge/entry.js";
 import { openRecord, type RecordWriter } from "../../../record/index.js";
+import { reviewAction } from "../../../review/actions.js";
 import { stageConflict } from "../../../review/conflicts.js";
 import { groupId, learningReviewId, stageReview } from "../../../review/state.js";
 import { createMachineHubApp } from "../app.js";
@@ -232,4 +234,89 @@ it("shows a partial repo past the scan cap and still serves other repos", async 
   expect(result.total).toBe(1);
   expect(result.partial).toEqual([{ repoId: limited.id, note: expect.stringContaining("reading limit") }]);
   expect((await queue("?repo=" + limited.id)).partial).toEqual(result.partial);
+});
+
+function post(key: string, action: string, body: unknown, idempotencyKey = randomUUID() as string, headers?: HeadersInit) {
+  return request(cardPath(key) + "/" + action, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: ORIGIN, "x-mex-csrf": csrfToken, "idempotency-key": idempotencyKey, ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+it("keeps card six through the service, queues its rule files and replays the request", async () => {
+  const repo = project("tools");
+  for (let index = 0; index < 6; index++) stage(repo, entry("fixture" + index, "run test " + index + "."), at(-6000 + index));
+  const cards = (await settled()).cards;
+  const card = await detail(cards[5].key);
+  const body = { expectedRevision: card.revision };
+  const [first, replay] = await Promise.all([post(card.key, "keep", body, "same-request"), post(card.key, "keep", body, "same-request")]);
+  expect(first.status).toBe(200);
+  expect(await first.json()).toMatchObject({ outcome: "kept", knowledgeKey: repo.id + ":onlyYou:mx_fixture5" });
+  expect(await replay.json()).toMatchObject({ outcome: "kept" });
+  expect(writer.db.prepare("SELECT count(*) n FROM jobs WHERE project_id=? AND kind='native-files'").get(repo.id)).toMatchObject({ n: 1 });
+  expect((await queue()).total).toBe(5);
+  const mismatch = await post(card.key, "keep", { ...body, expectedRevision: "different" }, "same-request");
+  expect(mismatch.status).toBe(409);
+  expect(await mismatch.json()).toMatchObject({ code: "REQUEST_KEY_USED" });
+});
+
+it("binds edits to the opened revision and keeps the submitted fields through Review", async () => {
+  const repo = project("tools");
+  const staged = stage(repo, entry("fixture", "run the linter."), at(-1000));
+  const card = await detail(staged.key);
+  const edited = { claim: "run checks locally", text: "run the test command locally.", kind: "procedure", scope: ["src/**"] };
+  const body = { expectedRevision: "sha256:" + "d".repeat(64), edited, then: "keep" };
+  const stale = await post(card.key, "edit", body);
+  expect(stale.status).toBe(409);
+  expect(await stale.json()).toMatchObject({ code: "STALE_PREVIEW", current: { key: card.key, revision: card.revision } });
+  const result = await post(card.key, "edit", { ...body, expectedRevision: card.revision });
+  expect(result.status).toBe(200);
+  expect(parseEntry(readFileSync(staged.file, "utf8"))).toMatchObject({
+    text: edited.text, mex: { one_line: edited.claim, kind: edited.kind, scope: edited.scope, checks: [] },
+  });
+});
+
+it("keeps the current notes with sharing off", async () => {
+  const repo = project("tools");
+  writer.db.prepare("UPDATE projects SET shared=0 WHERE id=?").run(repo.id);
+  const note = entry("current", "use the current formatter.");
+  const { raw, file } = save(notes(repo.id), note);
+  const id = stageConflict(writer, repo.id, {
+    entry: entry("proposed", "use a new formatter."), checkout: repo.path, evidence: [],
+    conflicts: [{ id: note.mex.id, level: "personal", revision: hash(raw) }],
+  }, new Date(at(-1000)));
+  const card = await detail(repo.id + ":" + id);
+  const response = await post(card.key, "keepCurrent", { expectedRevision: card.revision });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ outcome: "keptCurrent", knowledgeKey: card.contradiction!.current[0].key });
+  expect(readFileSync(file, "utf8")).toBe(raw);
+  expect((await queue()).total).toBe(0);
+});
+
+it.each([["keep", "Kept"], ["edit", null]] as const)("recognizes a terminal %s from retained rows", async (action, outcome) => {
+  const repo = project("tools");
+  const { key } = stage(repo, entry("fixture", "run the linter."), at(-1000));
+  const card = await detail(key);
+  const options = { ...location(), projectPath: repo.path };
+  const input = action === "edit" ? { text: "run the formatter." } : {};
+  const { preview } = await reviewAction(card.cardId, action, options, input, { clock: now });
+  await reviewAction(card.cardId, action, options, { ...input, apply: true, expect: preview.revision }, { clock: now });
+  const response = await post(card.key, "keep", { expectedRevision: card.revision });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: "ALREADY_HANDLED", outcome });
+  expect((await queue()).total).toBe(0);
+});
+
+it("requires Origin, CSRF, an idempotency key, and a bounded POST body", async () => {
+  const repo = project("tools");
+  const card = await detail(stage(repo, entry("fixture", "run the linter."), at(-1000)).key);
+  const body = { expectedRevision: card.revision };
+  expect((await post(card.key, "keep", body, "valid", { origin: "https://elsewhere.example" })).status).toBe(403);
+  expect((await post(card.key, "keep", body, "valid", { "x-mex-csrf": "" })).status).toBe(403);
+  expect((await post(card.key, "keep", body, "")).status).toBe(400);
+  expect((await post(card.key, "keep", { ...body, tooLong: "x".repeat((64 << 10) + 1) })).status).toBe(400);
+  expect((await post("invalid-key", "keep", body)).status).toBe(400);
+  expect((await post(repo.id + ":rv_" + "f".repeat(24), "keep", body)).status).toBe(404);
+  expect((await queue()).total).toBe(1);
 });
