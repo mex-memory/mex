@@ -1,15 +1,20 @@
-import { MachineSetupQuoteRequestSchema, type MachineSetupLearning, type MachineSetupQuote } from "@mex/hub-contracts/machine";
+import { MachineSetupLearningDecisionSchema, MachineSetupQuoteRequestSchema, type MachineSetupLearning, type MachineSetupQuote } from "@mex/hub-contracts/machine";
 import { randomBytes } from "node:crypto";
 import { SourceError } from "../../learn-deeper/forge.js";
+import { origin, revision } from "../../learn-deeper/git.js";
 import { LEARN_KIND, type LearningPlan } from "../../learn-deeper/plan.js";
 import { prepareLearningQuote } from "../../learn-deeper/quote.js";
+import { queueLearning } from "../../learn-deeper/queue.js";
+import { ensureBackground } from "../../record/background.js";
 import { openHooksReadOnly, openRecordReadOnly, type RecordReader } from "../../record/index.js";
 import { recordLocation, type LocationOptions } from "../../record/location.js";
 import { realPath } from "../../record/project.js";
+import { waitForRecordWriter } from "../../record/writer-wait.js";
+import { stepFromRow } from "../../repo-start/steps.js";
 import { machineBusy } from "./agent-repair.js";
 import { readStore } from "./read.js";
 import { HubRequestError } from "./security.js";
-import { readSetupTarget, setupOfferRevision } from "./setup-snapshot.js";
+import { hubSetupStep, readSetupTarget, setupOfferRevision, setupRevision } from "./setup-snapshot.js";
 
 const QUOTE_TTL_MS = 5 * 60_000;
 const QUOTE_LIMIT = 128;
@@ -32,11 +37,20 @@ function isSameCheckout(path: string) {
   try { return realPath(path) === path; } catch { return false; }
 }
 
+function planRevision({ since: _since, until: _until, ...plan }: LearningPlan) {
+  // Clock movement alone changes the source window bounds. Its selected
+  // sources, pinned revision, agent and budget must all still match.
+  return setupRevision(plan);
+}
+
 export class SetupLearning {
   #approvals = new Map<string, Approval>();
   #active = new Set<string>();
 
-  constructor(private readonly location: LocationOptions, private readonly now: () => number, private readonly env: NodeJS.ProcessEnv) {}
+  constructor(
+    private readonly location: LocationOptions, private readonly now: () => number, private readonly env: NodeJS.ProcessEnv,
+    private readonly entry?: string,
+  ) {}
 
   async quote(repoId: string, session: string, body: unknown): Promise<MachineSetupLearning> {
     const parsed = MachineSetupQuoteRequestSchema.safeParse(body);
@@ -69,6 +83,59 @@ export class SetupLearning {
         return { state: "unavailable", reason };
       }
     });
+  }
+
+  async start(repoId: string, session: string, body: unknown) {
+    return this.#run(repoId, async () => {
+      const approval = this.#approval(repoId, session, body);
+      const { quote, plan, offerRevision } = approval;
+      try {
+        await this.#read(repoId, offerRevision, async (reader, root) => {
+          const current = await prepareLearningQuote(reader, { root, projectId: repoId, location: this.location, env: this.env, now: this.now });
+          if (current.state !== "offered" || planRevision(current.plan) !== planRevision(plan)) throw staleQuote();
+          // The repository can change while the inventory request is in flight.
+          const [head, remote] = await Promise.all([revision(root), origin(root)]);
+          if (head !== plan.head || remote?.host !== plan.origin.host || remote.slug !== plan.origin.slug) throw staleQuote();
+        });
+        const writer = await waitForRecordWriter(this.location);
+        let step;
+        try {
+          const reader: Pick<RecordReader, "all" | "get" | "setting"> = {
+            all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never,
+            get: (sql, ...args) => writer.db.prepare(sql).get(...args) as never,
+            setting: (scope, key) => writer.setting(scope, key),
+          };
+          const { job, existing } = queueLearning(writer, repoId, { ...plan, waitForSetup: true }, jobId => {
+            const root = this.#requireOffer(reader, repoId, offerRevision);
+            if (root !== plan.checkout || approval.expires <= this.now()) throw staleQuote();
+            writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(
+              repoId, "hub.setup.consent." + setupRevision([repoId, LEARN_KIND, quote.revision]),
+              JSON.stringify({ version: 1, source: "from the Hub", action: LEARN_KIND, revision: quote.revision, at: new Date(this.now()).toISOString(),
+                jobId, checkout: root, agent: plan.agent, tokensEstimate: quote.tokens, ceilingTokens: quote.ceilingTokens, weekly: quote.weekly }),
+            );
+          });
+          if (existing) throw staleQuote();
+          step = hubSetupStep(stepFromRow(reader, job), job);
+        } finally { writer.close(); }
+        this.#approvals.delete(quote.revision);
+        ensureBackground({ ...this.location, env: this.env, entry: this.entry });
+        return step;
+      } catch (error) {
+        if (error instanceof SourceError || error instanceof HubRequestError && error.status === 409) {
+          this.#approvals.delete(quote.revision);
+          throw staleQuote();
+        }
+        throw error;
+      }
+    });
+  }
+
+  #approval(repoId: string, session: string, body: unknown) {
+    const parsed = MachineSetupLearningDecisionSchema.safeParse(body);
+    if (!parsed.success) throw new HubRequestError(400, "INVALID_REQUEST", "Invalid learning decision", "Open and confirm the current learning estimate.");
+    const approval = this.#approvals.get(parsed.data.quoteRevision);
+    if (!approval || approval.repoId !== repoId || approval.session !== session || approval.expires <= this.now()) throw staleQuote();
+    return approval;
   }
 
   async #run<T>(repoId: string, action: () => Promise<T>): Promise<T> {

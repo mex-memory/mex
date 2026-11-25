@@ -87,6 +87,8 @@ export interface JobKind<P = unknown, C = unknown> {
   runBatch(context: BatchContext<P, C>): Promise<BatchResult<C>> | BatchResult<C>;
   /** For a waiting job: true when it can continue. Default: continue on the next pass. */
   ready?(job: JobRow, writer: RecordWriter): boolean;
+  /** A queued prerequisite that must finish before this job can be claimed. */
+  blockedBy?(job: JobRow, reader: Pick<RecordReader, "all">): string | undefined;
   /** Optional owned recovery metadata for a batch whose runner died. */
   interrupted?(job: JobRow, writer: RecordWriter): Pick<Partial<JobRow>, "checkpoint" | "progress">;
   display?(job: JobRow, reader: Pick<RecordReader, "all">): { used?: number; ceiling?: number; summary?: string };
@@ -249,6 +251,7 @@ export function requeueReadyJobs(writer: RecordWriter): number {
 function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): JobRow | undefined {
   return inTransaction(writer.db, () => {
     const queued = writer.db.prepare("SELECT * FROM jobs WHERE state='queued' ORDER BY updated_at,created_at").all() as unknown as JobRow[];
+    const reader: Pick<RecordReader, "all"> = { all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never };
     for (const job of queued) {
       if (only && !only.has(job.id)) continue;
       const kind = kinds.get(job.kind);
@@ -262,6 +265,7 @@ function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): 
         const busy = writer.db.prepare("SELECT 1 FROM jobs WHERE state='running' AND kind=? AND id!=?").get(job.kind, job.id);
         if (busy) continue;
       }
+      if (kind.blockedBy?.(job, reader)) continue;
       return setState(writer.db, job, "running", { owner: self });
     }
     return undefined;
@@ -271,6 +275,8 @@ function claim(writer: RecordWriter, self: string, only?: ReadonlySet<string>): 
 /** Why a queued job isn't running, in plain words, for callers that queue work. */
 export function blockedReason(reader: Pick<RecordReader, "all">, job: JobRow): string | undefined {
   const kind = kinds.get(job.kind);
+  const prerequisite = kind?.blockedBy?.(job, reader);
+  if (prerequisite) return prerequisite;
   if (job.project_id) {
     const other = reader.all<JobRow & { root_path: string | null }>(`SELECT jobs.*,projects.root_path FROM jobs LEFT JOIN projects ON projects.id=jobs.project_id
       WHERE jobs.state='running' AND jobs.project_id=? AND jobs.id!=? LIMIT 1`, job.project_id, job.id)[0];

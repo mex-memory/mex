@@ -87,7 +87,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   const uninstallRead = new ControlSnapshot(now, async signal => ({ ...await takeUninstallSnapshot(location, signal), issue: undefined }),
     "The install record couldn’t be read. Run mex uninstall --dry-run in your terminal.");
   const setup = new SetupData(location, now, options.env ?? process.env);
-  const setupLearning = new SetupLearning(location, now, options.env ?? process.env);
+  const setupLearning = new SetupLearning(location, now, options.env ?? process.env, options.agentEntry);
   const repair = new AgentRepair(agentOptions, now);
   const followUps = new Set<NodeJS.Immediate>();
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
@@ -357,6 +357,14 @@ export function createMachineHubApp(options: MachineHubOptions) {
 
   app.post("/api/v1/setup/:repo/quote", (context) => machinePost(context, body =>
     setupLearning.quote(setupRepoId(context.req.param("repo")), context.get("session").id, body)));
+
+  app.post("/api/v1/setup/:repo/learn", (context) => machinePost(context, async (body) => {
+    const repoId = setupRepoId(context.req.param("repo"));
+    const step = await setupLearning.start(repoId, context.get("session").id, body);
+    setup.refresh(repoId);
+    events.controlsChanged("setup", "jobs");
+    return step;
+  }));
 
   app.post("/api/v1/setup/:repo/steps/:id", (context) => machinePost(context, async (body) => {
     const repoId = setupRepoId(context.req.param("repo"));
