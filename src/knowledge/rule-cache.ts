@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { openRecord } from "../record/index.js";
 import { knowledgeProject, type KnowledgeOptions } from "./context.js";
-import { KnowledgeError } from "./contract.js";
-import { containedDirectory } from "./files.js";
+import { KNOWLEDGE_LIMITS, KnowledgeError } from "./contract.js";
+import { containedDirectory, readBoundedTextFile } from "./files.js";
 import { scanRuleFiles, type RuleScan } from "./rule-files.js";
 
 export const RULE_CACHE = "rule-files.json";
@@ -35,8 +35,20 @@ export function refreshRuleFiles(options: KnowledgeOptions, now = new Date(), li
   return cache;
 }
 
-/** The last saved scan, if any. Never scans. */
-export function readRuleFiles(options: KnowledgeOptions): RuleCache | undefined {
+/** The last saved scan, if any. A registered reader needs no Git or identity fallback. */
+export function readRuleFiles(options: KnowledgeOptions | { home: string; projectId: string }): RuleCache | undefined {
+  if ("projectId" in options) {
+    if (!/^[gf]-[a-f0-9]{24}$/u.test(options.projectId)) throw new KnowledgeError("UNSAFE_STORE", "Invalid registered project identity.");
+    const directory = containedDirectory(options.home, ["projects", options.projectId]);
+    const text = directory && readBoundedTextFile(join(directory, RULE_CACHE), KNOWLEDGE_LIMITS.scanBytes);
+    if (text === undefined) return undefined;
+    const cache = JSON.parse(text) as RuleCache;
+    if (cache?.version !== VERSION || typeof cache.root !== "string"
+      || !Array.isArray(cache.files) || !Array.isArray(cache.entries) || !Array.isArray(cache.review)) {
+      throw new KnowledgeError("UNSAFE_STORE", "The saved rule file scan is invalid.");
+    }
+    return cache;
+  }
   const project = knowledgeProject(options);
   const file = join(project.location.home, "projects", project.projectId, RULE_CACHE);
   if (!existsSync(file)) return undefined;

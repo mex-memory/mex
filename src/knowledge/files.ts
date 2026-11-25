@@ -56,7 +56,7 @@ export function readBoundedTextFile(path: string, maxBytes: number): string | un
 }
 
 function readBoundedText(path: string, maxBytes: number): { content: string; bytes: Uint8Array } | undefined {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024) throw new KnowledgeError("STORE_LIMIT", "Invalid text read bound.");
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", "Invalid text read bound.");
   let fd: number;
   let expected;
   try {
@@ -70,7 +70,7 @@ function readBoundedText(path: string, maxBytes: number): { content: string; byt
     if (before.dev !== expected.dev || before.ino !== expected.ino) throw new KnowledgeError("STORE_CHANGED", "A note changed while it was opened; retry the command.");
     if (!before.isFile()) throw new KnowledgeError("UNSAFE_STORE", "A note must be a regular file.");
     if (before.size > BigInt(maxBytes)) throw new KnowledgeError("ENTRY_TOO_LARGE", "File exceeds the size limit.");
-    const bytes = Buffer.alloc(maxBytes + 1);
+    const bytes = Buffer.alloc(Math.min(maxBytes + 1, Number(before.size) + 1));
     let length = 0, read: number;
     do { read = readSync(fd, bytes, length, bytes.length - length, null); length += read; } while (read > 0 && length < bytes.length);
     const after = fstatSync(fd, { bigint: true });
