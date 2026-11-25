@@ -29,6 +29,7 @@ function app(path: string, own: (url: string, init: RequestInit | undefined) => 
   });
   vi.stubGlobal("fetch", fetch);
   vi.stubGlobal("EventSource", undefined);
+  if (!window.PointerEvent) vi.stubGlobal("PointerEvent", MouseEvent);
   window.history.replaceState(null, "", path);
   const client = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
   render(<QueryClientProvider client={client}><BrowserRouter><MachineHub /></BrowserRouter></QueryClientProvider>);

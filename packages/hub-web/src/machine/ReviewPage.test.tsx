@@ -374,6 +374,7 @@ function liveHub(selected?: MachineReviewCard) {
     if (pathname === "/api/v1/session") return Response.json(fixture.session);
     if (pathname === "/api/v1/projects") return Response.json({ projects: fixture.projects });
     if (pathname === "/api/v1/home") return Response.json(getFixture("empty").overview);
+    if (pathname === "/api/v1/agents") return Response.json({ agents: [] });
     if (pathname === "/api/v1/jobs") return Response.json([]);
     throw new Error("Unexpected request " + input);
   });

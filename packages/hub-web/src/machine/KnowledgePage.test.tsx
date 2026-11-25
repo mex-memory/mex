@@ -487,6 +487,7 @@ function renderLive(request: (url: URL, init?: RequestInit) => Response | Promis
       case "/api/v1/projects": return Response.json({ projects: [knownRepo] });
       case "/api/v1/home": return Response.json(getFixture("empty").overview);
       case "/api/v1/jobs": return Response.json([]);
+      case "/api/v1/agents": return Response.json({ agents: [] });
       case "/api/v1/review": return Response.json({ total: 0, byRepo: {} });
       default: return request(url, init);
     }
