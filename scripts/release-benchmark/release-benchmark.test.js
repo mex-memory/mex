@@ -68,7 +68,7 @@ describe("release benchmark contract", () => {
     }
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       const cap = Math.min(...Object.values(previous.apiLatencyMs[profile]));
-      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail, agents, agentDetail, settings, uninstallPreview } = budgets.runtime.apiLatencyMs[profile];
+      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail, agents, agentDetail, settings, uninstallPreview, setup: setupIndex, setupDetail } = budgets.runtime.apiLatencyMs[profile];
       expect({ session, projects }).toEqual({ session: cap, projects: cap });
       expect(home).toBeGreaterThan(0);
       expect(jobs).toBeGreaterThan(0);
@@ -76,7 +76,7 @@ describe("release benchmark contract", () => {
       expect(knowledgeLanding).toBeGreaterThan(0);
       expect(review).toBeGreaterThan(0);
       expect(reviewDetail).toBeGreaterThan(0);
-      expect([agents, agentDetail, settings, uninstallPreview]).toEqual([review, review, review, review]);
+      expect([agents, agentDetail, settings, uninstallPreview, setupIndex, setupDetail]).toEqual(Array(6).fill(review));
       expect(budgets.runtime.browserHeapBytes[profile]).toEqual({
         home: previous.browserHeapBytes[profile].home,
         repo: Math.min(...Object.values(previous.browserHeapBytes[profile])),
@@ -92,7 +92,7 @@ describe("release benchmark contract", () => {
     const review = { jsBytes: 103715, cssBytes: 17786, fontBytes: 0 };
     const agents = { jsBytes: 132824, cssBytes: 13137, fontBytes: 0 };
     const settings = { jsBytes: 113560, cssBytes: 32363, fontBytes: 0 };
-    const setup = { jsBytes: 76934, cssBytes: 6397, fontBytes: 0 };
+    const setup = { jsBytes: 84069, cssBytes: 7299, fontBytes: 0 };
     expect(budgets.assets).toEqual({
       maxJsChunkBytes: assetBudgetCandidate(measuredInitial.jsBytes),
       initial: assetGroup(measuredInitial),
@@ -132,6 +132,7 @@ describe("release benchmark contract", () => {
       review: "/api/v1/review", reviewDetail: "/api/v1/review/cards/:key",
       agents: "/api/v1/agents", agentDetail: "/api/v1/agents/claude-code",
       settings: "/api/v1/settings", uninstallPreview: "/api/v1/settings/uninstall",
+      setup: "/api/v1/setup", setupDetail: "/api/v1/setup?repo=:repo",
     });
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile])).toEqual(RELEASE_ROUTE_KEYS);

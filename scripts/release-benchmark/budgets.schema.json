@@ -112,7 +112,7 @@
     "readBudgets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session", "projects", "home", "jobs", "knowledge", "knowledgeLanding", "review", "reviewDetail", "agents", "agentDetail", "settings", "uninstallPreview"],
+      "required": ["session", "projects", "home", "jobs", "knowledge", "knowledgeLanding", "review", "reviewDetail", "agents", "agentDetail", "settings", "uninstallPreview", "setup", "setupDetail"],
       "properties": {
         "session": { "$ref": "#/$defs/nonNegativeNumber" },
         "projects": { "$ref": "#/$defs/nonNegativeNumber" },
@@ -125,7 +125,9 @@
         "agents": { "$ref": "#/$defs/nonNegativeNumber" },
         "agentDetail": { "$ref": "#/$defs/nonNegativeNumber" },
         "settings": { "$ref": "#/$defs/nonNegativeNumber" },
-        "uninstallPreview": { "$ref": "#/$defs/nonNegativeNumber" }
+        "uninstallPreview": { "$ref": "#/$defs/nonNegativeNumber" },
+        "setup": { "$ref": "#/$defs/nonNegativeNumber" },
+        "setupDetail": { "$ref": "#/$defs/nonNegativeNumber" }
       }
     },
     "profiledReadBudgets": {

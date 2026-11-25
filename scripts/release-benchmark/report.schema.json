@@ -276,7 +276,7 @@
       "required": ["session", "projects"],
       "dependentRequired": { "home": ["jobs"], "jobs": ["home"], "knowledge": ["knowledgeLanding"], "knowledgeLanding": ["knowledge"],
         "review": ["reviewDetail"], "reviewDetail": ["review"], "agents": ["agentDetail"], "agentDetail": ["agents"],
-        "settings": ["uninstallPreview"], "uninstallPreview": ["settings"] },
+        "settings": ["uninstallPreview"], "uninstallPreview": ["settings"], "setup": ["setupDetail"], "setupDetail": ["setup"] },
       "properties": {
         "session": { "$ref": "#/$defs/summary10" },
         "projects": { "$ref": "#/$defs/summary10" },
@@ -289,7 +289,9 @@
         "agents": { "$ref": "#/$defs/summary10" },
         "agentDetail": { "$ref": "#/$defs/summary10" },
         "settings": { "$ref": "#/$defs/summary10" },
-        "uninstallPreview": { "$ref": "#/$defs/summary10" }
+        "uninstallPreview": { "$ref": "#/$defs/summary10" },
+        "setup": { "$ref": "#/$defs/summary10" },
+        "setupDetail": { "$ref": "#/$defs/summary10" }
       }
     },
     "maintenanceMeasurement": {

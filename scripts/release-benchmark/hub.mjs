@@ -153,6 +153,8 @@ export const RELEASE_COMMON_READ_PATHS = Object.freeze({
   agentDetail: "/api/v1/agents/claude-code",
   settings: "/api/v1/settings",
   uninstallPreview: "/api/v1/settings/uninstall",
+  setup: "/api/v1/setup",
+  setupDetail: "/api/v1/setup?repo=:repo",
 });
 
 export async function measureCommonReads(server, auth, samples) {
@@ -182,13 +184,19 @@ export async function measureCommonReads(server, auth, samples) {
   }
   const key = review.cards?.[0]?.key;
   if (!key || review.partial) throw new Error("The benchmark Hub did not return its staged Review cards.");
-  const paths = { ...RELEASE_COMMON_READ_PATHS, reviewDetail: RELEASE_COMMON_READ_PATHS.reviewDetail.replace(":key", encodeURIComponent(key)) };
+  const repoId = result.projects[0].id;
+  const paths = { ...RELEASE_COMMON_READ_PATHS,
+    reviewDetail: RELEASE_COMMON_READ_PATHS.reviewDetail.replace(":key", encodeURIComponent(key)),
+    setupDetail: RELEASE_COMMON_READ_PATHS.setupDetail.replace(":repo", encodeURIComponent(repoId)),
+  };
 
   const controls = {
     agents: (data) => data.agents?.length === 4,
     agentDetail: (data) => data.agent?.id === "claude-code",
     settings: (data) => data.settings?.repos?.some((repo) => repo.id === result.projects[0].id),
     uninstallPreview: (data) => Array.isArray(data.preview?.changes),
+    setup: (data) => data.repos?.some((repo) => repo.repoId === repoId && repo.status === "done"),
+    setupDetail: (data) => data.repo?.repoId === repoId && data.repo.steps?.some(step => step.kind === "graph-build" && step.state === "done"),
   };
   await Promise.all(Object.entries(controls).map(async ([name, ready]) => {
     const deadline = performance.now() + 5_000;
