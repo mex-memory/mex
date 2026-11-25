@@ -102,7 +102,7 @@ export default function FixtureHub({ variant }: { variant: FixtureVariant }) {
     <HubShell
       connectionLost={false}
       preview={{
-        jobs, overview, knowledge, review, changeJob,
+        jobs, overview, knowledge, review, changeJob, setup: fixture.setup,
         agents: { agents, getRepairPreview: (id) => fixture.agents.repairPreviews[id], repair },
         settings: { settings, uninstall: fixture.settings.uninstall, write },
       }}

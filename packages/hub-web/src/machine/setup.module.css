@@ -1,0 +1,148 @@
+.page {
+  display: grid;
+  min-width: 0;
+  width: min(100%, 940px);
+  gap: 20px;
+  overflow-wrap: anywhere;
+}
+
+.page h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.page p {
+  margin-block: 0;
+}
+
+.page code {
+  font-family: var(--font-mono);
+  font-size: 0.91em;
+  overflow-wrap: anywhere;
+}
+
+.repoList,
+.freeFindings,
+.empty,
+.summary {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.repoList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.repoList li {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px 16px;
+  padding: 14px 18px;
+}
+
+.repoList li + li {
+  border-top: 1px solid var(--border);
+}
+
+.repoIdentity {
+  display: grid;
+  min-width: 0;
+  justify-items: start;
+  gap: 3px;
+}
+
+.repoIdentity a {
+  font-size: 14px;
+}
+
+.repoIdentity code,
+.sectionHeader code,
+.repoStatus {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.freeFindings {
+  background: var(--surface-subtle);
+}
+
+.sectionHeader {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 3px 16px;
+  padding: 12px 18px;
+}
+
+.findings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 10px 20px;
+  margin: 0;
+  padding: 0 18px 14px;
+  font-size: 13px;
+}
+
+.findings dt {
+  font-weight: 550;
+}
+
+.findings dd {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.summary,
+.empty {
+  padding: 16px 18px;
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px 24px;
+}
+
+.empty {
+  display: grid;
+  max-width: 500px;
+  justify-items: start;
+  gap: 7px;
+}
+
+.summary p,
+.empty p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.summary h2 + p {
+  margin-top: 5px;
+}
+
+.rerun {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+
+@media (max-width: 600px) {
+  .page { gap: 16px; }
+  .findings { grid-template-columns: 1fr; }
+  .summary { align-items: start; flex-direction: column; }
+  .repoIdentity a { min-height: 28px; }
+}

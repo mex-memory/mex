@@ -28,6 +28,7 @@ import type {
   MachineReviewQueue,
   MachineOutboundSchema,
   MachineSettingsSchema,
+  MachineSetup,
   MachineSettingsWriteRequestSchema,
   MachineStorageSchema,
   MachineUninstallPreviewSchema,
@@ -108,6 +109,7 @@ export interface HubPreview {
   review: ReviewPreview;
   agents: AgentsPreview;
   settings: SettingsPreview;
+  setup?: MachineSetup;
   changeJob: (id: string, action: JobAction) => void;
 }
 
