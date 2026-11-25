@@ -123,7 +123,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const waiting = fixture ? reviewCount(data.overview, projectId)
     : (projectId ? data.reviewCount?.byRepo[projectId] : data.reviewCount?.total) ?? 0;
   const activePage = reviewRoute ? "review" : knowledgeRoute ? "knowledge" : machineJobs || repoJobs ? "jobs" : "home";
-  const agentsNeedRepair = data.agents?.agents.some(({ state }) => state === "needsRepair");
+  const agentsNeedAttention = data.agents?.agents.some(({ state }) => state === "needsRepair" || state === "needsApproval");
   const loadingPage = { home: "Home", knowledge: "Knowledge", review: "Review", jobs: "jobs" }[activePage];
 
   function pagePath(page: NavPage, id?: string) {
@@ -189,7 +189,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                 <li className={page === "settings" ? styles.settingsNavItem : undefined} key={page}>
                   <NavLink
                     aria-description={page === "review" && waiting > 0 ? `${waiting} waiting`
-                      : page === "agents" && agentsNeedRepair ? "Some agents need repair" : undefined}
+                      : page === "agents" && agentsNeedAttention ? "Some agents need attention" : undefined}
                     className={({ isActive }) => cn(shell.navLink, isActive && shell.navLinkActive)}
                     end={page === "home" || page === "jobs"}
                     onClick={closeMenu}
@@ -198,7 +198,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                     <Icon aria-hidden="true" />
                     <span>{label}</span>
                     {page === "review" && waiting > 0 && <Badge aria-hidden="true" variant="secondary">{waiting}</Badge>}
-                    {page === "agents" && agentsNeedRepair && <span aria-hidden="true" className={styles.warningDot} />}
+                    {page === "agents" && agentsNeedAttention && <span aria-hidden="true" className={styles.warningDot} />}
                   </NavLink>
                 </li>
               ))}

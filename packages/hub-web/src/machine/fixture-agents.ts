@@ -62,7 +62,7 @@ export function fixtureAgents(now: number, variant: FixtureVariant) {
     {
       id: "codex",
       name: "Codex",
-      state: "needsRepair",
+      state: terminal ? "needsRepair" : "needsApproval",
       hooks: { canVerify: true, events: codexEvents.map((name) => ({ name, status: terminal ? "unverified" : "installed" })) },
       trust: terminal ? "unknown" : "needsApproval",
       lastFiredAt: null,

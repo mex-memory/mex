@@ -98,7 +98,8 @@ main:has(.page) {
   border-color: var(--success-border);
 }
 
-.state[data-state="needsRepair"] {
+.state[data-state="needsRepair"],
+.state[data-state="needsApproval"] {
   color: color-mix(in oklch, var(--warning), var(--foreground) 24%);
   background: var(--warning-soft);
   border-color: var(--warning-border);

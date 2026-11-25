@@ -1,5 +1,5 @@
 import { useRef, useState, type ComponentType, type ReactNode } from "react";
-import { ArrowRight, Bot, CircleCheck, CircleMinus, Code2, Plug, Sparkle, Terminal, TriangleAlert, X } from "lucide-react";
+import { ArrowRight, Bot, CircleCheck, CircleMinus, Code2, Plug, ShieldAlert, Sparkle, Terminal, TriangleAlert, X } from "lucide-react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
 import { Button } from "../components/primitives/button";
@@ -20,6 +20,7 @@ const agentIcons: Record<MachineAgent["id"], ComponentType<{ "aria-hidden": true
 const agentStates = {
   working: { label: "Working", icon: CircleCheck },
   needsRepair: { label: "Needs repair", icon: TriangleAlert },
+  needsApproval: { label: "Needs approval", icon: ShieldAlert },
   notSetUp: { label: "Not set up", icon: Plug },
   notFound: { label: "Not found", icon: CircleMinus },
 };

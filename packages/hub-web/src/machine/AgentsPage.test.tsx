@@ -25,7 +25,7 @@ describe("Agents fixtures", () => {
     await openAgents("/agents?fixture=agents-broken");
 
     for (const [name, state] of [
-      ["Claude Code", "Needs repair"], ["Codex", "Needs repair"], ["Copilot CLI", "Not set up"], ["OpenCode", "Not found"],
+      ["Claude Code", "Needs repair"], ["Codex", "Needs approval"], ["Copilot CLI", "Not set up"], ["OpenCode", "Not found"],
     ]) {
       expect(card(name).getByText(state, { exact: true }).querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     }
@@ -33,7 +33,7 @@ describe("Agents fixtures", () => {
     expect(card("Copilot CLI").getByText("Can’t verify for this agent yet")).toBeVisible();
     expect(card("Claude Code").getByRole("button", { name: "48 min ago" })).toHaveAccessibleDescription(/\d/);
     expect(card("OpenCode").queryByRole("button", { name: "Repair" })).not.toBeInTheDocument();
-    expect(nav().getByRole("link", { name: "Agents" })).toHaveAccessibleDescription("Some agents need repair");
+    expect(nav().getByRole("link", { name: "Agents" })).toHaveAccessibleDescription("Some agents need attention");
   });
 
   it("reviews the missing entries, repairs them, and updates the card and detail", async () => {
@@ -80,6 +80,7 @@ describe("Agents fixtures", () => {
     const user = await openAgents();
     const codex = card("Codex");
     expect(codex.getByText("Installed")).toBeVisible();
+    expect(codex.getByText("Needs approval", { exact: true })).toBeVisible();
     expect(codex.getByText(/Needs your approval in Codex/)).toHaveTextContent("/hooks");
     expect(codex.queryByRole("button", { name: "Repair" })).not.toBeInTheDocument();
     await user.click(codex.getByRole("link", { name: "Details for Codex" }));

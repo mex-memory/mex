@@ -381,7 +381,7 @@ const agentFileSchema = z.object({
 export const MachineAgentSchema = z.object({
   id: MachineAgentIdSchema,
   name: machineLabelSchema,
-  state: z.enum(["working", "needsRepair", "notSetUp", "notFound"]),
+  state: z.enum(["working", "needsRepair", "needsApproval", "notSetUp", "notFound"]),
   hooks: z.object({
     canVerify: z.boolean(),
     events: z.array(z.object({
