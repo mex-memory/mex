@@ -1,4 +1,4 @@
-import { MachineHomeSchema, MachineReviewCardSchema, MachineReviewPreviewReplySchema, MachineReviewQueueSchema } from "@mex/hub-contracts/machine";
+import { MachineChangeEventSchema, MachineHomeSchema, MachineReviewCardSchema, MachineReviewPreviewReplySchema, MachineReviewQueueSchema } from "@mex/hub-contracts/machine";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -562,4 +562,36 @@ it("previews a judged team note in its source worktree and retires the exact tea
   expect(parseEntry(readFileSync(file, "utf8")).mex).toMatchObject({ status: "retired", retired: { reason } });
   expect((await queue()).total).toBe(0);
   expect(authority).not.toHaveBeenCalled();
+});
+
+it("publishes Review and Home changes to both tabs after Review and Knowledge writes", async () => {
+  const repo = project("tools");
+  const original = entry("fixture", "run the linter.");
+  const first = stage(repo, original, at(-1000));
+  const second = stage(repo, entry("fixture2", "run the formatter."), at(-2000));
+  const card = await detail(second.key);
+  const tabs = await Promise.all([request("/events"), request("/events")]);
+  const readers = tabs.map((response) => response.body!.getReader());
+  const read = async (tab: (typeof readers)[number]) => new TextDecoder().decode((await tab.read()).value);
+  const expectChange = async () => {
+    for (const tab of readers) {
+      const line = (await read(tab)).split("\n").find((value) => value.startsWith("data: "));
+      expect(MachineChangeEventSchema.parse(JSON.parse(line!.slice(6))).topics).toEqual(["review", "home", "knowledge"]);
+    }
+  };
+  try {
+    for (const tab of readers) expect(await read(tab)).toContain(": connected");
+    expect((await post(card.key, "keep", { expectedRevision: card.revision })).status).toBe(200);
+    await expectChange();
+    expect((await queue()).total).toBe(1);
+    const key = repo.id + ":onlyYou:" + original.mex.id;
+    const response = await request("/knowledge/items/" + encodeURIComponent(key) + "/edit", {
+      method: "POST",
+      headers: { origin: ORIGIN, "x-mex-csrf": csrfToken, "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: hash(first.raw).slice(7), text: "run lint after each local change." }),
+    });
+    expect(response.status).toBe(200);
+    await expectChange();
+    expect((await queue()).total).toBe(0);
+  } finally { await Promise.all(readers.map((tab) => tab.cancel())); }
 });

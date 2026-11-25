@@ -62,18 +62,13 @@ export function createMachineHubApp(options: MachineHubOptions) {
   const knowledge = new KnowledgeData(location, now, options.env);
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
   const events = new HubEvents(location, home, knowledge, now, keepOpen);
-  const knowledgeWrites = new KnowledgeWrites(location, now, options.env, async (repoId) => {
+  const changed = async (repoId: string, notesChanged: boolean) => {
     await home.refreshProject(repoId);
-    await knowledge.refreshProject(repoId);
-    events.knowledgeChanged();
-  });
-  const reviewWrites = new ReviewWrites(home, location, now, options.env, options.reviewDependencies, async (repoId, notesChanged) => {
-    await home.refreshProject(repoId);
-    if (notesChanged) {
-      await knowledge.refreshProject(repoId);
-      events.knowledgeChanged();
-    }
-  }, knowledgeWrites);
+    if (notesChanged) await knowledge.refreshProject(repoId);
+    events.reviewChanged(notesChanged);
+  };
+  const knowledgeWrites = new KnowledgeWrites(location, now, options.env, (repoId) => changed(repoId, true));
+  const reviewWrites = new ReviewWrites(home, location, now, options.env, options.reviewDependencies, changed, knowledgeWrites);
   const knowledgeReplays = new KnowledgeReplays(now);
   const knowledgePost = async (context: Context<{ Variables: Variables }>, action: (body: unknown) => Promise<unknown>, status: 200 | 201 = 200) => {
     const body = await readBoundedJson(context.req.raw, 64 << 10);

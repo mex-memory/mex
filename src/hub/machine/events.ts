@@ -131,7 +131,8 @@ export class HubEvents {
       if (this.#jobs !== undefined && jobs !== this.#jobs) topics.push("jobs");
       this.#jobs = jobs;
     } catch { /* Keep the previous baseline while the record is busy. */ }
-    let homeChanged = this.#generation !== undefined && this.#generation !== this.home.generation;
+    const snapshotChanged = this.#generation !== undefined && this.#generation !== this.home.generation;
+    let homeChanged = snapshotChanged;
     this.#generation = this.home.generation;
     try {
       const activity = homeActivityFingerprint(this.location);
@@ -142,16 +143,22 @@ export class HubEvents {
       this.#activity = activity;
     } catch { /* Try again on the next tick. */ }
     if (homeChanged) topics.push("home");
+    if (snapshotChanged) topics.push("review");
     const knowledge = this.knowledge.eventVersion;
     if (this.#knowledge !== undefined && this.#knowledge !== knowledge) topics.push("knowledge");
     this.#knowledge = knowledge;
     this.#sendChange(topics);
   }
 
-  knowledgeChanged() {
+  reviewChanged(notesChanged: boolean) {
     if (!this.#clients.size) return;
-    this.#knowledge = this.knowledge.eventVersion;
-    this.#sendChange(["knowledge"]);
+    this.#generation = this.home.generation;
+    const topics: MachineChangeEvent["topics"] = ["review", "home"];
+    if (notesChanged) {
+      this.#knowledge = this.knowledge.eventVersion;
+      topics.push("knowledge");
+    }
+    this.#sendChange(topics);
   }
 
   #sendChange(topics: MachineChangeEvent["topics"]) {
