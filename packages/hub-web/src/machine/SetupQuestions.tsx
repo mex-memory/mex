@@ -5,7 +5,7 @@ import { Button } from "../components/primitives/button";
 import { SetupText } from "./SetupText";
 import styles from "./setup.module.css";
 
-function Question({ question, reply }: { question: MachineSetupQuestion; reply: (choice: string) => void }) {
+function Question({ disabled, question, reply }: { disabled?: boolean; question: MachineSetupQuestion; reply: (choice: string) => void }) {
   const id = useId();
   const heading = useRef<HTMLHeadingElement>(null);
   const { outcome } = question;
@@ -23,12 +23,12 @@ function Question({ question, reply }: { question: MachineSetupQuestion; reply: 
       {!outcome && (
         <div aria-labelledby={id} className={styles.actions} role="group">
           {question.choices.map(({ key, label }) => (
-            <Button key={key} onClick={() => choose(key)} size="sm" type="button" variant="outline">
+            <Button disabled={disabled} focusableWhenDisabled key={key} onClick={() => choose(key)} size="sm" type="button" variant="outline">
               <SetupText text={label} />
               {key === question.suggested && <span className={styles.suggestion}> · Suggested</span>}
             </Button>
           ))}
-          <Button onClick={() => choose("skip")} size="sm" type="button" variant="ghost">Skip</Button>
+          <Button disabled={disabled} focusableWhenDisabled onClick={() => choose("skip")} size="sm" type="button" variant="ghost">Skip</Button>
         </div>
       )}
       <div aria-live="polite" className={styles.outcome} role="status">
@@ -38,7 +38,8 @@ function Question({ question, reply }: { question: MachineSetupQuestion; reply: 
   );
 }
 
-export function SetupQuestions({ questions, learning, reply, skipAll }: {
+export function SetupQuestions({ disabled, questions, learning, reply, skipAll }: {
+  disabled?: boolean;
   questions: readonly MachineSetupQuestion[];
   learning: boolean;
   reply: (id: string, choice: string) => void;
@@ -59,13 +60,13 @@ export function SetupQuestions({ questions, learning, reply, skipAll }: {
           {waiting > 0 && <p>{learning ? "You can answer these while learn deeper runs." : "Only you can answer these."}</p>}
         </div>
         {waiting > 1 && (
-          <Button onClick={() => { heading.current?.focus({ preventScroll: true }); skipAll(); }} size="sm" type="button" variant="outline">
+          <Button disabled={disabled} focusableWhenDisabled onClick={() => { heading.current?.focus({ preventScroll: true }); skipAll(); }} size="sm" type="button" variant="outline">
             Skip all
           </Button>
         )}
       </header>
       <ol className={styles.questions} role="list">
-        {questions.map((question) => <Question key={question.id} question={question} reply={(choice) => reply(question.id, choice)} />)}
+        {questions.map((question) => <Question disabled={disabled} key={question.id} question={question} reply={(choice) => reply(question.id, choice)} />)}
       </ol>
     </section>
   );

@@ -26,7 +26,7 @@ function Estimate({ quote }: { quote: MachineSetupQuote }) {
         <div><dt>Estimated use</dt><dd>{number.format(quote.tokens)} tokens</dd></div>
         <div><dt>Token ceiling</dt><dd>{number.format(quote.ceilingTokens)} tokens</dd></div>
       </dl>
-      <p>{quote.recentUse ?? "Recent usage is unavailable, so a share of your plan can't be estimated yet."}</p>
+      {quote.recentUse && <p>{quote.recentUse}</p>}
     </div>
   );
 }
@@ -43,7 +43,8 @@ function minutesText(seconds: number) {
   return "About " + number.format(minutes) + " " + (minutes === 1 ? "minute" : "minutes");
 }
 
-export function SetupLearningOffer({ offer, trigger, onQuote, onSkip }: {
+export function SetupLearningOffer({ offer, trigger, onQuote, onSkip, disabled }: {
+  disabled?: boolean;
   offer: NonNullable<MachineRepoSetup["learnDeeper"]>;
   trigger: Ref<HTMLButtonElement>;
   onQuote: (quote: MachineSetupQuote) => void;
@@ -79,10 +80,10 @@ export function SetupLearningOffer({ offer, trigger, onQuote, onSkip }: {
       {offered && (
         <div className={styles.stepAside}>
           <div className={styles.actions}>
-            <Button aria-haspopup="dialog" onClick={() => onQuote(offer.quote)} ref={trigger} size="sm" type="button">
+            <Button disabled={disabled} focusableWhenDisabled aria-haspopup="dialog" onClick={() => onQuote(offer.quote)} ref={trigger} size="sm" type="button">
               Learn deeper
             </Button>
-            <Button onClick={() => { title.current?.focus({ preventScroll: true }); onSkip(); }} size="sm" type="button" variant="ghost">Not now</Button>
+            <Button disabled={disabled} focusableWhenDisabled onClick={() => { title.current?.focus({ preventScroll: true }); onSkip(); }} size="sm" type="button" variant="ghost">Not now</Button>
           </div>
         </div>
       )}
@@ -90,7 +91,8 @@ export function SetupLearningOffer({ offer, trigger, onQuote, onSkip }: {
   );
 }
 
-export function SetupLearningDialog({ quote, waitsForSetup, finalFocus, onClose, onStart }: {
+export function SetupLearningDialog({ quote, waitsForSetup, finalFocus, onClose, onStart, disabled }: {
+  disabled?: boolean;
   quote: MachineSetupQuote | null;
   /** Earlier setup jobs are still running, so learn deeper queues behind them. */
   waitsForSetup?: boolean;
@@ -121,7 +123,7 @@ export function SetupLearningDialog({ quote, waitsForSetup, finalFocus, onClose,
         )}
         <AlertDialogFooter>
           <AlertDialogCancel ref={back}>Back</AlertDialogCancel>
-          <AlertDialogAction onClick={() => { if (quote) onStart(quote); }} type="button">Start learning</AlertDialogAction>
+          <AlertDialogAction disabled={disabled} onClick={() => { if (quote) onStart(quote); }} type="button">Start learning</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

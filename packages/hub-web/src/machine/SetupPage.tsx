@@ -1,13 +1,15 @@
 import { Fragment, useId } from "react";
-import type { MachineProject, MachineRepoSetup, MachineSetup } from "@mex/hub-contracts/machine";
+import type { MachineProject, MachineRepoSetup, MachineSetup, MachineSetupRepoStatus } from "@mex/hub-contracts/machine";
 import { ArrowRight } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
+import type { ControlConnection } from "./data";
 import { JobStateBadge } from "./JobStatus";
 import { repoPrefix } from "./review-model";
 import { SetupQuestions } from "./SetupQuestions";
+import { useLiveSetup } from "./setup-data";
 import { SetupSteps } from "./SetupSteps";
-import type { SetupPreview } from "./types";
-import { CommandCard, HubPageHeader } from "./ui";
+import type { SetupControls, SetupPreview } from "./types";
+import { CommandCard, HubPageHeader, PageRequestState } from "./ui";
 import shared from "./machine.module.css";
 import styles from "./setup.module.css";
 
@@ -26,26 +28,45 @@ function setupStatus(repo: MachineRepoSetup | undefined): [SetupPhase, string] {
   return ["done", "Done"];
 }
 
-function SetupCommand({ project }: { project?: MachineProject }) {
+const repoStatuses: Record<MachineSetupRepoStatus["status"], [SetupPhase, string]> = {
+  missing: ["failed", "Folder missing"],
+  notStarted: ["stopped", "No setup run"],
+  failed: ["failed", "Needs attention"],
+  running: ["running", "In progress"],
+  stopped: ["stopped", "Stopped"],
+  doneWithGaps: ["doneWithGaps", "Done with gaps"],
+  done: ["done", "Done"],
+};
+
+function SetupCommand({ project, missing }: { project?: MachineProject; missing?: boolean }) {
   return (
     <section className={styles.empty}>
-      <h2>{project ? "Setup hasn't run for this repo" : "Set up your first repo"}</h2>
-      <p>{project ? `Open ${project.name} in a terminal to set it up.` : "Open a repo in a terminal, then run this command."}</p>
+      {missing ? <p>The repo folder is missing. Restore it and run <code>mex</code> in the repo to try again.</p> : (
+        <>
+          <h2>{project ? "Setup hasn't run for this repo" : "Set up your first repo"}</h2>
+          <p>{project ? `Open ${project.name} in a terminal to set it up.` : "Open a repo in a terminal, then run this command."}</p>
+        </>
+      )}
       <CommandCard command="mex" compact />
     </section>
   );
 }
 
-function SetupRepos({ projects, setup, search }: { projects: MachineProject[]; setup: MachineSetup; search: string }) {
+function SetupRepos({ projects, setup, repos, search }: {
+  projects: MachineProject[]; setup?: MachineSetup; repos?: readonly MachineSetupRepoStatus[]; search: string;
+}) {
   if (!projects.length) return <SetupCommand />;
-  const byRepo = new Map(setup.repos.map((repo) => [repo.repoId, repo]));
+  const fixture = new Map(setup?.repos.map(repo => [repo.repoId, repo]));
+  const live = new Map(repos?.map(repo => [repo.repoId, repo]));
 
   return (
     <>
       <ul aria-label="Repos" className={styles.repoList} role="list">
         {projects.map((project) => {
-          const repo = byRepo.get(project.id);
-          const checkout = repo?.checkout ?? project.checkouts[0]?.path;
+          const row = live.get(project.id);
+          const repo = fixture.get(project.id);
+          const checkout = row?.checkout ?? repo?.checkout ?? project.checkouts[0]?.path;
+          const [phase, text] = row ? repoStatuses[row.status] : setupStatus(repo);
           return (
             <li key={project.id}>
               <div className={styles.repoIdentity}>
@@ -54,7 +75,7 @@ function SetupRepos({ projects, setup, search }: { projects: MachineProject[]; s
                 </Link>
                 {checkout && <code>{checkout}</code>}
               </div>
-              <span className={styles.repoStatus}><JobStateBadge phase={setupStatus(repo)[0]}>{setupStatus(repo)[1]}</JobStateBadge></span>
+              <span className={styles.repoStatus}><JobStateBadge phase={phase}>{text}</JobStateBadge></span>
             </li>
           );
         })}
@@ -97,7 +118,7 @@ function SetupSummary({ project, repo }: { project: MachineProject; repo: Machin
       <div>
         <h2>Summary</h2>
         {elapsedMs !== undefined && <p>Read {project.name} in {(elapsedMs / 1_000).toLocaleString("en-US", { maximumFractionDigits: 1 })} s, for $0.</p>}
-        {repo.summary.commandsSaved && <p>Your agents now get its test and build commands.</p>}
+        {repo.summary.commandsSaved && <p>Your agents now get its commands.</p>}
         {saved > 0 && <p>Your {saved === 1 ? "answer reaches" : `${saved} answers reach`} your agents as “you said”.</p>}
       </div>
       <div className={styles.rerun}>
@@ -108,16 +129,47 @@ function SetupSummary({ project, repo }: { project: MachineProject; repo: Machin
   );
 }
 
-export default function SetupPage({ project, projects, setup }: {
-  project?: MachineProject;
-  projects: MachineProject[];
-  setup: SetupPreview;
+function RepoSetup({ project, repo, search, controls, disabled }: {
+  project: MachineProject; repo: MachineRepoSetup; search: string; controls: SetupControls; disabled?: boolean;
+}) {
+  if (repo.missingCheckout) return <SetupCommand missing project={project} />;
+  const learning = repo.steps.some(({ kind, state }) => kind === "learn-deeper" && state === "running");
+  return (
+    <Fragment key={repo.checkout}>
+      <FreeFindings repo={repo} />
+      <SetupSteps disabled={disabled} repo={repo} search={search} setup={controls} />
+      <SetupQuestions disabled={disabled} learning={learning} questions={repo.questions}
+        reply={(id, choice) => controls.replyToQuestion(repo.repoId, id, choice)}
+        skipAll={() => controls.skipQuestions(repo.repoId)} />
+      <SetupSummary project={project} repo={repo} />
+    </Fragment>
+  );
+}
+
+type Scope = { project?: MachineProject; projects: MachineProject[]; search: string };
+
+function ConnectedSetup({ project, projects, search, live }: Scope & { live: ControlConnection }) {
+  const { query, repo, controls, pending, feedback } = useLiveSetup(live, project?.id);
+  const { repos, issue, updatingSince } = query.data ?? {};
+  const loaded = (project ? repo : repos) !== undefined;
+  return (
+    <>
+      {(feedback || issue || loaded && updatingSince) && (
+        <p className={shared.muted} role="status">{feedback || issue || "Updating setup…"}</p>
+      )}
+      {!loaded ? <PageRequestState name="Setup" error={query.isError} loading={!query.isError && !issue} retry={() => void query.refetch()} />
+        : !project ? <SetupRepos projects={projects} repos={repos} search={search} />
+        : repo ? <RepoSetup controls={controls} disabled={pending || !!issue} project={project} repo={repo} search={search} />
+        : <SetupCommand project={project} />}
+    </>
+  );
+}
+
+export default function SetupPage({ project, projects, setup, live }: {
+  project?: MachineProject; projects: MachineProject[]; setup?: SetupPreview; live?: ControlConnection;
 }) {
   const { search } = useLocation();
-  const repo = setup.data.repos.find(({ repoId }) => repoId === project?.id);
-
-  const learning = repo?.steps.some(({ kind, state }) => kind === "learn-deeper" && state === "running") ?? false;
-
+  const repo = setup?.data.repos.find(({ repoId }) => repoId === project?.id);
   return (
     <div className={styles.page}>
       <HubPageHeader
@@ -125,16 +177,10 @@ export default function SetupPage({ project, projects, setup }: {
         subtitle={project?.name ?? "All repos"}
         title="Setup"
       />
-      {!project ? <SetupRepos projects={projects} search={search} setup={setup.data} /> : repo ? (
-        <Fragment key={repo.repoId}>
-          <FreeFindings repo={repo} />
-          <SetupSteps repo={repo} search={search} setup={setup} />
-          <SetupQuestions learning={learning} questions={repo.questions}
-            reply={(id, choice) => setup.replyToQuestion(repo.repoId, id, choice)}
-            skipAll={() => setup.skipQuestions(repo.repoId)} />
-          <SetupSummary project={project} repo={repo} />
-        </Fragment>
-      ) : <SetupCommand project={project} />}
+      {live ? <ConnectedSetup key={project?.id ?? "all"} live={live} project={project} projects={projects} search={search} />
+        : !project ? <SetupRepos projects={projects} search={search} setup={setup?.data} />
+        : repo && setup ? <RepoSetup controls={setup} project={project} repo={repo} search={search} />
+        : <SetupCommand project={project} />}
     </div>
   );
 }

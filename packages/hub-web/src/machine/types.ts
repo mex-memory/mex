@@ -138,8 +138,11 @@ export interface SettingsPreview {
   write: (request: SettingsWrite, onRetry?: () => void) => void | Promise<{ notice?: string }>;
 }
 
-export interface SetupPreview {
+export interface SetupPreview extends SetupControls {
   data: MachineSetup;
+}
+
+export interface SetupControls {
   changeStep: (jobId: string, action: SetupStepAction) => void;
   startLearning: (repoId: string, quote: MachineSetupQuote) => void;
   skipLearning: (repoId: string) => void;

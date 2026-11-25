@@ -19,7 +19,7 @@ import { JobStateBadge } from "./JobStatus";
 import { repoPrefix, reviewHref } from "./review-model";
 import { setupJobTokens } from "./setup-model";
 import { SetupLearningDialog, SetupLearningOffer } from "./SetupLearning";
-import type { HubJob, SetupPreview } from "./types";
+import type { HubJob, SetupControls } from "./types";
 import shared from "./machine.module.css";
 import styles from "./setup.module.css";
 
@@ -44,11 +44,12 @@ const status: Record<MachineSetupStep["state"], [HubJob["state"]["phase"], strin
 
 const count = new Intl.NumberFormat("en-US");
 
-function StepRow({ step, repo, search, changeStep }: {
+function StepRow({ step, repo, search, changeStep, disabled }: {
+  disabled?: boolean;
   step: MachineSetupStep;
   repo: MachineRepoSetup;
   search: string;
-  changeStep: SetupPreview["changeStep"];
+  changeStep: SetupControls["changeStep"];
 }) {
   const [confirm, setConfirm] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -99,11 +100,11 @@ function StepRow({ step, repo, search, changeStep }: {
       <div className={styles.stepAside}>
         {active && (
           <div aria-label={`${label} controls`} className={styles.actions} role="group">
-            <Button aria-describedby={requestText ? statusId : undefined} disabled={Boolean(pending)} focusableWhenDisabled
+            <Button aria-describedby={requestText ? statusId : undefined} disabled={disabled || Boolean(pending)} focusableWhenDisabled
               onClick={() => changeStep(jobId, resume ? "resume" : "pause")} size="sm" type="button" variant="outline">
               {resume ? "Resume" : "Pause"}
             </Button>
-            <Button aria-describedby={requestText ? statusId : undefined} aria-haspopup="dialog" disabled={Boolean(pending)} focusableWhenDisabled
+            <Button aria-describedby={requestText ? statusId : undefined} aria-haspopup="dialog" disabled={disabled || Boolean(pending)} focusableWhenDisabled
               onClick={() => { cancelled.current = false; setConfirm(true); }} ref={cancel} size="sm" type="button" variant="ghost">
               Cancel
             </Button>
@@ -132,24 +133,27 @@ function StepRow({ step, repo, search, changeStep }: {
   );
 }
 
-export function SetupSteps({ repo, search, setup }: {
+export function SetupSteps({ repo, search, setup, disabled }: {
+  disabled?: boolean;
   repo: MachineRepoSetup;
   search: string;
-  setup: SetupPreview;
+  setup: SetupControls;
 }) {
   const titleId = useId();
   const title = useRef<HTMLHeadingElement>(null);
   const start = useRef<HTMLButtonElement>(null);
+  const starting = useRef(false);
   const [quote, setQuote] = useState<MachineSetupQuote | null>(null);
+  if (!repo.steps.length && !repo.learnDeeper && !repo.unavailableSteps?.length) return null;
   return (
     <section aria-labelledby={titleId} className={styles.section}>
       <h2 id={titleId} ref={title} tabIndex={-1}>Setup steps</h2>
       <ol className={styles.steps} role="list">
         {kinds.map((kind) => {
           const step = repo.steps.find((step) => step.kind === kind);
-          if (step) return <StepRow changeStep={setup.changeStep} key={step.jobId} repo={repo} search={search} step={step} />;
+          if (step) return <StepRow changeStep={setup.changeStep} disabled={disabled} key={step.jobId} repo={repo} search={search} step={step} />;
           if (kind === "learn-deeper") return repo.learnDeeper && (
-            <SetupLearningOffer key={kind} offer={repo.learnDeeper} onQuote={setQuote}
+            <SetupLearningOffer disabled={disabled} key={kind} offer={repo.learnDeeper} onQuote={(quote) => { starting.current = false; setQuote(quote); }}
               onSkip={() => setup.skipLearning(repo.repoId)} trigger={start} />
           );
           const unavailable = repo.unavailableSteps?.find((step) => step.kind === kind);
@@ -168,10 +172,11 @@ export function SetupSteps({ repo, search, setup }: {
       </ol>
       <SetupLearningDialog
         waitsForSetup={repo.steps.some(({ kind, finishedAt }) => kind !== "learn-deeper" && finishedAt === null)}
-        finalFocus={() => start.current ?? title.current}
+        finalFocus={() => starting.current ? title.current : start.current ?? title.current}
         onClose={() => setQuote(null)}
-        onStart={(accepted) => { setup.startLearning(repo.repoId, accepted); setQuote(null); }}
+        onStart={(accepted) => { starting.current = true; setup.startLearning(repo.repoId, accepted); setQuote(null); }}
         quote={quote}
+        disabled={disabled}
       />
     </section>
   );
