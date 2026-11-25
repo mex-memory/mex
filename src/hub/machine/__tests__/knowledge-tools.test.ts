@@ -169,6 +169,31 @@ describe("Rule files", () => {
     expect(readFileSync(cachePath(scope))).toEqual(before);
   });
 
+  function scannedAMinuteAgo(scope: MachineKnowledgeCheckout) {
+    scan(scope);
+    const scannedAt = new Date(Date.now() - 60_000);
+    utimesSync(cachePath(scope), scannedAt, scannedAt);
+    return scannedAt;
+  }
+
+  it("notices a rule file added after the scan", async () => {
+    const scope = repo();
+    scannedAMinuteAgo(scope);
+    put(join(scope.checkout, "CLAUDE.md"), RULE);
+    expect((await rules(scope)).cache).toMatchObject({ state: "stale", files: [] });
+  });
+
+  it("ignores rule files the scan leaves out on purpose", async () => {
+    const scope = repo();
+    const scannedAt = scannedAMinuteAgo(scope);
+    // Written by MEX, or untouched since the scan (for example, git-ignored).
+    put(join(scope.checkout, ".claude", "rules", "mex.md"), "<!-- mex:generated -->\nGenerated");
+    const older = new Date(scannedAt.getTime() - 60_000);
+    put(join(scope.checkout, "GEMINI.md"), RULE);
+    utimesSync(join(scope.checkout, "GEMINI.md"), older, older);
+    expect((await rules(scope)).cache).toMatchObject({ state: "current", files: [] });
+  });
+
   it("treats a cache from another registered worktree as stale even with identical source bytes", async () => {
     const scope = repo();
     const checkout = join(base, "other worktree");

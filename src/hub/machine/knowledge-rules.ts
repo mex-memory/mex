@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import {
@@ -7,8 +7,8 @@ import {
 import { KNOWLEDGE_LIMITS, KnowledgeError } from "../../knowledge/contract.js";
 import { containedDirectory, readBoundedTextFile } from "../../knowledge/files.js";
 import { LOCAL_MANIFEST, readNativeManifest, SHARED_MANIFEST } from "../../knowledge/native-write.js";
-import { readRuleFiles, refreshRuleFiles, type RuleCache } from "../../knowledge/rule-cache.js";
-import { listRepositoryFilesAsync, MAX_RULE_FILE_BYTES } from "../../knowledge/rule-files.js";
+import { readRuleFiles, refreshRuleFiles, RULE_CACHE, type RuleCache } from "../../knowledge/rule-cache.js";
+import { GENERATED_MARK, listRepositoryFilesAsync, MAX_RULE_FILE_BYTES, ruleFormat } from "../../knowledge/rule-files.js";
 import { fileHash } from "../../knowledge/sections.js";
 import { openRecord } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
@@ -62,6 +62,42 @@ async function hashesMatch(cache: RuleCache, root: string, signal: AbortSignal):
   return true;
 }
 
+/** Where rule files usually live. A file outside these, such as a nested AGENTS.md, appears on the next Refresh. */
+const RULE_FILE_SPOTS = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", "AGENTS.override.md", "GEMINI.md", ".cursorrules", ".github/copilot-instructions.md"];
+const RULE_FILE_FOLDERS = [".claude/rules", ".cursor/rules", ".github/instructions"];
+const FOLDER_ENTRIES = 200;
+
+/**
+ * A rule file added since the saved scan, without listing the whole repo. Only files changed
+ * after the scan count, so one the scan deliberately leaves out (git-ignored or written by MEX)
+ * doesn't keep the notice up after a Refresh.
+ */
+function addedRuleFile(target: Target, cache: RuleCache): boolean {
+  const directory = containedDirectory(target.location.home, ["projects", target.projectId]);
+  const scannedAt = directory && lstatSync(join(directory, RULE_CACHE), { throwIfNoEntry: false })?.mtimeMs;
+  if (!scannedAt) return false;
+  const known = new Set(cache.files.map(({ path }) => path));
+  const candidates = [...RULE_FILE_SPOTS];
+  for (const folder of RULE_FILE_FOLDERS) {
+    const parent = containedDirectory(target.root, folder.split("/"));
+    if (!parent) continue;
+    try {
+      for (const child of readdirSync(parent, { withFileTypes: true }).slice(0, FOLDER_ENTRIES)) {
+        if (child.isFile()) candidates.push(folder + "/" + child.name);
+      }
+    } catch { /* an unreadable folder adds nothing */ }
+  }
+  return candidates.some((path) => {
+    if (known.has(path) || !ruleFormat(path)) return false;
+    const parts = path.split("/");
+    const parent = parts.length > 1 ? containedDirectory(target.root, parts.slice(0, -1)) : target.root;
+    const stat = parent ? lstatSync(join(parent, parts.at(-1)!), { throwIfNoEntry: false }) : undefined;
+    if (!stat?.isFile() || stat.mtimeMs <= scannedAt) return false;
+    const text = checkoutText(target.root, path, MAX_RULE_FILE_BYTES);
+    return text !== undefined && !text.includes(GENERATED_MARK);
+  });
+}
+
 function generatedRules(target: Target, sharing: Generated[number]["sharing"]): Generated {
   const shared = sharing === "shared";
   const directory = shared
@@ -91,7 +127,8 @@ async function readRules(target: Target, signal: AbortSignal): Promise<MachineKn
       cache = { state: "stale", files: [], findings: [] };
     } else if (saved) {
       const rules = importedRules(saved);
-      cache = { ...rules, state: await hashesMatch(saved, target.root, signal) ? "current" : "stale" };
+      const current = await hashesMatch(saved, target.root, signal) && !addedRuleFile(target, saved);
+      cache = { ...rules, state: current ? "current" : "stale" };
     }
   } catch { issue = UNAVAILABLE; }
   signal.throwIfAborted();
