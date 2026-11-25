@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { Fragment, useId } from "react";
 import type { MachineProject, MachineRepoSetup, MachineSetup } from "@mex/hub-contracts/machine";
 import { ArrowRight } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
@@ -122,14 +122,14 @@ export default function SetupPage({ project, projects, setup }: {
         title="Setup"
       />
       {!project ? <SetupRepos projects={projects} search={search} setup={setup.data} /> : repo ? (
-        <>
+        <Fragment key={repo.repoId}>
           <FreeFindings repo={repo} />
-          <SetupSteps key={repo.repoId} repo={repo} search={search} setup={setup} />
-          <SetupQuestions key={repo.repoId} learning={learning} questions={repo.questions}
+          <SetupSteps repo={repo} search={search} setup={setup} />
+          <SetupQuestions learning={learning} questions={repo.questions}
             reply={(id, choice) => setup.replyToQuestion(repo.repoId, id, choice)}
             skipAll={() => setup.skipQuestions(repo.repoId)} />
           <SetupSummary project={project} repo={repo} />
-        </>
+        </Fragment>
       ) : <SetupCommand project={project} />}
     </div>
   );

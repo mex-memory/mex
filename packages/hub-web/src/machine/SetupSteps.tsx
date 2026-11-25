@@ -60,11 +60,16 @@ function StepRow({ step, repo, search, changeStep }: {
   const label = labels[kind];
   const [phase, text] = status[state];
   const paid = kind === "learn-deeper";
+  const usedTokens = paid ? setupJobTokens(step) : 0;
+  const showCost = paid && (finishedAt !== null || usedTokens > 0);
   const active = phase === "running" || phase === "queued" || phase === "paused" || phase === "waiting";
   const resume = phase === "paused";
   const requestText = pending === "pause" ? "Pausing after this batch. You can resume or cancel when it pauses."
     : pending === "cancel" ? "Cancelling after this batch. Wait for the job to finish stopping." : undefined;
-  const progressText = progress?.message ?? (paid && phase === "queued" ? "Starts after the code map and other setup work." : undefined);
+  const map = repo.steps.find(({ kind }) => kind === "graph-build");
+  const mapIsPending = map?.finishedAt === null;
+  const progressText = progress?.message ?? (paid && phase === "queued" && mapIsPending
+    ? "Starts after the code map and other setup work." : undefined);
   const jobHref = repoPrefix(repo.repoId) + "/jobs" + search + jobHash(jobId);
 
   return (
@@ -84,9 +89,9 @@ function StepRow({ step, repo, search, changeStep }: {
         {progress?.done !== undefined && progress.total ? (
           <progress aria-label={`${label} progress`} aria-valuetext={progress.message} max={progress.total} value={Math.min(progress.done, progress.total)} />
         ) : null}
-        {paid && (
+        {(showCost || estimate?.tokens !== undefined) && (
           <p>
-            {(finishedAt || setupJobTokens(step) > 0) && <>{count.format(setupJobTokens(step))} tokens used{estimate?.tokens !== undefined && " · "}</>}
+            {showCost && <>{count.format(usedTokens)} tokens used{estimate?.tokens !== undefined && " · "}</>}
             {estimate?.tokens !== undefined && <>{count.format(estimate.tokens)} tokens estimated</>}
           </p>
         )}

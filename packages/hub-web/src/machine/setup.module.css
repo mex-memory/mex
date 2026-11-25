@@ -18,7 +18,7 @@
 }
 
 .page code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 0.91em;
   overflow-wrap: anywhere;
 }
@@ -241,12 +241,18 @@
   position: absolute;
 }
 
+.actions [data-slot="button"],
+.questionsHeader [data-slot="button"] {
+  font-size: 13px;
+}
+
 .actions button[aria-disabled="true"] {
   opacity: 0.65;
 }
 
 .confirmation.confirmation {
   width: min(calc(100% - 32px), 420px);
+  max-width: none;
   overflow-y: auto;
   max-height: calc(100dvh - 32px);
   box-shadow: var(--overlay-shadow);
@@ -279,7 +285,7 @@
 .estimate dl {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 20px;
+  gap: 8px 14px;
   margin: 0;
   padding: 9px 12px;
   background: var(--surface-subtle);
@@ -319,7 +325,7 @@
 }
 
 .confirmationBody code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 0.95em;
 }
 

@@ -56,11 +56,8 @@
   border: 0;
   border-radius: var(--radius-md);
   cursor: pointer;
-  text-align: start;
-}
-
-.jobToggle {
   scroll-margin-top: 60px;
+  text-align: start;
 }
 
 .jobToggle:hover,
