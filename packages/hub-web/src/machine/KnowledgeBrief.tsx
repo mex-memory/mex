@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type Ref } from "react";
 import type { MachineKnowledgeBrief, MachineKnowledgeBriefRequest, MachineProject } from "@mex/hub-contracts/machine";
 import { Button } from "../components/primitives/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "../components/primitives/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/primitives/dialog";
 import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { KnowledgeRuleFiles } from "./KnowledgeRules";
@@ -170,11 +170,13 @@ function BriefForm({ project, projects, preferredRepo, previewBrief, initialFocu
 }
 
 export function KnowledgeBrief(props: BriefProps) {
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   const initialFocus = useRef<HTMLSelectElement>(null);
   return (
-    <Dialog>
-      <DialogTrigger render={<Button className={page.addButton} type="button" variant="outline" />}>Preview brief</DialogTrigger>
-      <DialogContent className={`${fields.dialog} ${fields.wideDialog} ${styles.dialog}`} initialFocus={initialFocus}>
+    <Dialog onOpenChange={setOpen} open={open}>
+      <Button aria-haspopup="dialog" className={page.addButton} onClick={() => setOpen(true)} ref={trigger} type="button" variant="outline">Preview brief</Button>
+      <DialogContent className={`${fields.dialog} ${fields.wideDialog} ${styles.dialog}`} finalFocus={trigger} initialFocus={initialFocus}>
         <DialogHeader><DialogTitle>Preview brief</DialogTitle></DialogHeader>
         <BriefForm {...props} initialFocus={initialFocus} />
       </DialogContent>
