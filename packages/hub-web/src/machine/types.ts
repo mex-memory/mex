@@ -15,6 +15,7 @@ import type {
   MachineKnowledgeForgetResponseSchema,
   MachineKnowledgeItemSchema,
   MachineKnowledgeKindSchema,
+  MachineKnowledgeLandingSchema,
   MachineKnowledgePageSchema,
   MachineKnowledgeStatusCountsSchema,
   MachineKnowledgeStatusSchema,
@@ -30,6 +31,7 @@ export type KnowledgeSummary = z.infer<typeof MachineKnowledgeSummarySchema>;
 export type KnowledgeItem = z.infer<typeof MachineKnowledgeItemSchema>;
 export type KnowledgeDetail = z.infer<typeof MachineKnowledgeDetailSchema>;
 export type KnowledgePageData = z.infer<typeof MachineKnowledgePageSchema>;
+export type KnowledgeLandingData = z.infer<typeof MachineKnowledgeLandingSchema>;
 export type ForgottenItem = z.infer<typeof MachineForgottenItemSchema>;
 export type KnowledgeCreate = z.infer<typeof MachineKnowledgeCreateRequestSchema>;
 export type KnowledgeEdit = z.infer<typeof MachineKnowledgeEditRequestSchema>;
@@ -48,11 +50,13 @@ export interface KnowledgeFilters {
   repoId?: string;
   kind?: KnowledgeKind;
   audience?: KnowledgeAudience;
-  status?: KnowledgeStatus;
+  status?: KnowledgeStatus | "needs-look";
+  area?: string;
   query: string;
 }
 
 export interface KnowledgePreview {
+  getLanding: (scopeId?: string) => KnowledgeLandingData;
   getPage: (filters: KnowledgeFilters, cursor?: string) => KnowledgePageData;
   getDetail: (key: string) => KnowledgeDetail | undefined;
   forgotten: readonly ForgottenItem[];

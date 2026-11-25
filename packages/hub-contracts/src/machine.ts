@@ -90,6 +90,26 @@ export const MachineKnowledgeItemSchema = knowledgeContentSchema.pick({ oneLine:
   lastUsedAt: isoTimeSchema.nullable(),
 });
 
+const knowledgeGroupSchema = z.object({
+  count: countSchema,
+  statusCounts: MachineKnowledgeStatusCountsSchema,
+  topItems: z.array(MachineKnowledgeItemSchema).max(3),
+});
+
+export const MachineKnowledgeLandingSchema = z.object({
+  groups: z.object({
+    byKind: z.array(knowledgeGroupSchema.extend({ kind: MachineKnowledgeKindSchema })).max(7),
+    byArea: z.array(knowledgeGroupSchema.extend({
+      pattern: z.string().min(1).max(512),
+      repoId: z.string().min(1).optional(),
+    })),
+  }),
+  needsLook: z.object({
+    total: countSchema,
+    items: z.array(MachineKnowledgeItemSchema.extend({ why: z.string().min(1) })).max(3),
+  }),
+});
+
 const knowledgeSourceSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("note"), at: isoTimeSchema, via: z.enum(["cli", "hub"]), edited: z.boolean().optional() }),
   z.object({ type: z.literal("session"), at: isoTimeSchema, checkedByModel: z.boolean() }),

@@ -3,13 +3,61 @@ import type { MachineProject } from "@mex/hub-contracts/machine";
 import type { FixtureVariant, KnowledgeFixture } from "./fixtures";
 import type {
   ForgottenItem, KnowledgeCreate, KnowledgeDetail, KnowledgeEdit, KnowledgeEditResult, KnowledgeFilters,
-  KnowledgeForget, KnowledgeForgetResult, KnowledgeItem, KnowledgePageData, KnowledgePreview,
+  KnowledgeForget, KnowledgeForgetResult, KnowledgeItem, KnowledgeKind, KnowledgeLandingData,
+  KnowledgePageData, KnowledgePreview, KnowledgeStatus,
 } from "./types";
 
 const fixturePageSize = 20;
+const kindOrder: readonly KnowledgeKind[] = ["rule", "decision", "recipe", "pitfall", "procedure", "fact", "hint"];
+const reviewOrder: readonly KnowledgeStatus[] = ["outOfDate", "codeChanged"];
 
 function listItem({ id, key, repoId, oneLine, kind, audience, status, lastUsedAt }: KnowledgeDetail): KnowledgeItem {
   return { id, key, repoId, oneLine, kind, audience, status, lastUsedAt };
+}
+
+function summarizeGroup(items: readonly KnowledgeDetail[]) {
+  const statusCounts = { upToDate: 0, codeChanged: 0, outOfDate: 0, notChecked: 0 };
+  for (const { status } of items) statusCounts[status]++;
+  const topItems = items.slice(0, 3).map(listItem);
+  return { count: items.length, statusCounts, topItems };
+}
+
+const observedAt = ({ checkedAt }: KnowledgeDetail["checks"][number]) => checkedAt ? Date.parse(checkedAt) : Infinity;
+
+function landingOf(fixture: KnowledgeFixture, scopeId?: string): KnowledgeLandingData {
+  const items = fixture.items.filter(({ repoId }) => !scopeId || repoId === scopeId);
+  const recentlyUsed = [...items].sort((a, b) => (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? ""));
+  const byKind = kindOrder.flatMap((kind) => {
+    const matching = recentlyUsed.filter((item) => item.kind === kind);
+    return matching.length ? [{ kind, ...summarizeGroup(matching) }] : [];
+  });
+
+  const areas = new Map<string, { pattern: string; repoId?: string; items: KnowledgeDetail[] }>();
+  for (const item of recentlyUsed) {
+    for (const pattern of new Set(item.scope)) {
+      const repoId = pattern === "**" ? undefined : item.repoId;
+      const key = JSON.stringify([repoId, pattern]);
+      const area = areas.get(key);
+      if (area) area.items.push(item);
+      else areas.set(key, { pattern, repoId, items: [item] });
+    }
+  }
+  const byArea = [...areas.values()]
+    .map(({ pattern, repoId, items }) => ({ pattern, repoId, ...summarizeGroup(items) }))
+    .sort((a, b) => Number(b.pattern === "**") - Number(a.pattern === "**") || b.count - a.count || a.pattern.localeCompare(b.pattern));
+
+  const attention = items.flatMap((item) => {
+    const priority = reviewOrder.indexOf(item.status);
+    if (priority < 0) return [];
+    const outOfDate = item.status === "outOfDate";
+    const check = item.checks.filter(({ result }) => result === (outOfDate ? "broken" : "changed"))
+      .sort((a, b) => observedAt(a) - observedAt(b))[0];
+    const file = check?.kind === "symbol" ? check.target.split(" in ").at(-1) : check?.target;
+    const why = outOfDate ? "A check no longer holds" : file ? `Code changed in ${file}` : "Linked code changed";
+    return [{ priority, at: check ? observedAt(check) : Infinity, row: { ...listItem(item), why } }];
+  }).sort((a, b) => a.priority - b.priority || a.at - b.at);
+
+  return { groups: { byKind, byArea }, needsLook: { total: attention.length, items: attention.slice(0, 3).map(({ row }) => row) } };
 }
 
 function pageOf(fixture: KnowledgeFixture, filters: KnowledgeFilters, cursor?: string): KnowledgePageData {
@@ -18,6 +66,7 @@ function pageOf(fixture: KnowledgeFixture, filters: KnowledgeFilters, cursor?: s
   const kindCounts: KnowledgePageData["kindCounts"] = {};
   const audienceCounts: KnowledgePageData["audienceCounts"] = {};
   const words = filters.query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+  const statuses = filters.status === "needs-look" ? reviewOrder : filters.status ? [filters.status] : undefined;
   const matches: KnowledgeItem[] = [];
 
   for (const item of scoped) {
@@ -27,7 +76,8 @@ function pageOf(fixture: KnowledgeFixture, filters: KnowledgeFilters, cursor?: s
     if (filters.repoId && item.repoId !== filters.repoId) continue;
     if (filters.kind && item.kind !== filters.kind) continue;
     if (filters.audience && item.audience !== filters.audience) continue;
-    if (filters.status && item.status !== filters.status) continue;
+    if (statuses && !statuses.includes(item.status)) continue;
+    if (filters.area && !item.scope.includes(filters.area)) continue;
     const searchable = `${item.oneLine} ${item.text} ${item.scope.join(" ")}`.toLocaleLowerCase();
     if (words.every((word) => searchable.includes(word))) matches.push(listItem(item));
   }
@@ -186,6 +236,7 @@ export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonl
   }
 
   return {
+    getLanding: (scopeId) => landingOf(fixture, scopeId),
     getPage: (filters, cursor) => pageOf(fixture, filters, cursor),
     getDetail: (key) => fixture.items.find((item) => item.key === key),
     forgotten: fixture.forgotten,

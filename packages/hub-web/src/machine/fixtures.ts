@@ -1,7 +1,7 @@
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
 import type { ForgottenItem, HomeOverview, HubJob, KnowledgeDetail, KnowledgeStatusCounts } from "./types";
 
-export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating" | "conflict";
+export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating" | "conflict" | "calm";
 
 export interface KnowledgeFixture {
   items: readonly KnowledgeDetail[];
@@ -245,7 +245,7 @@ const storefrontNotes: readonly NoteSeed[] = [
   ["anonfixtures", "rule", "team", "upToDate", "Keep real customer names out of test fixtures",
     "Use generated customer details in seed data, snapshots, and examples shared with support."],
   ["guestcart", "recipe", "personal", "codeChanged", "Use the checkout seed when testing the guest cart",
-    "Load the guest checkout seed before running the cart spec. It fills in the shipping region and starts the cart without an account.", ["apps/web/**"]],
+    "Load the guest checkout seed before running the cart spec. It fills in the shipping region and starts the cart without an account.", ["apps/web/**", "apps/api/src/checkout.ts"]],
   ["retrykey", "rule", "team", "notChecked", "Keep the retry key across checkout requests",
     "Send the original retry key when the customer retries after a timeout. Create a new key after they change the cart."],
   ["snapshot", "decision", "personal", "upToDate", "Start checkout from a saved cart snapshot",
@@ -280,7 +280,7 @@ const designKitNotes: readonly NoteSeed[] = [
   ["dialogfocus", "rule", "team", "upToDate", "Return focus to the button that opened the dialog",
     "Pass the trigger to the dialog’s focus-return option. When the trigger disappears after an action, focus the next item in the list."],
   ["menufocus", "rule", "team", "codeChanged", "Keep the keyboard focus ring on menu items",
-    "Use the focus token for menu items reached by keyboard. Reserve the hover background for the pointer."],
+    "Use the focus token for menu items reached by keyboard. Reserve the hover background for the pointer.", ["packages/ui/**"]],
   ["dangercolour", "rule", "personal", "upToDate", "Use the destructive colour for destructive actions",
     "Use the destructive button style for the final delete action. The button that opens the confirmation can stay neutral."],
   ["headings", "rule", "team", "upToDate", "Keep heading sizes independent of component sizes",
@@ -290,7 +290,7 @@ const designKitNotes: readonly NoteSeed[] = [
   ["tables", "recipe", "team", "upToDate", "Test compact tables with long labels",
     "Use the customer export example to check labels at narrow widths and at 200% zoom."],
   ["darkforms", "recipe", "team", "upToDate", "Preview form errors in the dark theme",
-    "Open the invalid form example in dark mode and check that the error copy and field outline are readable."],
+    "Open the invalid form example in dark mode and check that the error copy and field outline are readable.", ["packages/ui/**"]],
   ["tokens", "decision", "team", "upToDate", "Use semantic colour tokens for control states",
     "Use the success, warning and danger tokens on controls so the same state reads consistently across themes."],
   ["cardpad", "decision", "personal", "notChecked", "Keep card padding on the container",
@@ -329,6 +329,8 @@ function knowledgeFixture(now: number, generatedAt: string, variant: FixtureVari
     ([slug, kind, audience, status, oneLine, text, scope = ["**"]], index): KnowledgeDetail => {
       const id = `mx_${slug}`;
       const at = hoursAgo((12 + index) * 24);
+      const target = slug === "menufocus" ? "packages/ui/src/menu.tsx" : file;
+      const checkedAt = hoursAgo(slug === "menufocus" ? 12 : 2 + index);
       const path = `.mex/learned/${id}.md`;
       const source: KnowledgeDetail["source"] = audience === "team" ? { type: "team", path, checkout }
         : audience === "hint" ? { type: "agent-memory", agent: repoIndex === 1 ? "Codex" : "Claude Code", observations: 3 }
@@ -340,7 +342,7 @@ function knowledgeFixture(now: number, generatedAt: string, variant: FixtureVari
       return {
         id, key: `${repoId}:${audience}:${id}`, repoId, kind, audience, status, oneLine, text, scope,
         revision: "r1", source, history,
-        checks: status === "notChecked" ? [] : [{ kind: "source", target: file, result: result[status], checkedAt: hoursAgo(2 + index) }],
+        checks: status === "notChecked" ? [] : [{ kind: "source", target, result: result[status], checkedAt }],
         lastUsedAt: audience === "hint" || status === "notChecked" ? null : hoursAgo(2 + index * 3 + repoIndex),
         useCount30Days: audience === "hint" || status === "notChecked" ? 0 : 14 - index % 10,
       };
@@ -360,7 +362,7 @@ function knowledgeFixture(now: number, generatedAt: string, variant: FixtureVari
     { type: "model-check", outcome: "still true", at: hoursAgo(5 * 24) },
     { type: "added", at: hoursAgo(6 * 24) },
   ];
-  team.checks = [{ kind: "symbol", target: "checkoutTotal in packages/money/src/totals.ts", result: "changed", checkedAt: hoursAgo(3) }];
+  team.checks = [{ kind: "symbol", target: "checkoutTotal in packages/money/src/totals.ts", result: "changed", checkedAt: hoursAgo(18) }];
   team.history = [
     { type: "git", action: "edited", actor: "Mateo", sha: "f42c9ae", at: hoursAgo(4 * 24) },
     { type: "git", action: "added", actor: "Priya", sha: "a1b2c3d", at: hoursAgo(21 * 24) },
@@ -373,8 +375,11 @@ function knowledgeFixture(now: number, generatedAt: string, variant: FixtureVari
   ];
   // Put a few examples from each repo in the first screenful.
   const featured = [0, 1, 22, 2, 34, 3, 4, 32, 5];
+  const ordered = [...featured.map((index) => items[index]), ...items.filter((_, index) => !featured.includes(index))];
   return {
-    items: [...featured.map((index) => items[index]), ...items.filter((_, index) => !featured.includes(index))],
+    items: variant === "calm" ? ordered.map((item) => item.status === "outOfDate" || item.status === "codeChanged"
+      ? { ...item, status: "upToDate", checks: item.checks.map((check) => ({ ...check, result: "held" })) }
+      : item) : ordered,
     forgotten: [
       { id: "mx_legacycart", repoId: "storefront", audience: "personal", at: hoursAgo(8) },
       { id: "mx_oldtokens", repoId: "design-kit", audience: "team", at: hoursAgo(3 * 24) },
