@@ -132,12 +132,14 @@ function setState(db: DatabaseSync, job: JobRow, to: JobState, fields: Partial<J
 
 export interface EnqueueOptions { kind: string; projectId?: string | null; params?: unknown; tokensEstimate?: number; }
 export type EnqueueResult = { job: JobRow; existing: boolean };
+/** Store approval for a new job in the same transaction as its row. */
+export type BeforeJobInsert = (jobId: string) => void;
 /**
  * Queue a job. A project job whose kind already has an unfinished job for that project
  * returns that job instead of a second one ("Already running in another window"),
  * unless the kind's `joins` says that job does not serve this request.
  */
-export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): EnqueueResult {
+export function enqueueJob(writer: RecordWriter, options: EnqueueOptions, beforeInsert?: BeforeJobInsert): EnqueueResult {
   const kind = kinds.get(options.kind);
   if (!kind) throw new Error(`Unknown job kind: ${options.kind}`);
   if (kind.reserved) throw new Error(kind.reserved);
@@ -150,6 +152,7 @@ export function enqueueJob(writer: RecordWriter, options: EnqueueOptions): Enque
     if (open) return { job: open, existing: true };
     const ts = now();
     const id = randomUUID();
+    beforeInsert?.(id);
     writer.db.prepare(`INSERT INTO jobs(id,project_id,kind,state,progress,checkpoint,tokens_used,tokens_estimate,created_at,updated_at,params)
       VALUES(?,?,?,'queued',NULL,NULL,0,?,?,?,?)`).run(id, projectId, kind.name, options.tokensEstimate ?? null, ts, ts,
       JSON.stringify(options.params ?? {}));

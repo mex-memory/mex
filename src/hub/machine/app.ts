@@ -27,6 +27,7 @@ import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes
 import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
 import { rotateHubSecret } from "./secret.js";
+import { SetupLearning } from "./setup-learning.js";
 import { changeSetupStep } from "./setup-step-actions.js";
 import { SetupData, setupRepoId } from "./setup-data.js";
 import { takeSettingsSnapshot } from "./settings-snapshot.js";
@@ -86,6 +87,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   const uninstallRead = new ControlSnapshot(now, async signal => ({ ...await takeUninstallSnapshot(location, signal), issue: undefined }),
     "The install record couldn’t be read. Run mex uninstall --dry-run in your terminal.");
   const setup = new SetupData(location, now, options.env ?? process.env);
+  const setupLearning = new SetupLearning(location, now, options.env ?? process.env);
   const repair = new AgentRepair(agentOptions, now);
   const followUps = new Set<NodeJS.Immediate>();
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
@@ -352,6 +354,9 @@ export function createMachineHubApp(options: MachineHubOptions) {
     const { repo } = readStrictQuery(context.req.raw, ["repo"]);
     return context.json(setup.get(repo));
   });
+
+  app.post("/api/v1/setup/:repo/quote", (context) => machinePost(context, body =>
+    setupLearning.quote(setupRepoId(context.req.param("repo")), context.get("session").id, body)));
 
   app.post("/api/v1/setup/:repo/steps/:id", (context) => machinePost(context, async (body) => {
     const repoId = setupRepoId(context.req.param("repo"));
