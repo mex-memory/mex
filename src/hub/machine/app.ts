@@ -17,6 +17,7 @@ import { HubEvents } from "./events.js";
 import { HomeData } from "./home.js";
 import { changeHubJob, readHubJobs } from "./jobs.js";
 import { KnowledgeData } from "./knowledge.js";
+import { KnowledgeBriefs } from "./knowledge-brief.js";
 import { parseKnowledgeCheckout } from "./knowledge-checkout.js";
 import { readKnowledgeItem } from "./knowledge-detail.js";
 import { readForgotten } from "./knowledge-forgotten.js";
@@ -82,6 +83,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
 
   const home = new HomeData(location, now);
   const knowledge = new KnowledgeData(location, now, options.env);
+  const briefs = new KnowledgeBriefs(location, options.env);
   const ruleFiles = new RuleFilesData(location, now);
   const agentOptions: MachineAgentOptions = { ...location, env: options.env, entry: options.agentEntry, userHome: options.agentUserHome };
   const agentRead = new ControlSnapshot(now, signal => takeAgentsSnapshot(agentOptions, signal), "Agent settings couldn’t be read. Try again or run mex doctor.");
@@ -289,6 +291,8 @@ export function createMachineHubApp(options: MachineHubOptions) {
     return rules;
   }));
 
+  app.post("/api/v1/knowledge/brief", (context) => machinePost(context, (body) => briefs.preview(body)));
+
   app.post("/api/v1/knowledge/notes", (context) => knowledgePost(context, (body) => knowledgeWrites.create(body), 201));
   app.post("/api/v1/knowledge/items/:key/edit", (context) => knowledgePost(context, (body) => knowledgeWrites.edit(context.req.param("key"), body)));
   app.post("/api/v1/knowledge/items/:key/forget", (context) => knowledgePost(context, (body) => knowledgeWrites.forget(context.req.param("key"), body)));
@@ -455,6 +459,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
     events.close();
     home.close();
     knowledge.close();
+    briefs.close();
     ruleFiles.close();
     agentRead.close();
     settingsRead.close();
