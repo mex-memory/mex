@@ -184,8 +184,13 @@
   justify-items: start;
 }
 
+/* Step controls and links share one line, so "View job" lines up across rows. */
 .stepAside {
-  justify-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px 14px;
 }
 
 .stepTitle,
@@ -269,7 +274,7 @@
 
 @media (max-width: 600px) {
   .step { grid-template-columns: minmax(0, 1fr); }
-  .stepAside { justify-items: start; }
+  .stepAside { justify-content: flex-start; }
   .actions [data-slot="button"] { min-height: 44px; }
   .stepAside a { min-height: 28px; }
 }
