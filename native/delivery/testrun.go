@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mex-memory/mex/native/graph"
+	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/index/shift"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/internal/shellparse"
@@ -34,7 +35,11 @@ func fullTestRun(ev contract.Event) bool {
 	if (ev.Kind != contract.PostTool && ev.Kind != contract.PostToolFailure) || ev.Tool == nil || ev.Tool.Name != contract.ToolShell || ev.Tool.Output == nil {
 		return false
 	}
-	command := ev.Tool.Input.Command
+	return fullTestCommand(ev.Tool.Input.Command)
+}
+
+// fullTestCommand reports a command that runs a whole test suite.
+func fullTestCommand(command string) bool {
 	if !testCommand(command) {
 		return false
 	}
@@ -87,6 +92,49 @@ func testRunCards(ev contract.Event, env Environment) []answerCard {
 		return nil
 	}
 	defer done()
+	symbols := changedDefinitions(view, ix, changed)
+	if len(symbols) == 0 {
+		return nil
+	}
+	value := tokens.Code(boundedText(ev.Tool.Output.Text, 1<<20))
+	card, ok := view.TestsCard(symbols, ev.Tool.Input.Command, value, graph.Seen{})
+	if !ok || card.Value < testRunValueFactor*card.Tokens {
+		return nil
+	}
+	return []answerCard{graphAnswerCard(card)}
+}
+
+// graphDefinition is the graph's node for a definition the file index holds:
+// same file, name and kind, the nearest one when the name repeats.
+func graphDefinition(store *graph.Store, rel, name, kind string, start int) (graph.Symbol, bool) {
+	defs, err := store.Resolve(name)
+	if err != nil {
+		return graph.Symbol{}, false
+	}
+	var best graph.Symbol
+	found := false
+	for _, d := range defs {
+		if d.Path != rel || d.Kind != kind {
+			continue
+		}
+		if !found || abs(d.Start-start) < abs(best.Start-start) {
+			best, found = d, true
+		}
+	}
+	return best, found
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// changedDefinitions lists the innermost definitions the changed lines
+// touch, outside test files, at most maxChangedSymbols of them, each with
+// the file's hash today.
+func changedDefinitions(view graph.View, ix *index.Reader, changed map[string][]LineSpan) []graph.Symbol {
 	isTest := func(path string) bool {
 		if t, known := ix.TestFlag(path); known {
 			return t
@@ -182,40 +230,5 @@ func testRunCards(ev contract.Event, env Environment) []answerCard {
 			break
 		}
 	}
-	if len(symbols) == 0 {
-		return nil
-	}
-	value := tokens.Code(boundedText(ev.Tool.Output.Text, 1<<20))
-	card, ok := view.TestsCard(symbols, ev.Tool.Input.Command, value, graph.Seen{})
-	if !ok || card.Value < testRunValueFactor*card.Tokens {
-		return nil
-	}
-	return []answerCard{graphAnswerCard(card)}
-}
-
-// graphDefinition is the graph's node for a definition the file index holds:
-// same file, name and kind, the nearest one when the name repeats.
-func graphDefinition(store *graph.Store, rel, name, kind string, start int) (graph.Symbol, bool) {
-	defs, err := store.Resolve(name)
-	if err != nil {
-		return graph.Symbol{}, false
-	}
-	var best graph.Symbol
-	found := false
-	for _, d := range defs {
-		if d.Path != rel || d.Kind != kind {
-			continue
-		}
-		if !found || abs(d.Start-start) < abs(best.Start-start) {
-			best, found = d, true
-		}
-	}
-	return best, found
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
+	return symbols
 }
