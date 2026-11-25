@@ -94,7 +94,7 @@ function pageOf(fixture: KnowledgeFixture, filters: KnowledgeFilters, cursor?: s
   };
 }
 
-function teamFile(item: KnowledgeDetail, retiredAt?: string, reason?: string) {
+export function teamFile(item: KnowledgeDetail, retiredAt?: string, reason?: string) {
   return [
     "---",
     "mex:",
@@ -111,7 +111,7 @@ function teamFile(item: KnowledgeDetail, retiredAt?: string, reason?: string) {
   ];
 }
 
-function unifiedDiff(path: string, before: string[], after: string[]) {
+export function unifiedDiff(path: string, before: string[], after: string[]) {
   let start = 0;
   while (start < before.length && before[start] === after[start]) start++;
   let sharedEnd = 0;
@@ -124,7 +124,7 @@ function unifiedDiff(path: string, before: string[], after: string[]) {
   const afterEnd = after.length - sharedEnd;
   const contextEnd = Math.min(sharedEnd, 2);
   return [
-    `--- a/${path}`,
+    ...(before.length ? [`--- a/${path}`] : ["new file mode 100644", "--- /dev/null"]),
     `+++ b/${path}`,
     `@@ -${contextStart + 1},${beforeEnd + contextEnd - contextStart} +${contextStart + 1},${afterEnd + contextEnd - contextStart} @@`,
     ...before.slice(contextStart, start).map((line) => ` ${line}`),
@@ -134,7 +134,11 @@ function unifiedDiff(path: string, before: string[], after: string[]) {
   ].join("\n");
 }
 
-export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonly MachineProject[], variant: FixtureVariant): KnowledgePreview {
+export interface FixtureKnowledge extends KnowledgePreview {
+  applyReview: (at: string, note?: KnowledgeDetail, retireKeys?: readonly string[]) => void;
+}
+
+export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonly MachineProject[], variant: FixtureVariant): FixtureKnowledge {
   const [fixture, setFixture] = useState(initial);
   const current = useRef(initial);
   const sequence = useRef(1);
@@ -226,13 +230,22 @@ export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonl
     const preview = teamPreview(item, request, teamFile(item, at, request.reason));
     if (preview) return preview;
     const forgotten: ForgottenItem = { id: item.id, repoId: item.repoId, audience: item.audience, at };
+    applyReview(at, undefined, [item.key]);
+    return { type: "ok", item: forgotten };
+  }
+
+  function applyReview(at: string, note?: KnowledgeDetail, retireKeys: readonly string[] = []) {
+    const retired = current.current.items.filter(({ key }) => retireKeys.includes(key));
+    const items = current.current.items.filter(({ key }) => key !== note?.key && !retireKeys.includes(key));
     publish({
       ...current.current,
       generatedAt: at,
-      items: current.current.items.filter(({ key }) => key !== item.key),
-      forgotten: [forgotten, ...current.current.forgotten],
+      items: note ? [note, ...items] : items,
+      forgotten: [
+        ...retired.map(({ id, repoId, audience }) => ({ id, repoId, audience, at })),
+        ...current.current.forgotten,
+      ],
     });
-    return { type: "ok", item: forgotten };
   }
 
   return {
@@ -243,5 +256,6 @@ export function useFixtureKnowledge(initial: KnowledgeFixture, projects: readonl
     createNote,
     editNote,
     forgetItem,
+    applyReview,
   };
 }

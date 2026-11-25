@@ -92,5 +92,6 @@ export interface HubPreview {
   overview: HomeOverview;
   jobs: readonly HubJob[];
   knowledge: KnowledgePreview;
+  review: ReviewPreview;
   changeJob: (id: string, action: JobAction) => void;
 }

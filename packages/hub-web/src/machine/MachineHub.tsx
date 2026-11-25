@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Button } from "../components/primitives/button";
 import { useMachineConnection } from "./connection";
 import { HubShell } from "./HubShell";
+import type { FixtureVariant } from "./fixtures";
 import { RelinkPage } from "./pages";
 import { HubBanners, HubBrand } from "./ui";
 import styles from "./machine.module.css";
@@ -10,8 +11,13 @@ const FixtureHub = import.meta.env.DEV ? lazy(() => import("./FixtureHub")) : nu
 
 export function MachineHub() {
   if (FixtureHub) {
-    const variant = new URLSearchParams(window.location.search).get("fixture");
-    if (variant === "home" || variant === "populated" || variant === "empty" || variant === "stale" || variant === "updating" || variant === "conflict" || variant === "calm") {
+    const variants: readonly FixtureVariant[] = [
+      "home", "populated", "empty", "stale", "updating", "conflict", "calm",
+      "review-empty", "review-handled", "review-handled-unknown", "review-busy", "review-loading",
+    ];
+    const requested = new URLSearchParams(window.location.search).get("fixture");
+    const variant = variants.find((variant) => variant === requested);
+    if (variant) {
       return (
         <Suspense fallback={null}>
           <FixtureHub key={variant} variant={variant} />
