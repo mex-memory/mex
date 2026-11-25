@@ -233,3 +233,22 @@ func TestSameCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestNamesAnyTestFile(t *testing.T) {
+	tests := []string{"packages/api/test/routes.test.ts"}
+	for segment, want := range map[string]bool{
+		"":       false,
+		"vitest": false,
+		"vitest packages/api/test/routes.test.ts": true,
+		"vitest ./test/routes.test.ts":            true,
+		"vitest routes.test.ts":                   true,
+		"vitest packages/api/test":                true,
+		"vitest packages/api/test/":               true,
+		"vitest packages/web":                     false,
+		"vitest --run":                            false,
+	} {
+		if got := namesAny(segment, tests); got != want {
+			t.Errorf("namesAny(%q) = %v, want %v", segment, got, want)
+		}
+	}
+}

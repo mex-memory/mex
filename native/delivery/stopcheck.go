@@ -392,7 +392,11 @@ func directTests(view graph.View, symbols []graph.Symbol) []string {
 // namesAny reports a command word naming one of the test files: the path,
 // a path ending in it, its folder, or its file name.
 func namesAny(segment string, tests []string) bool {
-	for _, w := range shellparse.Words(segment)[1:] {
+	words := shellparse.Words(segment)
+	if len(words) < 2 {
+		return false
+	}
+	for _, w := range words[1:] {
 		if strings.HasPrefix(w, "-") {
 			continue
 		}
