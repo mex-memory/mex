@@ -60,8 +60,12 @@ type Event struct {
 	Batch        []Tool    `json:"batch,omitempty"`
 	Transcript   string    `json:"transcript"`
 	// Summary is the compaction summary on post_compact, where the agent gives it.
-	Summary    string `json:"summary,omitempty"`
-	Background bool   `json:"background"`
+	Summary string `json:"summary,omitempty"`
+	// StopActive is true on a stop when the agent is already continuing
+	// because a stop hook sent it back (Claude Code's stop_hook_active).
+	// Nothing may send it back again.
+	StopActive bool `json:"stop_active,omitempty"`
+	Background bool `json:"background"`
 }
 
 type PromptIn struct {
