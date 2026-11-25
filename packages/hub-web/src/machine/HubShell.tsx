@@ -1,24 +1,29 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
-import { BookOpen, FolderGit2, House, ListTodo, Menu, Terminal, X } from "lucide-react";
+import { BookOpen, ClipboardCheck, FolderGit2, House, ListTodo, Menu, Terminal, X } from "lucide-react";
 import { Navigate, NavLink, Route, Routes, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { Button } from "../components/primitives/button";
+import { Badge } from "../components/primitives/badge";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { Separator } from "../components/primitives/separator";
 import { cn } from "../lib/utils";
 import shell from "../styles/shell.module.css";
-import { useHome, useHubEvents, useJobActions, useJobs, type HubEventState } from "./data";
+import { useHome, useHubEvents, useJobActions, useJobs, useReviewCount, type HubEventState } from "./data";
+import type { ReviewConnection } from "./ReviewPage";
 import type { KnowledgeConnection } from "./KnowledgePage";
 import { UnknownRepoPage } from "./pages";
-import type { HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview } from "./types";
+import { reviewCount } from "./review-model";
+import type { HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview, ReviewPreview } from "./types";
 import { HubBanners, HubBrand, ThemeToggle, type PageLoad } from "./ui";
 import styles from "./machine.module.css";
 
 const HomePage = lazy(() => import("./HomePage"));
 const JobsPage = lazy(() => import("./JobsPage"));
 const KnowledgePage = lazy(() => import("./KnowledgePage"));
+const ReviewPage = lazy(() => import("./ReviewPage"));
 const navPages = [
   { page: "home", label: "Home", icon: House },
+  { page: "review", label: "Review", icon: ClipboardCheck },
   { page: "knowledge", label: "Knowledge", icon: BookOpen },
   { page: "jobs", label: "Jobs", icon: ListTodo },
 ] as const;
@@ -41,6 +46,9 @@ interface HubData {
   overview?: HomeOverview;
   jobs?: readonly HubJob[];
   knowledge?: KnowledgePreview;
+  review?: ReviewPreview;
+  reviewCount?: ReturnType<typeof useReviewCount>["data"];
+  reviewLive?: ReviewConnection;
   knowledgeLive?: KnowledgeConnection;
   homeLoad?: PageLoad;
   jobsLoad?: PageLoad;
@@ -49,8 +57,8 @@ interface HubData {
 
 export function HubShell(props: HubShellProps) {
   if (props.preview) {
-    const { jobs, overview, knowledge, changeJob } = props.preview;
-    return <HubLayout {...props} data={{ jobs, overview, knowledge, changeJob: (job, action) => changeJob(job.id, action) }} fixture />;
+    const { jobs, overview, knowledge, review, changeJob } = props.preview;
+    return <HubLayout {...props} data={{ jobs, overview, knowledge, review, changeJob: (job, action) => changeJob(job.id, action) }} fixture />;
   }
   return <LiveHubShell {...props} />;
 }
@@ -62,6 +70,7 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
   const events = useHubEvents(checkSession);
   const home = useHome(events);
   const jobs = useJobs(events);
+  const waiting = useReviewCount(events);
   const changeJob = useJobActions(props.session.csrfToken, reportDataError);
 
   useEffect(() => {
@@ -70,7 +79,8 @@ function LiveHubShell({ checkSession, reportDataError, ...props }: ShellProps & 
   }, [home.error, jobs.error, reportDataError]);
 
   return <HubLayout {...props} events={events} data={{
-    overview: home.data, jobs: jobs.data, changeJob,
+    overview: home.data, jobs: jobs.data, changeJob, reviewCount: waiting.data,
+    reviewLive: { events, csrfToken: props.session.csrfToken, reportDataError },
     knowledgeLive: { events, csrfToken: props.session.csrfToken, reportDataError },
     homeLoad: { loading: home.isPending, error: home.isError, retry: () => void home.refetch() },
     jobsLoad: { loading: jobs.isPending, error: jobs.isError, retry: () => void jobs.refetch() },
@@ -93,10 +103,18 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
   const machineKnowledge = useMatch("/knowledge/*");
   const repoKnowledge = useMatch("/repos/:projectId/knowledge/*");
   const knowledgeRoute = Boolean(machineKnowledge || repoKnowledge);
+  const machineReview = useMatch("/review/*");
+  const repoReview = useMatch("/repos/:projectId/review/*");
+  const reviewRoute = Boolean(machineReview || repoReview);
   const project = projects?.find(({ id }) => id === projectId);
   const navigate = useNavigate();
   const terminal = session.mode === "terminal";
   const knowledgeProps = data.knowledge ? { knowledge: data.knowledge } : { live: data.knowledgeLive! };
+  const reviewProps = data.review ? { review: data.review } : { live: data.reviewLive! };
+  const waiting = fixture ? reviewCount(data.overview, projectId)
+    : (projectId ? data.reviewCount?.byRepo[projectId] : data.reviewCount?.total) ?? 0;
+  const activePage = reviewRoute ? "review" : knowledgeRoute ? "knowledge" : machineJobs || repoJobs ? "jobs" : "home";
+  const loadingPage = { home: "Home", knowledge: "Knowledge", review: "Review", jobs: "jobs" }[activePage];
 
   function pagePath(page: NavPage, id?: string) {
     const repo = id ? `/repos/${encodeURIComponent(id)}` : "";
@@ -122,8 +140,8 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
     if (previousPath.current === pathname) return;
     previousPath.current = pathname;
     setMenuOpen(false);
-    if (!knowledgeRoute) main.current?.focus();
-  }, [knowledgeRoute, pathname]);
+    if (!knowledgeRoute && (!reviewRoute || projectId && !project)) main.current?.focus();
+  }, [knowledgeRoute, reviewRoute, projectId, project, pathname]);
 
   function closeMenu() {
     if (!menuOpen) return;
@@ -160,13 +178,15 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
               {navPages.map(({ page, label, icon: Icon }) => (
                 <li key={page}>
                   <NavLink
+                    aria-description={page === "review" && waiting > 0 ? `${waiting} waiting` : undefined}
                     className={({ isActive }) => cn(shell.navLink, isActive && shell.navLinkActive)}
-                    end={page !== "knowledge"}
+                    end={page === "home" || page === "jobs"}
                     onClick={closeMenu}
                     to={pagePath(page, projectId)}
                   >
                     <Icon aria-hidden="true" />
                     <span>{label}</span>
+                    {page === "review" && waiting > 0 && <Badge aria-hidden="true" variant="secondary">{waiting}</Badge>}
                   </NavLink>
                 </li>
               ))}
@@ -186,7 +206,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
           aria-label="Repo switcher"
           className={styles.switcher}
           disabled={projects === undefined}
-          onChange={(event) => navigate(pagePath(knowledgeRoute ? "knowledge" : machineJobs || repoJobs ? "jobs" : "home", event.target.value))}
+          onChange={(event) => navigate(pagePath(activePage, event.target.value))}
           value={project?.id ?? ""}
         >
           <NativeSelectOption value="">All repos</NativeSelectOption>
@@ -204,7 +224,7 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
             </div>
           )}
           {projects ? (
-            <Suspense fallback={<p className={styles.pageState} role="status">{knowledgeRoute ? "Loading Knowledge…" : machineJobs || repoJobs ? "Loading jobs…" : "Loading Home…"}</p>}>
+            <Suspense fallback={<p className={styles.pageState} role="status">Loading {loadingPage}…</p>}>
               <Routes>
                 <Route
                   element={(
@@ -218,6 +238,11 @@ function HubLayout({ session, projects, projectsError, retryProjects, connection
                     />
                   )}
                   path="/"
+                />
+                <Route element={<ReviewPage key="all" {...reviewProps} projects={projects} />} path="/review/:cardKey?" />
+                <Route
+                  element={project ? <ReviewPage key={project.id} {...reviewProps} project={project} projects={projects} /> : unknownRepo}
+                  path="/repos/:projectId/review/:cardKey?"
                 />
                 <Route
                   element={<KnowledgePage key="all" {...knowledgeProps} projects={projects} />}

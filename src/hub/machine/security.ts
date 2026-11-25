@@ -17,7 +17,7 @@ const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const FORWARDED_HEADERS = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-port", "x-forwarded-proto", "x-real-ip"] as const;
 
 export type HubProblem = "INVALID_REQUEST" | "UNAUTHORIZED" | "ORIGIN_REJECTED" | "JOB_CONFLICT" | "KNOWLEDGE_CHANGED" | "REVISION_CONFLICT" | "STALE_PREVIEW"
-  | "MEX_BUSY" | "REQUEST_KEY_USED" | "RULE_FILES_UNAVAILABLE" | "STREAM_UNAVAILABLE";
+  | "REVIEW_CHANGED" | "REVIEW_UNAVAILABLE" | "ALREADY_HANDLED" | "MEX_BUSY" | "REQUEST_KEY_USED" | "RULE_FILES_UNAVAILABLE" | "STREAM_UNAVAILABLE";
 
 export class HubRequestError extends Error {
   constructor(readonly status: number, readonly code: HubProblem, readonly title: string, detail: string) {

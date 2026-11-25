@@ -19,6 +19,10 @@ import type {
   MachineKnowledgeStatusSchema,
   MachineKnowledgeSummarySchema,
   MachineKnowledgeWritePreviewSchema,
+  MachineReviewActionRequest,
+  MachineReviewActionResponse,
+  MachineReviewCard,
+  MachineReviewQueue,
 } from "@mex/hub-contracts/machine";
 
 export type KnowledgeStatusCounts = z.infer<typeof MachineKnowledgeStatusCountsSchema>;
@@ -47,6 +51,21 @@ export type DailyActivity = z.infer<typeof MachineDailyActivitySchema>;
 export type HomeOverview = z.infer<typeof MachineHomeSchema>;
 export type HubJob = z.infer<typeof MachineJobSchema>;
 export type JobAction = z.infer<typeof MachineJobActionRequestSchema>["action"];
+export type ReviewAction = MachineReviewActionRequest["action"];
+export type ReviewDraft = NonNullable<MachineReviewActionRequest["edited"]>;
+export type ReviewWritePreview = Extract<MachineReviewActionResponse, { type: "preview" }>;
+export type ReviewApplied = Extract<MachineReviewActionResponse, { type: "applied" }>;
+export type ReviewHandled = Extract<MachineReviewActionResponse, { type: "alreadyHandled" }>;
+
+export type FixtureReviewQueue = Omit<MachineReviewQueue, "cards"> & { cards: readonly MachineReviewCard[] };
+
+export interface ReviewActions {
+  act: (key: string, request: MachineReviewActionRequest, onRetry: () => void) => Promise<MachineReviewActionResponse>;
+  removeCompleted: (key: string) => void;
+}
+export interface ReviewPreview extends ReviewActions {
+  queue?: FixtureReviewQueue;
+}
 
 export interface KnowledgeFilters {
   scopeId?: string;
@@ -78,5 +97,6 @@ export interface HubPreview {
   overview: HomeOverview;
   jobs: readonly HubJob[];
   knowledge: KnowledgePreview;
+  review: ReviewPreview;
   changeJob: (id: string, action: JobAction) => void;
 }

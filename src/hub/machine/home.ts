@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import { setImmediate } from "node:timers/promises";
 import type { MachineHome } from "@mex/hub-contracts/machine";
-import { openHooksReadOnly, openRecordReadOnly } from "../../record/index.js";
+import { openHooksReadOnly, openRecordReadOnly, recordLocation } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
 import { homeTimeZone, readHomeMetrics } from "./home-metrics.js";
 import { snapshotFields, takeHomeSnapshot, type HomeSnapshot } from "./home-snapshot.js";
@@ -19,7 +21,13 @@ function refreshSignal(location: LocationOptions): string {
       AND (kind='file-index' OR kind GLOB 'graph-*' OR kind GLOB 'learn*')
     ORDER BY finished_at DESC,id DESC LIMIT 16`));
   const verdict = readStore(openHooksReadOnly, location, (hooks) => hooks?.get("SELECT max(checked_at) AS at FROM verdicts"));
-  return JSON.stringify([jobs, verdict]);
+  // Review decisions in the terminal are visible on the same cheap refresh interval.
+  const { record } = recordLocation({ ...location, create: false });
+  const review = [record, record + "-wal"].map((path) => {
+    const stat = statSync(path, { bigint: true, throwIfNoEntry: false });
+    return stat && `${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+  });
+  return JSON.stringify([jobs, verdict, review]);
 }
 
 export function homeActivityFingerprint(location: LocationOptions): string {
@@ -34,10 +42,14 @@ export class HomeData {
   #snapshot: HomeSnapshot | undefined;
   #updatingSince: string | undefined;
   #lastStart: number | undefined;
+  #lastFullStart = -Infinity;
+  #refreshing: Promise<void> | undefined;
+  readonly #instance = randomUUID();
   #lastActivity = -Infinity;
   #lastSignal: string | undefined;
   #timer: NodeJS.Timeout | undefined;
   #generation = 0;
+  #snapshotGeneration = 0;
 
   constructor(private readonly location: LocationOptions, private readonly now: () => number) {}
 
@@ -51,10 +63,24 @@ export class HomeData {
     if (this.#lastStart !== undefined) this.#schedule();
   }
 
+  getReview() {
+    this.touch();
+    const now = this.now();
+    if (!this.#refreshing && now - this.#lastFullStart >= REFRESH_MS) void this.#refresh(now);
+    return {
+      snapshot: this.#snapshot, updatingSince: this.#updatingSince, generation: `${this.#instance}:${this.#snapshotGeneration}`,
+      ready: this.#refreshing,
+    };
+  }
+
+  async refreshProject(repoId: string) {
+    while (this.#refreshing) await this.#refreshing;
+    await this.#refresh(this.now(), undefined, this.#snapshot ? repoId : undefined);
+  }
+
   get(zone: string | undefined): MachineHome {
     const now = this.now();
-    this.touch();
-    if (!this.#updatingSince && (this.#lastStart === undefined || now - this.#lastStart >= REFRESH_MS)) this.#refresh(now);
+    this.getReview();
     const tz = homeTimeZone(zone);
     let cached = this.#metrics.get(tz);
     if (!cached || now < cached.at || now - cached.at >= METRICS_CACHE_MS) {
@@ -85,8 +111,8 @@ export class HomeData {
       if (now - this.#lastActivity >= ACTIVE_MS) return;
       if (!this.#updatingSince && now - this.#lastStart! >= SIGNAL_CHECK_MS) {
         const signal = this.#signal();
-        if (now - this.#lastStart! >= REFRESH_MS || (signal !== undefined && signal !== this.#lastSignal)) {
-          this.#refresh(now, signal);
+        if (now - this.#lastFullStart >= REFRESH_MS || (signal !== undefined && signal !== this.#lastSignal)) {
+          void this.#refresh(now, signal);
         }
       }
       this.#schedule();
@@ -98,26 +124,31 @@ export class HomeData {
     try { return refreshSignal(this.location); } catch { return undefined; }
   }
 
-  #refresh(now: number, signal?: string) {
+  #refresh(now: number, signal?: string, only?: string) {
+    if (this.#stop.signal.aborted) return Promise.resolve();
     this.#lastStart = now;
+    if (!only) this.#lastFullStart = now;
     this.#updatingSince = new Date(now).toISOString();
     if (this.#snapshot) this.#generation++;
-    void (async () => {
+    this.#refreshing = (async () => {
       try {
         if (signal === undefined) {
           // The first snapshot and its change signals run outside the GET.
           await setImmediate(undefined, { signal: this.#stop.signal });
           signal = this.#signal();
         }
-        this.#lastSignal = signal ?? this.#lastSignal;
-        this.#snapshot = await takeHomeSnapshot(this.location, this.#snapshot, this.now, this.#stop.signal);
+        if (!only) this.#lastSignal = signal ?? this.#lastSignal;
+        this.#snapshot = await takeHomeSnapshot(this.location, this.#snapshot, this.now, this.#stop.signal, only);
+        this.#snapshotGeneration++;
         this.clearMetrics();
       } catch { /* Keep the last good in-memory snapshot. */ }
       finally {
         this.#updatingSince = undefined;
+        this.#refreshing = undefined;
         this.#generation++;
       }
     })();
     this.#schedule();
+    return this.#refreshing;
   }
 }

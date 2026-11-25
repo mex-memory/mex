@@ -11,11 +11,10 @@ import { localHintReader } from "../../knowledge/hints.js";
 import { savedByAgent, statementDate } from "../../knowledge/labels.js";
 import { openHooksReadOnly, openRecordReadOnly, recordLocation, type RecordReader } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
-import { checkoutCollation, knowledgeStatus } from "./home-snapshot.js";
 import { knowledgeMissing, parseKnowledgeKey, repoMissing } from "./knowledge-list.js";
 import { isRetired, midnight, registeredCheckout, representativeCheckout } from "./knowledge-snapshot.js";
 import { knowledgePageUsage, noUse, useKey } from "./knowledge-usage.js";
-import { boundedSetting, readStore } from "./read.js";
+import { boundedSetting, checkoutCollation, knowledgeStatus, readStore } from "./read.js";
 
 const git = promisify(execFile);
 const dateTime = z.string().datetime({ offset: true });

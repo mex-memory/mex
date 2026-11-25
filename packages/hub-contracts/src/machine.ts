@@ -205,6 +205,96 @@ export const MachineKnowledgeConflictSchema = MachineProblemSchema.extend({
   attempted: z.union([MachineKnowledgeEditRequestSchema, MachineKnowledgeForgetRequestSchema]),
 });
 
+const reviewAction = z.enum(["share", "keep", "edit", "use", "keepCurrent", "retire"]);
+const reviewContent = knowledgeContentSchema.omit({ oneLine: true }).extend({ claim: knowledgeContentSchema.shape.oneLine });
+const reviewNote = z.object({ key: knowledgeKeySchema, audience: MachineKnowledgeAudienceSchema });
+
+const reviewRowSchema = reviewContent.omit({ text: true }).extend({
+  key: z.string().min(3).max(512),
+  cardId: z.string().min(1),
+  repoId: z.string().min(1),
+  revision: knowledgeRevisionSchema,
+  checkout: z.string().min(1),
+  reason: z.string().min(1),
+  checkedByModel: z.boolean(),
+  sources: z.object({ count: countSchema, producer: z.string().min(1), checkouts: z.array(z.string().min(1)) }),
+  createdAt: isoTimeSchema,
+  expiresAt: isoTimeSchema,
+  contradiction: z.object({ current: z.array(reviewNote.extend({ claim: reviewContent.shape.claim })).min(1) }).optional(),
+  retireTarget: reviewNote.optional(),
+  actions: z.array(reviewAction),
+  disabled: z.record(reviewAction, z.string().min(1)).optional(),
+});
+const reviewKeyMatches = ({ key, repoId, cardId }: z.infer<typeof reviewRowSchema>) => key === `${repoId}:${cardId}`;
+export const MachineReviewRowSchema = reviewRowSchema.refine(reviewKeyMatches);
+export const MachineReviewCardSchema = reviewRowSchema.extend({ text: reviewContent.shape.text }).refine(reviewKeyMatches);
+
+export const MachineReviewCountsSchema = z.object({ total: countSchema, byRepo: z.record(countSchema) });
+export const MachineReviewQueueSchema = MachineReviewCountsSchema.extend({
+  cards: z.array(MachineReviewRowSchema).max(100).readonly(),
+  nextCursor: z.string().nullable(),
+  oldest: isoTimeSchema.nullable(),
+  updatingSince: isoTimeSchema.optional(),
+  partial: knowledgeReadState.partial,
+});
+
+export const MachineReviewActionRequestSchema = z.object({
+  action: reviewAction,
+  expectedRevision: knowledgeRevisionSchema,
+  edited: reviewContent.strict().optional(),
+  then: z.enum(["keep", "share"]).optional(),
+  apply: z.literal(true).optional(),
+  previewRevision: knowledgeRevisionSchema.optional(),
+  reason: z.string().trim().min(1).max(512).optional(),
+}).strict();
+
+const reviewEffectsSchema = z.object({
+  save: reviewNote.extend({ audience: z.literal("onlyYou"), claim: reviewContent.shape.claim }),
+  retire: z.array(reviewNote.extend({ claim: reviewContent.shape.claim })).max(129),
+  cost: z.literal(0),
+});
+
+export const MachineReviewPreviewReplySchema = z.object({
+  preview: MachineKnowledgeWritePreviewSchema.extend({
+    revision: knowledgeRevisionSchema,
+    effects: reviewEffectsSchema.optional(),
+    checks: z.array(z.object({
+      id: z.enum(["secrets", "repository", "checks"]),
+      status: z.enum(["pass", "warn", "fail"]),
+      label: z.string().min(1),
+    })).max(3),
+  }),
+});
+export type MachineReviewPreviewReply = z.infer<typeof MachineReviewPreviewReplySchema>;
+
+export const MachineReviewPreviewSchema = MachineKnowledgeWritePreviewSchema.extend({
+  type: z.literal("preview"),
+  revision: knowledgeRevisionSchema,
+  effects: reviewEffectsSchema.optional(),
+  checks: z.array(z.object({
+    id: z.enum(["privacy", "repository", "checks"]),
+    status: z.enum(["passed", "warning", "blocked"]),
+    message: z.string().min(1),
+  })),
+});
+const reviewApplied = z.object({
+  type: z.literal("applied"),
+  outcome: z.enum(["kept", "shared", "used", "keptCurrent", "retired"]),
+  toast: z.string().min(1),
+  knowledgeKey: knowledgeKeySchema,
+});
+const reviewHandled = z.object({
+  type: z.literal("alreadyHandled"),
+  outcome: z.enum(["Kept", "Shared", "Used"]).optional(),
+});
+export const MachineReviewActionResponseSchema = z.discriminatedUnion("type", [MachineReviewPreviewSchema, reviewApplied, reviewHandled]);
+
+export type MachineReviewRow = z.infer<typeof MachineReviewRowSchema>;
+export type MachineReviewCard = z.infer<typeof MachineReviewCardSchema>;
+export type MachineReviewQueue = z.infer<typeof MachineReviewQueueSchema>;
+export type MachineReviewActionRequest = z.infer<typeof MachineReviewActionRequestSchema>;
+export type MachineReviewActionResponse = z.infer<typeof MachineReviewActionResponseSchema>;
+
 export const MachineDailyActivitySchema = z.object({
   day: z.string().date(),
   sessions: countSchema,
@@ -271,7 +361,7 @@ export const MachineJobActionRequestSchema = z.object({
 export const MachineJobActionResponseSchema = MachineJobSchema;
 export const MachineJobConflictSchema = MachineProblemSchema.extend({ job: MachineJobSchema });
 
-export const MachineChangeEventSchema = z.object({ topics: z.array(z.enum(["jobs", "home", "knowledge"])).min(1).max(3) });
+export const MachineChangeEventSchema = z.object({ topics: z.array(z.enum(["jobs", "home", "knowledge", "review"])).min(1).max(4) });
 
 export type MachineHome = z.infer<typeof MachineHomeSchema>;
 export type MachineJob = z.infer<typeof MachineJobSchema>;

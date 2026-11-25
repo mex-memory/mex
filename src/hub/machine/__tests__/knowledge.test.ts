@@ -579,7 +579,7 @@ it("publishes knowledge after a snapshot and a write to every open tab", async (
     await vi.advanceTimersByTimeAsync(2_000);
     for (const tab of [a, b]) expect(await nextChange(tab)).toContain("knowledge");
     expect((await post("/notes", { repoId: repo.id, text: "Keep fixture inputs small.", kind: "rule" }, "stream-write")).status).toBe(201);
-    for (const tab of [a, b]) expect(await nextChange(tab)).toEqual(["knowledge"]);
+    for (const tab of [a, b]) expect(await nextChange(tab)).toEqual(["review", "home", "knowledge"]);
     expect((await page()).total).toBe(1);
   } finally {
     await Promise.all([a.cancel(), b.cancel()]);

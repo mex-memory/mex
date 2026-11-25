@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
 import { ArrowLeft, ArrowRight, BookOpen, ChevronRight, Plus, Search } from "lucide-react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import { Input } from "../components/primitives/input";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
@@ -244,6 +244,20 @@ function ForgottenView({ items, repoNames, backHref, titleRef, load, loadMore, f
   fetching?: boolean;
   partial?: KnowledgeView["partial"];
 }) {
+  const { hash } = useLocation();
+  const table = useRef<HTMLTableElement>(null);
+  const focused = useRef("");
+  useEffect(() => {
+    if (hash === focused.current) return;
+    const row = Array.from(table.current?.tBodies[0]?.rows ?? []).find(({ id }) => "#" + encodeURIComponent(id) === hash);
+    if (row) {
+      row.focus();
+      focused.current = hash;
+    } else {
+      focused.current = "";
+    }
+  }, [hash, items]);
+
   return (
     <div className={styles.page}>
       <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
@@ -255,11 +269,11 @@ function ForgottenView({ items, repoNames, backHref, titleRef, load, loadMore, f
       <KnowledgePartial partial={partial} repoNames={repoNames} />
       {items.length ? (
         <div className={styles.listCard}>
-          <table aria-label="Forgotten items" className={styles.forgottenTable}>
+          <table aria-label="Forgotten items" className={styles.forgottenTable} ref={table}>
             <thead><tr><th scope="col">ID</th><th scope="col">Date forgotten</th><th scope="col">Repo</th><th scope="col">Who sees it</th></tr></thead>
             <tbody>
               {items.map(({ id, repoId, audience, at }) => (
-                <tr key={`${repoId}:${audience}:${id}`}>
+              <tr id={`${repoId}:${audience}:${id}`} key={`${repoId}:${audience}:${id}`} tabIndex={-1}>
                   <th scope="row"><code>{id}</code></th>
                   <td><KnowledgeDate at={at} /></td>
                   <td>{repoNames.get(repoId) ?? "Unknown repo"}</td>

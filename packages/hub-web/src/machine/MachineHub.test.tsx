@@ -51,6 +51,7 @@ function mockHub({ anonymous = false, projectList = projects, session = liveSess
   const readProjects = vi.fn(async () => Response.json({ projects: projectList }));
   const heartbeat = vi.fn(async () => new Response(null, { status: 204 }));
   const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url === "/api/v1/review?limit=1") return Response.json({ total: 0, byRepo: {} });
     if (url.startsWith("/api/v1/home?")) return Response.json(getFixture("empty").overview);
     switch (url) {
       case "/api/v1/session/bootstrap": return bootstrap();
@@ -143,6 +144,7 @@ describe("machine Hub", () => {
     expect(within(switcher).getAllByRole("option").map((option) => option.textContent)).toEqual(["All repos", "Alder", "Birch"]);
     expect(within(screen.getByRole("navigation", { name: "Primary" })).getAllByRole("link")).toEqual([
       screen.getByRole("link", { name: "Home" }),
+      screen.getByRole("link", { name: "Review" }),
       screen.getByRole("link", { name: "Knowledge" }),
       screen.getByRole("link", { name: "Jobs" }),
     ]);

@@ -147,6 +147,8 @@ export const RELEASE_COMMON_READ_PATHS = Object.freeze({
   jobs: "/api/v1/jobs",
   knowledge: "/api/v1/knowledge",
   knowledgeLanding: "/api/v1/knowledge/landing",
+  review: "/api/v1/review",
+  reviewDetail: "/api/v1/review/cards/:key",
 });
 
 export async function measureCommonReads(server, auth, samples) {
@@ -168,9 +170,19 @@ export async function measureCommonReads(server, auth, samples) {
     await delay(25);
   }
 
-  const timings = Object.fromEntries(Object.keys(RELEASE_COMMON_READ_PATHS).map((name) => [name, []]));
+  let review = await hubJson(server, RELEASE_COMMON_READ_PATHS.review, auth);
+  while (review.updatingSince) {
+    if (performance.now() >= warmDeadline) throw new Error("The Review snapshot did not become ready.");
+    await delay(25);
+    review = await hubJson(server, RELEASE_COMMON_READ_PATHS.review, auth);
+  }
+  const key = review.cards?.[0]?.key;
+  if (!key || review.partial) throw new Error("The benchmark Hub did not return its staged Review cards.");
+  const paths = { ...RELEASE_COMMON_READ_PATHS, reviewDetail: RELEASE_COMMON_READ_PATHS.reviewDetail.replace(":key", encodeURIComponent(key)) };
+
+  const timings = Object.fromEntries(Object.keys(paths).map((name) => [name, []]));
   for (let sample = 0; sample < samples; sample += 1) {
-    for (const [name, path] of Object.entries(RELEASE_COMMON_READ_PATHS)) {
+    for (const [name, path] of Object.entries(paths)) {
       const startedAt = performance.now();
       const data = await hubJson(server, path, auth);
       timings[name].push(performance.now() - startedAt);
@@ -182,6 +194,12 @@ export async function measureCommonReads(server, auth, samples) {
       }
       if (name === "knowledgeLanding" && (!data.groups?.byKind?.length || !data.groups?.byArea?.length)) {
         throw new Error("The benchmark Hub did not group its Knowledge entries.");
+      }
+      if (name === "review" && (!data.cards?.length || data.updatingSince || data.partial)) {
+        throw new Error("The benchmark Hub did not return its Review queue.");
+      }
+      if (name === "reviewDetail" && (data.key !== key || !data.text)) {
+        throw new Error("The benchmark Hub did not return its full Review card.");
       }
       if (name === "jobs" && !Array.isArray(data)) {
         throw new Error("The benchmark Hub did not return its jobs list.");

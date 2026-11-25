@@ -1,7 +1,10 @@
+import type { FixtureReviewQueue } from "./types";
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
+import { fixtureHomeReview, fixtureReviewQueue } from "./fixture-review-data";
 import type { ForgottenItem, HomeOverview, HubJob, KnowledgeDetail, KnowledgeStatusCounts } from "./types";
 
-export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating" | "conflict" | "calm";
+export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating" | "conflict" | "calm"
+  | "review-empty" | "review-handled" | "review-handled-unknown" | "review-busy" | "review-loading";
 
 export interface KnowledgeFixture {
   items: readonly KnowledgeDetail[];
@@ -16,6 +19,7 @@ interface HubFixture {
   overview: HomeOverview;
   jobs: readonly HubJob[];
   knowledge: KnowledgeFixture;
+  review?: FixtureReviewQueue;
 }
 
 const session = {
@@ -82,20 +86,6 @@ const knowledge: HomeOverview["knowledge"] = {
     byKind: { rule: statuses(2, 0, 0, 1), fact: statuses(2) },
   },
 };
-
-function waitingRules(now: number): HomeOverview["needs"] {
-  const ago = (days: number) => new Date(now - days * 86_400_000).toISOString();
-  return [
-    { id: "type-check", repoId: "storefront", rule: "Run the type checker before opening a pull request", waitingSince: ago(6) },
-    { id: "spacing", repoId: "design-kit", rule: "Use the shared spacing scale in new components", waitingSince: ago(5) },
-    { id: "links", repoId: "docs-site", rule: "Check links when moving a page", waitingSince: ago(4) },
-    { id: "prices", repoId: "storefront", rule: "Use the shared price formatter at checkout", waitingSince: ago(3) },
-    { id: "examples", repoId: "design-kit", rule: "Add a keyboard example for new controls", waitingSince: ago(2) },
-    { id: "migrations", repoId: "storefront", rule: "Run migrations against a copy before release", waitingSince: ago(1.5) },
-    { id: "fixtures", repoId: "storefront", rule: "Keep real customer names out of test data", waitingSince: ago(1) },
-    { id: "alt-text", repoId: "docs-site", rule: "Describe diagrams in their image captions", waitingSince: ago(0.25) },
-  ];
-}
 
 function localDay(now: number, daysAgo: number) {
   const date = new Date(now);
@@ -393,13 +383,17 @@ function knowledgeFixture(now: number, generatedAt: string, variant: FixtureVari
 export function getFixture(variant: FixtureVariant): HubFixture {
   const now = Date.now();
   const generatedAt = new Date(now - 120_000).toISOString();
+  const notes = knowledgeFixture(now, generatedAt, variant);
+  const review = fixtureReviewQueue(now, notes.items, variant);
+  const waiting = fixtureHomeReview(review);
   if (variant === "empty") {
     return {
       session,
       projects: [],
       overview: { ...homeMetrics(now, []), week: { ...week, percent: 0 }, generatedAt, byRepo: {}, needs: [], needsCount: {}, knowledge: {}, sessions: [] },
       jobs: [],
-      knowledge: knowledgeFixture(now, generatedAt, variant),
+      knowledge: notes,
+      review,
     };
   }
   const scopedKnowledge = variant === "stale" || variant === "updating"
@@ -411,14 +405,8 @@ export function getFixture(variant: FixtureVariant): HubFixture {
   const byRepo = Object.fromEntries(projects.map(({ id }) => (
     [id, homeMetrics(now, sessions.filter(({ repoId }) => id === repoId))]
   )));
-  const needs = waitingRules(now);
-  const needsCount: Record<string, { count: number; oldest: string }> = {};
-  for (const { repoId, waitingSince } of needs) {
-    const count = (needsCount[repoId]?.count ?? 0) + 1;
-    needsCount[repoId] = { count, oldest: needsCount[repoId]?.oldest ?? waitingSince };
-  }
   return {
-    session, projects, jobs, knowledge: knowledgeFixture(now, generatedAt, variant),
-    overview: { ...homeMetrics(now, sessions), generatedAt, byRepo, needs, needsCount, knowledge: scopedKnowledge, sessions },
+    session, projects, jobs, knowledge: notes, review,
+    overview: { ...homeMetrics(now, sessions), generatedAt, byRepo, ...waiting, knowledge: scopedKnowledge, sessions },
   };
 }

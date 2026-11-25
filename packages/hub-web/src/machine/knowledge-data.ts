@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteD
 import { HubProblemError } from "./api";
 import { queryOptions, type HubEventState } from "./data";
 import { getForgotten, getKnowledgeItem, getKnowledgeLanding, getKnowledgePage, postKnowledgeEdit, postKnowledgeForget, postNote } from "./knowledge-api";
+import { retryKnowledgeBusy } from "./knowledge-write-state";
 import type { KnowledgeActions, KnowledgeCreateResult, KnowledgeEditResult, KnowledgeFilters, KnowledgeForgetResult } from "./types";
 
 const key = ["knowledge"];
@@ -68,13 +69,7 @@ function useKnowledgeMutation<T, R extends WriteResult>(
   const { mutateAsync } = useMutation({
     mutationFn: async ({ input, onRetry }: { input: T; onRetry?: () => void }) => {
       const headers = { csrfToken, idempotencyKey: crypto.randomUUID() };
-      try { return await post(input, headers); }
-      catch (error) {
-        if (!(error instanceof HubProblemError) || error.status !== 503 || error.problem?.code !== "MEX_BUSY") throw error;
-        onRetry?.();
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
-        return post(input, headers);
-      }
+      return retryKnowledgeBusy(() => post(input, headers), onRetry);
     },
     networkMode: "always",
     retry: false,

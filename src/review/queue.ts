@@ -17,7 +17,12 @@ import { rows, storedItems, groupId, reviewEligible, legacyJudge, ReviewOffer, R
 export interface ReviewMember { row: ReviewRow; item: StoredReview; revision: string; }
 export interface ReviewCard { id: string; entry: KnowledgeEntry; reason: string; sources: number; createdAt: string; expiresAt: string; checkedByModel: boolean; conflictsWith?: string[]; }
 export interface ReviewGroup extends ReviewCard { members: ReviewMember[]; conflict?: StoredConflict; }
+export function groupRevision(group: ReviewGroup): string { return hash(JSON.stringify(group)); }
 export function memberRevision(row: ReviewRow, item: StoredReview): string { return hash(JSON.stringify([row, item])); }
+/** A retirement may leave the original bytes in place while a judged rewrite has a different claim. */
+export function hasRetiredReviewSource(reader: ReviewReader, project: string, group: ReviewGroup): boolean {
+  return group.members.some(({ row }) => reader.setting(project, "knowledge.retired." + row.entry_id) !== undefined);
+}
 export function canonicalBytes(home: string, project: string, item: StoredReview): string | undefined {
   const source = item.source;
   const base = source.level === "team" ? containedDirectory(source.checkout, [".mex", "learned"]) : containedDirectory(home, ["projects", project, "notes"]);
@@ -30,7 +35,7 @@ export function canonicalBytes(home: string, project: string, item: StoredReview
   if (entry.mex.status !== "active" || entry.mex.id !== item.entry.mex.id) return undefined;
   return raw;
 }
-interface ReviewScanLimits { retainedBytes: number; vocabularyBytes: number; }
+export interface ReviewScanLimits { retainedBytes: number; vocabularyBytes: number; }
 
 export function snapshotReview(reader: ReviewReader, project: string, home: string, root: string, now = Date.now(), limits?: ReviewScanLimits): ReviewGroup[] {
   let retained = 0;

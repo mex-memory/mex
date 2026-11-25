@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useFixtureKnowledge } from "./fixture-knowledge";
+import { useFixtureReview } from "./fixture-review";
+import { fixtureHomeReview } from "./fixture-review-data";
 import { getFixture, type FixtureVariant } from "./fixtures";
 import { HubShell } from "./HubShell";
 import type { HubJob, JobAction } from "./types";
@@ -21,6 +23,8 @@ export default function FixtureHub({ variant }: { variant: FixtureVariant }) {
   const [fixture] = useState(() => getFixture(variant));
   const [jobs, setJobs] = useState(fixture.jobs);
   const knowledge = useFixtureKnowledge(fixture.knowledge, fixture.projects, variant);
+  const review = useFixtureReview(fixture.review, knowledge, variant);
+  const overview = { ...fixture.overview, ...fixtureHomeReview(review.queue) };
   const pauseTimers = useRef(new Set<number>());
 
   useEffect(() => {
@@ -49,7 +53,7 @@ export default function FixtureHub({ variant }: { variant: FixtureVariant }) {
   return (
     <HubShell
       connectionLost={false}
-      preview={{ jobs, overview: fixture.overview, knowledge, changeJob }}
+      preview={{ jobs, overview, knowledge, review, changeJob }}
       projects={fixture.projects}
       projectsError={false}
       retryProjects={() => {}}

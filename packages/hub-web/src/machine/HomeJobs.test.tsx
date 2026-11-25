@@ -57,7 +57,7 @@ describe("Home and Jobs fixtures", () => {
     const needs = within(screen.getByRole("region", { name: "Needs you" }));
     expect(needs.getAllByRole("listitem")).toHaveLength(4);
     expect(needs.getByText("+4 more")).toBeVisible();
-    expect(needs.getByRole("button", { name: "Open Review" })).toBeVisible();
+    expect(needs.getByRole("link", { name: "Open Review" })).toBeVisible();
     expect(needs.getByText("Run the type checker before opening a pull request")).toBeVisible();
     expect(needs.getAllByText("Storefront")).toHaveLength(2);
     const sessions = within(screen.getByRole("region", { name: "What MEX did" }));
@@ -412,6 +412,7 @@ function liveHub(path = "/", overview?: HomeOverview) {
   const getJobs = vi.fn(async () => Response.json(fixture.jobs));
   const postAction = vi.fn(async (_path: string, _init?: RequestInit) => problem(500));
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
+    if (url === "/api/v1/review?limit=1") return Response.json({ total: 0, byRepo: {} });
     if (url.startsWith("/api/v1/home?")) return getHome(url);
     if (url.includes("/actions")) return postAction(url, init);
     if (url === "/api/v1/jobs") return getJobs();

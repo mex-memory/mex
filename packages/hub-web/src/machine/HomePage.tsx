@@ -2,12 +2,13 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
 import { ArrowRight, ArrowUpRight, Check, FolderX, Info } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
-import { Button } from "../components/primitives/button";
+import { Button, buttonVariants } from "../components/primitives/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/primitives/tooltip";
 import { ActivityChart, ActivityLegend, KnowledgeChart, KnowledgeLegend, SessionsSparkline, UsageMeter } from "./HomeCharts";
 import { JobProgress, jobProgressPercent, JobStatus } from "./JobStatus";
 import { fullDateTime, relativeTime } from "./local-time";
 import { RepoCheckouts } from "./pages";
+import { repoPrefix, reviewHref, waitingAge } from "./review-model";
 import type { HomeOverview, HubJob, KnowledgeKind, KnowledgeSummary } from "./types";
 import { CopyButton, PageRequestState, type PageLoad } from "./ui";
 import styles from "./home.module.css";
@@ -74,29 +75,30 @@ function StatTile({ label, value, note, href, action, children }: {
   );
 }
 
-function waitingAge(at: string, now: Date) {
-  const days = Math.floor((now.getTime() - Date.parse(at)) / 86_400_000);
-  if (days < 1) return "less than a day";
-  return `${number.format(days)} ${days === 1 ? "day" : "days"}`;
-}
-
-function RuleRows({ rules, repoNames, now }: { rules: readonly Rule[]; repoNames: RepoNames; now: Date }) {
+function RuleRows({ rules, repoNames, now, cardHref }: {
+  rules: readonly Rule[];
+  repoNames: RepoNames;
+  now: Date;
+  cardHref: (key: string) => string;
+}) {
   return (
     <ul className={styles.rows} role="list">
       {rules.map(({ id, rule, repoId, waitingSince }) => (
-        <li className={styles.needRow} key={`${repoId}:${id}`}>
-          <span title={rule}>{rule}</span>
-          <div className={styles.ruleMeta}>
-            {repoNames.has(repoId) && <span className={styles.repoChip}>{repoNames.get(repoId)}</span>}
-            <time dateTime={waitingSince}>{waitingAge(waitingSince, now)}</time>
-          </div>
+        <li className={styles.needRow} key={repoId + ":" + id}>
+          <Link className={styles.needLink} to={cardHref(repoId + ":" + id)}>
+            <span title={rule}>{rule}</span>
+            <div className={styles.ruleMeta}>
+              {repoNames.has(repoId) && <span className={styles.repoChip}>{repoNames.get(repoId)}</span>}
+              <time dateTime={waitingSince}>{waitingAge(waitingSince, now.getTime())}</time>
+            </div>
+          </Link>
         </li>
       ))}
     </ul>
   );
 }
 
-function NeedsYou({ rules, count, pending, folders, repoNames, now, search }: {
+function NeedsYou({ rules, count, pending, folders, repoNames, now, search, scopeId }: {
   rules: readonly Rule[];
   count: number;
   pending: boolean;
@@ -104,45 +106,34 @@ function NeedsYou({ rules, count, pending, folders, repoNames, now, search }: {
   repoNames: RepoNames;
   now: Date;
   search: string;
+  scopeId?: string;
 }) {
-  const review = useRef<HTMLDialogElement>(null);
-  const reviewTitle = useId();
   const more = count - Math.min(rules.length, ruleLimit);
+  const href = (key?: string) => reviewHref(scopeId, key, search);
 
   return (
-    <>
-      <HomeCard title="Needs you" id="needs-you" layout={styles.reviewCard}>
-        {rules.length > 0 && <RuleRows rules={rules.slice(0, ruleLimit)} repoNames={repoNames} now={now} />}
-        {folders.map(({ key, repoId, text, path }) => (
-          <div className={styles.folderIssue} key={key}>
-            <FolderX aria-hidden="true" />
-            <span title={path}>{text}</span>
-            <Link className={shared.textLink} to={`/repos/${encodeURIComponent(repoId)}${search}#checkouts`}>Fix</Link>
-          </div>
-        ))}
-        {pending && <p className={styles.quietState}>—</p>}
-        {!pending && !count && !folders.length && (
-          <p className={styles.quietState}><Check aria-hidden="true" />Nothing needs you right now.</p>
-        )}
-        {(rules.length > 0 || more > 0) && (
-          <div className={styles.cardActions}>
-            {rules.length > 0 && (
-              <Button size="sm" onClick={() => review.current?.showModal()}>Open Review <ArrowRight aria-hidden="true" /></Button>
-            )}
-            {more > 0 && <span>+{number.format(more)} more</span>}
-          </div>
-        )}
-      </HomeCard>
-      {rules.length > 0 && (
-        <dialog aria-labelledby={reviewTitle} className={styles.reviewDialog} ref={review}>
-          <div className={styles.cardHeading}>
-            <h2 id={reviewTitle}>Review waiting rules</h2>
-            <form method="dialog"><Button size="sm" type="submit" variant="outline">Close</Button></form>
-          </div>
-          <RuleRows rules={rules} repoNames={repoNames} now={now} />
-        </dialog>
+    <HomeCard title="Needs you" id="needs-you" layout={styles.reviewCard}>
+      {rules.length > 0 && <RuleRows cardHref={href} rules={rules.slice(0, ruleLimit)} repoNames={repoNames} now={now} />}
+      {folders.map(({ key, repoId, text, path }) => (
+        <div className={styles.folderIssue} key={key}>
+          <FolderX aria-hidden="true" />
+          <span title={path}>{text}</span>
+          <Link className={shared.textLink} to={repoPrefix(repoId) + search + "#checkouts"}>Fix</Link>
+        </div>
+      ))}
+      {pending && <p className={styles.quietState}>—</p>}
+      {!pending && !count && !folders.length && (
+        <p className={styles.quietState}><Check aria-hidden="true" />Nothing needs you right now.</p>
       )}
-    </>
+      {(!pending || count > 0) && (
+        <div className={styles.cardActions}>
+          <Link className={buttonVariants({ size: "sm", variant: count ? "default" : "outline" }) + " " + shared.reviewAction} to={href()}>
+            Open Review <ArrowRight aria-hidden="true" />
+          </Link>
+          {more > 0 && <span>+{number.format(more)} more</span>}
+        </div>
+      )}
+    </HomeCard>
   );
 }
 
@@ -428,9 +419,9 @@ export function HomePage({ projects, project, overview, jobs, jobsHref, load, jo
         {overview && (
           <>
             <StatTile
-              href="#needs-you"
+              href={reviewHref(project?.id, undefined, location.search)}
               label="Needs you"
-              note={waitingForSnapshot ? undefined : oldest ? `oldest waiting ${waitingAge(oldest, now)}` : "Nothing waiting"}
+              note={waitingForSnapshot ? undefined : oldest ? `oldest waiting ${waitingAge(oldest, now.getTime())}` : "Nothing waiting"}
               value={waitingForSnapshot ? "—" : waiting}
             >
               <WaitingBreakdown counts={counts} repoNames={repoNames} scoped={Boolean(project)} now={now} />
@@ -453,7 +444,7 @@ export function HomePage({ projects, project, overview, jobs, jobsHref, load, jo
           <Activity days={days} sessions={overview?.sessions.filter(inScope) ?? []} repoNames={repoNames} now={now} showSetup={showSetup} />
         )}
         {(overview || folders.length > 0 || showSetup) && (
-          <NeedsYou count={waiting} pending={waitingForSnapshot || !overview} rules={rules} folders={folders} repoNames={repoNames} now={now} search={location.search} />
+          <NeedsYou count={waiting} pending={waitingForSnapshot || !overview} rules={rules} folders={folders} repoNames={repoNames} now={now} search={location.search} scopeId={project?.id} />
         )}
         {overview && (
           <>

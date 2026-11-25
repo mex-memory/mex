@@ -56,12 +56,13 @@
         "routes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["home", "repo", "jobs", "knowledge"],
+          "required": ["home", "repo", "jobs", "knowledge", "review"],
           "properties": {
             "home": { "$ref": "#/$defs/assetGroup" },
             "repo": { "$ref": "#/$defs/assetGroup" },
             "jobs": { "$ref": "#/$defs/assetGroup" },
-            "knowledge": { "$ref": "#/$defs/assetGroup" }
+            "knowledge": { "$ref": "#/$defs/assetGroup" },
+            "review": { "$ref": "#/$defs/assetGroup" }
           }
         }
       }
@@ -108,14 +109,16 @@
     "readBudgets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session", "projects", "home", "jobs", "knowledge", "knowledgeLanding"],
+      "required": ["session", "projects", "home", "jobs", "knowledge", "knowledgeLanding", "review", "reviewDetail"],
       "properties": {
         "session": { "$ref": "#/$defs/nonNegativeNumber" },
         "projects": { "$ref": "#/$defs/nonNegativeNumber" },
         "home": { "$ref": "#/$defs/nonNegativeNumber" },
         "jobs": { "$ref": "#/$defs/nonNegativeNumber" },
         "knowledge": { "$ref": "#/$defs/nonNegativeNumber" },
-        "knowledgeLanding": { "$ref": "#/$defs/nonNegativeNumber" }
+        "knowledgeLanding": { "$ref": "#/$defs/nonNegativeNumber" },
+        "review": { "$ref": "#/$defs/nonNegativeNumber" },
+        "reviewDetail": { "$ref": "#/$defs/nonNegativeNumber" }
       }
     },
     "profiledReadBudgets": {

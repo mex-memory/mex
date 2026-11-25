@@ -6,7 +6,8 @@ import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogT
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { Textarea } from "../components/primitives/textarea";
 import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
-import { KindSelect, ScopeInputs, scopePatterns } from "./knowledge-fields";
+import { KindSelect, ScopeInputs } from "./knowledge-fields";
+import { scopePatterns } from "./knowledge-labels";
 import type { KnowledgeCreate, KnowledgeKind } from "./types";
 import styles from "./knowledge-forms.module.css";
 
