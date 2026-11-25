@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { BrowserSettings, PowerSettings, SharingSettings, type SettingsEdits } from "./SettingsControls";
+import { AboutSettings, AISettings, HintsSettings, PrivacySettings, StorageSettings } from "./SettingsReadouts";
 import type { SettingsPreview } from "./types";
 import { HubPageHeader } from "./ui";
 import shared from "./machine.module.css";
@@ -11,6 +12,11 @@ const sections = [
   { id: "browser", label: "This browser" },
   { id: "power", label: "MEX on or off" },
   { id: "sharing", label: "Sharing" },
+  { id: "ai-use", label: "AI use" },
+  { id: "privacy", label: "Privacy" },
+  { id: "hints", label: "Hints from your agent" },
+  { id: "storage", label: "Storage" },
+  { id: "about", label: "About" },
 ] as const;
 type SectionId = typeof sections[number]["id"];
 
@@ -97,6 +103,7 @@ function SectionNavigation() {
 }
 
 function SettingsWorkspace({ preview }: { preview: SettingsPreview }) {
+  const { settings } = preview;
   const [feedback, setFeedback] = useState<{ target: string; count: number } | null>(null);
   const edits: SettingsEdits = {
     save: (target, request) => {
@@ -109,9 +116,14 @@ function SettingsWorkspace({ preview }: { preview: SettingsPreview }) {
     <div className={styles.layout}>
       <SectionNavigation />
       <div className={styles.sections}>
-        <BrowserSettings settings={preview.settings.browser} write={preview.write} />
-        <PowerSettings edits={edits} settings={preview.settings} />
-        <SharingSettings edits={edits} repos={preview.settings.repos} />
+        <BrowserSettings settings={settings.browser} write={preview.write} />
+        <PowerSettings edits={edits} settings={settings} />
+        <SharingSettings edits={edits} repos={settings.repos} />
+        <AISettings ai={settings.ai} repos={settings.repos} />
+        <PrivacySettings edits={edits} outbound={settings.outbound} telemetry={settings.telemetry} />
+        <HintsSettings hints={settings.hints} />
+        <StorageSettings storage={settings.storage} />
+        <AboutSettings about={settings.about} />
       </div>
     </div>
   );
