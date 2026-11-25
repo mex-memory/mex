@@ -1,13 +1,21 @@
 import type { MachineProject, MachineSession } from "@mex/hub-contracts/machine";
-import type { HomeOverview, HubJob, KnowledgeStatusCounts } from "./types";
+import type { ForgottenItem, HomeOverview, HubJob, KnowledgeDetail, KnowledgeStatusCounts } from "./types";
 
-export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating";
+export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating" | "conflict";
+
+export interface KnowledgeFixture {
+  items: readonly KnowledgeDetail[];
+  forgotten: readonly ForgottenItem[];
+  generatedAt: string;
+  updatingSince?: string;
+}
 
 interface HubFixture {
   session: MachineSession;
   projects: MachineProject[];
   overview: HomeOverview;
   jobs: readonly HubJob[];
+  knowledge: KnowledgeFixture;
 }
 
 const session = {
@@ -209,6 +217,174 @@ const jobs: readonly HubJob[] = [
   },
 ];
 
+type NoteSeed = readonly [
+  id: string,
+  kind: KnowledgeDetail["kind"],
+  audience: KnowledgeDetail["audience"],
+  status: KnowledgeDetail["status"],
+  oneLine: string,
+  text: string,
+  scope?: string[],
+];
+
+const storefrontNotes: readonly NoteSeed[] = [
+  ["checkout", "rule", "personal", "upToDate", "Validate checkout inputs at the API boundary",
+    "Parse the checkout request as soon as it reaches the API. Return field errors before looking up the cart or asking the payment provider to authorize a charge.\n\nUse the same schema for guest and signed-in checkout so both paths return the same errors.", ["apps/api/**"]],
+  ["checkout", "rule", "team", "codeChanged", "Keep the checkout total in integer cents",
+    "Calculate and store the checkout total in integer cents. Format it for display only when rendering the order summary.\n\nSend the total in cents to the payment provider so the amount charged matches the amount stored.", ["apps/api/**", "packages/money/**"]],
+  ["sandbox", "recipe", "team", "upToDate", "Reproduce a checkout failure with the payment sandbox",
+    "Seed a guest cart and use the sandbox’s declined-card example. Check that the cart is still open and the retry button stays available.", ["apps/web/**"]],
+  ["carttxn", "decision", "team", "upToDate", "Keep cart and payment changes in separate transactions",
+    "Persist cart changes before contacting the payment provider. Record the payment outcome in a second transaction so provider timeouts cannot hold the cart lock."],
+  ["oldseed", "pitfall", "personal", "outOfDate", "Avoid reusing checkout fixtures after a schema change",
+    "Regenerate the checkout fixtures when the order schema changes. Old fixtures can hide a required field because they bypass the request parser."],
+  ["smoketest", "procedure", "team", "upToDate", "Run the checkout smoke test before tagging a release",
+    "Place a sandbox order in staging and confirm the order reference appears in both the dashboard and the confirmation email."],
+  ["taxcalc", "fact", "team", "upToDate", "The checkout tax total is calculated on the server",
+    "The order API returns the tax total with the cart estimate. The web app displays that amount directly."],
+  ["anonfixtures", "rule", "team", "upToDate", "Keep real customer names out of test fixtures",
+    "Use generated customer details in seed data, snapshots, and examples shared with support."],
+  ["guestcart", "recipe", "personal", "codeChanged", "Use the checkout seed when testing the guest cart",
+    "Load the guest checkout seed before running the cart spec. It fills in the shipping region and starts the cart without an account.", ["apps/web/**"]],
+  ["retrykey", "rule", "team", "notChecked", "Keep the retry key across checkout requests",
+    "Send the original retry key when the customer retries after a timeout. Create a new key after they change the cart."],
+  ["snapshot", "decision", "personal", "upToDate", "Start checkout from a saved cart snapshot",
+    "Read the frozen cart snapshot when starting checkout. Editing the active cart can then leave an order already in progress alone."],
+  ["taxround", "pitfall", "team", "upToDate", "Round tax once after adding the line items",
+    "Add the unrounded tax for each line item and round the sum. Rounding each line can shift the total by a cent."],
+  ["replay", "recipe", "team", "upToDate", "Use the sandbox webhook to replay a failed payment",
+    "Replay the original sandbox event and verify the payment status changes once. Keep the event ID the same to exercise deduplication."],
+  ["typecheck", "rule", "team", "upToDate", "Run the type checker before opening a pull request",
+    "Run the workspace type check from the repository root. The package test command only checks its own imports."],
+  ["migrationresult", "procedure", "personal", "notChecked", "Record the migration result before resuming checkout",
+    "Note the row counts and the last applied migration in the release checklist before reopening checkout."],
+  ["apiseed", "recipe", "team", "upToDate", "Refresh API fixtures after changing the order schema",
+    "Generate fresh fixtures from staging seed data and include the changed payloads with the schema change.", ["apps/api/**", "test/fixtures/orders/*.json"]],
+  ["ordernumber", "decision", "team", "upToDate", "Generate order numbers on the server",
+    "Assign the order number in the create-order transaction and return it with the completed order."],
+  ["refunds", "rule", "personal", "upToDate", "Keep refund inputs consistent across the checkout API and the billing tools that handle partial returns",
+    "Use the shared refund input schema for checkout and billing. Keep the original currency and order reference on every partial return.", ["apps/api/**", "tools/billing/**"]],
+  ["maskpayment", "rule", "team", "upToDate", "Log masked payment identifiers",
+    "Include only the last four characters of the payment identifier in support logs. Use the order reference for joins."],
+  ["migrationcopy", "procedure", "personal", "upToDate", "Run migrations against a copy before release",
+    "Run the migration on a recent staging copy and record the duration and final row counts in the release checklist."],
+  ["taxhint", "hint", "hint", "notChecked", "Check the shipping region before debugging tax",
+    "With the guest seed, tax stays at zero until a shipping region is selected."],
+  ["retryhint", "hint", "hint", "notChecked", "Replay the original event to investigate duplicate charges",
+    "The sandbox replay tool can send the same event ID as the first delivery."],
+];
+
+const designKitNotes: readonly NoteSeed[] = [
+  ["spacing", "rule", "team", "upToDate", "Use the shared spacing scale in new components",
+    "Use the spacing tokens for component padding and gaps. This keeps the same rhythm when a component moves into a denser layout.", ["packages/ui/**"]],
+  ["dialogfocus", "rule", "team", "upToDate", "Return focus to the button that opened the dialog",
+    "Pass the trigger to the dialog’s focus-return option. When the trigger disappears after an action, focus the next item in the list."],
+  ["menufocus", "rule", "team", "codeChanged", "Keep the keyboard focus ring on menu items",
+    "Use the focus token for menu items reached by keyboard. Reserve the hover background for the pointer."],
+  ["dangercolour", "rule", "personal", "upToDate", "Use the destructive colour for destructive actions",
+    "Use the destructive button style for the final delete action. The button that opens the confirmation can stay neutral."],
+  ["headings", "rule", "team", "upToDate", "Keep heading sizes independent of component sizes",
+    "Pick the heading level based on page structure and the size token based on the layout."],
+  ["iconname", "rule", "team", "upToDate", "Name icon buttons with the action they perform",
+    "Give icon-only buttons names such as Close or Copy link so their purpose is clear to screen reader users."],
+  ["tables", "recipe", "team", "upToDate", "Test compact tables with long labels",
+    "Use the customer export example to check labels at narrow widths and at 200% zoom."],
+  ["darkforms", "recipe", "team", "upToDate", "Preview form errors in the dark theme",
+    "Open the invalid form example in dark mode and check that the error copy and field outline are readable."],
+  ["tokens", "decision", "team", "upToDate", "Use semantic colour tokens for control states",
+    "Use the success, warning and danger tokens on controls so the same state reads consistently across themes."],
+  ["cardpad", "decision", "personal", "notChecked", "Keep card padding on the container",
+    "Set horizontal padding on the card so header and body content share the same edge."],
+  ["hintmenu", "hint", "hint", "notChecked", "Try the compact menu story when checking keyboard focus",
+    "Open Compact menu and use the arrow keys to move the focus ring across the first and last items."],
+  ["hintfieldset", "hint", "hint", "notChecked", "Use the field group example for paired date inputs",
+    "The field group example shows how to label a date range while retaining a separate label for each input."],
+];
+
+const docsNotes: readonly NoteSeed[] = [
+  ["movingpages", "rule", "personal", "upToDate", "Check links when moving a page",
+    "Run the link checker after moving a page. Add a redirect for the old address when it is linked from a published guide."],
+  ["diagrams", "rule", "personal", "upToDate", "Describe diagrams in their image captions",
+    "Include the main point of the diagram in its caption so the guide makes sense when the image is unavailable."],
+  ["examples", "rule", "personal", "notChecked", "Keep examples runnable without credentials",
+    "Use the development sandbox in examples. Put authenticated calls in the separate deployment guide."],
+  ["navfile", "fact", "personal", "upToDate", "Sidebar labels come from the navigation file",
+    "Change the label in the navigation file when renaming a page in the sidebar."],
+  ["redirects", "fact", "personal", "upToDate", "Redirects are read from redirects.json",
+    "Give each moved page a single redirect to its new canonical URL.", ["redirects.json"]],
+  ["previewhint", "hint", "hint", "notChecked", "Check the generated navigation in a local preview",
+    "The local preview lists orphaned pages that do not appear in the navigation file."],
+];
+
+function knowledgeFixture(now: number, generatedAt: string, variant: FixtureVariant): KnowledgeFixture {
+  if (variant === "empty") return { items: [], forgotten: [], generatedAt };
+
+  const hoursAgo = (hours: number) => new Date(now - hours * 3_600_000).toISOString();
+  const noteSets = [
+    { repoId: "storefront", checkout: "/work/storefront", file: "apps/api/src/checkout.ts", seeds: storefrontNotes },
+    { repoId: "design-kit", checkout: "/work/design-kit", file: "packages/ui/src/index.ts", seeds: designKitNotes },
+    { repoId: "docs-site", checkout: "/work/docs-site", file: "docs/navigation.yml", seeds: docsNotes },
+  ];
+  const items = noteSets.flatMap(({ repoId, checkout, file, seeds }, repoIndex) => seeds.map(
+    ([slug, kind, audience, status, oneLine, text, scope = ["**"]], index): KnowledgeDetail => {
+      const id = `mx_${slug}`;
+      const at = hoursAgo((12 + index) * 24);
+      const path = `.mex/learned/${id}.md`;
+      const source: KnowledgeDetail["source"] = audience === "team" ? { type: "team", path, checkout }
+        : audience === "hint" ? { type: "agent-memory", agent: repoIndex === 1 ? "Codex" : "Claude Code", observations: 3 }
+        : { type: "note", at, via: "cli" };
+      const history: KnowledgeDetail["history"] = audience === "team"
+        ? [{ type: "git", action: "added", actor: "Priya", sha: "a1b2c3d", at }]
+        : [{ type: "added", at }];
+      const result = { upToDate: "held", codeChanged: "changed", outOfDate: "broken", notChecked: null } as const;
+      return {
+        id, key: `${repoId}:${audience}:${id}`, repoId, kind, audience, status, oneLine, text, scope,
+        revision: "r1", source, history,
+        checks: status === "notChecked" ? [] : [{ kind: "source", target: file, result: result[status], checkedAt: hoursAgo(2 + index) }],
+        lastUsedAt: audience === "hint" || status === "notChecked" ? null : hoursAgo(2 + index * 3 + repoIndex),
+        useCount30Days: audience === "hint" || status === "notChecked" ? 0 : 14 - index % 10,
+      };
+    },
+  ));
+  const personal = items[0];
+  const team = items[1];
+  personal.source = { type: "session", at: hoursAgo(6 * 24), checkedByModel: true };
+  personal.evidence = "The guest flow was sending malformed address data to the payment provider. Moving validation to the API returned a field error before any payment call.";
+  personal.checks = [
+    { kind: "symbol", target: "parseCheckoutRequest in apps/api/src/checkout.ts", result: "held", checkedAt: hoursAgo(2) },
+    { kind: "key", target: "checkout.inputSchema in apps/api/config.json", result: "held", checkedAt: hoursAgo(2) },
+  ];
+  personal.history = [
+    { type: "model-check", outcome: "still true", at: hoursAgo(2) },
+    { type: "edited", at: hoursAgo(4 * 24) },
+    { type: "model-check", outcome: "still true", at: hoursAgo(5 * 24) },
+    { type: "added", at: hoursAgo(6 * 24) },
+  ];
+  team.checks = [{ kind: "symbol", target: "checkoutTotal in packages/money/src/totals.ts", result: "changed", checkedAt: hoursAgo(3) }];
+  team.history = [
+    { type: "git", action: "edited", actor: "Mateo", sha: "f42c9ae", at: hoursAgo(4 * 24) },
+    { type: "git", action: "added", actor: "Priya", sha: "a1b2c3d", at: hoursAgo(21 * 24) },
+  ];
+  items[6].history = [
+    ...[2, 26, 50, 74, 98, 122].map((hour) => ({
+      type: "git" as const, action: "edited" as const, actor: "Priya", sha: (0xce62acd + hour).toString(16), at: hoursAgo(hour),
+    })),
+    ...items[6].history,
+  ];
+  // Put a few examples from each repo in the first screenful.
+  const featured = [0, 1, 22, 2, 34, 3, 4, 32, 5];
+  return {
+    items: [...featured.map((index) => items[index]), ...items.filter((_, index) => !featured.includes(index))],
+    forgotten: [
+      { id: "mx_legacycart", repoId: "storefront", audience: "personal", at: hoursAgo(8) },
+      { id: "mx_oldtokens", repoId: "design-kit", audience: "team", at: hoursAgo(3 * 24) },
+      { id: "mx_navhint", repoId: "docs-site", audience: "hint", at: hoursAgo(6 * 24) },
+    ],
+    generatedAt,
+    updatingSince: variant === "stale" || variant === "updating" ? hoursAgo(0) : undefined,
+  };
+}
+
 export function getFixture(variant: FixtureVariant): HubFixture {
   const now = Date.now();
   const generatedAt = new Date(now - 120_000).toISOString();
@@ -218,6 +394,7 @@ export function getFixture(variant: FixtureVariant): HubFixture {
       projects: [],
       overview: { ...homeMetrics(now, []), week: { ...week, percent: 0 }, generatedAt, byRepo: {}, needs: [], needsCount: {}, knowledge: {}, sessions: [] },
       jobs: [],
+      knowledge: knowledgeFixture(now, generatedAt, variant),
     };
   }
   const scopedKnowledge = variant === "stale" || variant === "updating"
@@ -236,7 +413,7 @@ export function getFixture(variant: FixtureVariant): HubFixture {
     needsCount[repoId] = { count, oldest: needsCount[repoId]?.oldest ?? waitingSince };
   }
   return {
-    session, projects, jobs,
+    session, projects, jobs, knowledge: knowledgeFixture(now, generatedAt, variant),
     overview: { ...homeMetrics(now, sessions), generatedAt, byRepo, needs, needsCount, knowledge: scopedKnowledge, sessions },
   };
 }

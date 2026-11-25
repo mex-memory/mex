@@ -9,7 +9,7 @@ import { cn } from "../lib/utils";
 import shell from "../styles/shell.module.css";
 import { useHome, useHubEvents, useJobActions, useJobs, type HubEventState } from "./data";
 import { UnknownRepoPage } from "./pages";
-import type { HomeOverview, HubJob, HubPreview, JobAction } from "./types";
+import type { HomeOverview, HubJob, HubPreview, JobAction, KnowledgePreview } from "./types";
 import { HubBanners, HubBrand, ThemeToggle, type PageLoad } from "./ui";
 import styles from "./machine.module.css";
 
@@ -36,6 +36,7 @@ type HubShellProps = ShellProps & (
 interface HubData {
   overview?: HomeOverview;
   jobs?: readonly HubJob[];
+  knowledge?: KnowledgePreview;
   homeLoad?: PageLoad;
   jobsLoad?: PageLoad;
   changeJob: (job: HubJob, action: JobAction) => void | Promise<void>;
@@ -43,8 +44,8 @@ interface HubData {
 
 export function HubShell(props: HubShellProps) {
   if (props.preview) {
-    const { jobs, overview, changeJob } = props.preview;
-    return <HubLayout {...props} data={{ jobs, overview, changeJob: (job, action) => changeJob(job.id, action) }} fixture />;
+    const { jobs, overview, knowledge, changeJob } = props.preview;
+    return <HubLayout {...props} data={{ jobs, overview, knowledge, changeJob: (job, action) => changeJob(job.id, action) }} fixture />;
   }
   return <LiveHubShell {...props} />;
 }

@@ -64,5 +64,6 @@ export interface KnowledgePreview {
 export interface HubPreview {
   overview: HomeOverview;
   jobs: readonly HubJob[];
+  knowledge: KnowledgePreview;
   changeJob: (id: string, action: JobAction) => void;
 }
