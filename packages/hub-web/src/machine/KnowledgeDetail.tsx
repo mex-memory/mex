@@ -1,15 +1,16 @@
-import { useId, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from "react";
-import { ArrowLeft, Check, ChevronDown, Pencil, X } from "lucide-react";
+import { useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
+import { ArrowLeft, Check, ChevronDown, Pencil, Share2, Trash2, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
 import { Button } from "../components/primitives/button";
 import { KnowledgeConflictDialog, KnowledgeEditor, type EditConflict, type EditDraft } from "./KnowledgeEditor";
+import { KnowledgeForgetDialog, KnowledgeShareDialog } from "./KnowledgeItemDialogs";
 import { KnowledgeReviewDialog } from "./KnowledgeReviewDialog";
 import { scopePatterns } from "./knowledge-fields";
 import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
 import { KnowledgeStatusLabel } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
-import type { KnowledgeDetail as Detail, KnowledgeEdit, KnowledgePreview, KnowledgeWritePreview } from "./types";
+import type { KnowledgeDetail as Detail, KnowledgeEdit, KnowledgeForget, KnowledgePreview, KnowledgeWritePreview } from "./types";
 import styles from "./knowledge.module.css";
 import shared from "./machine.module.css";
 
@@ -104,40 +105,61 @@ function DetailSection({ title, narrow, children }: { title: string; narrow: boo
   return <div className={styles.detailSection}><Heading>{title}</Heading>{children}</div>;
 }
 
-function EditAction({ hint, onEdit, buttonRef }: { hint: boolean; onEdit: () => void; buttonRef: Ref<HTMLButtonElement> }) {
+function DetailActions({ audience, onEdit, onForget, onShare, editRef, children }: {
+  audience: Detail["audience"];
+  onEdit: () => void;
+  onForget: (event: MouseEvent<HTMLButtonElement>) => void;
+  onShare: (event: MouseEvent<HTMLButtonElement>) => void;
+  editRef: Ref<HTMLButtonElement>;
+  children?: ReactNode;
+}) {
   const reason = useId();
+  const hint = audience === "hint";
   return (
-    <div className={styles.editAction}>
-      <Button aria-describedby={hint ? reason : undefined} disabled={hint} onClick={onEdit} ref={buttonRef} size="sm" type="button" variant="outline">
-        <Pencil aria-hidden="true" /> Edit
-      </Button>
-      {hint && <p id={reason}>Edit this hint in your agent’s memory.</p>}
-    </div>
+    <>
+      <div className={styles.actionLine}>
+        <Button aria-describedby={hint ? reason : undefined} disabled={hint} onClick={onEdit} ref={editRef} size="sm" type="button" variant="outline">
+          <Pencil aria-hidden="true" /> Edit
+        </Button>
+        {audience === "personal" && (
+          <Button aria-haspopup="dialog" onClick={onShare} size="sm" type="button" variant="ghost"><Share2 aria-hidden="true" /> Share…</Button>
+        )}
+        {children}
+        <Button aria-haspopup="dialog" className={styles.forgetAction} onClick={onForget} size="sm" type="button" variant="ghost"><Trash2 aria-hidden="true" /> Forget</Button>
+      </div>
+      {hint && <p className={styles.actionReason} id={reason}>Edit this hint in your agent’s memory.</p>}
+    </>
   );
 }
 
 type EditReview = { type: "preview"; preview: KnowledgeWritePreview; request: KnowledgeEdit } | EditConflict;
+type ForgetDraft = { request: KnowledgeForget; reason: string; preview?: KnowledgeWritePreview; error?: string };
 
-export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narrow, now }: {
+export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narrow, now, onForgotten }: {
   item?: Detail;
   backHref: string;
   titleRef: Ref<HTMLHeadingElement>;
   knowledge: KnowledgePreview;
   narrow: boolean;
   now: Date;
+  onForgotten: () => void;
 }) {
   const Heading = narrow ? "h1" : "h2";
   const titleId = useId();
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [review, setReview] = useState<EditReview | null>(null);
+  const [forget, setForget] = useState<ForgetDraft | null>(null);
+  const [sharing, setSharing] = useState(false);
   const [notice, setNotice] = useState("");
+  const [actionError, setActionError] = useState("");
   const [error, setError] = useState("");
   const editAtTop = useRef(false);
   const restoreEdit = useRef(false);
   const topEdit = useRef<HTMLButtonElement>(null);
   const bottomEdit = useRef<HTMLButtonElement>(null);
   const save = useRef<HTMLButtonElement>(null);
-  const hint = item?.audience === "hint";
+  const dialogTrigger = useRef<HTMLButtonElement | null>(null);
+  const returnToTrigger = () => dialogTrigger.current?.isConnected ? dialogTrigger.current : false;
 
   useLayoutEffect(() => {
     if (draft || !restoreEdit.current) return;
@@ -152,6 +174,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
     setDraft({ key, expectedRevision: revision, oneLine, text, kind, scope });
     setError("");
     setNotice("");
+    setActionError("");
   }
 
   function closeEditor(message = "") {
@@ -193,11 +216,44 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
     setReview(null);
   }
 
+  function beginForget(event: MouseEvent<HTMLButtonElement>) {
+    if (!item) return;
+    dialogTrigger.current = event.currentTarget;
+    setActionError("");
+    setForget({ request: { key: item.key, expectedRevision: item.revision }, reason: "" });
+  }
+
+  function submitForget(confirmRevision?: string) {
+    if (!forget) return;
+    const request = { ...forget.request, reason: forget.reason.trim() || undefined, confirmRevision };
+    try {
+      const result = knowledge.forgetItem(request);
+      if (result.type === "preview") setForget({ ...forget, preview: result });
+      else if (result.type === "conflict") {
+        setForget(null);
+        setActionError("This item changed. Review it before forgetting.");
+      } else {
+        dialogTrigger.current = null;
+        setForget(null);
+        onForgotten();
+      }
+    } catch {
+      setForget({ ...forget, preview: undefined, error: "Couldn’t forget this item. Try again." });
+    }
+  }
+
+  const startShare = (event: MouseEvent<HTMLButtonElement>) => {
+    dialogTrigger.current = event.currentTarget;
+    setSharing(true);
+  };
+  const editPreview = review?.type === "preview" ? review : null;
+  const retirement = forget?.preview;
+
   return (
     <div className={styles.detailColumn}>
       <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
       <section aria-labelledby={titleId} className={styles.detailCard}>
-        <div className={styles.detailScroll} tabIndex={narrow ? undefined : 0}>
+        <div aria-label="Read item" className={styles.detailScroll} role="group" tabIndex={narrow ? undefined : 0}>
           <header>
             <div className={styles.detailHeader}>
               <Heading id={titleId} ref={titleRef} tabIndex={-1}>{item?.oneLine ?? "Item unavailable"}</Heading>
@@ -216,7 +272,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
           </header>
           {narrow && item && !draft && (
             <div className={styles.mobileActions}>
-              <EditAction buttonRef={topEdit} hint={hint} onEdit={() => beginEdit(true)} />
+              <DetailActions audience={item.audience} editRef={topEdit} onEdit={() => beginEdit(true)} onForget={beginForget} onShare={startShare} />
             </div>
           )}
           {draft ? (
@@ -242,18 +298,22 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
         </div>
         {item && !draft && (
           <footer className={styles.detailFooter}>
-            <EditAction buttonRef={bottomEdit} hint={hint} onEdit={() => beginEdit(false)} />
-            <span className={styles.saved} role="status">{notice && <><Check aria-hidden="true" />{notice}</>}</span>
+            <DetailActions audience={item.audience} editRef={bottomEdit} onEdit={() => beginEdit(false)} onForget={beginForget} onShare={startShare}>
+              <span className={styles.saved} role="status">{notice && <><Check aria-hidden="true" />{notice}</>}</span>
+            </DetailActions>
+            {actionError && <p className={styles.actionError} role="alert">{actionError}</p>}
           </footer>
         )}
       </section>
       <KnowledgeReviewDialog
-        finalFocus={() => save.current ?? false}
-        onCancel={() => setReview(null)}
+        finalFocus={retirement ? returnToTrigger : () => save.current ?? false}
+        onCancel={() => { if (retirement) setForget(null); else setReview(null); }}
         onConfirm={() => {
-          if (review?.type === "preview") submitEdit({ ...review.request, confirmRevision: review.preview.revision });
+          if (retirement) submitForget(retirement.revision);
+          else if (editPreview) submitEdit({ ...editPreview.request, confirmRevision: editPreview.preview.revision });
         }}
-        preview={review?.type === "preview" ? review.preview : null}
+        preview={retirement ?? editPreview?.preview ?? null}
+        retiring={Boolean(retirement)}
       />
       <KnowledgeConflictDialog
         conflict={review?.type === "conflict" ? review : null}
@@ -266,6 +326,19 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
           submitEdit({ ...attempted, expectedRevision: review.current.revision });
         }}
       />
+      {item && (
+        <KnowledgeForgetDialog
+          audience={item.audience}
+          error={forget?.error}
+          finalFocus={() => retirement ? false : returnToTrigger()}
+          onCancel={() => setForget(null)}
+          onConfirm={() => submitForget()}
+          onReason={(reason) => { if (forget) setForget({ ...forget, reason }); }}
+          open={forget !== null && !retirement}
+          reason={forget?.reason ?? ""}
+        />
+      )}
+      <KnowledgeShareDialog finalFocus={returnToTrigger} onClose={() => setSharing(false)} open={sharing} />
     </div>
   );
 }

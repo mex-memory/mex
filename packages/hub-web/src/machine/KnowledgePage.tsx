@@ -1,17 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { MachineProject } from "@mex/hub-contracts/machine";
-import { BookOpen, Check, ChevronDown, ChevronRight, Search } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, ChevronDown, ChevronRight, Search } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "../components/primitives/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "../components/primitives/dropdown-menu";
 import { Input } from "../components/primitives/input";
-import { KnowledgeDetailPanel } from "./KnowledgeDetail";
+import { KnowledgeDate, KnowledgeDetailPanel } from "./KnowledgeDetail";
 import { audienceLabels, kindLabels } from "./knowledge-labels";
 import { KnowledgeStatusLabel, knowledgeStatuses } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
-import type { KnowledgeFilters, KnowledgeItem, KnowledgePreview, KnowledgeStatusCounts } from "./types";
+import type { ForgottenItem, KnowledgeFilters, KnowledgeItem, KnowledgePreview, KnowledgeStatusCounts } from "./types";
 import styles from "./knowledge.module.css";
 import shared from "./machine.module.css";
 
@@ -166,6 +166,40 @@ function KnowledgeHeader({ scope, updating, titleRef }: {
   );
 }
 
+function ForgottenView({ items, repoNames, backHref, titleRef }: {
+  items: readonly ForgottenItem[];
+  repoNames: ReadonlyMap<string, string>;
+  backHref: string;
+  titleRef: React.Ref<HTMLHeadingElement>;
+}) {
+  return (
+    <div className={styles.page}>
+      <Link className={`${shared.textLink} ${styles.forgottenBack}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
+      <header className={styles.forgottenHeader}>
+        <h1 className={shared.pageTitle} ref={titleRef} tabIndex={-1}>Forgotten</h1>
+        <p className={shared.muted}>Forgotten items stay out of what MEX gives your agents. Their content isn’t shown here.</p>
+      </header>
+      {items.length ? (
+        <div className={styles.listCard}>
+          <table aria-label="Forgotten items" className={styles.forgottenTable}>
+            <thead><tr><th scope="col">ID</th><th scope="col">Date forgotten</th><th scope="col">Repo</th><th scope="col">Who sees it</th></tr></thead>
+            <tbody>
+              {items.map(({ id, repoId, audience, at }) => (
+                <tr key={`${repoId}:${audience}:${id}`}>
+                  <th scope="row"><code>{id}</code></th>
+                  <td><KnowledgeDate at={at} /></td>
+                  <td>{repoNames.get(repoId) ?? "Unknown repo"}</td>
+                  <td>{audienceLabels[audience]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : <p className={`${styles.listCard} ${styles.emptyForgotten}`}>No forgotten items.</p>}
+    </div>
+  );
+}
+
 function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePageProps, "knowledge"> & { knowledge: KnowledgePreview }) {
   const { entryKey } = useParams();
   const narrow = useSyncExternalStore(subscribeToLayout, isNarrow);
@@ -176,6 +210,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const listHref = linkTo(basePath);
   const q = params.get("q") ?? "";
   const [query, setQuery] = useState(q);
+  const [notice, setNotice] = useState("");
   const activeStatus = knowledgeStatuses.find(({ slug }) => slug === params.get("status"));
   const filters: KnowledgeFilters = {
     scopeId: project?.id,
@@ -198,7 +233,9 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   const total = Object.values(first.statusCounts).reduce((sum, count) => sum + count, 0);
   const repoNames = new Map(projects.map(({ id, name }) => [id, name]));
   const now = new Date();
-  const found = entryKey ? knowledge.getDetail(entryKey) : undefined;
+  const forgotten = knowledge.forgotten.filter(({ repoId }) => !project || repoId === project.id);
+  const isForgotten = entryKey === "forgotten";
+  const found = entryKey && !isForgotten ? knowledge.getDetail(entryKey) : undefined;
   const detail = !project || found?.repoId === project.id ? found : undefined;
   const title = useRef<HTMLHeadingElement>(null);
   const detailTitle = useRef<HTMLHeadingElement>(null);
@@ -220,7 +257,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
   useEffect(() => setQuery(q), [q]);
   useEffect(() => {
     const search = query.trim();
-    if (search === q) return;
+    if (search === q || isForgotten) return;
     const timer = window.setTimeout(() => {
       const next = new URLSearchParams(params);
       if (search) next.set("q", search);
@@ -228,7 +265,7 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
       navigate({ pathname: basePath, search: next.toString() }, { replace: true });
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [basePath, navigate, params, q, query]);
+  }, [basePath, isForgotten, navigate, params, q, query]);
 
   function changeFilter(name: FilterName, value: string) {
     const next = new URLSearchParams(params);
@@ -246,6 +283,8 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
     setQuery("");
     navigate(linkTo(basePath, next));
   }
+
+  if (isForgotten) return <ForgottenView backHref={listHref} items={forgotten} repoNames={repoNames} titleRef={detailTitle} />;
 
   return (
     <div className={styles.page} data-detail={Boolean(entryKey)} ref={browser}>
@@ -270,7 +309,11 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
               <FilterMenu all="All repos" choices={projects.map(({ id, name }) => ({ value: id, label: name }))} label="Repo" onSelect={(value) => changeFilter("repo", value)} value={filters.repoId} />
             )}
           </div>
+          <Link className={`${shared.textLink} ${styles.forgottenLink}`} to={linkTo(`${basePath}/forgotten`)}>
+            Forgotten ({number.format(forgotten.length)})
+          </Link>
         </div>
+        <span className={shared.srOnly} role="status">{notice}</span>
       </div>
       <div className={styles.workspace}>
         {items.length > 0 ? (
@@ -308,7 +351,19 @@ function KnowledgeBrowser({ project, projects, knowledge }: Omit<KnowledgePagePr
           </section>
         )}
         {entryKey ? (
-          <KnowledgeDetailPanel backHref={listHref} item={detail} key={entryKey} knowledge={knowledge} narrow={narrow} now={now} titleRef={detailTitle} />
+          <KnowledgeDetailPanel
+            backHref={listHref}
+            item={detail}
+            key={entryKey}
+            knowledge={knowledge}
+            narrow={narrow}
+            now={now}
+            onForgotten={() => {
+              setNotice("Item moved to Forgotten.");
+              navigate(listHref, { replace: true });
+            }}
+            titleRef={detailTitle}
+          />
         ) : items.length > 0 && (
           <div className={styles.detailPlaceholder}><BookOpen aria-hidden="true" /><p>Select an item to read it.</p></div>
         )}

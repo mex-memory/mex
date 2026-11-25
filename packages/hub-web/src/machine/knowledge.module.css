@@ -47,6 +47,7 @@ main:has(.page) {
 }
 
 .title h1:focus,
+.forgottenHeader h1:focus,
 .detailHeader :is(h1, h2):focus {
   outline: none;
 }
@@ -285,6 +286,66 @@ main:has(.page) {
   min-height: 32px;
   justify-content: space-between;
   gap: 12px;
+  font-size: 13px;
+}
+
+.forgottenLink {
+  min-height: 35px;
+  flex: none;
+  margin-inline-start: auto;
+  padding-inline: 4px 0;
+  white-space: nowrap;
+}
+
+.forgottenBack {
+  width: fit-content;
+}
+
+.forgottenHeader {
+  display: grid;
+  gap: 6px;
+}
+
+.forgottenTable {
+  width: 100%;
+  border-spacing: 0;
+  text-align: start;
+}
+
+.forgottenTable th,
+.forgottenTable td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: start;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.forgottenTable thead th {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.forgottenTable tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.forgottenTable tbody th {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.forgottenTable td {
+  color: var(--text-secondary);
+}
+
+.emptyForgotten {
+  margin: 0;
+  padding: 20px;
+  color: var(--muted-foreground);
   font-size: 13px;
 }
 
@@ -618,11 +679,9 @@ main:has(.page) {
 
 .detailFooter,
 .mobileActions {
-  display: flex;
+  display: grid;
   min-width: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 7px;
+  gap: 6px;
 }
 
 .detailFooter {
@@ -635,18 +694,33 @@ main:has(.page) {
   margin-top: 14px;
 }
 
-.editAction {
+.actionLine {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
 
-.editAction p,
+.actionLine .forgetAction {
+  margin-inline-start: auto;
+  color: var(--muted-foreground);
+}
+
+.actionLine .forgetAction:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.actionReason,
+.actionError,
 .saved {
   margin: 0;
   color: var(--muted-foreground);
   font-size: 11px;
+}
+
+.actionError {
+  color: var(--danger);
 }
 
 .saved {
@@ -724,6 +798,16 @@ main:has(.page) {
     display: grid;
     width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .forgottenLink {
+    min-height: 28px;
+  }
+
+  .forgottenTable th,
+  .forgottenTable td {
+    padding: 9px 7px;
+    font-size: 11px;
   }
 
   .row {

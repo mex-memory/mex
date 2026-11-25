@@ -22,6 +22,11 @@
   line-height: 1.4;
 }
 
+.field label span {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+
 .field :is(input, textarea, select) {
   min-width: 0;
   color: var(--foreground);
@@ -266,6 +271,26 @@
   font-size: 13px;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.shareHeader {
+  padding-inline-end: 22px;
+}
+
+.command {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.command > code {
+  font-size: 13px;
 }
 
 @media (max-width: 600px) {
