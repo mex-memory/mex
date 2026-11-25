@@ -54,7 +54,9 @@ export type MachineProblem = z.infer<typeof MachineProblemSchema>;
 const countSchema = z.number().int().nonnegative();
 const isoTimeSchema = z.string().datetime({ offset: true });
 
-export const MachineKnowledgeKindSchema = z.enum(["rule", "recipe", "decision", "pitfall", "procedure", "fact"]);
+export const MachineKnowledgeKindSchema = z.enum(["rule", "recipe", "decision", "pitfall", "procedure", "fact", "hint"]);
+export const MachineKnowledgeAudienceSchema = z.enum(["personal", "team", "hint"]);
+export const MachineKnowledgeStatusSchema = z.enum(["upToDate", "codeChanged", "outOfDate", "notChecked"]);
 export const MachineKnowledgeStatusCountsSchema = z.object({
   upToDate: countSchema,
   codeChanged: countSchema,
@@ -69,6 +71,108 @@ export const MachineKnowledgeSummarySchema = MachineKnowledgeStatusCountsSchema.
   updatingSince: isoTimeSchema.optional(),
   byKind: z.record(MachineKnowledgeKindSchema, MachineKnowledgeStatusCountsSchema),
 });
+
+const knowledgeRevisionSchema = z.string().min(1).max(256);
+const knowledgeKeySchema = z.string().min(1).max(512);
+const knowledgeContentSchema = z.object({
+  oneLine: z.string().trim().min(1).max(1024).regex(/^[^\r\n]+$/u),
+  text: z.string().trim().min(1).max(8192),
+  kind: MachineKnowledgeKindSchema,
+  scope: z.array(z.string().trim().min(1).max(512)).min(1).max(32),
+});
+
+export const MachineKnowledgeItemSchema = knowledgeContentSchema.pick({ oneLine: true, kind: true }).extend({
+  id: z.string().min(1),
+  key: knowledgeKeySchema,
+  repoId: z.string().min(1),
+  audience: MachineKnowledgeAudienceSchema,
+  status: MachineKnowledgeStatusSchema,
+  lastUsedAt: isoTimeSchema.nullable(),
+});
+
+const knowledgeSourceSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("note"), at: isoTimeSchema, via: z.enum(["cli", "hub"]), edited: z.boolean().optional() }),
+  z.object({ type: z.literal("session"), at: isoTimeSchema, checkedByModel: z.boolean() }),
+  z.object({ type: z.literal("team"), path: z.string().min(1), checkout: z.string().min(1) }),
+  z.object({ type: z.literal("agent-memory"), agent: z.string().min(1), observations: countSchema.positive() }),
+]);
+
+const knowledgeHistorySchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("added"), at: isoTimeSchema }),
+  z.object({ type: z.literal("edited"), at: isoTimeSchema }),
+  z.object({ type: z.literal("model-check"), at: isoTimeSchema, outcome: z.enum(["still true", "needs attention", "couldn’t tell"]) }),
+  z.object({ type: z.literal("git"), at: isoTimeSchema, action: z.enum(["added", "edited"]), actor: z.string(), sha: z.string() }),
+]);
+
+export const MachineKnowledgeDetailSchema = MachineKnowledgeItemSchema.merge(knowledgeContentSchema).extend({
+  revision: knowledgeRevisionSchema,
+  source: knowledgeSourceSchema,
+  evidence: z.string().max(8192).optional(),
+  checks: z.array(z.object({
+    kind: z.enum(["key", "command", "section", "source", "value", "symbol", "legacy-grounding", "pattern", "relation"]),
+    target: z.string().min(1).max(2048),
+    result: z.enum(["held", "changed", "broken"]).nullable(),
+    checkedAt: isoTimeSchema.nullable(),
+  })).max(32),
+  useCount30Days: countSchema,
+  history: z.array(knowledgeHistorySchema),
+});
+
+export const MachineKnowledgePageSchema = z.object({
+  items: z.array(MachineKnowledgeItemSchema).max(50),
+  total: countSchema,
+  nextCursor: z.string().nullable(),
+  statusCounts: MachineKnowledgeStatusCountsSchema,
+  kindCounts: z.record(MachineKnowledgeKindSchema, countSchema),
+  audienceCounts: z.record(MachineKnowledgeAudienceSchema, countSchema),
+  updatingSince: isoTimeSchema.optional(),
+  generatedAt: isoTimeSchema,
+});
+
+export const MachineForgottenItemSchema = MachineKnowledgeItemSchema.pick({ id: true, repoId: true, audience: true })
+  .extend({ at: isoTimeSchema }).strict();
+
+export const MachineKnowledgeCreateRequestSchema = knowledgeContentSchema.omit({ oneLine: true }).extend({
+  repoId: z.string().min(1),
+  // A create asserts that the note is new. The writer supplies its identity.
+  expectedRevision: z.literal("new"),
+}).strict();
+
+const knowledgeWriteSchema = z.object({
+  key: knowledgeKeySchema,
+  expectedRevision: knowledgeRevisionSchema,
+  confirmRevision: knowledgeRevisionSchema.optional(),
+});
+
+export const MachineKnowledgeEditRequestSchema = knowledgeContentSchema.merge(knowledgeWriteSchema).strict();
+export const MachineKnowledgeForgetRequestSchema = knowledgeWriteSchema.extend({
+  reason: z.string().trim().min(1).max(512).optional(),
+}).strict();
+
+export const MachineKnowledgeWritePreviewSchema = z.object({
+  type: z.literal("preview"),
+  diff: z.string(),
+  path: z.string(),
+  checkout: z.string(),
+  revision: knowledgeRevisionSchema,
+});
+
+export const MachineKnowledgeCreateResponseSchema = z.object({
+  type: z.literal("ok"),
+  item: MachineKnowledgeDetailSchema,
+});
+
+export const MachineKnowledgeEditResponseSchema = z.discriminatedUnion("type", [
+  MachineKnowledgeCreateResponseSchema,
+  MachineKnowledgeWritePreviewSchema,
+  z.object({ type: z.literal("conflict"), current: MachineKnowledgeDetailSchema, attempted: MachineKnowledgeEditRequestSchema }),
+]);
+
+export const MachineKnowledgeForgetResponseSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("ok"), item: MachineForgottenItemSchema }),
+  MachineKnowledgeWritePreviewSchema,
+  z.object({ type: z.literal("conflict"), current: MachineKnowledgeDetailSchema, attempted: MachineKnowledgeForgetRequestSchema }),
+]);
 
 export const MachineDailyActivitySchema = z.object({
   day: z.string().date(),
