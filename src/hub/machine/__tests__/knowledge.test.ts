@@ -1,4 +1,4 @@
-import { MachineKnowledgeDetailSchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
+import { MachineForgottenPageSchema, MachineKnowledgeDetailSchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
 import { setImmediate } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -10,6 +10,7 @@ import { hash } from "../../../judge/evidence.js";
 import { ruleChangeKey } from "../../../judge/rule-change.js";
 import { KNOWLEDGE_LIMITS, serializeEntry, type KnowledgeEntry } from "../../../knowledge/entry.js";
 import { readHints, refreshHints } from "../../../knowledge/hints.js";
+import { saveTombstone } from "../../../knowledge/state.js";
 import { openRecord, projectIdentity, type RecordWriter } from "../../../record/index.js";
 import { createMachineHubApp } from "../app.js";
 import { HubSessions } from "../security.js";
@@ -357,9 +358,37 @@ describe("Knowledge detail", () => {
     const before = paths.map((path) => readFileSync(path));
     await page();
     await get("/landing");
+    await get("/forgotten");
     await detail(repo, "onlyYou", "mx_personal");
     await detail(repo, "team", "mx_teamrule");
     await detail(repo, "hint", observed.mex.id);
     expect(paths.map((path) => readFileSync(path))).toEqual(before);
   });
+});
+
+it("pages across dated retirement markers and retired team files, with metadata only", async () => {
+  const repo = project("repo");
+  const other = project("other");
+  const retirement = { reason: "Private reason", by: "mex forget", at: "2026-11-22" };
+  const observed = hint(repo);
+  saveTombstone(writer, repo.id, observed, retirement);
+  save(repo, "team", entry("mx_zzzzteam", "A retired team claim", { status: "retired", retired: retirement }));
+  for (let i = 0; i < 51; i++) {
+    saveTombstone(writer, repo.id, entry("mx_retired" + String(i).padStart(2, "0"), "A retired personal claim"), retirement);
+  }
+  saveTombstone(writer, other.id, entry("mx_otherrepo", "Forgotten elsewhere"), retirement);
+  expect((await page()).items).toEqual([]);
+  const firstQuery = "/forgotten?repo=" + repo.id;
+  const first = MachineForgottenPageSchema.parse(await (await get(firstQuery)).json());
+  expect(first.items).toHaveLength(50);
+  expect(first.nextCursor).toBeTruthy();
+  expect(first.items.find(({ id }) => id === observed.mex.id)).toEqual({
+    id: observed.mex.id, repoId: repo.id, audience: "hint", at: "2026-11-22T00:00:00.000Z",
+  });
+  const response = await get(firstQuery + "&cursor=" + first.nextCursor);
+  const second = MachineForgottenPageSchema.parse(await response.json());
+  expect(second.items).toHaveLength(3);
+  expect(second.items.at(-1)).toEqual({ id: "mx_zzzzteam", repoId: repo.id, audience: "team", at: "2026-11-22T00:00:00.000Z" });
+  expect(second.nextCursor).toBeNull();
+  expect(JSON.stringify([first, second])).not.toMatch(/Private reason|retired (?:team|personal) claim|claim_hash|revision/u);
 });

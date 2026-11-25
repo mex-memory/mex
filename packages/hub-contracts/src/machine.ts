@@ -167,6 +167,12 @@ export const MachineKnowledgePageSchema = z.object({
 export const MachineForgottenItemSchema = MachineKnowledgeItemSchema.pick({ id: true, repoId: true, audience: true })
   .extend({ at: isoTimeSchema }).strict();
 
+export const MachineForgottenPageSchema = z.object({
+  ...knowledgeReadState,
+  items: z.array(MachineForgottenItemSchema).max(50),
+  nextCursor: z.string().nullable(),
+});
+
 export const MachineKnowledgeCreateRequestSchema = knowledgeContentSchema.omit({ oneLine: true }).extend({
   repoId: z.string().min(1),
   // A create asserts that the note is new. The writer supplies its identity.

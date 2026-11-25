@@ -13,6 +13,7 @@ import { HomeData } from "./home.js";
 import { changeHubJob, readHubJobs } from "./jobs.js";
 import { KnowledgeData } from "./knowledge.js";
 import { readKnowledgeItem } from "./knowledge-detail.js";
+import { readForgotten } from "./knowledge-forgotten.js";
 import { readKnowledgeLanding } from "./knowledge-landing.js";
 import { readKnowledgePage } from "./knowledge-list.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
@@ -141,6 +142,10 @@ export function createMachineHubApp(options: MachineHubOptions) {
     knowledge.get();
     return context.json(await readKnowledgeItem(location, context.req.param("key"), now(), options.env));
   });
+
+  app.get("/api/v1/knowledge/forgotten", (context) => (
+    context.json(readForgotten(knowledge, context.req.query("repo"), context.req.query("cursor")))
+  ));
 
   app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
 

@@ -38,6 +38,8 @@ export function knowledgeMissing(detail = "That item may have been forgotten or 
   return new HubRequestError(404, "INVALID_REQUEST", "Knowledge item unavailable", detail);
 }
 
+export const knowledgeChanged = () => new HubRequestError(409, "KNOWLEDGE_CHANGED", "Knowledge changed", "Start again at the first page.");
+
 export const repoMissing = () => new HubRequestError(404, "INVALID_REQUEST", "Repo not found", "Choose a repo registered with MEX.");
 
 export function ensureRepo(location: LocationOptions, repoId: string | undefined) {
@@ -98,7 +100,7 @@ export function readKnowledgePage(data: KnowledgeData, query: Record<string, str
   let after: KnowledgeRow | undefined;
   if (cursor) {
     const decoded = decodeCursor(cursor);
-    if (decoded.generation !== generation) throw new HubRequestError(409, "KNOWLEDGE_CHANGED", "Knowledge changed", "Start again at the first page.");
+    if (decoded.generation !== generation) throw knowledgeChanged();
     if (decoded.filter !== filter) throw badKnowledgeRequest("The page cursor belongs to a different search.");
     const { repoId } = parseKnowledgeKey(decoded.after);
     after = snapshot?.projects.get(repoId)?.rows.get(decoded.after);
