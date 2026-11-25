@@ -19,6 +19,9 @@ import type {
   MachineKnowledgeStatusSchema,
   MachineKnowledgeSummarySchema,
   MachineKnowledgeWritePreviewSchema,
+  MachineReviewActionRequest,
+  MachineReviewActionResponse,
+  MachineReviewQueue,
 } from "@mex/hub-contracts/machine";
 
 export type KnowledgeStatusCounts = z.infer<typeof MachineKnowledgeStatusCountsSchema>;
@@ -47,6 +50,17 @@ export type DailyActivity = z.infer<typeof MachineDailyActivitySchema>;
 export type HomeOverview = z.infer<typeof MachineHomeSchema>;
 export type HubJob = z.infer<typeof MachineJobSchema>;
 export type JobAction = z.infer<typeof MachineJobActionRequestSchema>["action"];
+export type ReviewAction = MachineReviewActionRequest["action"];
+export type ReviewDraft = NonNullable<MachineReviewActionRequest["edited"]>;
+export type ReviewWritePreview = Extract<MachineReviewActionResponse, { type: "preview" }>;
+export type ReviewApplied = Extract<MachineReviewActionResponse, { type: "applied" }>;
+export type ReviewHandled = Extract<MachineReviewActionResponse, { type: "alreadyHandled" }>;
+
+export interface ReviewPreview {
+  queue?: MachineReviewQueue;
+  act: (key: string, request: MachineReviewActionRequest, onRetry: () => void) => Promise<MachineReviewActionResponse>;
+  dismissHandled: (key: string) => void;
+}
 
 export interface KnowledgeFilters {
   scopeId?: string;

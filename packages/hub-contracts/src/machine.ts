@@ -205,6 +205,68 @@ export const MachineKnowledgeConflictSchema = MachineProblemSchema.extend({
   attempted: z.union([MachineKnowledgeEditRequestSchema, MachineKnowledgeForgetRequestSchema]),
 });
 
+const reviewAction = z.enum(["share", "keep", "edit", "use", "keepCurrent", "retire"]);
+const reviewContent = knowledgeContentSchema.omit({ oneLine: true }).extend({ claim: knowledgeContentSchema.shape.oneLine });
+const reviewNote = z.object({ key: knowledgeKeySchema, audience: MachineKnowledgeAudienceSchema });
+
+export const MachineReviewCardSchema = reviewContent.extend({
+  key: z.string().min(3).max(512),
+  cardId: z.string().min(1),
+  repoId: z.string().min(1),
+  revision: knowledgeRevisionSchema,
+  reason: z.string().min(1),
+  checkedByModel: z.boolean(),
+  sources: z.object({ count: countSchema, producer: z.string().min(1), checkouts: z.array(z.string().min(1)) }),
+  createdAt: isoTimeSchema,
+  expiresAt: isoTimeSchema,
+  contradiction: z.object({ current: z.array(reviewNote.extend({ claim: reviewContent.shape.claim })).min(1) }).optional(),
+  retireTarget: reviewNote.optional(),
+  actions: z.array(reviewAction),
+  disabled: z.record(reviewAction, z.string().min(1)).optional(),
+}).refine(({ key, repoId, cardId }) => key === `${repoId}:${cardId}`);
+
+export const MachineReviewQueueSchema = z.object({
+  cards: z.array(MachineReviewCardSchema).readonly(),
+  total: countSchema,
+  byRepo: z.record(countSchema),
+  oldest: isoTimeSchema.nullable(),
+  updatingSince: isoTimeSchema.optional(),
+});
+
+export const MachineReviewActionRequestSchema = z.object({
+  action: reviewAction,
+  expectedRevision: knowledgeRevisionSchema,
+  edited: reviewContent.strict().optional(),
+  previewRevision: knowledgeRevisionSchema.optional(),
+  reason: z.string().trim().min(1).max(512).optional(),
+}).strict();
+
+export const MachineReviewPreviewSchema = MachineKnowledgeWritePreviewSchema.extend({
+  type: z.literal("preview"),
+  revision: knowledgeRevisionSchema,
+  checks: z.array(z.object({
+    id: z.enum(["privacy", "repository", "checks"]),
+    status: z.enum(["passed", "warning", "blocked"]),
+    message: z.string().min(1),
+  })),
+});
+const reviewApplied = z.object({
+  type: z.literal("applied"),
+  outcome: z.enum(["kept", "shared", "used", "keptCurrent", "retired"]),
+  toast: z.string().min(1),
+  knowledgeKey: knowledgeKeySchema,
+});
+const reviewHandled = z.object({
+  type: z.literal("alreadyHandled"),
+  outcome: z.enum(["Kept", "Shared", "Used"]).optional(),
+});
+export const MachineReviewActionResponseSchema = z.discriminatedUnion("type", [MachineReviewPreviewSchema, reviewApplied, reviewHandled]);
+
+export type MachineReviewCard = z.infer<typeof MachineReviewCardSchema>;
+export type MachineReviewQueue = z.infer<typeof MachineReviewQueueSchema>;
+export type MachineReviewActionRequest = z.infer<typeof MachineReviewActionRequestSchema>;
+export type MachineReviewActionResponse = z.infer<typeof MachineReviewActionResponseSchema>;
+
 export const MachineDailyActivitySchema = z.object({
   day: z.string().date(),
   sessions: countSchema,
