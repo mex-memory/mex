@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -12,14 +12,15 @@ import { serializeEntry } from "../src/knowledge/entry.js";
 
 const now = Date.parse("2026-11-17T10:00:00Z");
 afterEach(() => vi.restoreAllMocks());
-function fixture() {
+function fixture(network = false) {
   const base = mkdtempSync(join(tmpdir(), "mex-status-")), root = join(base, "repo"), home = join(base, "mex");
   mkdirSync(root); mkdirSync(home);
-  const writer = openRecord({ home, projectPath: root, isNetwork: () => false, git: () => { throw new Error("No git"); } });
+  const storage = { home, cache: join(base, "cache"), isNetwork: () => network };
+  const writer = openRecord({ ...storage, projectPath: root, git: () => { throw new Error("No git"); } });
   const projectId = writer.checkout(root)!.project_id, location = writer.location;
   writer.close();
   const env = { ...process.env, CLAUDE_CONFIG_DIR: join(base, "claude"), CODEX_HOME: join(base, "codex"), MEX_OFF: "0" };
-  return { base, home, root, projectId, location, env, options: { home, cwd: root, env, now, isNetwork: () => false } };
+  return { base, home, root, projectId, location, env, options: { ...storage, cwd: root, env, now } };
 }
 
 it("reads installed agents, cached verdicts and last hook call without writing", async () => {
@@ -64,6 +65,75 @@ it("shows missing installations with fixes", () => {
   expect(view.agents.every(agent => agent.installed === false)).toBe(true);
   expect(statusProblems(view)).toContain("Hook binary missing: run mex install");
   expect(statusProblems(view)).toContain("Codex hooks missing or incomplete: run mex install");
+});
+
+it("reads hook errors from the location pointer even when hooks.db is absent", () => {
+  const f = fixture(true);
+  const first = "2026-11-17T09:57:00Z", counts = { delivery: 1 };
+  const recent = [{ at: first, agent: "claude-code", event: "Stop", kind: "delivery", detail: "could not save result" }];
+  expect(f.location.directory).not.toBe(f.location.home);
+  writeFileSync(join(f.location.directory, "hook-errors.json"), JSON.stringify({ version: 1, counts, first, recent }));
+  expect(readStatus(f.options).hookErrors).toEqual({ total: 1, announced: 1, counts, first, recent });
+  expect(existsSync(f.location.hooks)).toBe(false);
+});
+
+const firstHookError = new Date(2026, 10, 24, 12).toISOString();
+const busyError = { at: firstHookError, agent: "claude-code", event: "Stop", kind: "busy", detail: "database is locked" };
+const busyErrors = { version: 1, counts: { busy: 1 }, first: firstHookError, recent: [busyError] };
+
+it.each([
+  ["missing", null],
+  ["version 2", JSON.stringify({ ...busyErrors, version: 2 })],
+  ["oversized", JSON.stringify(busyErrors).padEnd((64 << 10) + 1)],
+])("omits the hook error section for a %s file", (_name, text) => {
+  const f = fixture();
+  if (text !== null) writeFileSync(join(f.location.directory, "hook-errors.json"), text);
+  const view = readStatus(f.options);
+  expect(view.hookErrors).toBeNull();
+  expect(formatStatus(view, { doctor: true })).not.toContain("Hook errors:");
+});
+
+it("lists busy errors in doctor without adding a problem or a status summary", () => {
+  const f = fixture(), before = readStatus(f.options);
+  writeFileSync(join(f.location.directory, "hook-errors.json"), JSON.stringify(busyErrors));
+  const view = readStatus(f.options);
+  const doctor = formatStatus(view, { doctor: true });
+  expect(doctor).toContain("Hook errors: 1 since 24 Nov (1 busy (a locked database; expected under load)) · your agents kept working");
+  expect(doctor).toContain("24 Nov 12:00  claude-code Stop  busy  database is locked");
+  expect(formatStatus(view)).not.toContain("Hook errors:");
+  expect(statusProblems(view)).toEqual(statusProblems(before));
+});
+
+it("lists the five newest hook errors and adds one problem for the non-busy count", () => {
+  const f = fixture(), before = readStatus(f.options);
+  const counts = { busy: 2, delivery: 2, panic: 1, parse: 1 };
+  const recent = [busyError, ...[
+    { minute: 38, agent: "claude-code", kind: "busy", detail: "database deadline exceeded" },
+    { minute: 39, agent: "claude-code", kind: "delivery", detail: "could not save result" },
+    { minute: 40, agent: "codex", kind: "parse", detail: "invalid input" },
+    { minute: 41, agent: "claude-code", kind: "delivery", detail: "could not send event" },
+    { minute: 42, agent: "codex", kind: "panic", detail: "\x1b[31munexpected result\x1b[0m" },
+  ].map(({ minute, ...error }) => ({ at: new Date(2026, 10, 25, 10, minute).toISOString(), event: "Stop", ...error }))];
+  writeFileSync(join(f.location.directory, "hook-errors.json"), JSON.stringify({ version: 1, counts, first: firstHookError, recent }));
+  const view = readStatus(f.options), now = new Date(2026, 10, 25, 12).getTime();
+  const doctor = formatStatus(view, { doctor: true, now });
+  expect(doctor.split("\n\n").find(section => section.startsWith("Hook errors:"))).toBe([
+    "Hook errors: 6 since 24 Nov (2 busy (a locked database; expected under load), 2 delivery, 1 panic, 1 parse) · your agents kept working",
+    "  25 Nov 10:42  codex Stop  panic  unexpected result",
+    "  25 Nov 10:41  claude-code Stop  delivery  could not send event",
+    "  25 Nov 10:40  codex Stop  parse  invalid input",
+    "  25 Nov 10:39  claude-code Stop  delivery  could not save result",
+    "  25 Nov 10:38  claude-code Stop  busy  database deadline exceeded",
+  ].join("\n"));
+  expect(formatStatus(view, { now }).split("\n\n").find(section => section.startsWith("Hook errors:"))).toBe("Hook errors: 4 in the last 7 days · see mex doctor for details");
+  const problem = "4 hook errors in the last 7 days, since 25 Nov: see the list above; if they repeat, run mex install and report the details";
+  expect(statusProblems(view, now)).toEqual([...statusProblems(before, now), problem]);
+  expect(doctor).toContain(`  ✗ ${problem}`);
+  // A week later the errors are still listed, but no longer a problem.
+  const later = now + 8 * 86_400_000;
+  expect(statusProblems(view, later)).toEqual(statusProblems(before, later));
+  expect(formatStatus(view, { doctor: true, now: later })).toContain("Hook errors: 6 since 24 Nov");
+  expect(formatStatus(view, { now: later })).not.toContain("Hook errors:");
 });
 
 it("reads repo and capture switches, including a timed off that has ended", () => {
