@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Archive, CalendarClock, CircleCheck, CircleMinus, Lightbulb, Shield, Sparkles, Info } from "lucide-react";
 import { Button } from "../components/primitives/button";
-import { localDateTime, localShortDate } from "./local-time";
+import { formatLocalClock, localDateTime, localShortDate } from "./local-time";
 import { SettingRow, SettingsSection, ToggleSetting, type SettingsEdits } from "./SettingsControls";
 import type { MachineOutbound, MachineSettings, MachineStorage } from "./types";
 import { CommandCard, CopyButton } from "./ui";
@@ -11,7 +11,6 @@ import styles from "./settings.module.css";
 
 const number = new Intl.NumberFormat();
 const decimal = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
-const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 export function storageSize(bytes: number) {
   if (bytes >= 1_000_000_000) return decimal.format(bytes / 1_000_000_000) + " GB";
@@ -198,7 +197,7 @@ export function AboutSettings({ about }: Pick<MachineSettings, "about">) {
         {background ? (
           <span className={styles.inlineValue} data-running="true">
             <CircleCheck aria-hidden="true" />
-            <span>Running since <time dateTime={background.startedAt}>{clock.format(new Date(background.startedAt))}</time>, version {background.version}</span>
+            <span>Running since <time dateTime={background.startedAt}>{formatLocalClock(new Date(background.startedAt))}</time>, version {background.version}</span>
           </span>
         ) : <span className={styles.inlineValue}><CircleMinus aria-hidden="true" />Stopped</span>}
       </SettingRow>

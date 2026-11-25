@@ -99,7 +99,7 @@ main:has(.page) {
 }
 
 .state[data-state="needsRepair"] {
-  color: var(--warning);
+  color: color-mix(in oklch, var(--warning), var(--foreground) 24%);
   background: var(--warning-soft);
   border-color: var(--warning-border);
 }
@@ -143,9 +143,23 @@ main:has(.page) {
   color: var(--foreground);
   background: var(--muted);
   border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.hookHint {
+  white-space: nowrap;
+}
+
+.timeTrigger {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: none;
+  text-decoration: underline dotted color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  text-underline-offset: 3px;
+  cursor: help;
 }
 
 .errorTime {
@@ -160,6 +174,11 @@ main:has(.page) {
   padding: 8px 18px;
   border-top: 1px solid var(--border);
   background: var(--surface-subtle);
+}
+
+.cardFooter [data-slot="button"],
+.detailHeading [data-slot="button"] {
+  font-size: 13px;
 }
 
 .detailsLink {
@@ -297,7 +316,7 @@ main:has(.page) {
 .hookRows code,
 .fileRows code,
 .approval code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -411,7 +430,7 @@ main:has(.page) {
 
 .repairFiles li > code {
   color: var(--text-secondary);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 12px;
   font-weight: 550;
 }

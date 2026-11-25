@@ -21,8 +21,11 @@ const claudeRepairDiff = [
   '   "hooks": {',
   ...[...missingEvents].flatMap((event) => [
     '+    "' + event + '": [{',
-    '+      "hooks": [{ "type": "command", "command": "' + hookBinary + '",',
-    '+        "args": ["claude-code", "' + event + '"], "timeout": 10, "onFailure": "continue" }]',
+    '+      "hooks": [{',
+    '+        "type": "command", "command": "' + hookBinary + '",',
+    '+        "args": ["claude-code", "' + event + '"],',
+    '+        "timeout": 10, "onFailure": "continue"',
+    '+      }]',
     '+    }],',
   ]),
   '     "SessionStart": [{',

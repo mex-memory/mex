@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
 import { BrowserSettings, PowerSettings, SharingSettings, type SettingsEdits } from "./SettingsControls";
@@ -28,36 +28,40 @@ function sectionElement(id: SectionId) {
 
 function useActiveSection(hash: string, locationKey: string) {
   const [active, setActive] = useState<SectionId>(sections[0].id);
-  const landingPosition = useRef<number | undefined>(undefined);
+  const target = sections.find(({ id }) => "#" + id === hash);
 
   useEffect(() => {
-    landingPosition.current = undefined;
-    const match = sections.find(({ id }) => "#" + id === hash);
-    if (!match) return;
-    const section = sectionElement(match.id);
-    if (!section) return;
-    section.scrollIntoView?.({ block: "start" });
-    section.querySelector("h2")?.focus({ preventScroll: true });
-    landingPosition.current = window.scrollY;
-    setActive(match.id);
-  }, [hash, locationKey]);
+    if (!target) {
+      if (!hash) {
+        document.getElementById("main-content")?.scrollIntoView?.({ block: "start" });
+        setActive(sections[0].id);
+      }
+      return;
+    }
+    const section = sectionElement(target.id);
+    section?.scrollIntoView?.({ block: "start" });
+    section?.querySelector("h2")?.focus({ preventScroll: true });
+    setActive(target.id);
+  }, [hash, locationKey, target]);
 
   useEffect(() => {
     let frame: number | undefined;
     function update() {
       frame = undefined;
-      if (landingPosition.current === window.scrollY) return;
-      landingPosition.current = undefined;
 
       const root = document.documentElement;
       const atEnd = window.scrollY > 0 && window.scrollY + root.clientHeight >= root.scrollHeight - 2;
-      if (atEnd) {
-        setActive(sections[sections.length - 1].id);
-        return;
-      }
       const first = sectionElement(sections[0].id);
       const marker = first ? Number.parseFloat(getComputedStyle(first).scrollMarginTop) || 0 : 0;
-      const current = sections.filter(({ id }) => (sectionElement(id)?.getBoundingClientRect().top ?? Infinity) <= marker + 2).at(-1);
+      const top = (id: SectionId) => sectionElement(id)?.getBoundingClientRect().top ?? Infinity;
+
+      // The last few cards can share the same bottom scroll position.
+      if (target && (Math.abs(top(target.id) - marker) <= 3 || atEnd && top(target.id) >= marker - 3)) {
+        setActive(target.id);
+        return;
+      }
+      const readingLine = marker + (atEnd ? 32 : 2);
+      const current = sections.filter(({ id }) => top(id) <= readingLine).at(-1);
       setActive(current?.id ?? sections[0].id);
     }
     function schedule() {
@@ -70,7 +74,7 @@ function useActiveSection(hash: string, locationKey: string) {
       window.removeEventListener("resize", schedule);
       if (frame !== undefined) window.cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [target]);
   return active;
 }
 

@@ -3,6 +3,7 @@ import { ArrowRight, Bot, CircleCheck, CircleMinus, Code2, Plug, Sparkle, Termin
 import { Link, useLocation, useParams } from "react-router-dom";
 import { Badge } from "../components/primitives/badge";
 import { Button } from "../components/primitives/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/primitives/tooltip";
 import { AgentDetail } from "./AgentDetail";
 import { AgentRepairDialog } from "./AgentRepairDialog";
 import { localDateTime, relativeTime } from "./local-time";
@@ -31,7 +32,14 @@ function AgentBadge({ state }: { state: MachineAgent["state"] }) {
 function AgentTime({ at }: { at: string }) {
   const date = new Date(at);
   const local = localDateTime.format(date);
-  return <time aria-label={local} dateTime={at} title={local}>{relativeTime(date, new Date(), true)}</time>;
+  return (
+    <Tooltip>
+      <TooltipTrigger aria-description={local} className={styles.timeTrigger} type="button">
+        <time dateTime={at}>{relativeTime(date, new Date(), true)}</time>
+      </TooltipTrigger>
+      <TooltipContent role="tooltip">{local}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function AgentFacts({ agent }: { agent: MachineAgent }) {
@@ -43,7 +51,7 @@ function AgentFacts({ agent }: { agent: MachineAgent }) {
     : events.some(({ status }) => status === "unverified") ? "Couldn’t verify"
     : missing > 0 ? "Missing " + missing + " of " + events.length : "Installed";
   const trust = agent.trust === "approved" ? "Yes" : agent.trust === "needsApproval"
-    ? <>Needs your approval in Codex (run <code>/hooks</code>)</> : "—";
+    ? <>Needs your approval in Codex <span className={styles.hookHint}>(run <code>/hooks</code>)</span></> : "—";
   const facts: [string, ReactNode][] = [
     ["Hooks", hooks],
     ["Trusted", trust],
@@ -152,9 +160,11 @@ export default function AgentsPage({ preview }: { preview?: AgentsPreview }) {
         <>
           <HubPageHeader title="Agents" subtitle={subtitle} />
           {preview ? (
-            <div className={styles.grid}>
-              {preview.agents.map((item) => <AgentCard agent={item} key={item.id} onRepair={openRepair} search={search} />)}
-            </div>
+            <TooltipProvider delay={250}>
+              <div className={styles.grid}>
+                {preview.agents.map((item) => <AgentCard agent={item} key={item.id} onRepair={openRepair} search={search} />)}
+              </div>
+            </TooltipProvider>
           ) : <p className={shared.muted} role="status">Agent details aren’t available in this Hub yet.</p>}
         </>
       )}

@@ -14,7 +14,7 @@ import {
 import { Input } from "../components/primitives/input";
 import { Label } from "../components/primitives/label";
 import { NativeSelect, NativeSelectOption } from "../components/primitives/native-select";
-import { localDateTime, localShortDate } from "./local-time";
+import { formatLocalClock, localDateTime, localShortDate } from "./local-time";
 import type { MachineSettings, SettingsPreview, SettingsWrite } from "./types";
 import forms from "./knowledge-forms.module.css";
 import shared from "./machine.module.css";
@@ -90,7 +90,7 @@ export function BrowserSettings({ settings, write }: {
         stack
         title="All browsers"
       >
-        <Button aria-describedby={everywhereDescription} aria-haspopup="dialog" disabled={Boolean(settings.signOutEverywhere.disabledReason)}
+        <Button aria-describedby={everywhereDescription} aria-haspopup="dialog" className={styles.dangerAction} disabled={Boolean(settings.signOutEverywhere.disabledReason)}
           onClick={() => setConfirm(true)} ref={everywhere} type="button" variant="destructive">
           Sign out everywhere
         </Button>
@@ -106,7 +106,7 @@ export function BrowserSettings({ settings, write }: {
           <AlertDialogFooter className={forms.dialogFooter}>
             <AlertDialogCancel ref={cancel}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              className={forms.destructive}
+              className={styles.dangerAction}
               onClick={() => write({ type: "signOut", scope: "everywhere" })}
               type="button"
               variant="destructive"
@@ -152,7 +152,6 @@ type RepoSettings = MachineSettings["repos"][number];
 type Checkout = RepoSettings["checkouts"][number];
 type CheckoutPower = Checkout["power"];
 const hourMs = 60 * 60 * 1000;
-const deadlineFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
 
 function Deadline({ until }: { until: string }) {
   const date = new Date(until);
@@ -161,7 +160,7 @@ function Deadline({ until }: { until: string }) {
     <span className={styles.deadline}>
       <Clock3 aria-hidden="true" /> <span>Off until{" "}
         <time dateTime={until} title={localDateTime.format(date)}>
-          {today ? deadlineFormat.format(date) : localShortDate.format(date) + ", " + deadlineFormat.format(date)}
+          {today ? formatLocalClock(date, true) : localShortDate.format(date) + ", " + formatLocalClock(date, true)}
         </time>
       </span>
     </span>
@@ -269,22 +268,28 @@ export function PowerSettings({ settings, edits }: { settings: MachineSettings; 
         label="MEX everywhere" onChange={(enabled) => edits.save("globalPower", { type: "globalPower", enabled })}
         saved={edits.savedFor("globalPower")} setting={settings.everywhere} title="Everywhere"
       />
-      <h3 className={styles.rowGroup}>Checkouts</h3>
-      {settings.repos.length === 0 && <p className={styles.sectionNote}>No registered checkouts.</p>}
-      {settings.repos.flatMap(({ name, checkouts }) => checkouts.map((checkout) => (
-        <CheckoutSetting checkout={checkout} key={checkout.path} onCustom={(element) => {
-          select.current = element;
-          setDeadline((current) => ({ path: checkout.path, cycle: current.cycle + 1 }));
-        }} onPower={(power) => setPower(checkout.path, power)} repoName={name} saved={edits.savedFor(checkout.path)} />
-      )))}
-      <h3 className={styles.rowGroup}>Capture</h3>
-      <ToggleSetting description="Delivery has its own off switches." onChange={(enabled) => edits.save("capture", { type: "capture", enabled })}
-        saved={edits.savedFor("capture")} setting={settings.capture} title="Capture everywhere" />
-      {settings.repos.map(({ id, name, capture }) => (
-        <ToggleSetting description="Applies across this repo’s checkouts." key={id} label={"Capture for " + name}
-          onChange={(enabled) => edits.save("capture-" + id, { type: "capture", repoId: id, enabled })}
-          saved={edits.savedFor("capture-" + id)} setting={capture} title={name} />
-      ))}
+      <div className={styles.powerGroups}>
+        <div className={styles.powerGroup}>
+          <h3 className={styles.rowGroup}>Checkouts</h3>
+          {settings.repos.length === 0 && <p className={styles.sectionNote}>No registered checkouts.</p>}
+          {settings.repos.flatMap(({ name, checkouts }) => checkouts.map((checkout) => (
+            <CheckoutSetting checkout={checkout} key={checkout.path} onCustom={(element) => {
+              select.current = element;
+              setDeadline((current) => ({ path: checkout.path, cycle: current.cycle + 1 }));
+            }} onPower={(power) => setPower(checkout.path, power)} repoName={name} saved={edits.savedFor(checkout.path)} />
+          )))}
+        </div>
+        <div className={styles.powerGroup}>
+          <h3 className={styles.rowGroup}>Capture</h3>
+          <ToggleSetting description="Delivery has its own off switches." onChange={(enabled) => edits.save("capture", { type: "capture", enabled })}
+            saved={edits.savedFor("capture")} setting={settings.capture} title="Capture everywhere" />
+          {settings.repos.map(({ id, name, capture }) => (
+            <ToggleSetting description="Applies across this repo’s checkouts." key={id} label={"Capture for " + name}
+              onChange={(enabled) => edits.save("capture-" + id, { type: "capture", repoId: id, enabled })}
+              saved={edits.savedFor("capture-" + id)} setting={capture} title={name} />
+          ))}
+        </div>
+      </div>
       <CheckoutDeadlineDialog finalFocus={() => select.current ?? false} key={deadline.cycle}
         onClose={close} onSave={(until) => {
           if (deadline.path) setPower(deadline.path, { state: "offUntil", until });

@@ -484,7 +484,7 @@
 
 .commandInline > code {
   color: var(--foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 12px;
   overflow-wrap: anywhere;
 }

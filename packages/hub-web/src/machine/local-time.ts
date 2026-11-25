@@ -10,6 +10,15 @@ export const fullDateTime = new Intl.DateTimeFormat(undefined, {
 
 export const localShortDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
+const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const clockWithZone = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+
+export function formatLocalClock(date: Date, withZone = false) {
+  return (withZone ? clockWithZone : clock).formatToParts(date).map(({ type, value }) => (
+    type === "dayPeriod" && /^(am|pm)$/i.test(value) ? value.toUpperCase() : value
+  )).join("");
+}
+
 export function relativeTime(at: Date, now: Date, compactDays = false) {
   const minutes = Math.floor((now.getTime() - at.getTime()) / 60_000);
   if (minutes < 1) return "just now";

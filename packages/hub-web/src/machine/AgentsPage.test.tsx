@@ -31,7 +31,7 @@ describe("Agents fixtures", () => {
     }
     expect(card("Claude Code").getByText("Missing 2 of 12")).toBeVisible();
     expect(card("Copilot CLI").getByText("Can’t verify for this agent yet")).toBeVisible();
-    expect(card("Claude Code").getByText("48 min ago")).toHaveAttribute("title");
+    expect(card("Claude Code").getByRole("button", { name: "48 min ago" })).toHaveAccessibleDescription(/\d/);
     expect(card("OpenCode").queryByRole("button", { name: "Repair" })).not.toBeInTheDocument();
     expect(nav().getByRole("link", { name: "Agents" })).toHaveAccessibleDescription("Some agents need repair");
   });

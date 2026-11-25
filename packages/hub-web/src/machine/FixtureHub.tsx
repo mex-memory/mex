@@ -34,6 +34,11 @@ export default function FixtureHub({ variant }: { variant: FixtureVariant }) {
   const review = useFixtureReview(fixture.review, knowledge, variant);
   const overview = { ...fixture.overview, ...fixtureHomeReview(review.queue) };
   const pauseTimers = useRef(new Set<number>());
+  const signedOutPage = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (signedOut) signedOutPage.current?.focus();
+  }, [signedOut]);
 
   useEffect(() => {
     const timers = pauseTimers.current;
@@ -80,10 +85,10 @@ export default function FixtureHub({ variant }: { variant: FixtureVariant }) {
 
   if (signedOut) {
     return (
-      <main className={styles.fullPage}>
+      <main className={styles.fullPage} ref={signedOutPage} tabIndex={-1}>
         <div className={styles.signIn}>
           <HubBrand />
-          <p className={styles.muted} role="status">
+          <p aria-live="polite" className={styles.muted} role="status">
             {signedOut === "everywhere" ? "Signed out everywhere." : "Signed out of this browser."}{" "}
             <span className={styles.signOutSaved}><Check aria-hidden="true" /> Saved</span>
           </p>

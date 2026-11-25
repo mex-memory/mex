@@ -21,6 +21,7 @@
 }
 
 .header [data-slot="dialog-title"] {
+  margin: 0;
   color: var(--foreground);
   font-size: 20px;
   font-weight: 600;
@@ -29,7 +30,7 @@
 }
 
 .header [data-slot="dialog-description"] {
-  margin-top: 4px;
+  margin: 4px 0 0;
   font-size: 13px;
 }
 
@@ -100,7 +101,7 @@
 
 .change code,
 .retained code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
