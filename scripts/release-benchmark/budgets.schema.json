@@ -56,13 +56,15 @@
         "routes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["home", "repo", "jobs", "knowledge", "review"],
+          "required": ["home", "repo", "jobs", "knowledge", "review", "agents", "settings"],
           "properties": {
             "home": { "$ref": "#/$defs/assetGroup" },
             "repo": { "$ref": "#/$defs/assetGroup" },
             "jobs": { "$ref": "#/$defs/assetGroup" },
             "knowledge": { "$ref": "#/$defs/assetGroup" },
-            "review": { "$ref": "#/$defs/assetGroup" }
+            "review": { "$ref": "#/$defs/assetGroup" },
+            "agents": { "$ref": "#/$defs/assetGroup" },
+            "settings": { "$ref": "#/$defs/assetGroup" }
           }
         }
       }

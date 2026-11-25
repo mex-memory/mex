@@ -5,13 +5,15 @@ export const RELEASE_ROUTE_PATTERNS = Object.freeze({
 
 export const RELEASE_ROUTE_KEYS = Object.freeze(Object.keys(RELEASE_ROUTE_PATTERNS));
 
-// The two Home routes share one lazy page. Jobs, Knowledge, and Review load their own chunks.
+// The two Home routes share one lazy page. Other workbenches load their own chunks.
 export const RELEASE_ROUTE_MANIFEST_HINTS = Object.freeze({
   home: Object.freeze(["HomePage", "src/machine/HomePage.tsx"]),
   repo: Object.freeze(["HomePage", "src/machine/HomePage.tsx", "RepoPage"]),
   jobs: Object.freeze(["JobsPage", "src/machine/JobsPage.tsx"]),
   knowledge: Object.freeze(["KnowledgePage", "src/machine/KnowledgePage.tsx"]),
   review: Object.freeze(["ReviewPage", "src/machine/ReviewPage.tsx"]),
+  agents: Object.freeze(["AgentsPage", "src/machine/AgentsPage.tsx"]),
+  settings: Object.freeze(["SettingsPage", "src/machine/SettingsPage.tsx"]),
 });
 
 export function releaseWorkbenchPaths({ projectId }) {

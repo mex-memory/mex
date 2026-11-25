@@ -9,8 +9,8 @@ still requires `MEX_ENFORCE_RELEASE_BUDGETS=1` on Ubuntu 24.04 x64 with Node
 ## Machine Hub
 
 The Vite manifest accounts for the initial JS and CSS closure and every built
-font. Route measurements count the bytes added by each lazy Home, Jobs, Knowledge, and Review
-page, including their shared chunk. The initial and largest-chunk limits
+font. Route measurements count the bytes added by each lazy Home, Jobs,
+Knowledge, Review, Agents, and Settings page, including shared chunks. The initial and largest-chunk limits
 retain the previous calibration. Route limits use `ceil(built bytes * 1.05)`.
 
 Cold readiness runs `mex hub --foreground --no-open` against a new temporary

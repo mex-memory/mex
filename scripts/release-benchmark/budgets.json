@@ -30,9 +30,11 @@
     "routes": {
       "home": { "jsBytes": 118310, "cssBytes": 10277, "fontBytes": 0 },
       "repo": { "jsBytes": 118310, "cssBytes": 10277, "fontBytes": 0 },
-      "jobs": { "jsBytes": 68894, "cssBytes": 4183, "fontBytes": 0 },
-      "knowledge": { "jsBytes": 123827, "cssBytes": 26728, "fontBytes": 0 },
-      "review": { "jsBytes": 108901, "cssBytes": 18676, "fontBytes": 0 }
+      "jobs": { "jsBytes": 73250, "cssBytes": 4183, "fontBytes": 0 },
+      "knowledge": { "jsBytes": 132258, "cssBytes": 26868, "fontBytes": 0 },
+      "review": { "jsBytes": 108901, "cssBytes": 18676, "fontBytes": 0 },
+      "agents": { "jsBytes": 139466, "cssBytes": 13794, "fontBytes": 0 },
+      "settings": { "jsBytes": 119238, "cssBytes": 33982, "fontBytes": 0 }
     }
   },
   "runtime": {
