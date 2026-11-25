@@ -14,7 +14,7 @@ import { shortHash } from "../../record/project.js";
 import { claimHash } from "../../knowledge/state.js";
 import { reviewQueue } from "../queue.js";
 import { reviewAction, type ReviewAction } from "../actions.js";
-import { stageReview, learningReviewId, reviewQuiet } from "../state.js";
+import { stageReview, groupId, learningReviewId, reviewQuiet } from "../state.js";
 import * as teamWrites from "../../knowledge/team.js";
 
 let suite: string, binary: string, base: string, root: string, home: string, project: string, writer: RecordWriter;
@@ -69,6 +69,21 @@ it("merges duplicates, shows the oldest five, and reading does not write", async
   expect(result.items[0]!.sources).toBe(2); expect(result.items[0]!.entry.text).toContain("rule 6");
   expect(writer.db.prepare("SELECT * FROM settings ORDER BY key").all()).toEqual(before);
 });
+it("keeps the CLI selection at five and permits an exact ID beyond five when opted in", async () => {
+  let last!: KnowledgeEntry;
+  for (let i = 0; i < 6; i++) last = await queued(`tests use vitest for rule ${i}.`, now - 6_000 + i);
+  const id = groupId(project, last);
+  expect(queue().items.map(card => card.id)).not.toContain(id);
+  await expect(reviewAction(id, "keep", options(), {}, deps())).rejects.toMatchObject({ code: "NOT_FOUND" });
+  await expect(reviewAction("6", "keep", options(), {}, deps())).rejects.toMatchObject({ code: "NOT_FOUND" });
+  const selection = { allCards: true } as const;
+  const { preview } = await reviewAction(id, "keep", options(), {}, deps(), selection);
+  await expect(reviewAction(id, "keep", options(), { apply: true, expect: preview.revision }, deps(),
+    { ...selection, expectedGroupRevision: "wrong" })).rejects.toMatchObject({ code: "STALE_PREVIEW" });
+  expect((await reviewAction(id, "keep", options(), { apply: true, expect: preview.revision }, deps(), selection)).applied).toBe(true);
+  expect(queue().waiting).toBe(5);
+});
+
 it("keeps claims permanently quiet across new identities and normalized whitespace", async () => {
   const entry = await queued(); await queued();
   const team = join(root, ".mex", "learned"); mkdirSync(team, { recursive: true }); writeFileSync(join(team, `${entry.mex.id}.md`), serializeEntry(entry));

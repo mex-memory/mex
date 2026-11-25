@@ -5,7 +5,7 @@ import { hash } from "../../judge/evidence.js";
 import { KNOWLEDGE_LIMITS, KnowledgeError } from "../../knowledge/entry.js";
 import { entryProducer, listProducers } from "../../knowledge/producers.js";
 import type { RecordReader } from "../../record/index.js";
-import { snapshotReview, type ReviewGroup } from "../../review/queue.js";
+import { groupRevision, snapshotReview, type ReviewGroup } from "../../review/queue.js";
 import { reviewReason } from "../../review/reasons.js";
 import { checkoutCollation, knowledgeKey } from "./read.js";
 import { conflictNote } from "./review-notes.js";
@@ -43,10 +43,6 @@ export function compareReview(a: ReviewPoint, b: ReviewPoint): number {
     || a.row.repoId.localeCompare(b.row.repoId);
 }
 
-export function reviewGroupRevision(group: ReviewGroup): string {
-  return hash(JSON.stringify(group));
-}
-
 export function judgeMember(group: ReviewGroup) {
   return group.members.find(({ item }) => item.source.producer === "judge");
 }
@@ -67,7 +63,7 @@ export function reviewPoint(
   const row: ReviewRow = {
     key: repoId + ":" + id, repoId, cardId: id, checkout, claim: stripHidden(mex.one_line).trim() || "Rule for Review",
     kind: mex.kind, scope: mex.scope,
-    revision: hash(JSON.stringify([checkout, reviewGroupRevision(group)])),
+    revision: hash(JSON.stringify([checkout, groupRevision(group)])),
     reason: stripHidden(reason).trim() || "this rule needs your decision",
     createdAt: new Date(group.createdAt).toISOString(), expiresAt: group.expiresAt, checkedByModel: group.checkedByModel,
     sources: { count: group.sources, producer: source ?? "MEX", checkouts: sources },

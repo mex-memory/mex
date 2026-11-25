@@ -23,7 +23,7 @@ import { learningMetadata } from "../filter/metadata.js";
 import { verifySources } from "../filter/publication.js";
 import { claimHash } from "../knowledge/state.js";
 import { entryProducer } from "../knowledge/producers.js";
-import { canonicalBytes, memberRevision, snapshotReview, type ReviewGroup } from "./queue.js";
+import { canonicalBytes, groupRevision, memberRevision, snapshotReview, type ReviewGroup, type ReviewScanLimits } from "./queue.js";
 import { legacyJudge, put, rows, storedItems, ReviewItem, REVIEW_VISIBLE } from "./state.js";
 
 export type ReviewAction = "share" | "keep" | "edit" | "use";
@@ -40,13 +40,18 @@ function trackedNames(root: string): string {
   return execFileSync("git", ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
     { env: backgroundEnvironment(), encoding: "utf8", timeout: 1500, maxBuffer: 1 << 20, stdio: ["ignore", "pipe", "ignore"] });
 }
-function choose(groups: ReviewGroup[], selector: string): ReviewGroup {
-  const visible = groups.slice(0, REVIEW_VISIBLE);
+interface ReviewSelection {
+  allCards: true;
+  expectedGroupRevision?: string;
+  limits?: ReviewScanLimits;
+}
+function choose(groups: ReviewGroup[], selector: string, selection?: ReviewSelection): ReviewGroup {
+  const visible = selection?.allCards ? groups : groups.slice(0, REVIEW_VISIBLE);
   const group = /^[1-5]$/u.test(selector) ? visible[Number(selector) - 1] : visible.find(g => g.id === selector);
   if (!group) throw new KnowledgeError("NOT_FOUND", "That card is no longer in the visible Review queue. Run mex review again.");
+  if (selection?.expectedGroupRevision !== undefined && groupRevision(group) !== selection.expectedGroupRevision) throw stale();
   return group;
 }
-function groupRevision(group: ReviewGroup): string { return hash(JSON.stringify(group)); }
 function sourceProof(writer: RecordWriter, project: string, group: ReviewGroup): void {
   for (const { item } of group.members) {
     if (item.source.producer !== "learning") continue;
@@ -57,11 +62,11 @@ function sourceProof(writer: RecordWriter, project: string, group: ReviewGroup):
     }
   }
 }
-async function prepare(selector: string, action: ReviewAction, text: string | undefined, options: KnowledgeOptions, deps: ReviewDependencies): Promise<Prepared> {
+async function prepare(selector: string, action: ReviewAction, text: string | undefined, options: KnowledgeOptions, deps: ReviewDependencies, selection?: ReviewSelection): Promise<Prepared> {
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
   if (!reader) throw new KnowledgeError("NOT_FOUND", "There are no rules waiting for Review.");
   let group: ReviewGroup;
-  try { group = choose(snapshotReview(reader, project.projectId, project.location.home, project.root, deps.clock()), selector); }
+  try { group = choose(snapshotReview(reader, project.projectId, project.location.home, project.root, deps.clock(), selection?.limits), selector, selection); }
   finally { reader.close(); }
   const notes = readNotes(project.location.home, project.projectId);
   let entry = group.entry, team: TeamPreview | undefined, names: string | undefined;
@@ -116,7 +121,7 @@ function finish(writer: RecordWriter, project: string, prepared: Pick<Prepared, 
     writer.db.prepare("DELETE FROM settings WHERE scope=? AND key IN (?,?)").run(project, `learning.note.${entry.mex.id}`, `learning.offer.${entry.mex.id}`);
   }
 }
-async function recoverShare(selector: string, options: KnowledgeOptions, expected: string, deps: ReviewDependencies): Promise<ReviewPreview | undefined> {
+async function recoverShare(selector: string, options: KnowledgeOptions, expected: string, deps: ReviewDependencies, selection?: ReviewSelection): Promise<ReviewPreview | undefined> {
   if (!/^sha256:[a-f0-9]{64}$/u.test(expected)) return undefined;
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
   if (!reader) return undefined;
@@ -127,6 +132,7 @@ async function recoverShare(selector: string, options: KnowledgeOptions, expecte
     if (!sharingEnabled(reader, project.projectId, project.root)) throw stale();
     intent = ShareIntent.parse(JSON.parse(row.value));
   } finally { reader.close(); }
+  if (selection?.expectedGroupRevision !== undefined && groupRevision(intent.group) !== selection.expectedGroupRevision) throw stale();
   if (intent.root !== project.root || intent.preview.revision !== expected || ![intent.preview.id, "1", "2", "3", "4", "5"].includes(selector)) throw stale();
   if (projectIdentity(project.root).rootPath !== realPath(project.root)) throw stale();
   const team = prepareTeamWrite(intent.group.entry, { ...options, projectPath: project.root }, intent.group.entry.mex.source.quote);
@@ -168,18 +174,18 @@ async function recoverShare(selector: string, options: KnowledgeOptions, expecte
 }
 /** Every mutation is bound to a freshly computed exact preview. */
 export async function reviewAction(selector: string, action: ReviewAction, options: KnowledgeOptions,
-  input: { text?: string; expect?: string; apply?: boolean } = {}, overrides: Partial<ReviewDependencies> = {}): Promise<{ applied: boolean; preview: ReviewPreview }> {
+  input: { text?: string; expect?: string; apply?: boolean } = {}, overrides: Partial<ReviewDependencies> = {}, selection?: ReviewSelection): Promise<{ applied: boolean; preview: ReviewPreview }> {
   const deps = { ...defaults, ...overrides };
   if (action === "share" && input.apply && input.expect) {
-    const recovered = await recoverShare(selector, options, input.expect, deps);
+    const recovered = await recoverShare(selector, options, input.expect, deps, selection);
     if (recovered) return { applied: true, preview: recovered };
   }
-  const prepared = await prepare(selector, action, input.text, options, deps);
+  const prepared = await prepare(selector, action, input.text, options, deps, selection);
   if (!input.apply) return { applied: false, preview: prepared.preview };
   if (!input.expect || input.expect !== prepared.preview.revision) throw stale();
   const project = knowledgeProject(options);
   const validate = (writer: RecordWriter) => {
-    const current = choose(snapshotReview(writer, project.projectId, project.location.home, project.root, deps.clock()), prepared.group.id);
+    const current = choose(snapshotReview(writer, project.projectId, project.location.home, project.root, deps.clock(), selection?.limits), prepared.group.id, selection);
     if (groupRevision(current) !== groupRevision(prepared.group)) throw stale();
     if (action === "share") {
       if (projectIdentity(project.root).rootPath !== realPath(project.root) || trackedNames(project.root) !== prepared.names) throw stale();
