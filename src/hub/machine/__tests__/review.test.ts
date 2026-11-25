@@ -1,4 +1,4 @@
-import { MachineHomeSchema, MachineReviewCardSchema, MachineReviewQueueSchema } from "@mex/hub-contracts/machine";
+import { MachineHomeSchema, MachineReviewCardSchema, MachineReviewPreviewReplySchema, MachineReviewQueueSchema } from "@mex/hub-contracts/machine";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as repository from "../../../filter/repository.js";
 import { hash } from "../../../judge/evidence.js";
-import { parseEntry, serializeEntry, type KnowledgeEntry } from "../../../knowledge/entry.js";
+import { parseEntry, serializeEntry, type EntryCheck, type KnowledgeEntry } from "../../../knowledge/entry.js";
 import { openRecord, type RecordWriter } from "../../../record/index.js";
 import { reviewAction } from "../../../review/actions.js";
 import { stageConflict } from "../../../review/conflicts.js";
@@ -24,6 +24,8 @@ let base: string, home: string, clock: number, writer: RecordWriter, hooks: Data
 let app: ReturnType<typeof createMachineHubApp>, cookie: string, csrfToken: string;
 const location = () => ({ home, isNetwork: () => false });
 const now = () => clock;
+const authority = vi.fn<typeof repository.repositoryPolicy>();
+const observe = vi.fn(async ({ checkout }: Record<string, unknown>) => [observedCheck(checkout as string)]);
 
 beforeEach(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), "mex-hub-review-")));
@@ -41,7 +43,12 @@ beforeEach(() => {
   const signed = sessions.create();
   cookie = `${sessions.cookieName}=${signed.cookie}`;
   csrfToken = signed.session.csrfToken;
-  app = createMachineHubApp({ ...location(), sessions, homeId: "review-fixture", version: "test", mode: "background", now });
+  authority.mockReset().mockResolvedValue({ visibility: "private", authorized: true });
+  observe.mockClear();
+  app = createMachineHubApp({
+    ...location(), sessions, homeId: "review-fixture", version: "test", mode: "background", now,
+    reviewDependencies: { repository: authority, recordChecks: observe },
+  });
 });
 
 afterEach(async () => {
@@ -94,6 +101,13 @@ function entry(id: string, text: string, claim = text): KnowledgeEntry {
   };
 }
 
+function observedCheck(checkout: string): EntryCheck {
+  return {
+    kind: "key", role: "complete", target: { file: "package.json", pointer: "/scripts/test" },
+    saw: { value: "vitest" }, files: { "package.json": hash(readFileSync(join(checkout, "package.json"), "utf8")) },
+  };
+}
+
 function save(folder: string, item: KnowledgeEntry) {
   mkdirSync(folder, { recursive: true });
   const file = join(folder, item.mex.id + ".md");
@@ -111,6 +125,10 @@ function stage(repo: Repo, item: KnowledgeEntry, time: string, checkout = repo.p
   const id = learningReviewId(repo.id, item);
   writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(repo.id, key, JSON.stringify({
     state: "review", id: item.mex.id, checkout, personal_hash: hash(raw), review_at: Date.parse(time),
+  }));
+  writer.db.prepare("INSERT INTO settings VALUES(?,?,?)").run(repo.id, "learning.note." + item.mex.id, JSON.stringify({
+    at: time, holds: [], sessions: [], sources: [{ quote: item.mex.source.quote, label: "lasting",
+      source: { session: null, row: null, at: time, marks: "", delivered: [], private_tag: false, note_id: item.mex.id } }],
   }));
   stageReview(writer, repo.id, id, item, { producer: "learning", key, checkout, level: "personal", path: file, original_hash: hash(raw) }, "public-session", true, Date.parse(time));
   return { id, file, raw, producerKey: key, key: repo.id + ":" + groupId(repo.id, item) };
@@ -200,7 +218,6 @@ it("pages one generation and rejects a stale cursor after a terminal change", as
 });
 
 it("reads full detail without changing the databases, WALs or notes", async () => {
-  const policy = vi.spyOn(repository, "repositoryPolicy");
   const repo = project("tools");
   const item = entry("firstnote", "run the linter.\n\nreview any warnings.", "run the linter.");
   const staged = stage(repo, item, at(-3000));
@@ -216,7 +233,8 @@ it("reads full detail without changing the databases, WALs or notes", async () =
   expect(summaries.cards[0]).not.toHaveProperty("text");
   expect(summaries.cards[0].revision).toBe(card.revision);
   expect(files.map((file) => readFileSync(file))).toEqual(before);
-  expect(policy).not.toHaveBeenCalled();
+  expect(authority).not.toHaveBeenCalled();
+  expect(observe).not.toHaveBeenCalled();
   expect((await request(cardPath("../bad"))).status).toBe(400);
   expect((await request(cardPath(repo.id + ":rv_" + "f".repeat(24)))).status).toBe(404);
   expect((await request("/review?repo=unknown")).status).toBe(400);
@@ -320,3 +338,117 @@ it("requires Origin, CSRF, an idempotency key, and a bounded POST body", async (
   expect((await post(repo.id + ":rv_" + "f".repeat(24), "keep", body)).status).toBe(404);
   expect((await queue()).total).toBe(1);
 });
+
+function shareable(repo: Repo) {
+  const item = entry("forshare", "run the test suite.");
+  item.mex.checks = [observedCheck(repo.path)];
+  return { item, ...stage(repo, item, at(-1000)) };
+}
+
+async function preview(card: { key: string; revision: string }, action: string, extra: object = {}) {
+  const response = await post(card.key, action, { expectedRevision: card.revision, ...extra });
+  expect(response.status).toBe(200);
+  return MachineReviewPreviewReplySchema.parse(await response.json()).preview;
+}
+
+it("previews and shares only an exact checked diff in the selected checkout", async () => {
+  const repo = project("tools");
+  const { key, item } = shareable(repo);
+  const card = await detail(key);
+  const planned = await preview(card, "share");
+  const path = ".mex/learned/" + item.mex.id + ".md";
+  expect(planned).toMatchObject({ path, checkout: repo.path, checks: [
+    { id: "secrets", status: "pass" }, { id: "repository", status: "pass" }, { id: "checks", status: "pass" },
+  ] });
+  expect(planned.diff).toContain("+run the test suite.");
+  const head = git(repo.path, "rev-parse", "HEAD");
+  const noPreview = await post(key, "share", { expectedRevision: card.revision, apply: true, previewRevision: "made-up" });
+  expect(await noPreview.json()).toMatchObject({ code: "STALE_PREVIEW", current: { key } });
+  const apply = await post(key, "share", { expectedRevision: card.revision, apply: true, previewRevision: planned.revision });
+  expect(apply.status).toBe(200);
+  expect(await apply.json()).toMatchObject({ outcome: "shared", knowledgeKey: repo.id + ":team:" + item.mex.id });
+  expect(parseEntry(readFileSync(join(repo.path, path), "utf8")).text).toBe(item.text);
+  expect(git(repo.path, "rev-parse", "HEAD")).toEqual(head);
+  expect(git(repo.path, "diff", "--cached", "--name-only")).toHaveLength(0);
+  expect((await queue()).total).toBe(0);
+  expect(authority).toHaveBeenCalledTimes(3);
+  expect(writer.db.prepare("SELECT count(*) n FROM jobs WHERE kind='native-files'").get()).toMatchObject({ n: 0 });
+});
+
+it.each(["offline", "unknown", "unauthorized"])("returns a blocked Share preview for a %s repo", async (mode) => {
+  const repo = project("tools");
+  const { key } = shareable(repo);
+  const card = await detail(key);
+  if (mode === "offline") authority.mockRejectedValue(new Error("offline"));
+  if (mode === "unknown") authority.mockResolvedValue({ visibility: "unknown", authorized: true });
+  if (mode === "unauthorized") authority.mockResolvedValue({ visibility: "private", authorized: false });
+  const planned = await preview(card, "share");
+  expect(planned.checks).toContainEqual({
+    id: "repository", status: "fail", label: "Couldn't check the repository. Sharing needs GitHub access (gh).",
+  });
+  expect(planned.diff).toBe("");
+  expect(observe).not.toHaveBeenCalled();
+  const attempted = await post(key, "share", { expectedRevision: card.revision, apply: true, previewRevision: planned.revision });
+  expect(attempted.status).toBe(409);
+  expect((await queue()).total).toBe(1);
+});
+
+it("serves another request while Share waits for its repository policy", async () => {
+  const repo = project("tools");
+  const card = await detail(shareable(repo).key);
+  let release!: (policy: repository.RepositoryPolicy) => void;
+  authority.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  const pending = preview(card, "share");
+  try {
+    await vi.waitFor(() => expect(authority).toHaveBeenCalledOnce());
+    expect((await queue()).total).toBe(1);
+    const busy = await post(card.key, "keep", { expectedRevision: card.revision });
+    expect(busy.status).toBe(503);
+    expect(await busy.json()).toMatchObject({ code: "MEX_BUSY" });
+  } finally { release({ visibility: "public", authorized: true }); }
+  expect((await pending).checks).toContainEqual({ id: "repository", status: "warn", label: expect.stringContaining("public") });
+});
+
+it("blocks edited Share because the old checks no longer attest to the correction", async () => {
+  const repo = project("tools");
+  const { key, file, raw } = shareable(repo);
+  const card = await detail(key);
+  const planned = await preview(card, "edit", {
+    edited: { claim: "run checks locally", text: "run the test command locally.", kind: "procedure", scope: ["src/**"] }, then: "share",
+  });
+  expect(planned.checks).toContainEqual({ id: "checks", status: "fail", label: expect.stringContaining("record its checks") });
+  expect(readFileSync(file, "utf8")).toBe(raw);
+  expect(authority).not.toHaveBeenCalled();
+});
+
+it("returns the current card for a stale Share preview and blocks apply when GitHub goes offline", async () => {
+  const repo = project("tools");
+  const { key } = shareable(repo);
+  const card = await detail(key);
+  const planned = await preview(card, "share");
+  const apply = { expectedRevision: card.revision, apply: true, previewRevision: planned.revision };
+  authority.mockResolvedValueOnce({ visibility: "unknown", authorized: false });
+  const offline = await post(key, "share", apply);
+  expect(offline.status).toBe(200);
+  expect(MachineReviewPreviewReplySchema.parse(await offline.json()).preview.checks).toContainEqual({
+    id: "repository", status: "fail", label: expect.stringContaining("GitHub"),
+  });
+  git(repo.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "moved head");
+  const stale = await post(key, "share", apply);
+  expect(stale.status).toBe(409);
+  expect(await stale.json()).toMatchObject({ code: "STALE_PREVIEW", current: { key, revision: card.revision } });
+});
+
+it("retries a real busy database with the same request key", async () => {
+  const repo = project("tools");
+  const card = await detail(stage(repo, entry("fixture", "run the linter."), at(-1000)).key);
+  const body = { expectedRevision: card.revision };
+  writer.db.exec("BEGIN IMMEDIATE");
+  try {
+    const busy = await post(card.key, "keep", body, "busy-retry");
+    expect(busy.status).toBe(503);
+    expect(await busy.json()).toMatchObject({ code: "MEX_BUSY" });
+  } finally { writer.db.exec("ROLLBACK"); }
+  const saved = await post(card.key, "keep", body, "busy-retry");
+  expect(saved.status).toBe(200);
+}, 15_000);

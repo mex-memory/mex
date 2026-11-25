@@ -177,7 +177,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
     if (!idempotency) throw invalidReview("Provide a request key for this action.");
     const body = await readBoundedJson(context.req.raw, 64 << 10);
     return knowledgeReplays.run(context.get("session").id, idempotency, context.req.path, body, async () => {
-      try { return context.json(await reviewWrites.run(context.req.param("key"), context.req.param("action"), body)); }
+      try { return context.json(await reviewWrites.run(context.req.param("key"), context.req.param("action"), body, context.get("session").id)); }
       catch (error) {
         return problem(context, reviewWriteProblem(error), error instanceof ReviewProblem ? error.extensions : undefined);
       }

@@ -249,6 +249,18 @@ export const MachineReviewActionRequestSchema = z.object({
   reason: z.string().trim().min(1).max(512).optional(),
 }).strict();
 
+export const MachineReviewPreviewReplySchema = z.object({
+  preview: MachineKnowledgeWritePreviewSchema.extend({
+    revision: knowledgeRevisionSchema,
+    checks: z.array(z.object({
+      id: z.enum(["secrets", "repository", "checks"]),
+      status: z.enum(["pass", "warn", "fail"]),
+      label: z.string().min(1),
+    })).max(3),
+  }),
+});
+export type MachineReviewPreviewReply = z.infer<typeof MachineReviewPreviewReplySchema>;
+
 export const MachineReviewPreviewSchema = MachineKnowledgeWritePreviewSchema.extend({
   type: z.literal("preview"),
   revision: knowledgeRevisionSchema,
