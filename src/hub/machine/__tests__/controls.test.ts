@@ -265,6 +265,16 @@ describe("machine Agents and Settings", () => {
     expect(MachineAgentRepairPreviewSchema.parse(await response.json())).toMatchObject({ type: "terminal", command: "mex install" });
   });
 
+  it("reports other mex executables in PATH order alongside the Hub entry", async () => {
+    const first = join(base, "agents", process.platform === "win32" ? "mex.exe" : "mex");
+    const second = join(base, "old-install", process.platform === "win32" ? "mex.exe" : "mex");
+    mkdirSync(dirname(second));
+    for (const file of [first, second]) writeFileSync(file, "fixture", { mode: 0o700 });
+    env.PATH = [dirname(first), dirname(second), env.PATH].join(delimiter);
+    expect((await waitAgents()).pathWarning).toMatchObject({ paths: expect.arrayContaining([first, second]), hubEntry: entry });
+    expect((await waitAgents()).pathWarning?.paths.slice(0, 2)).toEqual([first, second]);
+  });
+
   it("doesn’t classify disabled Codex hooks as a trust issue", async () => {
     await installFixture();
     writeFileSync(join(env.CODEX_HOME!, "config.toml"), "[features]\nhooks=false\n");
