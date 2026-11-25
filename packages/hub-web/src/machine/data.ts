@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MachineChangeEventSchema, type MachineJobActionRequest } from "@mex/hub-contracts/machine";
-import { getHome, getJobs, HubProblemError, postJobAction } from "./api";
+import { getHome, getJobs, getReviewCounts, HubProblemError, postJobAction } from "./api";
 import type { HubJob, JobAction } from "./types";
 
 const JOBS_KEY = ["jobs"];
@@ -21,6 +21,10 @@ export function queryOptions(events: HubEventState) {
 export function useHome(events: HubEventState) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   return useQuery({ queryKey: ["home", tz], queryFn: () => getHome(tz), ...queryOptions(events) });
+}
+
+export function useReviewCount(events: HubEventState) {
+  return useQuery({ queryKey: ["review", "counts"], queryFn: getReviewCounts, ...queryOptions(events) });
 }
 
 export function useJobs(events: HubEventState) {
@@ -45,6 +49,7 @@ export function useHubEvents(checkSession: () => void): HubEventState {
       refresh("home");
       refresh("jobs");
       refresh("knowledge");
+      refresh("review");
     };
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) {
@@ -67,7 +72,11 @@ export function useHubEvents(checkSession: () => void): HubEventState {
       let data: unknown;
       try { data = JSON.parse(event.data); } catch { return; }
       const parsed = MachineChangeEventSchema.safeParse(data);
-      if (parsed.success) for (const topic of parsed.data.topics) refresh(topic);
+      if (parsed.success) {
+        const topics = new Set(parsed.data.topics);
+        if (topics.has("home") || topics.has("knowledge")) topics.add("review");
+        for (const topic of topics) refresh(topic);
+      }
     };
     source.addEventListener("change", onChange);
     return () => {

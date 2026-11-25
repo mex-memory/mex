@@ -9,6 +9,7 @@ import {
   type MachineJobActionRequest,
   MachineProblemSchema,
   MachineProjectsSchema,
+  MachineReviewCountsSchema,
   MachineSessionSchema,
   type MachineProblem,
 } from "@mex/hub-contracts/machine";
@@ -40,12 +41,14 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-async function request(path: string, init: RequestInit = {}): Promise<Response> {
+type HubRequestInit = RequestInit & { timeoutMs?: number };
+
+async function request(path: string, { timeoutMs = 8_000, ...init }: HubRequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("accept", "application/json, application/problem+json");
   let response: Response;
   try {
-    const timeout = AbortSignal.timeout(8_000);
+    const timeout = AbortSignal.timeout(timeoutMs);
     response = await fetch(`/api/v1${path}`, {
       ...init,
       headers,
@@ -65,7 +68,7 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   return response;
 }
 
-export async function requestJson<T>(path: string, schema: { parse(value: unknown): T }, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, schema: { parse(value: unknown): T }, init?: HubRequestInit): Promise<T> {
   return schema.parse(await readJson(await request(path, init)));
 }
 
@@ -99,6 +102,10 @@ export async function heartbeat(csrfToken: string): Promise<void> {
 
 export function getHome(tz: string) {
   return requestJson(`/home?${new URLSearchParams({ tz })}`, MachineHomeSchema);
+}
+
+export function getReviewCounts() {
+  return requestJson("/review?limit=1", MachineReviewCountsSchema);
 }
 
 export function getJobs() {

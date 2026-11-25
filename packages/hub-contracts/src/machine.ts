@@ -229,11 +229,10 @@ const reviewKeyMatches = ({ key, repoId, cardId }: z.infer<typeof reviewRowSchem
 export const MachineReviewRowSchema = reviewRowSchema.refine(reviewKeyMatches);
 export const MachineReviewCardSchema = reviewRowSchema.extend({ text: reviewContent.shape.text }).refine(reviewKeyMatches);
 
-export const MachineReviewQueueSchema = z.object({
+export const MachineReviewCountsSchema = z.object({ total: countSchema, byRepo: z.record(countSchema) });
+export const MachineReviewQueueSchema = MachineReviewCountsSchema.extend({
   cards: z.array(MachineReviewRowSchema).max(100).readonly(),
   nextCursor: z.string().nullable(),
-  total: countSchema,
-  byRepo: z.record(countSchema),
   oldest: isoTimeSchema.nullable(),
   updatingSince: isoTimeSchema.optional(),
   partial: knowledgeReadState.partial,
