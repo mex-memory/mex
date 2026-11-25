@@ -812,8 +812,9 @@ main:has(.page) {
   }
 
   .detailCard {
-    max-height: calc(100vh - var(--detail-top) - var(--detail-gap));
-    max-height: calc(100dvh - var(--detail-top) - var(--detail-gap));
+    --detail-start: max(var(--detail-top), var(--detail-offset, 0px));
+    max-height: max(220px, calc(100vh - var(--detail-start) - var(--detail-gap)));
+    max-height: max(220px, calc(100dvh - var(--detail-start) - var(--detail-gap)));
   }
 
   .detailBody {

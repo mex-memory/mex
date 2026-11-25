@@ -187,21 +187,33 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
   const save = useRef<HTMLButtonElement>(null);
   const dialogTrigger = useRef<HTMLButtonElement | null>(null);
   const forgetTrigger = useRef<HTMLButtonElement>(null);
+  const column = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [moreBelow, setMoreBelow] = useState(false);
   const measureScroll = useCallback(() => {
+    const panel = column.current;
     const element = scroller.current;
+    if (!narrow && panel) {
+      const offset = Math.ceil(panel.getBoundingClientRect().top) + "px";
+      if (panel.style.getPropertyValue("--detail-offset") !== offset) panel.style.setProperty("--detail-offset", offset);
+    }
     setMoreBelow(!narrow && !!element && element.scrollHeight - element.clientHeight - element.scrollTop > 1);
   }, [narrow]);
 
+  useLayoutEffect(measureScroll);
   useLayoutEffect(() => {
-    measureScroll();
-    if (narrow || typeof ResizeObserver === "undefined" || !scroller.current || !content.current) return;
-    const observer = new ResizeObserver(measureScroll);
-    observer.observe(scroller.current);
-    observer.observe(content.current);
-    return () => observer.disconnect();
+    if (narrow) return;
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measureScroll);
+    if (scroller.current) observer?.observe(scroller.current);
+    if (content.current) observer?.observe(content.current);
+    window.addEventListener("scroll", measureScroll, { passive: true });
+    window.addEventListener("resize", measureScroll);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("scroll", measureScroll);
+      window.removeEventListener("resize", measureScroll);
+    };
   }, [measureScroll, narrow]);
 
   const returnToTrigger = () => {
@@ -296,7 +308,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
   const retirement = forget?.preview;
 
   return (
-    <div className={styles.detailColumn}>
+    <div className={styles.detailColumn} ref={column}>
       {narrow && <Link className={`${shared.textLink} ${styles.back}`} to={backHref}><ArrowLeft aria-hidden="true" /> Knowledge</Link>}
       <section aria-labelledby={titleId} className={styles.detailCard}>
         <div className={styles.detailBody} data-more-below={moreBelow}>
