@@ -68,7 +68,7 @@ describe("release benchmark contract", () => {
     }
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       const cap = Math.min(...Object.values(previous.apiLatencyMs[profile]));
-      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail } = budgets.runtime.apiLatencyMs[profile];
+      const { session, projects, home, jobs, knowledge, knowledgeLanding, review, reviewDetail, agents, agentDetail, settings, uninstallPreview } = budgets.runtime.apiLatencyMs[profile];
       expect({ session, projects }).toEqual({ session: cap, projects: cap });
       expect(home).toBeGreaterThan(0);
       expect(jobs).toBeGreaterThan(0);
@@ -76,6 +76,7 @@ describe("release benchmark contract", () => {
       expect(knowledgeLanding).toBeGreaterThan(0);
       expect(review).toBeGreaterThan(0);
       expect(reviewDetail).toBeGreaterThan(0);
+      expect([agents, agentDetail, settings, uninstallPreview]).toEqual([review, review, review, review]);
       expect(budgets.runtime.browserHeapBytes[profile]).toEqual({
         home: previous.browserHeapBytes[profile].home,
         repo: Math.min(...Object.values(previous.browserHeapBytes[profile])),
@@ -127,6 +128,8 @@ describe("release benchmark contract", () => {
       session: "/api/v1/session", projects: "/api/v1/projects", home: "/api/v1/home", jobs: "/api/v1/jobs",
       knowledge: "/api/v1/knowledge", knowledgeLanding: "/api/v1/knowledge/landing",
       review: "/api/v1/review", reviewDetail: "/api/v1/review/cards/:key",
+      agents: "/api/v1/agents", agentDetail: "/api/v1/agents/claude-code",
+      settings: "/api/v1/settings", uninstallPreview: "/api/v1/settings/uninstall",
     });
     for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
       expect(Object.keys(budgets.runtime.browserHeapBytes[profile])).toEqual(RELEASE_ROUTE_KEYS);
