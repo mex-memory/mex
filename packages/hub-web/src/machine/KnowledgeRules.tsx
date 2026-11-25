@@ -26,15 +26,13 @@ export function KnowledgeRuleFiles({ files, findings = [] }: {
         return (
           <li className={styles.file} key={path}>
             <div className={styles.fileRow}>
-              <div>
-                <code>{path}</code>
-                <p className={styles.fileInfo}>
-                  <span>{agents.length ? agents.map((agent) => ruleAgentLabels[agent]).join(", ") : "No agents"}</span>
-                  <span aria-hidden="true">·</span>
-                  <span><span className={shared.srOnly}>Applies to </span>{scopeLabel(scope)}</span>
-                </p>
-              </div>
+              <code>{path}</code>
               <span className={styles.entryCount}>{number.format(entryCount)} {entryCount === 1 ? "entry" : "entries"}</span>
+              <p className={styles.fileInfo}>
+                <span>{agents.length ? agents.map((agent) => ruleAgentLabels[agent]).join(", ") : "No agents"}</span>
+                <span aria-hidden="true">·</span>
+                <span><span className={shared.srOnly}>Applies to </span>{scopeLabel(scope)}</span>
+              </p>
             </div>
             {review.length > 0 && (
               <ul aria-label={`Review findings for ${path}`} className={styles.findings} role="list">
@@ -88,7 +86,7 @@ function RulesCheckout({ scope, tools, children }: {
     <>
       <div className={styles.checkoutBar}>
         {children}
-        <Button aria-describedby={refreshing ? statusId : undefined} disabled={refreshing} focusableWhenDisabled onClick={refresh} type="button" variant="outline">
+        <Button aria-describedby={refreshing ? statusId : undefined} disabled={refreshing} focusableWhenDisabled onClick={refresh} size="sm" type="button" variant="outline">
           <RefreshCw aria-hidden="true" /> Refresh
         </Button>
       </div>

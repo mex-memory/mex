@@ -496,7 +496,7 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
             navigate(linkTo(basePath, next));
           }} value={grouping} />}
           <div className={styles.relatedLinks}>
-            {tools && <Link className={shared.textLink} to={linkTo(basePath, rulesParams)}>Rules</Link>}
+            {tools && <Link className={shared.textLink} to={linkTo(basePath, rulesParams)}>Rule files</Link>}
             <Link className={shared.textLink} to={linkTo(`${basePath}/forgotten`)}>
               Forgotten{view.forgottenCount !== undefined && ` (${number.format(view.forgottenCount)})`}
             </Link>

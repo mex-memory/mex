@@ -23,6 +23,10 @@
   overflow-wrap: anywhere;
 }
 
+.checkoutBar button {
+  height: 34px;
+}
+
 .notice,
 .empty {
   margin: 0;
@@ -68,12 +72,12 @@
   min-width: 0;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
-  gap: 6px 14px;
+  gap: 3px 14px;
 }
 
 .file code,
 .checkoutBar code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -84,9 +88,10 @@
 
 .fileInfo {
   display: flex;
+  grid-column: 1 / -1;
   flex-wrap: wrap;
   gap: 1px 7px;
-  margin: 3px 0 0;
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
