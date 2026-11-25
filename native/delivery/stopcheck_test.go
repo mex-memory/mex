@@ -496,3 +496,26 @@ func TestNamesAnyTestFile(t *testing.T) {
 		}
 	}
 }
+
+func TestPruneStopCursorsKeepsThoseTheJournalStillCovers(t *testing.T) {
+	dir := t.TempDir()
+	old := stopCursorPath(dir, contract.Event{Agent: "claude-code", SessionID: "old"})
+	fresh := stopCursorPath(dir, contract.Event{Agent: "claude-code", SessionID: "fresh"})
+	for _, f := range []string{old, fresh} {
+		if err := saveStopCursor(f, 7); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone := time.Now().Add(-record.JournalMaxAge - time.Hour)
+	if err := os.Chtimes(old, gone, gone); err != nil {
+		t.Fatal(err)
+	}
+	PruneStopCursors(dir, time.Now())
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("a cursor past the journal's age was kept")
+	}
+	if loadStopCursor(fresh) != 7 {
+		t.Fatal("a cursor the journal still covers was removed")
+	}
+	PruneStopCursors(t.TempDir(), time.Now()) // no folder yet: nothing to do
+}

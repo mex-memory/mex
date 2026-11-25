@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/graph"
@@ -470,6 +471,28 @@ type stopCursor struct {
 func stopCursorPath(recordDirectory string, ev contract.Event) string {
 	sum := sha256.Sum256([]byte(ev.Agent + "\x00" + ev.SessionID + "\x00" + ev.AgentID))
 	return filepath.Join(recordDirectory, "stop-turn", hex.EncodeToString(sum[:12])+".json")
+}
+
+// PruneStopCursors removes turn cursors older than the journal keeps rows.
+// Such a cursor points at rows already gone, so a resumed session loses
+// nothing. Bounded like the other session-file prunes.
+func PruneStopCursors(recordDirectory string, now time.Time) {
+	if recordDirectory == "" {
+		return
+	}
+	dir := filepath.Join(recordDirectory, "stop-turn")
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for i, f := range files {
+		if i >= 256 {
+			return
+		}
+		if info, err := f.Info(); err == nil && info.Mode().IsRegular() && now.Sub(info.ModTime()) > record.JournalMaxAge {
+			_ = os.Remove(filepath.Join(dir, f.Name()))
+		}
+	}
 }
 
 func loadStopCursor(file string) int64 {
