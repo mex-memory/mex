@@ -57,7 +57,7 @@ describe("Home and Jobs fixtures", () => {
     const needs = within(screen.getByRole("region", { name: "Needs you" }));
     expect(needs.getAllByRole("listitem")).toHaveLength(4);
     expect(needs.getByText("+4 more")).toBeVisible();
-    expect(needs.getByRole("button", { name: "Open Review" })).toBeVisible();
+    expect(needs.getByRole("link", { name: "Open Review" })).toBeVisible();
     expect(needs.getByText("Run the type checker before opening a pull request")).toBeVisible();
     expect(needs.getAllByText("Storefront")).toHaveLength(2);
     const sessions = within(screen.getByRole("region", { name: "What MEX did" }));

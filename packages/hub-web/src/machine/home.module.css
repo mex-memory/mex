@@ -129,8 +129,7 @@ main:has(.page) {
 }
 
 .tile,
-.card,
-.reviewDialog {
+.card {
   min-width: 0;
   padding: 16px;
   border: 1px solid var(--border);
@@ -284,6 +283,7 @@ main:has(.page) {
 
 .activityCard { grid-column: span 8; }
 .reviewCard {
+  position: relative;
   grid-column: span 4;
   gap: 10px;
 }
@@ -491,15 +491,30 @@ main:has(.page) {
   color: var(--text-secondary);
 }
 
-.needRow {
+.needLink {
+  position: relative;
+  z-index: 1;
+  display: block;
   padding-block: 6px;
+  color: inherit;
+  text-decoration: none;
 }
 
-.needRow > span {
+.needRow {
+  padding-block: 0;
+}
+
+.needLink > span {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.needLink:hover > span {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .ruleMeta {
@@ -532,6 +547,8 @@ main:has(.page) {
 }
 
 .folderIssue a {
+  position: relative;
+  z-index: 1;
   margin-left: auto;
 }
 
@@ -545,17 +562,16 @@ main:has(.page) {
   justify-content: space-between;
 }
 
-.reviewDialog {
-  width: min(480px, calc(100% - 32px));
-  max-height: calc(100dvh - 32px);
+.reviewAction::after {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  content: "";
 }
 
-.reviewDialog::backdrop {
-  background: rgb(0 0 0 / 35%);
-}
-
-.reviewDialog .needRow > span {
-  display: block;
+.reviewAction:focus-visible::after {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .knowledgeChart {
