@@ -58,6 +58,7 @@ function mockHub({ anonymous = false, projectList = projects, session = liveSess
       case "/api/v1/session": return readSession();
       case "/api/v1/projects": return readProjects();
       case "/api/v1/jobs": return Response.json([]);
+      case "/api/v1/agents": return Response.json({ agents: [] });
       case "/api/v1/session/heartbeat": return heartbeat();
       default: throw new Error(`Unexpected request: ${url}`);
     }

@@ -97,9 +97,13 @@ test("opens the machine Hub, keeps bookmarks signed in across restarts, and reje
   }
 });
 
-test("reads Home, Review, Knowledge, and Jobs from a real empty MEX home with no accessibility violations", async ({ page }) => {
+test("reads every main page from a real empty MEX home with no accessibility violations", async ({ page }) => {
   const root = mkdtempSync(join(tmpdir(), "mex-empty-hub-e2e-"));
-  const env = { ...process.env, MEX_HOME: join(root, "home"), MEX_BACKGROUND: "0", MEX_TELEMETRY: "0", MEX_OFF: "0", DO_NOT_TRACK: "1" };
+  const env = {
+    ...process.env, MEX_HOME: join(root, "home"), MEX_BACKGROUND: "0", MEX_TELEMETRY: "0", MEX_OFF: "0", DO_NOT_TRACK: "1",
+    PATH: join(root, "empty-bin"), CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"),
+    COPILOT_HOME: join(root, "copilot"), XDG_CONFIG_HOME: join(root, "config"),
+  };
   let hub: Awaited<ReturnType<typeof startHub>> | undefined;
   try {
     hub = await startHub(root, env, await freePort());
@@ -127,6 +131,29 @@ test("reads Home, Review, Knowledge, and Jobs from a real empty MEX home with no
     await expect(page).toHaveURL(`${origin}/knowledge`);
     await expect(page.getByRole("heading", { name: "Knowledge", exact: true, level: 1 })).toBeVisible();
     await expect(page.getByText("Nothing learned yet. Add a note, or let MEX learn from your sessions.")).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+    await page.getByRole("link", { name: "Agents", exact: true }).click();
+    await expect(page).toHaveURL(`${origin}/agents`);
+    const claude = page.getByRole("article", { name: "Claude Code" });
+    await expect(claude.getByText("Not found", { exact: true })).toBeVisible();
+    await expect(page.getByRole("article")).toHaveCount(4);
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await claude.getByRole("link", { name: "Details for Claude Code" }).click();
+    await expect(page.getByRole("heading", { name: "Claude Code", exact: true, level: 1 })).toBeVisible();
+    await expect(page.getByText("No hook error history is recorded.")).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page).toHaveURL(`${origin}/settings`);
+    await expect(page.getByText("No registered checkouts.")).toBeVisible();
+    await expect(page.getByRole("switch", { name: "Telemetry" })).toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByRole("region", { name: "Storage" }).getByText(/record\.db$/)).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByRole("button", { name: "Preview uninstall" }).click();
+    const uninstall = page.getByRole("dialog", { name: "Uninstall preview" });
+    await expect(uninstall.getByText("No recorded installation changes.")).toBeVisible();
+    await expect(uninstall.getByText("mex uninstall", { exact: true })).toBeVisible();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     expect(outbound).toEqual([]);
   } finally {
