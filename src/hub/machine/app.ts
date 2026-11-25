@@ -1,4 +1,6 @@
-import { MachineJobActionRequestSchema } from "@mex/hub-contracts/machine";
+import {
+  MachineAgentIdSchema, MachineAgentRepairRequestSchema, MachineJobActionRequestSchema, MachineSettingsApplyRequestSchema,
+} from "@mex/hub-contracts/machine";
 import { Hono, type Context } from "hono";
 import { generateCookie, getCookie } from "hono/cookie";
 import { randomUUID } from "node:crypto";
@@ -8,6 +10,9 @@ import { openRecord, openRecordReadOnly, type RecordWriter } from "../../record/
 import { recordLocation, type LocationOptions } from "../../record/location.js";
 import { readBoundedJson, readStrictQuery } from "../http/request.js";
 import { validateHubRequestPath, type HubAssetManifest } from "../static/assets.js";
+import { AgentRepair, machineBusy } from "./agent-repair.js";
+import { refreshedAgent, takeAgentsSnapshot, type MachineAgentOptions } from "./agents-snapshot.js";
+import { ControlSnapshot } from "./control-snapshot.js";
 import { HubEvents } from "./events.js";
 import { HomeData } from "./home.js";
 import { changeHubJob, readHubJobs } from "./jobs.js";
@@ -21,6 +26,9 @@ import { invalidReview, readReviewCard, readReviewPage, reviewUnavailable } from
 import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes.js";
 import type { ReviewDependencies } from "../../review/actions.js";
 import { checkHost, checkWrite, HubRequestError, isBootstrapToken, type HubSession, type HubSessions, type RequestAddress } from "./security.js";
+import { takeSettingsSnapshot } from "./settings-snapshot.js";
+import { applyRecordSetting, applyTelemetrySetting, refreshCheckoutRules } from "./settings-writes.js";
+import { takeUninstallSnapshot } from "./uninstall-snapshot.js";
 import { consumeBootstrap, keepHubOpen, TAB_KEEPALIVE_MS, type HubMode } from "./state.js";
 
 /**
@@ -40,6 +48,8 @@ export interface MachineHubOptions extends LocationOptions {
   readonly assets?: HubAssetManifest;
   readonly env?: NodeJS.ProcessEnv;
   readonly now?: () => number;
+  readonly agentEntry?: string;
+  readonly agentUserHome?: string;
   readonly reviewDependencies?: Partial<ReviewDependencies>;
 }
 
@@ -53,15 +63,29 @@ export function createMachineHubApp(options: MachineHubOptions) {
   const app = new Hono<{ Variables: Variables }>();
   const now = options.now ?? Date.now;
   const location: LocationOptions = { home: options.home, cache: options.cache, isNetwork: options.isNetwork };
+  const hubHome = recordLocation({ ...location, create: false }).home;
+  const requireHome = () => {
+    if (!existsSync(hubHome)) throw new HubRequestError(410, "MISSING_HOME", "MEX’s home was removed", "Run mex hub from the terminal to start again.");
+  };
   const withWriter = <T>(use: (writer: RecordWriter) => T): T => {
+    requireHome();
     const writer = openRecord(location);
     try { return use(writer); } finally { writer.close(); }
   };
 
   const home = new HomeData(location, now);
   const knowledge = new KnowledgeData(location, now, options.env);
+  const agentOptions: MachineAgentOptions = { ...location, env: options.env, entry: options.agentEntry, userHome: options.agentUserHome };
+  const agentRead = new ControlSnapshot(now, signal => takeAgentsSnapshot(agentOptions, signal), "Agent settings couldn’t be read. Try again or run mex doctor.");
+  const settingsRead = new ControlSnapshot(now,
+    signal => takeSettingsSnapshot({ ...location, now, env: options.env, version: options.version, mode: options.mode }, signal),
+    "The machine settings couldn’t be read. Try again or run mex doctor.");
+  const uninstallRead = new ControlSnapshot(now, async signal => ({ ...await takeUninstallSnapshot(location, signal), issue: undefined }),
+    "The install record couldn’t be read. Run mex uninstall --dry-run in your terminal.");
+  const repair = new AgentRepair(agentOptions, now);
+  const followUps = new Set<NodeJS.Immediate>();
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
-  const events = new HubEvents(location, home, knowledge, now, keepOpen);
+  const events = new HubEvents(location, home, knowledge, now, keepOpen, { agents: agentRead, settings: settingsRead, uninstall: uninstallRead });
   const changed = async (repoId: string, notesChanged: boolean) => {
     await home.refreshProject(repoId);
     if (notesChanged) await knowledge.refreshProject(repoId);
@@ -79,6 +103,27 @@ export function createMachineHubApp(options: MachineHubOptions) {
         return problem(context, knowledgeWriteProblem(error));
       }
     });
+  };
+
+  const machinePost = async (context: Context<{ Variables: Variables }>, action: (body: unknown) => Promise<unknown>) => {
+    requireHome();
+    const key = context.req.header("Idempotency-Key");
+    if (!key) throw new HubRequestError(400, "INVALID_REQUEST", "Request key required", "Provide a request key for this action.");
+    const body = await readBoundedJson(context.req.raw, 64 << 10);
+    return knowledgeReplays.run(context.get("session").id, key, context.req.path, body, async () => {
+      try { return context.json(await action(body)); }
+      catch (error) {
+        if (error instanceof Error && /^record\.db schema version \d+ is newer/u.test(error.message)) {
+          return problem(context, new HubRequestError(409, "REVISION_CONFLICT", "MEX needs an upgrade", error.message));
+        }
+        return problem(context, machineBusy(error) ?? error);
+      }
+    });
+  };
+  const readAgentId = (id: string) => {
+    const parsed = MachineAgentIdSchema.safeParse(id);
+    if (!parsed.success) throw new HubRequestError(404, "INVALID_REQUEST", "Agent not found", "Choose a supported agent.");
+    return parsed.data;
   };
 
   app.use("*", async (context, next) => {
@@ -129,6 +174,9 @@ export function createMachineHubApp(options: MachineHubOptions) {
     }
     context.set("session", session);
     home.touch();
+    agentRead.touch();
+    settingsRead.touch();
+    uninstallRead.touch();
     await next();
   });
 
@@ -204,6 +252,79 @@ export function createMachineHubApp(options: MachineHubOptions) {
   app.post("/api/v1/knowledge/items/:key/edit", (context) => knowledgePost(context, (body) => knowledgeWrites.edit(context.req.param("key"), body)));
   app.post("/api/v1/knowledge/items/:key/forget", (context) => knowledgePost(context, (body) => knowledgeWrites.forget(context.req.param("key"), body)));
 
+  app.get("/api/v1/agents", (context) => {
+    readStrictQuery(context.req.raw, []);
+    return context.json(agentRead.get());
+  });
+
+  app.get("/api/v1/agents/:agent", (context) => {
+    readStrictQuery(context.req.raw, []);
+    const id = readAgentId(context.req.param("agent"));
+    const { agents, ...state } = agentRead.get();
+    return context.json({ ...state, agent: agents?.find(agent => agent.id === id) });
+  });
+
+  app.post("/api/v1/agents/:agent/repair/preview", (context) => machinePost(context, async (body) => {
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length) {
+      throw new HubRequestError(400, "INVALID_REQUEST", "Invalid repair request", "Choose an agent to preview its repair.");
+    }
+    return repair.preview(readAgentId(context.req.param("agent")), context.get("session").id);
+  }));
+
+  app.post("/api/v1/agents/:agent/repair", (context) => machinePost(context, async (body) => {
+    const id = readAgentId(context.req.param("agent"));
+    const parsed = MachineAgentRepairRequestSchema.safeParse(body);
+    if (!parsed.success) throw new HubRequestError(400, "INVALID_REQUEST", "Invalid repair request", "Open and confirm a repair preview first.");
+    const { revision, previewToken } = parsed.data;
+    const files = [...(agentRead.get().agents?.find(agent => agent.id === id)?.files ?? [])];
+    const changes = await repair.apply(id, context.get("session").id, revision, previewToken);
+    for (const { path } of changes) if (!files.some(file => file.path === path) && files.length < 128) {
+      files.push({ path, kind: "hookConfig", hiddenFromGit: null });
+    }
+    const agent = refreshedAgent(id, agentOptions, files);
+    agentRead.update(current => ({ ...current, agents: current.agents?.map(row => row.id === id ? agent : row) }));
+    agentRead.refresh();
+    uninstallRead.refresh();
+    events.controlsChanged("agents", "settings");
+    return { agent };
+  }));
+
+  app.get("/api/v1/settings", (context) => {
+    readStrictQuery(context.req.raw, []);
+    return context.json(settingsRead.get());
+  });
+
+  app.get("/api/v1/settings/uninstall", (context) => {
+    readStrictQuery(context.req.raw, []);
+    return context.json(uninstallRead.get());
+  });
+
+  app.post("/api/v1/settings", (context) => machinePost(context, async (body) => {
+    const parsed = MachineSettingsApplyRequestSchema.safeParse(body);
+    if (!parsed.success) throw new HubRequestError(400, "INVALID_REQUEST", "Invalid setting change", "Provide the setting and its current revision.");
+    const { change, expectedRevision } = parsed.data;
+    const env = options.env ?? process.env;
+    let notice;
+    if (change.type === "telemetry") notice = await applyTelemetrySetting(location, env, change.enabled, expectedRevision);
+    else {
+      const checkout = applyRecordSetting(location, env, now(), change, expectedRevision);
+      if (checkout) {
+        const followUp = setImmediate(() => {
+          followUps.delete(followUp);
+          if (!existsSync(hubHome)) return;
+          refreshCheckoutRules(location, checkout);
+          agentRead.refresh();
+          uninstallRead.refresh();
+        });
+        followUp.unref();
+        followUps.add(followUp);
+      }
+    }
+    settingsRead.refresh();
+    events.controlsChanged("settings", "home");
+    return { saved: true, notice };
+  }));
+
   app.get("/api/v1/jobs", (context) => context.json(readHubJobs(location)));
 
   app.post("/api/v1/jobs/:id/actions", async (context) => {
@@ -242,6 +363,10 @@ export function createMachineHubApp(options: MachineHubOptions) {
     events.close();
     home.close();
     knowledge.close();
+    agentRead.close();
+    settingsRead.close();
+    uninstallRead.close();
+    for (const followUp of followUps) clearImmediate(followUp);
   } });
 }
 

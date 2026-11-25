@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cliEntryPath } from "../../hooks/shim/launcher.js";
 import { openRecord } from "../../record/index.js";
 import type { LocationOptions } from "../../record/location.js";
 import { VERSION } from "../../version.js";
@@ -48,7 +49,8 @@ export async function startMachineHub(options: StartMachineHubOptions): Promise<
   const sessions = new HubSessions(home, options.now);
   const assetRoot = options.assetRoot === undefined ? defaultAssetRoot() : options.assetRoot;
   const assets = assetRoot !== null && existsSync(assetRoot) ? new HubAssetManifest(assetRoot) : undefined;
-  const app = createMachineHubApp({ ...location, sessions, homeId, version: VERSION, mode: options.mode, assets, env: options.env, now: options.now });
+  const agentEntry = cliEntryPath(fileURLToPath(new URL("./cli.js", import.meta.url)));
+  const app = createMachineHubApp({ ...location, sessions, homeId, version: VERSION, mode: options.mode, assets, env: options.env, now: options.now, agentEntry });
 
   let server: RunningHubNodeServer | undefined;
   let lastError: unknown;
