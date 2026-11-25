@@ -27,6 +27,7 @@ const Reason = z.enum(["branch-merged", "release-tag", "release-age", "seen-once
 const Note = z.object({ version: z.literal(1), id: Digest, claim: Digest, scope: Scope, at: Time,
   session: z.string().min(1).max(512), row: z.string().regex(/^m[1-9]\d{0,15}$/u),
   quote: z.string().min(1).max(2400).refine(text => !!text.trim() && stripHidden(text) === text && !hasSecret(text)),
+  corroborated: z.literal("host-memory").optional(),
   retired: z.object({ reason: Reason, at: Time, replacement: Digest.optional() }).strict().optional(),
 }).strict();
 export type SessionNote = z.infer<typeof Note>;
@@ -87,7 +88,8 @@ export function sessionNoteQuotes(store: RecordReader | RecordWriter, project: s
   return notes.flatMap(note => {
     if (seen.has(note.claim)) return [];
     seen.add(note.claim);
-    return [{ id: note.id, lasts: note.scope.kind, text: verbatimText(note.quote, new Date(note.at).toISOString()) }];
+    return [{ id: note.id, lasts: note.scope.kind, text: verbatimText(note.quote, new Date(note.at).toISOString()),
+      ...(note.corroborated ? { corroborated: note.corroborated } : {}) }];
   });
 }
 
@@ -204,7 +206,7 @@ export function saveSessionNotes(writer: RecordWriter, changes: NoteChanges): vo
 
 /** Stage 2 changes the active projection and keeps the typed source in history. */
 export function settleSessionNotes(writer: RecordWriter, project: string, ids: ReadonlyMap<string, { reason: "one-off" | "corrected" | "restated"; replacement?: string }>,
-  promoted: ReadonlySet<string>, now: number): void {
+  promoted: ReadonlyMap<string, Note["corroborated"]>, now: number): void {
   if (!ids.size && !promoted.size) return;
   const changes: NoteChanges = new Map();
   for (const row of [...readNotes(writer, project), ...readNotes(writer, "global")]) {
@@ -212,7 +214,7 @@ export function settleSessionNotes(writer: RecordWriter, project: string, ids: R
     const retired = ids.get(row.note.id);
     if (retired) changes.set(row.note.id, { ...row, note: { ...row.note, retired: { ...retired, at: now } } });
     else if (promoted.has(row.note.id) && row.note.scope.kind === "seen")
-      changes.set(row.note.id, { ...row, note: { ...row.note, scope: { kind: "repo" } } });
+      changes.set(row.note.id, { ...row, note: { ...row.note, scope: { kind: "repo" }, corroborated: promoted.get(row.note.id) } });
   }
   saveSessionNotes(writer, changes);
 }

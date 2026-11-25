@@ -94,6 +94,19 @@ function readTranscript<T>(path: string, agent: TranscriptAgent, read: (fd: numb
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
+/** Path-only memory references use the captured rollout's bounded identity record. */
+export function codexRolloutSession(path: string): string | undefined {
+  const result = readTranscript<string>(path, "codex", (fd, size) => {
+    const head = Buffer.alloc(Math.min(Number(size), READ_CHUNK_BYTES));
+    const length = readSync(fd, head, 0, head.length, 0), end = head.subarray(0, length).indexOf(10);
+    if (end < 0) return { issue: "invalid-format" };
+    const row = parseRow(head.subarray(0, end).toString("utf8"));
+    const id = row && row !== "invalid-format" && row.type === "session_meta" ? object(row.payload)?.id : undefined;
+    return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(id) ? { value: id } : { issue: "invalid-format" };
+  });
+  return "value" in result ? result.value : undefined;
+}
+
 interface TranscriptTail { body: string; truncated: boolean; start: number; }
 function readTail(path: string, agent: TranscriptAgent, maxBytes = TAIL_BYTES, requireFull = false, appending = false): TranscriptRead<TranscriptTail> {
   return readTranscript<TranscriptTail>(path, agent, (fd, size) => {

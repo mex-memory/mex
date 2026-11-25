@@ -8,9 +8,11 @@ import { note, recall, expand } from "../store.js";
 import { openRecordReadOnly, projectIdentity } from "../../record/index.js";
 import { prepareTeamWrite, applyTeamWrite } from "../team.js";
 import { parseEntry, serializeEntry } from "../entry.js";
-import { MEMORY_LIMITS } from "../host-memory.js";
+import { discoverMemory, hostMemoryStatus, MEMORY_LIMITS } from "../host-memory.js";
 import { knowledgeProject } from "../context.js";
 import { realPath } from "../../record/project.js";
+import { readStatus, formatStatus } from "../../status.js";
+import { runRepoStart } from "../../repo-start/command.js";
 
 let root: string, repo: string, home: string, claude: string, codex: string, memory: string;
 const start = "2026-01-31T12:00:00.000Z";
@@ -36,7 +38,7 @@ beforeEach(() => {
   writeFileSync(join(repo, "README.md"), "# Fixture\n"); git(repo, "add", "README.md"); git(repo, "commit", "-m", "Fixture");
   memory = join(claude, "projects", repo.replace(/[^a-zA-Z0-9]/gu, "-"), "memory");
 });
-afterEach(() => { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
 
 describe("read-only host memory hints", () => {
   it("honors both configured homes, scopes Codex memories and never changes host files", () => {
@@ -66,6 +68,35 @@ describe("read-only host memory hints", () => {
     codexSummary("two", repo, "Fixtures use fixed inputs because failures must reproduce."); refreshHints(options());
     expect(readHints({ ...options(), consumerAgent: "codex" }).entries).toEqual([]);
     expect(recall("fixtures", { ...options(), consumerAgent: "codex" }).entries).toEqual([]);
+  });
+  it("shows disabled host memory in status and the first screen while leaving host files untouched", async () => {
+    expect(hostMemoryStatus(options())).toEqual({ "claude-code": "missing", codex: "missing" });
+    const claudeFile = topic("fixtures.md", "Fixtures use fixed inputs.");
+    const codexFile = codexSummary("our-thread", repo, "Build artifacts are disposable.");
+    writeFileSync(join(claude, "settings.json"), '{"autoMemoryEnabled":false}\n');
+    writeFileSync(join(codex, "config.toml"), "[features]\nmemories = false\n");
+    vi.stubEnv("MEX_HOME", home);
+    const expected = ["Claude Code memory is off: MEX learns from your messages only", "Codex memory is off: MEX learns from your messages only"];
+    expect(refreshHints(options())).toMatchObject({ imported: 0, agents: { "claude-code": "off", codex: "off" } });
+    const status = readStatus({ cwd: repo, home, env: options().env });
+    expect(status.learning.hostMemory).toEqual({ "claude-code": "off", codex: "off" });
+    const lines: string[] = [];
+    await runRepoStart({ cwd: repo, env: { ...process.env, ...options().env }, install: false, caller: "agent", interactive: false, wait: false, write: line => lines.push(line) });
+    for (const notice of expected) {
+      expect(formatStatus(status)).toContain(notice);
+      expect(lines.join("\n")).toContain(notice);
+    }
+    expect(readFileSync(claudeFile, "utf8")).toContain("Fixtures use fixed inputs.");
+    expect(readFileSync(codexFile, "utf8")).toContain("Build artifacts are disposable.");
+  });
+  it("binds a consolidated Codex fact only to the task named by its reference", () => {
+    const folder = join(codex, "memories_v2"); mkdirSync(folder, { recursive: true });
+    const block = "# Task Group: Tests\n" + [1, 2].map(id => `## Task ${id}: fixture\n### rollout_summary_files\n- task-${id}.md (cwd=${repo}, thread_id=session-${id})\n`).join("")
+      + "## Reusable knowledge\n- first task's rule [Task 1]\n- ambiguous rule [Task 1][Task 2]\n- unknown rule [Task 3]\n";
+    writeFileSync(join(folder, "MEMORY.md"), block);
+    expect(discoverMemory(options()).candidates.map(candidate => [candidate.text, candidate.sessionReference?.id])).toEqual([
+      ["first task's rule [Task 1]", "session-1"], ["ambiguous rule [Task 1][Task 2]", undefined], ["unknown rule [Task 3]", undefined],
+    ]);
   });
   it("reads both Codex memory versions and consolidated task groups without importing ambiguous scope", () => {
     const directory = join(codex, "memories_v2"); mkdirSync(directory, { recursive: true });

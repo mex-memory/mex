@@ -22,6 +22,10 @@ describe("code-enforced team evidence fixture table", () => {
     ["recorded decision conflict", policy(person, { conflict: true }), "review", "team-conflict"],
     ["unconfirmed agent claim", policy({ source: "observed" }), "personal", "insufficient-evidence"],
     ["agent memory alone", policy({ source: "agent-memory" }), "personal", "insufficient-evidence"],
+    ["host corroboration requires Review even with automatic sharing available", policy({ ...person,
+      corroboration: { kind: "host-memory", verified: true, sameClaim: true } }), "review", "host-memory"],
+    ["host corroboration without typed evidence", policy({ source: "agent-memory",
+      corroboration: { kind: "host-memory", verified: true, sameClaim: true } }), "personal", "insufficient-evidence"],
     ["observed and corroborated", policy({ source: "observed", corroboration: { kind: "script", verified: true, sameClaim: true } }), "team", "eligible"],
     ["coincidental command success", policy({ source: "observed", corroboration: { kind: "ci", verified: true, sameClaim: false } }), "personal", "insufficient-evidence"],
   ] as const)("%s", (_name, input, destination, reason) => expect(promotionDecision(input)).toEqual({ destination, reason }));

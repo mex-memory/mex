@@ -18,7 +18,7 @@ function fixture() {
   const writer = openRecord({ home, projectPath: root, isNetwork: () => false, git: () => { throw new Error("No git"); } });
   const projectId = writer.checkout(root)!.project_id, location = writer.location;
   writer.close();
-  const env = { ...process.env, CLAUDE_CONFIG_DIR: join(base, "claude"), CODEX_HOME: join(base, "codex"), MEX_OFF: "0" };
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: join(base, "claude"), CODEX_HOME: join(base, "codex"), CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0", MEX_OFF: "0" };
   return { base, home, root, projectId, location, env, options: { home, cwd: root, env, now, isNetwork: () => false } };
 }
 
@@ -41,6 +41,7 @@ it("reads installed agents, cached verdicts and last hook call without writing",
   const before = readFileSync(f.location.record);
   const view = readStatus(f.options);
   expect(view.agents).toEqual([{ agent: "claude-code", installed: true, events: 12, lastCall: "2026-11-17T09:57:00Z" }, { agent: "codex", installed: true, events: 9 }]);
+  expect(view.learning.hostMemory).toEqual({ "claude-code": "missing", codex: "missing" });
   expect(view.knowledge).toMatchObject({ personal: 1, team: 0, hints: 0, checks: { broken: 1, held: 0 } });
   expect(view.background).toMatchObject({ waiting: 0, running: 0, lastRun: { name: "memory-filter" } });
   expect(view.binary).toEqual({ state: "native", version: "0.9.0-beta.1.1" });

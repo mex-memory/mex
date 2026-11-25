@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 it("status and doctor share a read-only JSON view without a legacy scaffold", () => {
   const base = mkdtempSync(join(tmpdir(), "mex-status-cli-")), repo = join(base, "repo");
   mkdirSync(repo); mkdirSync(join(repo, ".git"));
-  const env = { ...process.env, MEX_HOME: join(base, "home"), CLAUDE_CONFIG_DIR: join(base, "claude"), CODEX_HOME: join(base, "codex"), LOCALAPPDATA: join(base, "local"), MEX_TELEMETRY: "0", MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0" };
+  const env = { ...process.env, MEX_HOME: join(base, "home"), CLAUDE_CONFIG_DIR: join(base, "claude"), CODEX_HOME: join(base, "codex"), LOCALAPPDATA: join(base, "local"), CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0", MEX_TELEMETRY: "0", MEX_INSTALL_AUTO: "0", MEX_BACKGROUND: "0" };
   const run = (...args: string[]) => spawnSync(process.execPath, [resolve("dist/cli.js"), ...args], { cwd: repo, env, encoding: "utf8", timeout: 15_000 });
   const status = run("status", "--json"), doctor = run("doctor", "--json");
   expect(status.status, status.stderr).toBe(0);

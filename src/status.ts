@@ -20,6 +20,7 @@ import { knowledgeProject, type KnowledgeOptions } from "./knowledge/context.js"
 import { KNOWLEDGE_LIMITS, parseEntry } from "./knowledge/entry.js";
 import { containedDirectory, readEntryFile } from "./knowledge/files.js";
 import { hintStatus } from "./knowledge/hints.js";
+import { hostMemoryStatus, memoryOffNotice, type MemoryAgent, type MemoryState } from "./knowledge/host-memory.js";
 import { LEARNING_BACKGROUND_NOTICE } from "./filter/background-notice.js";
 import { formatFilterBatch, readFilterBatchReport, type FilterBatchReport } from "./filter/report.js";
 
@@ -34,7 +35,7 @@ export interface StatusView {
   binary: { state: "native" | "missing" | "unknown"; version?: string };
   knowledge: KnowledgeStatus | null;
   background: { waiting: number; running: number; lastRun?: { name: string; at: string } } | null;
-  learning: { backgroundNotice: string; latestBatch: FilterBatchReport | null };
+  learning: { backgroundNotice: string; latestBatch: FilterBatchReport | null; hostMemory?: Record<MemoryAgent, MemoryState> };
   modelUse: { runs: number; percent: number | null; capPercent: number; estimated: true } | null;
 }
 export interface StatusOptions extends LocationOptions { cwd?: string; env?: NodeJS.ProcessEnv; now?: number; }
@@ -149,6 +150,12 @@ export function readStatus(options: StatusOptions = {}): StatusView {
         if (last?.at && Number.isFinite(Date.parse(last.at))) agent.lastCall = last.at;
       }
     } finally { hooks?.close(); }
+    if (root) {
+      const memory = attempt(() => hostMemoryStatus({ ...options, projectPath: root.root }));
+      if (memory && view.agents.some(agent => agent.agent !== "copilot" && (memory[agent.agent] !== "missing" || agent.installed || agent.lastCall))) {
+        view.learning.hostMemory = memory;
+      }
+    }
     if (reader) {
       view.background = attempt(() => {
         const pending = reader.get<{ waiting: number; running: number }>("SELECT count(CASE WHEN state IN ('queued','waiting','paused') THEN 1 END) waiting,count(CASE WHEN state='running' THEN 1 END) running FROM jobs")!;
@@ -211,6 +218,11 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   lines.push(b ? `  ${b.waiting ? `${b.waiting} jobs waiting` : "No jobs waiting"}${b.running ? ` · ${b.running} running` : ""} · last run: ${b.lastRun ? `${b.lastRun.name}, ${ago(b.lastRun.at, now)}` : "none recorded"}` : "  Jobs: unknown");
   lines.push(u ? `  Model use for MEX this week: ${u.runs} runs, ${u.percent === null ? "share of your usage unknown" : `${u.percent.toFixed(1)}% of your usage (estimate)`} (cap ${u.capPercent}%)` : "  Model use: unknown");
   lines.push(`  ${view.learning.backgroundNotice}`);
+  for (const agent of view.agents) {
+    if (agent.agent === "copilot") continue;
+    const state = view.learning.hostMemory?.[agent.agent];
+    if (state === "off" || state === "missing" && (agent.installed || agent.lastCall)) lines.push(`  ${memoryOffNotice(agent.agent)}`);
+  }
   if (view.learning.latestBatch) lines.push(`  ${formatFilterBatch(view.learning.latestBatch, "Latest filter batch")}`);
   if (options.doctor) {
     const problems = statusProblems(view);
