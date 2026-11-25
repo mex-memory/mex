@@ -1,10 +1,12 @@
 import { setCaptureEnabled, setCheckoutEnabled, setGlobalEnabled, setLearningSharing } from "../../controls/index.js";
 import { rebuildNative } from "../../knowledge/native.js";
 import { openRecord, type CheckoutRow, type RecordWriter } from "../../record/index.js";
-import type { LocationOptions } from "../../record/location.js";
+import { recordLocation, type LocationOptions } from "../../record/location.js";
+import { changeTelemetryPreference } from "../../telemetry/index.js";
 import { machinePath } from "./machine-projects.js";
 import { HubRequestError } from "./security.js";
-import { captureSetting, checkoutExists, checkoutPower, deliveryPower, sharingSetting, type SettingsApply } from "./settings-values.js";
+import { cliTelemetryHome } from "./settings-snapshot.js";
+import { captureSetting, checkoutExists, checkoutPower, deliveryPower, sharingSetting, telemetrySetting, type SettingsApply } from "./settings-values.js";
 
 type RecordChange = Exclude<SettingsApply["change"], { type: "telemetry" }>;
 
@@ -78,4 +80,19 @@ export function applyRecordSetting(
       }
     }
   } finally { writer.close(); }
+}
+
+
+export async function applyTelemetrySetting(location: LocationOptions, env: NodeJS.ProcessEnv, enabled: boolean, expected: string) {
+  const { home } = recordLocation({ ...location, create: false });
+  const writable = cliTelemetryHome(location);
+  const check = () => checkSetting(expected, telemetrySetting(home, env, writable));
+  check();
+  const { purged } = await changeTelemetryPreference(enabled, () => {
+    check();
+    // Fail on an already busy or newer record before changing the opt-out marker.
+    const writer = openRecord({ ...location, busyTimeoutMs: 0 });
+    writer.close();
+  });
+  return purged ? undefined : "Telemetry is off. The local queue couldn’t be cleared.";
 }

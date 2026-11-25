@@ -11,7 +11,7 @@ import { PUBLIC_COMMAND_ORDER } from "./cli-tools.js";
 import { buildKnowledgeCommands } from "./knowledge/cli.js";
 import { buildUpgradeCommand } from "./upgrade/cli.js";
 import { unsupportedNodeMessage } from "./node-version.js";
-import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, disableTelemetry, enableTelemetry, showFirstRunNotice } from "./telemetry/index.js";
+import { captureEvent, flush, isEnabled, getProjectTelemetryContext, getTelemetryInspection, changeTelemetryPreference, showFirstRunNotice } from "./telemetry/index.js";
 import { mexHomeDir, setGlobalConfigKey } from "./global-config.js";
 import { createCliTelemetry, telemetryProjectLocation } from "./cli-telemetry.js";
 export { isTelemetryExemptCommand } from "./cli-telemetry.js";
@@ -1280,15 +1280,14 @@ function describeTelemetryReason(reason: string | undefined): string {
  * anyone looks for it. An alias costs nothing; a user who cannot find the
  * opt-out costs trust.
  */
-function disableTelemetryWithNotice(): void {
-  const result = disableTelemetry();
+async function changeTelemetryWithNotice(enabled: boolean): Promise<void> {
+  const result = await changeTelemetryPreference(enabled);
   if (!result.purged) console.log("Telemetry is off; the local queue could not be cleared because it is busy or unavailable.");
 }
 
-function setTelemetryEnabled(enabled: boolean): void {
+async function setTelemetryEnabled(enabled: boolean): Promise<void> {
   try {
-    if (enabled) enableTelemetry();
-    else disableTelemetryWithNotice();
+    await changeTelemetryWithNotice(enabled);
   } catch (err) {
     console.error((err as Error).message);
     process.exitCode = 1;
@@ -1420,8 +1419,7 @@ configCmd
           process.exitCode = 1;
           return;
         }
-        if (value === "off") disableTelemetryWithNotice();
-        else enableTelemetry();
+        await changeTelemetryWithNotice(value === "on");
         console.log(`Telemetry set to "${value}" in ~/.mex/config.json`);
       } else if (key === "feedback") {
         if (value !== "on" && value !== "off") {
