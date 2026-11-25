@@ -23,7 +23,11 @@ export function HubBrand() {
   );
 }
 
-export function CopyButton({ text, path = false }: { text: string; path?: boolean }) {
+export function CopyButton({ text, path = false, iconOnly = path }: {
+  text: string;
+  path?: boolean;
+  iconOnly?: boolean;
+}) {
   const [result, setResult] = useState<"Copied" | "Copy failed" | "">("");
   const Icon = result === "Copied" ? Check : result === "Copy failed" ? X : Copy;
 
@@ -39,15 +43,15 @@ export function CopyButton({ text, path = false }: { text: string; path?: boolea
   return (
     <>
       <Button
-        aria-label={path ? `Copy path ${text}` : undefined}
+        aria-label={path ? `Copy path ${text}` : iconOnly ? "Copy command" : undefined}
         onClick={copy}
-        size={path ? "icon-sm" : "default"}
-        title={path ? result || "Copy path" : undefined}
+        size={iconOnly ? "icon-sm" : "default"}
+        title={iconOnly ? result || (path ? "Copy path" : "Copy command") : undefined}
         type="button"
-        variant={path ? "ghost" : "outline"}
+        variant={iconOnly ? "ghost" : "outline"}
       >
         <Icon aria-hidden="true" />
-        {path ? null : result || "Copy command"}
+        {iconOnly ? null : result || "Copy command"}
       </Button>
       <span className={styles.srOnly} role="status">{result}</span>
     </>
@@ -71,7 +75,19 @@ export function HubPageHeader({ title, subtitle, action, titleRef }: {
   );
 }
 
-export function CommandCard({ title, children, command }: { title: string; children: ReactNode; command: string }) {
+export function CommandCard({ title, children, command, compact }: {
+  children?: ReactNode;
+  command: string;
+} & ({ compact: true; title?: never } | { compact?: false; title: string })) {
+  if (compact) {
+    return (
+      <div className={styles.commandInline}>
+        <Terminal aria-hidden="true" />
+        <code>{command}</code>
+        <CopyButton text={command} iconOnly />
+      </div>
+    );
+  }
   return (
     <Card className={styles.commandCard}>
       <CardHeader className={styles.commandHeader}>

@@ -462,3 +462,33 @@
   border-radius: 50%;
   background: var(--warning);
 }
+
+.commandInline {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px 5px 11px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.commandInline > svg {
+  width: 15px;
+  height: 15px;
+  color: var(--muted-foreground);
+}
+
+.commandInline > code {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .commandInline [data-slot="button"] { width: 44px; height: 44px; }
+}
