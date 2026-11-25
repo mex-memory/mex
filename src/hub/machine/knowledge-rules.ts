@@ -1,11 +1,14 @@
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import {
   MachineKnowledgeRulesSchema, type MachineKnowledgeCheckout, type MachineKnowledgeRules,
 } from "@mex/hub-contracts/machine";
+import { KNOWLEDGE_LIMITS } from "../../knowledge/contract.js";
 import { containedDirectory, readBoundedTextFile } from "../../knowledge/files.js";
 import { LOCAL_MANIFEST, readNativeManifest, SHARED_MANIFEST } from "../../knowledge/native-write.js";
 import { readRuleFiles, type RuleCache } from "../../knowledge/rule-cache.js";
+import { MAX_RULE_FILE_BYTES } from "../../knowledge/rule-files.js";
 import { fileHash } from "../../knowledge/sections.js";
 import type { LocationOptions } from "../../record/location.js";
 import { ControlSnapshot } from "./control-snapshot.js";
@@ -20,11 +23,11 @@ const EMPTY: MachineKnowledgeRules = { cache: { state: "missing" }, generated: [
 type Generated = MachineKnowledgeRules["generated"];
 type Target = ReturnType<typeof registeredKnowledgeCheckout>;
 
-function importedRules(cache: RuleCache): MachineKnowledgeRules["cache"] {
+function importedRules(cache: RuleCache) {
   const counts = new Map<string, number>();
   for (const { path } of cache.entries) counts.set(path, (counts.get(path) ?? 0) + 1);
   const files = cache.files.map(({ path, agents, scope }) => ({ path, agents, scope, entryCount: counts.get(path) ?? 0 }));
-  const result = MachineKnowledgeRulesSchema.shape.cache.parse({ state: "current", files, findings: cache.review });
+  const result = MachineKnowledgeRulesSchema.shape.cache.options[1].parse({ state: "current", files, findings: cache.review });
   if (Buffer.byteLength(JSON.stringify(result)) > PROJECTION_BYTES) throw new Error(UNAVAILABLE);
   return result;
 }
@@ -39,6 +42,20 @@ function checkoutText(root: string, path: string, maxBytes: number): string | un
   const stat = lstatSync(file, { throwIfNoEntry: false });
   if (!stat?.isFile() || stat.size > maxBytes) return undefined;
   return readBoundedTextFile(file, maxBytes);
+}
+
+async function hashesMatch(cache: RuleCache, root: string, signal: AbortSignal): Promise<boolean> {
+  let remaining = KNOWLEDGE_LIMITS.scanBytes;
+  for (const [index, { path, hash }] of cache.files.entries()) {
+    if (index % 8 === 0) await setImmediate(undefined, { signal });
+    try {
+      const text = checkoutText(root, path, Math.min(MAX_RULE_FILE_BYTES, Math.max(1, remaining)));
+      if (text === undefined) return false;
+      remaining -= Buffer.byteLength(text);
+      if (remaining < 0 || fileHash(text) !== hash) return false;
+    } catch { return false; }
+  }
+  return true;
 }
 
 function generatedRules(target: Target, sharing: Generated[number]["sharing"]): Generated {
@@ -60,14 +77,20 @@ function generatedRules(target: Target, sharing: Generated[number]["sharing"]): 
   return generated;
 }
 
-function readRules(target: Target): MachineKnowledgeRules {
-  let cache = EMPTY.cache;
+async function readRules(target: Target, signal: AbortSignal): Promise<MachineKnowledgeRules> {
+  let cache: MachineKnowledgeRules["cache"] = EMPTY.cache;
   const generated: Generated = [];
   let issue: string | undefined;
   try {
     const saved = readRuleFiles({ home: target.location.home, projectId: target.projectId });
-    if (saved) cache = importedRules(saved);
+    if (saved && saved.root !== target.root) {
+      cache = { state: "stale", files: [], findings: [] };
+    } else if (saved) {
+      const rules = importedRules(saved);
+      cache = { ...rules, state: await hashesMatch(saved, target.root, signal) ? "current" : "stale" };
+    }
   } catch { issue = UNAVAILABLE; }
+  signal.throwIfAborted();
   for (const sharing of ["shared", "local"] as const) {
     try { generated.push(...generatedRules(target, sharing)); }
     catch { issue = UNAVAILABLE; }
@@ -97,7 +120,7 @@ export class RuleFilesData {
       old.close();
       this.#snapshots.delete(oldKey);
     }
-    sample ??= new ControlSnapshot(this.now, async () => readRules(registeredKnowledgeCheckout(this.location, scope)), UNAVAILABLE);
+    sample ??= new ControlSnapshot(this.now, signal => readRules(registeredKnowledgeCheckout(this.location, scope), signal), UNAVAILABLE);
     this.#snapshots.set(key, sample);
     return { ...EMPTY, ...sample.get() };
   }
