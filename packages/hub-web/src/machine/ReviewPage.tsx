@@ -118,8 +118,9 @@ export default function ReviewPage({ project, projects, review, overview, load }
 
   function keyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (!canUseShortcut(event) || leaving) return;
+    const focusedKey = (event.target as HTMLElement).closest<HTMLElement>("[data-review-key]")?.dataset.reviewKey;
     const shortcut = event.key.toUpperCase();
-    if (!event.repeat && (shortcut === "S" || shortcut === "K" || shortcut === "E") && (!narrow || cardKey)) {
+    if (!event.repeat && (shortcut === "S" || shortcut === "K" || shortcut === "E") && (!narrow || cardKey) && (!focusedKey || focusedKey === selected?.key)) {
       const action = page.current?.querySelector<HTMLButtonElement>(`[data-review-card] button[aria-keyshortcuts="${shortcut}"]`);
       if (action && !action.disabled) {
         event.preventDefault();
@@ -129,7 +130,6 @@ export default function ReviewPage({ project, projects, review, overview, load }
     }
     const direction = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
     if (!direction) return;
-    const focusedKey = (event.target as HTMLElement).closest<HTMLElement>("[data-review-key]")?.dataset.reviewKey;
     const currentKey = focusedKey ?? (!narrow || cardKey ? selected?.key : undefined);
     const index = ordered.findIndex(({ key }) => key === currentKey);
     const next = ordered[index < 0 ? direction > 0 ? 0 : ordered.length - 1 : index + direction];
@@ -159,7 +159,8 @@ export default function ReviewPage({ project, projects, review, overview, load }
       {loading || load?.error ? <PageRequestState name="Review" {...load} loading={loading} /> : null}
       {(ordered.length > 0 || leaving) && (
         <div className={styles.workspace}>
-          <ReviewQueue href={href} now={now} repoNames={repoNames} repos={repos} scoped={Boolean(project)} selected={cardKey || !narrow ? selected?.key : undefined} total={total} visible={ordered.length} />
+          <ReviewQueue counts={queue?.byRepo} href={href} now={now} repoNames={repoNames} repos={repos} scoped={Boolean(project)}
+            selected={cardKey || !narrow ? selected?.key : undefined} total={total} visible={ordered.length} />
           {card && review ? (
             <ReviewFocus card={card} key={card.key} leaving={Boolean(leaving)} now={now} repo={repoNames.get(card.repoId) ?? "Unknown repo"} review={review} titleRef={cardTitle}
               onApplied={(result) => { setToast(result); advance(card); }}

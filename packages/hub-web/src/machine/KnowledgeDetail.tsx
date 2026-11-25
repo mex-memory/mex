@@ -7,8 +7,7 @@ import { KnowledgeConflictDialog, KnowledgeEditor, type EditConflict, type EditD
 import { KnowledgeForgetDialog, KnowledgeShareDialog } from "./KnowledgeItemDialogs";
 import { KnowledgeReviewDialog } from "./KnowledgeReviewDialog";
 import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
-import { scopePatterns } from "./knowledge-fields";
-import { audienceLabels, kindLabels, scopeLabel } from "./knowledge-labels";
+import { audienceLabels, kindLabels, scopeLabel, scopePatterns } from "./knowledge-labels";
 import { KnowledgeStatusLabel } from "./KnowledgeStatus";
 import { fullDateTime, relativeTime } from "./local-time";
 import type { KnowledgeDetail as Detail, KnowledgeEdit, KnowledgeForget, KnowledgeActions, KnowledgeWritePreview } from "./types";

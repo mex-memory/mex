@@ -21,3 +21,8 @@ export function scopeLabel(scope: readonly string[]) {
   if (scope[0] === "**") return "Whole repo";
   return scope[0].match(/^([^*?\[\]{}!]+)\/\*\*$/u)?.[1] ?? scope[0];
 }
+
+export function scopePatterns(patterns: string[]) {
+  const cleaned = [...new Set(patterns.map((pattern) => pattern.trim()).filter(Boolean))];
+  return cleaned.length ? cleaned : ["**"];
+}

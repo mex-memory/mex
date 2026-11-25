@@ -1,18 +1,18 @@
-import { useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { lazy, Suspense, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { MachineReviewActionRequest, MachineReviewCard } from "@mex/hub-contracts/machine";
 import { ArrowRight, Info } from "lucide-react";
 import { Button } from "../components/primitives/button";
 import { Kbd } from "../components/primitives/kbd";
-import { KnowledgeForgetDialog } from "./KnowledgeItemDialogs";
-import { KnowledgeReviewDialog } from "./KnowledgeReviewDialog";
-import { KnowledgeEditFields, scopePatterns } from "./knowledge-fields";
+import { scopePatterns } from "./knowledge-labels";
 import { knowledgeSaveError, useKnowledgeWrite } from "./knowledge-write-state";
 import { ReviewCard } from "./ReviewCard";
-import { ReviewChecks, UseProposalDialog } from "./ReviewDialogs";
-import type { ReviewAction, ReviewApplied, ReviewDraft, ReviewHandled, ReviewPreview, ReviewWritePreview } from "./types";
-import forms from "./knowledge-forms.module.css";
+import type { ReviewDialogState } from "./ReviewDialogs";
+import type { ReviewAction, ReviewApplied, ReviewDraft, ReviewHandled, ReviewPreview } from "./types";
 import shared from "./machine.module.css";
 import styles from "./review.module.css";
+
+const ReviewDialogs = lazy(() => import("./ReviewDialogs"));
+const ReviewEditor = lazy(() => import("./ReviewEditor"));
 
 const actions = {
   share: { label: "Share with team", key: "S", variant: "default", dialog: true },
@@ -25,8 +25,6 @@ const actions = {
 const actionOrder: ReviewAction[] = ["share", "use", "keep", "keepCurrent", "edit", "retire"];
 const editedActions: readonly ReviewAction[] = ["share", "keep"];
 
-type Dialog = { type: "use" } | { type: "retire" } | { type: "preview"; preview: ReviewWritePreview; request: MachineReviewActionRequest };
-
 export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onApplied, onHandled }: {
   card: MachineReviewCard;
   now: number;
@@ -38,7 +36,8 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
   onHandled: () => void;
 }) {
   const [draft, setDraft] = useState<ReviewDraft | null>(null);
-  const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [dialog, setDialog] = useState<ReviewDialogState | null>(null);
+  const [dialogsReady, setDialogsReady] = useState(false);
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
   const [handled, setHandled] = useState<ReviewHandled | null>(null);
@@ -50,7 +49,6 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
   const active = useRef(false);
   const id = useId();
   const statusId = id + "-status";
-  const checksId = id + "-checks";
   const invalidId = id + "-invalid";
   const write = useKnowledgeWrite();
 
@@ -71,9 +69,10 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
   const status = write.status ?? (write.pending ? "Saving…" : leaving ? "Moving to the next card…" : undefined);
   const invalid = draft && (!draft.claim.trim() || !draft.text.trim()) ? "Enter a claim and note text to save." : undefined;
   const available = actionOrder.filter((action) => card.actions.includes(action) && (!draft || editedActions.includes(action)));
-  const preview = dialog?.type === "preview" ? dialog.preview : null;
-  const blocked = preview?.checks.find(({ status }) => status === "blocked");
-  const retiring = dialog?.type === "preview" && dialog.request.action === "retire";
+  function showDialog(next: ReviewDialogState) {
+    setDialogsReady(true);
+    setDialog(next);
+  }
 
   function closeDialog() {
     setDialog(null);
@@ -99,7 +98,7 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
       } else if (!active.current) {
         return;
       } else if (result.type === "preview") {
-        setDialog({ type: "preview", preview: result, request });
+        showDialog({ type: "preview", preview: result, request });
       } else {
         setDialog(null);
         setHandled(result);
@@ -110,7 +109,7 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
   }
 
   function begin(action: ReviewAction) {
-    if (card.disabled?.[action] || write.pending || moving.current || leaving || handled || invalid) return;
+    if (card.disabled?.[action] || write.pending || moving.current || leaving || handled || invalid || dialog) return;
     const focused = document.activeElement;
     trigger.current = focused instanceof HTMLElement ? focused : null;
     setError("");
@@ -119,15 +118,11 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
       setDraft({ claim, text, kind, scope });
     } else if (action === "use" || action === "retire") {
       setReason("");
-      setDialog({ type: action });
+      showDialog({ type: action });
     } else {
       const edited = draft ? { ...draft, claim: draft.claim.trim(), text: draft.text.trim(), scope: scopePatterns(draft.scope) } : undefined;
       submit({ action, expectedRevision: card.revision, edited });
     }
-  }
-
-  function confirm(action: "use" | "retire") {
-    submit({ action, expectedRevision: card.revision, reason: action === "retire" ? reason.trim() || undefined : undefined });
   }
 
   function cancelEdit() {
@@ -175,41 +170,28 @@ export function ReviewFocus({ card, now, repo, review, titleRef, leaving, onAppl
         <p className={styles.actionNote} id={id + "-" + action} key={action}>{card.disabled[action]}</p>
       ))}
       {error && !dialog && <p className={styles.actionError} role="alert">{error}</p>}
+      {dialogsReady && (
+        <Suspense fallback={<p className={styles.actionNote} role="status">Opening confirmation…</p>}>
+          <ReviewDialogs card={card} dialog={dialog} error={error} finalFocus={finalFocus} onCancel={closeDialog}
+            onReason={setReason} onSubmit={submit} pending={write.pending} reason={reason} status={status} />
+        </Suspense>
+      )}
     </div>
   );
 
   return (
-    <>
-      <ReviewCard card={card} footer={footer} leaving={leaving} now={now} repo={repo} row={card} titleRef={titleRef}
-        notice={handled && (
-          <div className={styles.handled} role="status">
-            <Info aria-hidden="true" /> Already handled elsewhere{handled.outcome ? " (" + handled.outcome + ")" : ""}
-          </div>
-        )}
-      >
-        {draft && !handled && (
-          <fieldset aria-label="Edit rule" className={forms.form + " " + styles.editor} disabled={write.pending || leaving}>
-            <KnowledgeEditFields draft={{ ...draft, oneLine: draft.claim }} onChange={({ oneLine, text, kind, scope }) => setDraft({ claim: oneLine, text, kind, scope })}
-              rows={4} summaryLabel="Claim" />
-          </fieldset>
-        )}
-      </ReviewCard>
-      {card.contradiction && (
-        <UseProposalDialog current={card.contradiction.current} error={dialog?.type === "use" ? error : undefined} finalFocus={finalFocus}
-          onCancel={closeDialog} onConfirm={() => confirm("use")} open={dialog?.type === "use"} pending={write.pending} status={status} />
+    <ReviewCard card={card} footer={footer} leaving={leaving} now={now} repo={repo} row={card} titleRef={titleRef}
+      notice={handled && (
+        <div className={styles.handled} role="status">
+          <Info aria-hidden="true" /> Already handled elsewhere{handled.outcome ? " (" + handled.outcome + ")" : ""}
+        </div>
       )}
-      {card.retireTarget && (
-        <KnowledgeForgetDialog audience={card.retireTarget.audience} error={dialog?.type === "retire" ? error : undefined} finalFocus={finalFocus}
-          onCancel={closeDialog} onConfirm={() => confirm("retire")} onReason={setReason} open={dialog?.type === "retire"}
-          pending={write.pending} reason={reason} showCost status={status} />
+    >
+      {draft && !handled && (
+        <Suspense fallback={<p className={styles.actionNote} role="status">Loading editor…</p>}>
+          <ReviewEditor disabled={write.pending || leaving} draft={draft} onChange={setDraft} />
+        </Suspense>
       )}
-      <KnowledgeReviewDialog blockedBy={blocked && checksId + "-" + blocked.id} error={preview ? error : undefined} finalFocus={finalFocus}
-        onCancel={closeDialog} onConfirm={() => {
-          if (!blocked && dialog?.type === "preview") submit({ ...dialog.request, previewRevision: dialog.preview.revision });
-        }} pending={write.pending} preview={preview} retiring={retiring} status={status} title={retiring ? undefined : "Share with team"}>
-        {preview && !retiring && <ReviewChecks checks={preview.checks} id={checksId} />}
-        {preview && retiring && <p className={forms.help}>Cost: free</p>}
-      </KnowledgeReviewDialog>
-    </>
+    </ReviewCard>
   );
 }

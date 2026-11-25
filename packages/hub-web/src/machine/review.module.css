@@ -337,6 +337,13 @@ main:has(.page) {
   font-size: 12px;
 }
 
+.comparison + .reason {
+  margin-top: 16px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
 .details {
   display: grid;
   min-width: 0;
@@ -363,7 +370,7 @@ main:has(.page) {
 
 .path code,
 .readOnly code {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
 }
 
 .scope {
@@ -639,8 +646,8 @@ main:has(.page) {
   border: 0;
 }
 
-.editor textarea {
-  min-height: 112px;
+.editor.editor textarea {
+  min-height: 128px;
 }
 
 .handled {
@@ -786,6 +793,7 @@ main:has(.page) {
     min-height: 44px;
   }
 
+  .buttons button,
   .toast button {
     min-width: 44px;
   }

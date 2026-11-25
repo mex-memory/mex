@@ -1,17 +1,19 @@
 import { useId, useRef } from "react";
-import type { MachineReviewCard } from "@mex/hub-contracts/machine";
+import type { MachineReviewActionRequest, MachineReviewCard } from "@mex/hub-contracts/machine";
 import { AlertCircle, Check, TriangleAlert } from "lucide-react";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "../components/primitives/alert-dialog";
+import { KnowledgeForgetDialog } from "./KnowledgeItemDialogs";
+import { KnowledgeReviewDialog } from "./KnowledgeReviewDialog";
 import type { ReviewWritePreview } from "./types";
 import forms from "./knowledge-forms.module.css";
 import styles from "./review.module.css";
 
 const checkIcon = { passed: Check, warning: TriangleAlert, blocked: AlertCircle };
 
-export function ReviewChecks({ checks, id }: { checks: ReviewWritePreview["checks"]; id: string }) {
+function ReviewChecks({ checks, id }: { checks: ReviewWritePreview["checks"]; id: string }) {
   return (
     <ul aria-label="Sharing checks" className={styles.checklist} role="list">
       {checks.map(({ id: checkId, status, message }) => {
@@ -22,7 +24,7 @@ export function ReviewChecks({ checks, id }: { checks: ReviewWritePreview["check
   );
 }
 
-export function UseProposalDialog({ open, current, pending, status, error, finalFocus, onCancel, onConfirm }: {
+function UseProposalDialog({ open, current, pending, status, error, finalFocus, onCancel, onConfirm }: {
   open: boolean;
   current: NonNullable<MachineReviewCard["contradiction"]>["current"];
   pending: boolean;
@@ -53,5 +55,48 @@ export function UseProposalDialog({ open, current, pending, status, error, final
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+export type ReviewDialogState = { type: "use" } | { type: "retire" }
+  | { type: "preview"; preview: ReviewWritePreview; request: MachineReviewActionRequest };
+
+export default function ReviewDialogs({ card, dialog, error, pending, reason, status, finalFocus, onCancel, onReason, onSubmit }: {
+  card: MachineReviewCard;
+  dialog: ReviewDialogState | null;
+  error: string;
+  pending: boolean;
+  reason: string;
+  status?: string;
+  finalFocus: () => HTMLElement | false;
+  onCancel: () => void;
+  onReason: (reason: string) => void;
+  onSubmit: (request: MachineReviewActionRequest) => void;
+}) {
+  const checksId = useId();
+  const preview = dialog?.type === "preview" ? dialog.preview : null;
+  const blocked = preview?.checks.find(({ status }) => status === "blocked");
+  const retiring = dialog?.type === "preview" && dialog.request.action === "retire";
+
+  return (
+    <>
+      {card.contradiction && (
+        <UseProposalDialog current={card.contradiction.current} error={dialog?.type === "use" ? error : undefined} finalFocus={finalFocus}
+          onCancel={onCancel} onConfirm={() => onSubmit({ action: "use", expectedRevision: card.revision })}
+          open={dialog?.type === "use"} pending={pending} status={status} />
+      )}
+      {card.retireTarget && (
+        <KnowledgeForgetDialog audience={card.retireTarget.audience} error={dialog?.type === "retire" ? error : undefined} finalFocus={finalFocus}
+          onCancel={onCancel} onConfirm={() => onSubmit({ action: "retire", expectedRevision: card.revision, reason: reason.trim() || undefined })}
+          onReason={onReason} open={dialog?.type === "retire"} pending={pending} reason={reason} showCost status={status} />
+      )}
+      <KnowledgeReviewDialog blockedBy={blocked && checksId + "-" + blocked.id} error={preview ? error : undefined} finalFocus={finalFocus}
+        onCancel={onCancel} onConfirm={() => {
+          if (!blocked && dialog?.type === "preview") onSubmit({ ...dialog.request, previewRevision: dialog.preview.revision });
+        }} pending={pending} preview={preview} retiring={retiring} status={status} title={retiring ? undefined : "Share with team"}>
+        {preview && !retiring && <ReviewChecks checks={preview.checks} id={checksId} />}
+        {preview && retiring && <p className={forms.help}>Cost: free</p>}
+      </KnowledgeReviewDialog>
+    </>
   );
 }

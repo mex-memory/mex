@@ -49,11 +49,6 @@ export function KindSelect({ kind, onChange }: { kind: KnowledgeKind; onChange: 
   );
 }
 
-export function scopePatterns(patterns: string[]) {
-  const cleaned = [...new Set(patterns.map((pattern) => pattern.trim()).filter(Boolean))];
-  return cleaned.length ? cleaned : ["**"];
-}
-
 export function ScopeInputs({ patterns, onChange }: { patterns: string[]; onChange: (patterns: string[]) => void }) {
   const fields = useRef<HTMLFieldSetElement>(null);
   const focusIndex = useRef<number | null>(null);

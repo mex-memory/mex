@@ -5,7 +5,8 @@ import { kindLabels } from "./knowledge-labels";
 import { waitingAge, type ReviewRow } from "./review-model";
 import styles from "./review.module.css";
 
-export function ReviewQueue({ repos, repoNames, selected, scoped, now, visible, total, href }: {
+export function ReviewQueue({ counts, repos, repoNames, selected, scoped, now, visible, total, href }: {
+  counts?: Readonly<Record<string, number>>;
   repos: ReadonlyMap<string, readonly ReviewRow[]>;
   repoNames: ReadonlyMap<string, string>;
   selected?: string;
@@ -16,7 +17,7 @@ export function ReviewQueue({ repos, repoNames, selected, scoped, now, visible, 
   href: (key: string) => string;
 }) {
   return (
-    <section aria-label="Review queue" className={styles.queue}>
+    <section aria-keyshortcuts="ArrowUp ArrowDown" aria-label="Review queue" className={styles.queue}>
       {[...repos].map(([repoId, cards]) => {
         const name = repoNames.get(repoId) ?? "Unknown repo";
         return (
@@ -24,7 +25,7 @@ export function ReviewQueue({ repos, repoNames, selected, scoped, now, visible, 
             {!scoped && (
               <h2 className={styles.repoHeading}>
                 <FolderGit2 aria-hidden="true" /><span>{name}</span>
-                <span className={styles.repoCount}>{cards.length}</span>
+                <span className={styles.repoCount}>{counts?.[repoId] ?? cards.length}</span>
               </h2>
             )}
             <ul aria-label={scoped ? "Waiting cards" : name} className={styles.rows} role="list">

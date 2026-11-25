@@ -86,7 +86,7 @@ describe("Review fixtures", () => {
     expect(heading(normal)).toHaveFocus();
 
     await user.keyboard("e");
-    const input = screen.getByRole("textbox", { name: "Claim" });
+    const input = await screen.findByRole("textbox", { name: "Claim" });
     expect(input).toHaveFocus();
     await user.keyboard("{End}ske{ArrowDown}");
     expect(input).toHaveValue(normal + "ske");
@@ -160,7 +160,7 @@ describe("Review fixtures", () => {
     await user.click(action("Edit"));
     const claim = "Run workspace checks locally";
     const text = "Run the type check at the root before pushing a change.";
-    await user.clear(screen.getByRole("textbox", { name: "Claim" }));
+    await user.clear(await screen.findByRole("textbox", { name: "Claim" }));
     expect(action("Keep for me")).toBeDisabled();
     expect(action("Keep for me")).toHaveAccessibleDescription("Enter a claim and note text to save.");
     await user.type(screen.getByRole("textbox", { name: "Claim" }), claim);
@@ -180,8 +180,9 @@ describe("Review fixtures", () => {
   it("previews the edited text before sharing", async () => {
     const user = await openReview("/review/storefront%3Atype-check?fixture=home");
     await user.click(action("Edit"));
-    await user.clear(screen.getByRole("textbox", { name: "Note text" }));
-    await user.type(screen.getByRole("textbox", { name: "Note text" }), "Check all workspace imports before opening the pull request.");
+    const text = await screen.findByRole("textbox", { name: "Note text" });
+    await user.clear(text);
+    await user.type(text, "Check all workspace imports before opening the pull request.");
     await user.click(action("Share with team"));
     const dialog = await screen.findByRole("alertdialog", { name: "Share with team" });
     expect(within(dialog).getByRole("region", { name: "File diff" })).toHaveTextContent("+Check all workspace imports");
