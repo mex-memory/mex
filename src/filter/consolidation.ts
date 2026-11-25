@@ -20,7 +20,7 @@ const Plan = z.object({ groups: z.array(Group).max(128) }).strict();
 type Grouping = z.infer<typeof Plan>;
 interface Inventory { id: string; text: string; at: string; kind: string; scope: string[]; }
 interface Observation { candidate: FilterCandidate; sessions: string[]; }
-import { learningMetadata as metadata, type SourceRecord } from "./metadata.js";
+import { contextSource, learningMetadata as metadata, type SourceRecord } from "./metadata.js";
 import { stagePromotion } from "./publication.js";
 const newId = () => `mx_${randomBytes(12).toString("hex")}`;
 const normalized = (text: string) => text.normalize("NFKC").trim().replace(/\s+/gu, " ");
@@ -209,18 +209,21 @@ Input follows as JSON:\n${JSON.stringify({ candidates, notes: inventory })}`;
     const winner = ordered[0]!, c = observation && latest(observation.candidate, winner.candidate) > 0 ? observation.candidate : winner.candidate;
     // Continuity remains in bounded private pending data for its consumer.
     if (c.label === "next-session") { group.members.forEach(i => deferred.add(i)); continue; }
-    const olderThanTarget = target && !c.source.note_id && Date.parse(metadata(writer, project, target.mex.id).at ?? target.mex.created) > Date.parse(c.source.at);
+    const targetMetadata = target ? metadata(writer, project, target.mex.id) : {};
+    const duplicateMetadata = (group.duplicates ?? []).map(id => metadata(writer, project, id));
+    const olderThanTarget = target && !c.source.note_id && Date.parse(targetMetadata.at ?? target.mex.created) > Date.parse(c.source.at);
     if (olderThanTarget && group.relation === "correction") continue;
     const currentSources = [...ordered.map(v => v.candidate), ...observation ? [observation.candidate] : []].filter(source => group.relation !== "correction" || normalized(source.text) === normalized(c.text));
-    const priorSessions = group.relation === "correction" ? [] : [...(target ? metadata(writer, project, target.mex.id).sessions ?? [] : observation?.sessions ?? []), ...(group.duplicates ?? []).flatMap(id => metadata(writer, project, id).sessions ?? [])];
+    const prior = group.relation === "correction" ? [] : [targetMetadata, ...duplicateMetadata];
+    const priorSessions = group.relation === "correction" ? [] : [...(target ? targetMetadata.sessions ?? [] : observation?.sessions ?? []), ...duplicateMetadata.flatMap(meta => meta.sessions ?? [])];
     const sessions = new Set([...priorSessions, ...currentSources.flatMap(source => source.source.session ? [source.source.session] : [])]);
     if (sessions.size > 128) throw new KnowledgeError("STORE_LIMIT", "A note's observation limit was reached.");
-    const privacy = new Set([...(target ? metadata(writer, project, target.mex.id).holds ?? [] : []), ...(observation ? privacyHolds(observation.candidate, vocabulary) : []), ...(group.duplicates ?? []).flatMap(duplicate => metadata(writer, project, duplicate).holds ?? []), ...group.members.flatMap(i => holds[i]!)]);
-    const previousSources = group.relation === "correction" ? [] : [...(target ? metadata(writer, project, target.mex.id).sources ?? [] : []), ...(group.duplicates ?? []).flatMap(id => metadata(writer, project, id).sources ?? [])];
-    const sources = sourceRecords(previousSources, currentSources);
+    const privacy = new Set([...(targetMetadata.holds ?? []), ...(observation ? privacyHolds(observation.candidate, vocabulary) : []), ...duplicateMetadata.flatMap(meta => meta.holds ?? []), ...group.members.flatMap(i => holds[i]!)]);
+    const sources = sourceRecords(prior.flatMap(meta => meta.sources ?? []), currentSources);
+    // Deduplication keeps one observation per session. Preserve the context proof even when a later typed statement replaces that observation.
+    const context_source = sourceRecords([], currentSources.filter(source => source.source.reply_context_hash))[0] ?? prior.map(contextSource).find(Boolean);
     if (target && (c.label === "unsure" && group.relation === "duplicate" || olderThanTarget)) {
-      const previous = metadata(writer, project, target.mex.id);
-      writes.push(() => set(writer, project, `learning.note.${target.mex.id}`, { at: previous.at ?? target.mex.created, holds: [...privacy].sort(), sessions: [...sessions], sources, needs_checks: previous.needs_checks ?? !target.mex.checks.length }));
+      writes.push(() => set(writer, project, `learning.note.${target.mex.id}`, { at: targetMetadata.at ?? target.mex.created, holds: [...privacy].sort(), sessions: [...sessions], sources, context_source, needs_checks: targetMetadata.needs_checks ?? !target.mex.checks.length }));
       continue;
     }
     if (c.label === "unsure" && sessions.size < 2) {
@@ -251,7 +254,7 @@ Input follows as JSON:\n${JSON.stringify({ candidates, notes: inventory })}`;
       if (previous.at) writes.push(() => set(writer, project, `learning.note.${archive.mex.id}`, previous));
     }
     files.set(id, serializeEntry(gated)); published++;
-    writes.push(() => { set(writer, project, `learning.note.${id}`, { at: c.source.at, holds: [...privacy].sort(), sessions: [...sessions], sources, needs_checks: c.needs_checks });
+    writes.push(() => { set(writer, project, `learning.note.${id}`, { at: c.source.at, holds: [...privacy].sort(), sessions: [...sessions], sources, context_source, needs_checks: c.needs_checks });
       writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(project, `filter.note.${id}`, hash(files.get(id)!));
       stagePromotion(writer, project, id, params.checkout, at, hash(files.get(id)!));
       if (seenId) writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(project, `learning.seen.${seenId}`);

@@ -2,6 +2,7 @@ import { join, relative, sep } from "node:path";
 import { reviewReason } from "./reasons.js";
 import { readConflict, type StoredConflict } from "./conflicts.js";
 import { openRecordReadOnly } from "../record/index.js";
+import type { RecordLocation } from "../record/location.js";
 import { knowledgeProject, type KnowledgeOptions } from "../knowledge/context.js";
 import { containedDirectory, readEntryFile } from "../knowledge/files.js";
 import { repoFile } from "../knowledge/references.js";
@@ -9,13 +10,14 @@ import { KnowledgeError, parseEntry, type KnowledgeEntry } from "../knowledge/en
 import { shareProblems } from "../knowledge/share-checks.js";
 import { claimHash, localSettings, retiredClaimHashes } from "../knowledge/state.js";
 import { hash } from "../judge/evidence.js";
-import { learningMetadata } from "../filter/metadata.js";
+import { contextSource, learningMetadata } from "../filter/metadata.js";
+import { reviewReply, type AgentReply } from "../filter/review-context.js";
 import { sharingEnabled } from "../filter/repository.js";
 import { repoVocabulary, type RepoVocabulary } from "../filter/privacy.js";
 import { rows, storedItems, groupId, reviewEligible, legacyJudge, ReviewOffer, REVIEW_DAYS, REVIEW_VISIBLE, type ReviewRow, type StoredReview, type ReviewReader } from "./state.js";
 
 export interface ReviewMember { row: ReviewRow; item: StoredReview; revision: string; }
-export interface ReviewCard { id: string; entry: KnowledgeEntry; reason: string; sources: number; createdAt: string; expiresAt: string; checkedByModel: boolean; conflictsWith?: string[]; }
+export interface ReviewCard { id: string; entry: KnowledgeEntry; reason: string; sources: number; createdAt: string; expiresAt: string; checkedByModel: boolean; conflictsWith?: string[]; agentContext?: AgentReply; }
 export interface ReviewGroup extends ReviewCard { members: ReviewMember[]; conflict?: StoredConflict; }
 export function memberRevision(row: ReviewRow, item: StoredReview): string { return hash(JSON.stringify([row, item])); }
 export function canonicalBytes(home: string, project: string, item: StoredReview): string | undefined {
@@ -95,12 +97,27 @@ export function snapshotReview(reader: ReviewReader, project: string, home: stri
   }).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   return [...conflicts, ...shareable];
 }
-export function reviewQueue(options: KnowledgeOptions, now = Date.now()): { items: ReviewCard[]; waiting: number; hidden: number } {
+export function reviewAgentContext(reader: ReviewReader, location: RecordLocation, project: string, group: ReviewGroup): { display: AgentReply; proof: string } | undefined {
+  for (const { item } of group.members) {
+    if (item.source.level !== "personal") continue;
+    const record = contextSource(learningMetadata(reader, project, item.entry.mex.id));
+    if (!record) continue;
+    const display = reviewReply(location, project, record);
+    return { display, proof: hash(JSON.stringify([record, display])) };
+  }
+}
+
+export function reviewQueue(options: KnowledgeOptions, now = Date.now(), includeContext = false): { items: ReviewCard[]; waiting: number; hidden: number } {
   const project = knowledgeProject(options), reader = openRecordReadOnly(options);
   if (!reader) return { items: [], waiting: 0, hidden: 0 };
   try {
     if (reader.diagnostic) throw new KnowledgeError("RECORD_UNAVAILABLE", reader.diagnostic);
     const groups = snapshotReview(reader, project.projectId, project.location.home, project.root, now);
-    return { items: groups.slice(0, REVIEW_VISIBLE).map(({ members: _members, conflict: _conflict, ...card }) => card), waiting: groups.length, hidden: Math.max(0, groups.length - REVIEW_VISIBLE) };
+    const items = groups.slice(0, REVIEW_VISIBLE).map(group => {
+      const { members: _members, conflict: _conflict, ...card } = group;
+      const context = includeContext && reviewAgentContext(reader, project.location, project.projectId, group);
+      return context ? { ...card, agentContext: context.display } : card;
+    });
+    return { items, waiting: groups.length, hidden: Math.max(0, groups.length - REVIEW_VISIBLE) };
   } finally { reader.close(); }
 }

@@ -19,7 +19,7 @@ import type { KnowledgeEntry } from "../knowledge/entry.js";
 import { consolidateNext } from "./consolidation.js";
 import { statementDate } from "../knowledge/labels.js";
 import { publishNext, publicationReady, PUBLICATION_WAIT, type PublicationDependencies } from "./publication.js";
-import type { ReplyContextMode, TranscriptIssue } from "./transcript.js";
+import { replyContextDigest, type ReplyContextMode, type TranscriptIssue } from "./transcript.js";
 
 const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
   role: z.enum(["complete", "supporting"]), target: z.record(z.unknown()) }).strict();
@@ -33,7 +33,7 @@ const Response = z.object({ items: z.array(Item).max(128) }).strict();
 type Answer = z.infer<typeof Item>;
 export interface FilterCandidate extends Omit<Answer, "checks"> {
   checks: EntryCheck[]; needs_checks: boolean;
-  source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string };
+  source: { session: string | null; row: number | null; at: string; marks: string; delivered: string[]; note_id?: string; note_hash?: string; private_tag?: boolean; message_hash?: string; reply_context_hash?: string };
 }
 interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: string; position: Position;
   answers: Answer[]; repair_attempted?: boolean; repair?: Answer[]; candidates?: FilterCandidate[]; model: string; tokens: number; }
@@ -48,6 +48,7 @@ const contextIssueText: Record<TranscriptIssue, string> = {
   "too-large": "transcript exceeds 32 MiB",
   changed: "transcript changed during the read",
   "invalid-format": "invalid or unsupported transcript format",
+  "delivered-notes": "a delivered note could not be matched",
 };
 
 function contextSummary(summary: string, issues?: readonly TranscriptIssue[]): string {
@@ -242,9 +243,11 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         const keepAids = aidFilter(params, writer, deps.aids ?? nativeAidRanker);
         const candidates: FilterCandidate[] = cached.answers.filter(a => a.label !== "task").map(a => {
           const m = input.messages.find(m => m.id === a.source_id), n = input.notes.find(n => n.id === a.source_id);
+          const replyHash = m && replyContextDigest(m);
           return { ...keepAids(a), checks: checks.get(a) ?? [], needs_checks: !checks.get(a), source: { session: m?.session ?? null,
             row: m?.row ?? null, at: m?.at ?? statementDate(n!.entry), marks: m?.marks ?? "", delivered: m?.delivered ?? [],
             message_hash: hash(m?.text ?? n?.entry.mex.source.quote ?? ""),
+            ...(replyHash ? { reply_context_hash: replyHash } : {}),
             private_tag: /<\s*\/?\s*private\b[^>]*>/iu.test(m?.text ?? n?.entry.mex.source.quote ?? ""),
             ...(n ? { note_id: n.id, note_hash: n.hash } : {}) } };
         });

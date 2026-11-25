@@ -13,6 +13,7 @@ import { hash } from "../../judge/evidence.js";
 import { enqueueModelBatch, claimModelBatch, settleModelBatch } from "../../model-runner/budget-queue.js";
 import { REFERENCE_BATCH } from "../../model-runner/budget-prices.js";
 import { note } from "../../knowledge/store.js";
+import { serializeEntry } from "../../knowledge/entry.js";
 import { createFilterKind, readFilterBatch, type FilterDependencies } from "../job.js";
 import { acknowledgeTyped, filterInput, type FilterInput, type FilterParams } from "../input.js";
 import { filterPending, queuePendingFilters } from "../pending.js";
@@ -424,6 +425,42 @@ function codexTranscript(session: string, content: string): string {
 
 const codexRow = (role: "user" | "assistant", content: string) => JSON.stringify({ type: "response_item", payload: { type: "message", role, content } });
 
+it("masks delivered note text and one-line forms in the session that received the note", async () => {
+  const noteText = "This is the longer body of the note.", noteLine = "Use the team's test runner.", originalLine = "Previously delivered headline.";
+  const received = note({ text: noteText }, { home, projectPath: root }).entry;
+  received.mex.one_line = noteLine;
+  const noteBytes = serializeEntry(received), id = received.mex.id;
+  writeFileSync(join(home, "projects", project, "notes", id + ".md"), noteBytes);
+  const reply = `${noteLine}\n${noteText}\n${originalLine}\nChoose the first or second option.`;
+  for (const session of ["received", "other"]) {
+    const typed = "use option two";
+    const transcript = codexTranscript(session, [codexRow("assistant", reply), codexRow("user", typed)].join("\n"));
+    add(session, typed, { finished: true, transcript });
+  }
+  hooks.prepare("INSERT INTO epochs(session_id,epoch,started_at) VALUES('received',0,?)").run(old);
+  hooks.prepare("INSERT INTO deliveries(id,session_id,epoch,ts,moment,entry_id,form,tokens,action,detail,title) VALUES('d','received',0,?,'start',?,'full',20,'replaced',?,?)")
+    .run(old, id, JSON.stringify({ entry_hash: hash(noteBytes) }), originalLine);
+  await run(queue());
+
+  const expected = "[MEX note]\n[MEX note]\n[MEX note]\nChoose the first or second option.";
+  const [masked, other] = inputOf(calls[0]!).messages;
+  expect(masked).toMatchObject({ previous_reply: expected, text: "use option two", delivered: [id] });
+  expect(other).toMatchObject({ previous_reply: reply, delivered: [] });
+  const candidate = batches()[0].candidates.find((value: { source: { session: string } }) => value.source.session === "received");
+  expect(candidate).toMatchObject({ quote: "use option two", source: { reply_context_hash: hash(expected) } });
+  expect(JSON.stringify(batches())).not.toContain(expected);
+});
+
+it("keeps typed text when a delivered version can no longer be masked", () => {
+  const received = note({ text: "Updated note body." }, { home, projectPath: root }).entry;
+  const transcript = codexTranscript("s", [codexRow("assistant", "Original note body."), codexRow("user", "yes")].join("\n"));
+  add("s", "yes", { finished: true, transcript });
+  hooks.prepare("INSERT INTO epochs(session_id,epoch,started_at) VALUES('s',0,?)").run(old);
+  hooks.prepare("INSERT INTO deliveries(id,session_id,epoch,ts,moment,entry_id,form,tokens,action,detail) VALUES('d','s',0,?,'start',?,'full',20,'given',?)")
+    .run(old, received.mex.id, JSON.stringify({ entry_hash: hash("historical note file") }));
+  expect(filterInput(writer, project, params(), true, now)?.messages).toMatchObject([{ text: "yes", previous_reply: null }]);
+});
+
 it("keeps typed input and shows when transcript context is paused", async () => {
   const broken = codexTranscript("broken", "{broken transcript");
   const valid = codexTranscript("valid", [codexRow("assistant", "Do you prefer the newer parser?"), codexRow("user", "Use the newer parser")].join("\n"));
@@ -447,8 +484,7 @@ it("leaves inputs over the prompt budget queued with the expanded reply mode", a
   const reply = "An option for this project. ".repeat(500);
   const path = codexTranscript("long", prompts.flatMap(prompt => [codexRow("assistant", reply), codexRow("user", prompt)]).join("\n"));
   for (const prompt of prompts) add("long", prompt, { finished: true, transcript: path });
-  expect(filterInput(writer, project, params(), true, now)?.messages).toHaveLength(prompts.length);
-  deps.contextMode = "design";
+  expect(filterInput(writer, project, params(), true, now, undefined, "tail600")?.messages).toHaveLength(prompts.length);
   deps.model = vi.fn(async request => {
     calls.push(request);
     return { selectedModel: "fake-cheap", usage, text: '{"items":[]}' };
