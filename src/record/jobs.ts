@@ -423,28 +423,31 @@ function runnerGone(owner: string | null): boolean {
 export function listJobs(reader: Pick<RecordReader, "all">, limit = 50): Array<JobListItem & { id: string }> {
   const rows = reader.all<JobRow & { root_path: string | null }>(`SELECT jobs.*,projects.root_path FROM jobs
     LEFT JOIN projects ON projects.id=jobs.project_id ORDER BY jobs.created_at DESC, jobs.id DESC LIMIT ?`, limit);
-  return rows.map((row, index) => {
-    const kind = kinds.get(row.kind);
-    const active = !TERMINAL_STATES.includes(row.state);
-    let detail: ReturnType<NonNullable<JobKind["display"]>> | undefined;
-    try { detail = kind?.display?.(row, reader); } catch { /* the base state remains readable */ }
-    return {
-      id: row.id,
-      position: index + 1,
-      kind: row.kind,
-      label: kind?.label ?? "Unknown job (needs a newer MEX)",
-      state: row.state,
-      project: row.project_id ? { name: projectName(row.root_path ? displayPath(row.root_path) : null), path: row.root_path ? displayPath(row.root_path) : "" } : null,
-      reason: row.reason,
-      doing: !active ? null : row.state === "running" && runnerGone(row.owner)
-        ? "interrupted; resumes from its last batch when the background process starts again" : row.progress,
-      batches: row.batch, results: row.results,
-      tokens: { used: detail?.used ?? row.tokens_used, estimate: row.tokens_estimate, ...(detail?.ceiling === undefined ? {} : { ceiling: detail.ceiling }) },
-      ...(detail?.summary ? { summary: detail.summary } : {}),
-      createdAt: row.created_at, updatedAt: row.updated_at, finishedAt: row.finished_at,
-      pending: row.state === "running" ? row.request : null,
-    };
-  });
+  return rows.map((row, index) => jobListItem(reader, row, index + 1));
+}
+
+/** Project one known row using the same labels, activity and costs as the jobs list. */
+export function jobListItem(reader: Pick<RecordReader, "all">, row: JobRow & { root_path: string | null }, position: number): JobListItem & { id: string } {
+  const kind = kinds.get(row.kind);
+  const active = !TERMINAL_STATES.includes(row.state);
+  let detail: ReturnType<NonNullable<JobKind["display"]>> | undefined;
+  try { detail = kind?.display?.(row, reader); } catch { /* the base state remains readable */ }
+  return {
+    id: row.id,
+    position,
+    kind: row.kind,
+    label: kind?.label ?? "Unknown job (needs a newer MEX)",
+    state: row.state,
+    project: row.project_id ? { name: projectName(row.root_path ? displayPath(row.root_path) : null), path: row.root_path ? displayPath(row.root_path) : "" } : null,
+    reason: row.reason,
+    doing: !active ? null : row.state === "running" && runnerGone(row.owner)
+      ? "interrupted; resumes from its last batch when the background process starts again" : row.progress,
+    batches: row.batch, results: row.results,
+    tokens: { used: detail?.used ?? row.tokens_used, estimate: row.tokens_estimate, ...(detail?.ceiling === undefined ? {} : { ceiling: detail.ceiling }) },
+    ...(detail?.summary ? { summary: detail.summary } : {}),
+    createdAt: row.created_at, updatedAt: row.updated_at, finishedAt: row.finished_at,
+    pending: row.state === "running" ? row.request : null,
+  };
 }
 
 function count(n: number): string { return n.toLocaleString("en-US"); }
