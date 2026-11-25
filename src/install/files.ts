@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 export interface Snapshot { data: string | null; mode: number; }
 export const MAX_SETTINGS_BYTES = 1 << 20;
@@ -42,6 +43,27 @@ export function snapshotBytes(snapshot: Snapshot): Buffer | null { return snapsh
 export function equalSnapshot(a: Snapshot, b: Snapshot): boolean {
   const sameMode = process.platform === "win32" ? (a.mode & 0o200) === (b.mode & 0o200) : a.mode === b.mode;
   return a.data === b.data && (a.data === null || sameMode);
+}
+
+const git = promisify(execFile);
+
+export async function installationTracking(path: string, signal?: AbortSignal): Promise<"tracked" | "untracked" | "outside"> {
+  let parent = dirname(path);
+  while (!lstatSync(parent, { throwIfNoEntry: false })) {
+    if (dirname(parent) === parent) throw new Error("The installation parent is unavailable.");
+    parent = dirname(parent);
+  }
+  try {
+    await git("git", ["-C", parent, "ls-files", "--error-unmatch", "--", path], {
+      timeout: 1500, maxBuffer: 128 << 10, windowsHide: true, signal, env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" },
+    });
+    return "tracked";
+  } catch (error) {
+    const result = error as { code?: number; stderr?: string };
+    if (result.code === 1) return "untracked";
+    if (result.code === 128 && /not a git repository/i.test(result.stderr ?? "")) return "outside";
+    throw error;
+  }
 }
 
 /** A settings directory can itself belong to a dotfiles repo. Never edit tracked files. */

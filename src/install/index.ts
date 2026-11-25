@@ -1,16 +1,18 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { mexHomeDir } from "../global-config.js";
 import { openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { recordLocation, type LocationOptions } from "../record/location.js";
 import { withContainedArtifactLock } from "../team/artifacts/filesystem.js";
 import { binaryFileName, findNativeBinary, selfTestBinary, type SelfTestResult } from "../hooks/shim/binary.js";
 import { cliEntryPath, launcherFile } from "../hooks/shim/launcher.js";
-import { assertUntracked, equalSnapshot, installPath, MAX_RUNTIME_BYTES, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
-import { agentSettings, AGENT_COMMANDS, CODEX_TRUST_NOTICE, FAILURE_BLOCKS, installSettings, withoutSettings, isLegacyHandler, parseSettings, removeHandlers, type Agent, type HookCommand } from "./settings.js";
+import { assertUntracked, equalSnapshot, installationTracking, installPath, MAX_RUNTIME_BYTES, MAX_SETTINGS_BYTES, readSnapshot, replaceFile, samePath, snapshotBytes, type Snapshot } from "./files.js";
+import { agentSettings, agentSettingsPath, AGENT_COMMANDS, CODEX_TRUST_NOTICE, FAILURE_BLOCKS, installSettings, withoutSettings, isLegacyHandler, ownedHookGroups, parseSettings, removeHandlers, undoSettings, type Agent, type HookCommand } from "./settings.js";
 import { decodeSnapshot, restoreSettings } from "./recovery.js";
 import { opencodePlugin } from "./opencode-plugin.js";
 import { journaledExcludeFiles, restoreExcludeBlocks } from "../repo-start/exclude.js";
@@ -32,6 +34,8 @@ export interface InstallOptions {
   nativeBinary?: string | null;
   fallbackFile?: string;
   dryRun?: boolean;
+  /** Repair one existing agent integration, keeping the installed runtime and other configs untouched. */
+  repair?: { agent: Agent | PluginAgent; expected?: RepairRevision; cache?: string; isNetwork?: LocationOptions["isNetwork"] };
   selfTest?: (path: string) => SelfTestResult;
   available?: (agent: Agent | PluginAgent) => boolean;
   /** Runs the exact registered command once, for agents where a failing hook blocks the agent. */
@@ -45,6 +49,7 @@ export interface InstallResult {
   agents: (Agent | PluginAgent)[]; changes: InstallChange[]; notices: string[]; legacyTracked: string[];
   /** The hook command now in agent settings: the native hook, or the Node fallback that only fails open and delivers nothing. */
   runner?: "native" | "node";
+  repair?: RepairRevision;
 }
 
 export function activeRows(writer: RecordWriter): InstallRow[] {
@@ -99,8 +104,8 @@ export function opencodePluginPath(user: string, env: NodeJS.ProcessEnv): string
  * directly: a `where.exe` child under a 1.5 s timeout missed Claude Code on
  * a busy Windows machine, so its hooks were silently not installed.
  */
-function available(agent: Agent | PluginAgent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
-  const name = agent === "opencode" ? "opencode" : AGENT_COMMANDS[agent];
+export function executablesOnPath(name: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv, limit: number): string[] {
+  const found: string[] = [];
   const key = Object.keys(env).find(k => k.toUpperCase() === "PATH");
   const dirs = (key ? env[key] ?? "" : "").split(platform === "win32" ? ";" : ":").map(d => d.trim().replace(/^"(.*)"$/u, "$1")).filter(Boolean);
   const extKey = Object.keys(env).find(k => k.toUpperCase() === "PATHEXT");
@@ -108,12 +113,16 @@ function available(agent: Agent | PluginAgent, platform: NodeJS.Platform, env: N
   for (const dir of dirs) {
     for (const ext of exts) {
       try {
-        const stat = statSync(join(dir, name + ext));
-        if (stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0)) return true;
+        const path = join(dir, name + ext);
+        const stat = statSync(path);
+        if (stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0)) {
+          found.push(path);
+          if (found.length >= limit) return found;
+        }
       } catch { /* not in this folder */ }
     }
   }
-  return false;
+  return found;
 }
 
 /** Agents with desktop apps and editor extensions that run the same hooks without a command on PATH. */
@@ -122,6 +131,16 @@ const APP_AGENTS: ReadonlySet<Agent> = new Set(["claude-code", "codex"]);
 /** Whether the agent's user settings folder (~/.claude, ~/.codex or its override) exists. */
 function configured(settingsFile: string): boolean {
   try { return statSync(dirname(settingsFile)).isDirectory(); } catch { return false; }
+}
+
+export function agentConfigPath(agent: Agent | PluginAgent, user: string, env: NodeJS.ProcessEnv): string {
+  return agent === "opencode" ? opencodePluginPath(user, env) : agentSettingsPath(agent, user, env);
+}
+
+export function agentDetected(agent: Agent | PluginAgent, platform: NodeJS.Platform, env: NodeJS.ProcessEnv, settingsFile?: string): boolean {
+  const name = agent === "opencode" ? "opencode" : AGENT_COMMANDS[agent];
+  return executablesOnPath(name, platform, env, 1).length > 0
+    || (agent !== "opencode" && APP_AGENTS.has(agent) && settingsFile !== undefined && configured(settingsFile));
 }
 
 /** npx runs a package from npm's temporary cache; hooks pointing there break when npm clears it. */
@@ -161,6 +180,7 @@ export function testCommand(command: HookCommand, env: NodeJS.ProcessEnv, fallba
 
 /** Global installation only. Project registration and the first screen belong to setup. */
 export async function installAgents(options: InstallOptions = {}): Promise<InstallResult> {
+  if (options.repair) return repairAgent(options, options.repair);
   if (!options.entry && fromNpxCache(cliEntryPath())) {
     throw new Error("MEX is running through npx, from npm's temporary cache; hooks installed from there stop working when npm clears it. Install MEX once with `npm i -g mex-agent@next`, then run `mex install`.");
   }
@@ -172,8 +192,8 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
   // The desktop apps and editor extensions run the same hooks from the same
   // user settings without putting a command on PATH; their settings folder
   // is the sign they are in use.
-  const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? (available(agent, platform, env) || (APP_AGENTS.has(agent) && configured(paths[agent]))));
-  const opencode = options.available?.("opencode") ?? available("opencode", platform, env);
+  const agents = (Object.keys(paths) as Agent[]).filter(agent => options.available?.(agent) ?? agentDetected(agent, platform, env, paths[agent]));
+  const opencode = options.available?.("opencode") ?? agentDetected("opencode", platform, env);
   const pluginPath = opencode ? installPath(opencodePluginPath(user, env)) : null;
   const result: InstallResult = { agents: [...agents, ...(opencode ? ["opencode" as const] : [])], changes: [], notices: [], legacyTracked: [] };
   if (!result.agents.length) return result;
@@ -252,6 +272,135 @@ export async function installAgents(options: InstallOptions = {}): Promise<Insta
   const writer = openRecord(location);
   try {
     return await withContainedArtifactLock(writer.location.home, "install", ".install.lock", () => planAndApply(writer));
+  } finally { writer.close(); }
+}
+
+export interface RepairRevision { path: string; revision: string; planRevision: string }
+export class InstallRevisionConflict extends Error {}
+
+export function installHookCommands(home: string, platform: NodeJS.Platform): [HookCommand, HookCommand] {
+  return [
+    { path: join(home, "bin", binaryFileName(platform)), args: [] },
+    { path: "node", args: [join(home, "bin", "mex-hook.cjs")] },
+  ];
+}
+
+function executableFile(path: string, platform: NodeJS.Platform): boolean {
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && (platform === "win32" || (stat.mode & 0o111) !== 0);
+  } catch { return false; }
+}
+
+/** A browser repair may use only an existing native shim with its intact launcher. */
+export function existingRepairCommand(home: string, platform: NodeJS.Platform, entry: string | undefined): HookCommand | undefined {
+  if (!entry?.endsWith(".js") || fromNpxCache(entry)) return undefined;
+  try {
+    const launcher = snapshotBytes(readSnapshot(launcherFile(home), 4096));
+    const value = JSON.parse(launcher?.toString("utf8") ?? "null") as { version?: unknown; entry?: unknown; node?: unknown } | null;
+    const [command] = installHookCommands(home, platform);
+    const shim = lstatSync(command.path);
+    if (!shim.isFile() || shim.isSymbolicLink() || shim.nlink !== 1 || !samePath(installPath(command.path), command.path)
+      || !executableFile(command.path, platform) || !value || value.version !== 1
+      || typeof value.entry !== "string" || !isAbsolute(value.entry) || !samePath(value.entry, entry) || !statSync(entry).isFile()
+      || typeof value.node !== "string" || !isAbsolute(value.node) || !executableFile(value.node, platform)) return undefined;
+    return command;
+  } catch { return undefined; }
+}
+
+const runFile = promisify(execFile);
+async function repairSelfTest(path: string): Promise<boolean> {
+  const { stdout } = await runFile(path, ["--self-test"], {
+    timeout: 3_000, maxBuffer: 16 << 10, windowsHide: true, env: { ...process.env, MEX_BACKGROUND: "1" },
+  });
+  return JSON.parse(stdout)?.ok === true;
+}
+
+/** A repair of a recorded install must leave that original undo valid. */
+function repairCoveredByJournal(writer: RecordWriter | undefined, location: LocationOptions, change: InstallChange, owned: readonly HookCommand[]): boolean {
+  const sql = `SELECT CASE WHEN length(old_value)+length(new_value)<=? THEN old_value END old_value,
+    CASE WHEN length(old_value)+length(new_value)<=? THEN new_value END new_value
+    FROM installs WHERE path=? AND key=? ORDER BY id DESC LIMIT 1`;
+  const params = [3 << 20, 3 << 20, change.path, PREFIX + change.kind] as const;
+  const reader = writer ? undefined : openRecordReadOnly(location);
+  try {
+    if (reader?.diagnostic) throw new Error(reader.diagnostic);
+    const row = writer ? writer.db.prepare(sql).get(...params) : reader?.get<{ old_value: string; new_value: string }>(sql, ...params);
+    if (!row) return false;
+    const before = snapshotBytes(decodeSnapshot(String(row.old_value)));
+    const after = snapshotBytes(decodeSnapshot(String(row.new_value)));
+    const repaired = snapshotBytes(change.after)!;
+    if (change.kind === "runtime" && equalSnapshot(decodeSnapshot(String(row.new_value)), change.after)) return true;
+    if (change.kind === "settings" && after) {
+      const saved = parseSettings(after), planned = parseSettings(repaired);
+      const normalize = (settings: ReturnType<typeof parseSettings>) => JSON.parse(JSON.stringify(ownedHookGroups(settings, owned)));
+      if (isDeepStrictEqual(normalize(saved), normalize(planned))) {
+        // Ensure the original install can still be reversed around user's other settings.
+        undoSettings(repaired, before, after);
+        return true;
+      }
+    }
+    throw new Error("The original install record needs to be reviewed before changing this file.");
+  } finally { reader?.close(); }
+}
+
+async function repairAgent(options: InstallOptions, repair: NonNullable<InstallOptions["repair"]>): Promise<InstallResult> {
+  const { agent, expected } = repair;
+  const platform = options.platform ?? process.platform;
+  const location = { home: options.home, cache: repair.cache, isNetwork: repair.isNetwork };
+  const { home } = recordLocation({ ...location, create: false });
+  const path = installPath(agentConfigPath(agent, options.userHome ?? homedir(), options.env ?? process.env));
+  if (!options.dryRun && !expected) throw new Error("Repair requires a reviewed configuration.");
+  if (expected && !samePath(path, expected.path)) throw new InstallRevisionConflict("The configuration path changed.");
+  const plan = async (writer?: RecordWriter): Promise<InstallResult> => {
+    if (await installationTracking(path) === "tracked") throw new Error("This configuration is tracked by Git.");
+    const command = existingRepairCommand(home, platform, options.entry);
+    if (!command || !(options.selfTest ? options.selfTest(command.path).ok : await repairSelfTest(command.path))) {
+      throw new Error("The installed MEX hook or launcher could not be verified.");
+    }
+    const before = readSnapshot(path, MAX_SETTINGS_BYTES);
+    const bytes = snapshotBytes(before);
+    const revision = createHash("sha256").update(bytes ?? Buffer.alloc(0)).digest("hex");
+    if (expected && revision !== expected.revision) throw new InstallRevisionConflict("The configuration changed.");
+    const owned = installHookCommands(home, platform);
+    let next: Buffer;
+    if (agent === "opencode") {
+      if (bytes && !owned.some(candidate => bytes.equals(Buffer.from(opencodePlugin(candidate))))) {
+        throw new Error("The existing plugin needs to be reviewed in the terminal.");
+      }
+      next = Buffer.from(opencodePlugin(command));
+    } else {
+      if (agent === "copilot" && bytes && parseSettings(bytes).version !== 1) {
+        throw new Error("The Copilot hook file needs its format checked.");
+      }
+      next = installSettings(bytes, agent, command, platform, owned);
+    }
+    if (next.length > MAX_SETTINGS_BYTES) throw new Error("The repaired configuration would exceed its bound.");
+    const after = { data: next.toString("base64"), mode: agent === "opencode" && !bytes ? 0o644 : before.mode };
+    const planRevision = createHash("sha256").update(JSON.stringify([path, before, after])).digest("hex");
+    if (expected && planRevision !== expected.planRevision) throw new InstallRevisionConflict("The repair plan changed.");
+    const changes: InstallChange[] = equalSnapshot(before, after) ? [] : [{
+      path, agent, kind: agent === "opencode" ? "runtime" : "settings", before, after,
+    }];
+    if (changes.length) {
+      const covered = repairCoveredByJournal(writer, location, changes[0], owned);
+      try {
+        if (writer && covered) replaceFile(path, before, after);
+        else if (writer) recordChange(writer, changes[0], options);
+      }
+      catch (error) {
+        if (error instanceof Error && /^File changed (?:before|during) installation/u.test(error.message)) {
+          throw new InstallRevisionConflict("The configuration changed.");
+        }
+        throw error;
+      }
+    }
+    return { agents: [agent], changes, notices: [], legacyTracked: [], runner: "native", repair: { path, revision, planRevision } };
+  };
+  if (options.dryRun) return plan();
+  const writer = openRecord({ ...location, busyTimeoutMs: 0 });
+  try {
+    return await withContainedArtifactLock(home, "install", ".install.lock", () => plan(writer));
   } finally { writer.close(); }
 }
 
