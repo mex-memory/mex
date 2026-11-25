@@ -54,12 +54,36 @@ function put(writer: RecordWriter, projectId: string, key: string, value: unknow
   if (Buffer.byteLength(bytes) > 32 * 1024) throw new KnowledgeError("STORE_LIMIT", "Hint state exceeds its size limit.");
   writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(projectId, key, bytes);
 }
-function expiryMonths(reader: Pick<RecordReader, "setting">, projectId: string): number {
-  const raw = reader.setting(projectId, EXPIRY) ?? reader.setting("global", EXPIRY);
+export function recordedHintExpiry(reader: Pick<RecordReader, "setting"> | undefined, projectId?: string) {
+  const local = projectId === undefined ? undefined : reader?.setting(projectId, EXPIRY);
+  const raw = local ?? reader?.setting("global", EXPIRY);
   const months = raw === undefined ? 6 : Number(raw);
   if (!Number.isSafeInteger(months) || months < 1 || months > 120) throw new KnowledgeError("INVALID_SETTING", "Hint expiry must be between 1 and 120 calendar months.");
-  return months;
+  return { months, source: local !== undefined ? "repo" as const : raw === undefined ? "default" as const : "global" as const };
 }
+
+function expiryMonths(reader: Pick<RecordReader, "setting">, projectId: string): number {
+  return recordedHintExpiry(reader, projectId).months;
+}
+
+/** Only counts survive the read. Use the same active/confirmed distinction as hintStatus. */
+export function recordedHintCounts(reader: RecordReader | undefined, projects: string[]) {
+  if (!reader || !projects.length) return { active: 0, confirmed: 0 };
+  const limit = 10_000;
+  const counts = reader.get<{ total: number; valid: number; active: number; confirmed: number }>(`
+    WITH hints AS (
+      SELECT scope,key,CASE WHEN length(CAST(value AS BLOB))<=32768 AND json_valid(value) THEN json_type(value,'$.confirmed') END state
+      FROM settings WHERE scope IN (SELECT value FROM json_each(?)) AND key GLOB 'knowledge.hint.*' LIMIT ?
+    )
+    SELECT count(*) total, count(CASE WHEN state IN ('true','false') THEN 1 END) valid,
+      count(CASE WHEN state='true' THEN 1 END) confirmed,
+      count(CASE WHEN state='false' AND NOT EXISTS(
+        SELECT 1 FROM settings s WHERE s.scope=h.scope AND s.key='knowledge.retired.'||substr(h.key,16)
+      ) THEN 1 END) active FROM hints h`, JSON.stringify(projects), limit + 1)!;
+  return counts.total > limit || counts.valid !== counts.total
+    ? { active: null, confirmed: null } : { active: counts.active, confirmed: counts.confirmed };
+}
+
 export function hintExpiresAt(lastSeen: number, months: number): number {
   const date = new Date(lastSeen), day = date.getUTCDate();
   date.setUTCDate(1); date.setUTCMonth(date.getUTCMonth() + months);

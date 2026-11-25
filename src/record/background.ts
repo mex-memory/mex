@@ -53,10 +53,10 @@ function envNumber(name: string): number | undefined {
   const value = Number(process.env[name]);
   return process.env[name] !== undefined && Number.isFinite(value) && value > 0 ? value : undefined;
 }
-function setting(writer: RecordWriter, key: string): string | undefined { return writer.setting("background", key); }
+function setting(writer: Pick<RecordWriter, "setting">, key: string): string | undefined { return writer.setting("background", key); }
 
 /** Settings live in record.db (scope `background`); MEX_BACKGROUND_* variables override them for tests. */
-export function backgroundSettings(writer?: RecordWriter): BackgroundSettings {
+export function backgroundSettings(writer?: Pick<RecordWriter, "setting">): BackgroundSettings {
   const minutes = writer ? Number(setting(writer, "idle_minutes")) : NaN;
   const memory = writer ? Number(setting(writer, "memory_mb")) : NaN;
   return {

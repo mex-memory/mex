@@ -195,16 +195,22 @@ export function pruneReports(writer: RecordWriter, now = Date.now()): void {
   writer.db.prepare("DELETE FROM counters_node WHERE day<?").run(cutoff);
 }
 
+/** Project the acknowledged reports only, without touching the outbox or the network. */
+export function sentReports(reader: RecordReader): UsageReport[] {
+  if (!plainTable(reader, "settings")) return [];
+  return settings(reader, "history:", REPORT_HISTORY_LIMIT).flatMap(row => {
+    if (Buffer.byteLength(row.value) > REPORT_BYTES) return [];
+    try { const item: unknown = JSON.parse(row.value); return validateReport(item) ? [item] : []; } catch { return []; }
+  });
+}
+
 export function inspectReports(): { pending: PendingReport[]; sent: UsageReport[]; controls?: Array<{ event: "off"; timestamp: string }> } {
   let reader: RecordReader | undefined;
   try {
     safeFiles(); reader = openRecordReadOnly({ create: false });
     if (!reader || reader.diagnostic || !plainTable(reader, "settings")) return { pending: [], sent: [] };
     const pending = settings(reader, "pending:", REPORT_QUEUE_LIMIT).map((row) => parsePending(row.value)).filter((item): item is PendingReport => !!item);
-    const sent = settings(reader, "history:", REPORT_HISTORY_LIMIT).flatMap((row) => {
-      if (Buffer.byteLength(row.value) > REPORT_BYTES) return [];
-      try { const item: unknown = JSON.parse(row.value); return validateReport(item) ? [item] : []; } catch { return []; }
-    });
+    const sent = sentReports(reader);
     const off = reader.setting(SCOPE, "control:off");
     return { pending, sent, ...(off && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(off) ? { controls: [{ event: "off" as const, timestamp: off }] } : {}) };
   } catch { return { pending: [], sent: [] }; }

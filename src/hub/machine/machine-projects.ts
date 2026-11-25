@@ -11,7 +11,7 @@ export function machinePath(path: string): boolean {
 
 export function machineTime(value: string | number | undefined | null): string | null {
   const at = typeof value === "number" ? value : Date.parse(value ?? "");
-  return Number.isFinite(at) && Math.abs(at) <= 8.64e15 ? new Date(at).toISOString() : null;
+  return Number.isFinite(at) && at >= -62_167_219_200_000 && at < 253_402_300_800_000 ? new Date(at).toISOString() : null;
 }
 
 export interface MachineProject {
