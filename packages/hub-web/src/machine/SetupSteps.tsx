@@ -167,6 +167,7 @@ export function SetupSteps({ repo, search, setup }: {
         })}
       </ol>
       <SetupLearningDialog
+        waitsForSetup={repo.steps.some(({ kind, finishedAt }) => kind !== "learn-deeper" && finishedAt === null)}
         finalFocus={() => start.current ?? title.current}
         onClose={() => setQuote(null)}
         onStart={(accepted) => { setup.startLearning(repo.repoId, accepted); setQuote(null); }}

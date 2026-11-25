@@ -421,3 +421,64 @@
   .question [data-slot="button"],
   .questionsHeader [data-slot="button"] { min-height: 44px; }
 }
+
+/* Learn deeper is the one optional step worth recommending: show what it adds first, the cost after. */
+.step[data-offer] {
+  background: var(--surface-subtle);
+}
+
+.recommended.recommended {
+  gap: 4px;
+  color: var(--foreground);
+  font-weight: 550;
+}
+
+.recommended svg {
+  width: 12px;
+  height: 12px;
+}
+
+.offer {
+  display: grid;
+  max-width: 62ch;
+  gap: 8px;
+}
+
+.stepMain .offerLead {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.gains {
+  display: grid;
+  gap: 5px;
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.gains li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--foreground);
+}
+
+.gains svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.stepMain .offerNote,
+.stepMain .offerCost {
+  font-size: 12px;
+}
+
+.stepMain .offerCost {
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
