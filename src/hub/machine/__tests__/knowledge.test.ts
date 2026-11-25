@@ -1,4 +1,4 @@
-import { MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
+import { MachineKnowledgeDetailSchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema } from "@mex/hub-contracts/machine";
 import { setImmediate } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -275,4 +275,91 @@ it("groups by kind and all scopes and reads a reason bound to the current team f
   const scoped = MachineKnowledgeLandingSchema.parse(await (await get("/landing?repo=" + other.id)).json());
   expect(scoped.groups.byKind[0].count).toBe(1);
   expect(scoped.needsLook.total).toBe(0);
+});
+
+const itemPath = (repo: ReturnType<typeof project>, audience: Audience, id: string) =>
+  "/items/" + encodeURIComponent(key(repo, audience, id));
+
+async function detail(repo: ReturnType<typeof project>, audience: Audience, id: string) {
+  const response = await get(itemPath(repo, audience, id));
+  expect(response.status).toBe(200);
+  return MachineKnowledgeDetailSchema.parse(await response.json());
+}
+
+describe("Knowledge detail", () => {
+  it("reads the open file, shows definitions with one saved status, and projects personal history", async () => {
+    const repo = project("repo");
+    const id = "mx_personal";
+    const checks: KnowledgeEntry["mex"]["checks"] = [
+      { kind: "section", role: "complete", target: { file: "README.md", heading: "Install" }, saw: { hash: hash("Install") }, files: {} },
+      { kind: "source", role: "supporting", target: { file: "docs/setup.md" }, saw: { hash: hash("Setup") }, files: {} },
+    ];
+    const value = entry(id, "A scoped note", {
+      scope: ["apps/api/**", "tests/check.ts"], checks,
+      source: { type: "person", ref: "mex edit 2026-11-24", quote: PRIVATE },
+    });
+    const file = save(repo, "onlyYou", value);
+    // Exact revisions preserve CRLF and a BOM, even though the parser ignores both.
+    writeFileSync(file, "\ufeff" + readFileSync(file, "utf8").replace(/\n/gu, "\r\n"));
+    verdict(repo, id, "held");
+    receipt(repo, id, at(-5_000));
+    writer.db.prepare("INSERT INTO judgements VALUES(?,?,?,?,?)").run(repo.id, id, "inputs", "still-true", at(-2_000));
+    writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?)").run(repo.id, "learning.note." + id, JSON.stringify({ at: at(-DAY), sessions: ["private-session-id"] }));
+
+    const result = await detail(repo, "onlyYou", id);
+    expect(result).toMatchObject({
+      oneLine: "A scoped note", text: PRIVATE, evidence: PRIVATE, checkSummary: { status: "upToDate", checkedAt: at(-DAY) },
+      checks: [{ kind: "section", target: "Install in README.md", result: null }, { kind: "source", target: "docs/setup.md", result: null }],
+      source: { type: "note", edited: true }, useCount30Days: 1,
+      history: [{ type: "added" }, { type: "edited" }, { type: "learned" }, { type: "model-check", outcome: "still true" }],
+      revision: hash(readFileSync(file, "utf8")).slice(7),
+    });
+    expect(JSON.stringify(result)).not.toContain("private-session-id");
+  });
+
+  it("uses real git history through a rename, and still shows a team note when git fails", async () => {
+    const repo = project("repo", true);
+    const id = "mx_teamrule";
+    const original = save(repo, "team", entry(id, "A shared rule"));
+    git(repo.path, "add", "--", original);
+    git(repo.path, "commit", "-m", "Add a shared rule");
+    mkdirSync(join(dirname(original), "rule"));
+    const moved = join(dirname(original), "rule", id + ".md");
+    git(repo.path, "mv", "--", original, moved);
+    git(repo.path, "commit", "-m", "Move the shared rule");
+    const result = await detail(repo, "team", id);
+    expect(result).toMatchObject({
+      checkout: repo.path, source: { type: "team", checkout: repo.path, path: ".mex/learned/rule/mx_teamrule.md" },
+      history: [{ type: "git", actor: "Test Author", action: "edited" }, { type: "git", actor: "Test Author", action: "added" }],
+    });
+    expect(JSON.stringify(result)).not.toContain("test-author@example.test");
+    rmSync(join(repo.path, ".git"), { recursive: true });
+    expect((await detail(repo, "team", id)).history).toEqual([{ type: "added", at: "2026-11-23T00:00:00.000Z" }]);
+  });
+
+  it("reads an observed hint from its verified source and rejects unknown and malformed IDs", async () => {
+    const repo = project("repo");
+    const observed = hint(repo);
+    const result = await detail(repo, "hint", observed.mex.id);
+    expect(result).toMatchObject({ text: observed.text, source: { type: "agent-memory", agent: "claude-code", observations: 1 } });
+    expect((await get(itemPath(repo, "hint", "mx_missing"))).status).toBe(404);
+    expect((await get(itemPath(repo, "onlyYou", "../mx_missing"))).status).toBe(400);
+  });
+
+  it("serves GETs without changing either database, WAL, or the entry files", async () => {
+    const repo = project("repo");
+    const file = save(repo, "onlyYou", entry("mx_personal", "A note"));
+    const team = save(repo, "team", entry("mx_teamrule", "A team note"));
+    const observed = hint(repo);
+    const hintFile = join(home, "projects", repo.id, "hints", observed.mex.id + ".md");
+    receipt(repo, "mx_personal", at());
+    const paths = [file, team, hintFile, writer.location.record, writer.location.record + "-wal", writer.location.hooks, writer.location.hooks + "-wal"];
+    const before = paths.map((path) => readFileSync(path));
+    await page();
+    await get("/landing");
+    await detail(repo, "onlyYou", "mx_personal");
+    await detail(repo, "team", "mx_teamrule");
+    await detail(repo, "hint", observed.mex.id);
+    expect(paths.map((path) => readFileSync(path))).toEqual(before);
+  });
 });

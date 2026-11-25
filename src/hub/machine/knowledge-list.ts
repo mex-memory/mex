@@ -38,11 +38,13 @@ export function knowledgeMissing(detail = "That item may have been forgotten or 
   return new HubRequestError(404, "INVALID_REQUEST", "Knowledge item unavailable", detail);
 }
 
+export const repoMissing = () => new HubRequestError(404, "INVALID_REQUEST", "Repo not found", "Choose a repo registered with MEX.");
+
 export function ensureRepo(location: LocationOptions, repoId: string | undefined) {
   if (repoId === undefined) return;
   if (!PROJECT_ID.test(repoId)) throw badKnowledgeRequest("Choose a registered repo.");
   if (!readStore(openRecordReadOnly, location, (reader) => reader?.project(repoId))) {
-    throw new HubRequestError(404, "INVALID_REQUEST", "Repo not found", "Choose a repo registered with MEX.");
+    throw repoMissing();
   }
 }
 

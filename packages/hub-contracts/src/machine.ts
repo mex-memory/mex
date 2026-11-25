@@ -121,7 +121,8 @@ export const MachineKnowledgeLandingSchema = z.object({
 });
 
 const knowledgeSourceSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("note"), at: isoTimeSchema, via: z.enum(["cli", "hub"]), edited: z.boolean().optional() }),
+  z.object({ type: z.literal("recorded"), at: isoTimeSchema, description: z.string().min(1) }),
+  z.object({ type: z.literal("note"), at: isoTimeSchema, via: z.enum(["cli", "hub"]).optional(), edited: z.boolean().optional() }),
   z.object({ type: z.literal("session"), at: isoTimeSchema, checkedByModel: z.boolean() }),
   z.object({ type: z.literal("team"), path: z.string().min(1), checkout: z.string().min(1) }),
   z.object({ type: z.literal("agent-memory"), agent: z.string().min(1), observations: countSchema.positive() }),
@@ -130,6 +131,7 @@ const knowledgeSourceSchema = z.discriminatedUnion("type", [
 const knowledgeHistorySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("added"), at: isoTimeSchema }),
   z.object({ type: z.literal("edited"), at: isoTimeSchema }),
+  z.object({ type: z.literal("learned"), at: isoTimeSchema }),
   z.object({ type: z.literal("model-check"), at: isoTimeSchema, outcome: z.enum(["still true", "needs attention", "couldn’t tell"]) }),
   z.object({ type: z.literal("git"), at: isoTimeSchema, action: z.enum(["added", "edited"]), actor: z.string(), sha: z.string() }),
 ]);
@@ -144,8 +146,10 @@ export const MachineKnowledgeDetailSchema = MachineKnowledgeItemSchema.merge(kno
     result: z.enum(["held", "changed", "broken"]).nullable(),
     checkedAt: isoTimeSchema.nullable(),
   })).max(32),
+  checkSummary: z.object({ status: MachineKnowledgeStatusSchema, checkedAt: isoTimeSchema.nullable() }).optional(),
   useCount30Days: countSchema,
-  history: z.array(knowledgeHistorySchema),
+  useNote: z.string().min(1).optional(),
+  history: z.array(knowledgeHistorySchema).max(24),
 });
 
 export const MachineKnowledgePageSchema = z.object({

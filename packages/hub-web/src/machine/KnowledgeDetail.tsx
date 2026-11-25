@@ -29,9 +29,11 @@ export function KnowledgeDate({ at, relativeTo }: { at: string; relativeTo?: Dat
 function SourceDescription({ source }: { source: Detail["source"] }) {
   switch (source.type) {
     case "note":
-      return <>You {source.edited ? "edited" : "wrote"} this {source.via === "cli" ? <>with <code>mex note</code></> : "in the Hub"} on <KnowledgeDate at={source.at} /></>;
+      return <>You {source.edited ? "edited" : "wrote"} this{source.via === "cli" ? <> with <code>mex note</code></> : source.via === "hub" ? " in the Hub" : null} on <KnowledgeDate at={source.at} /></>;
     case "session":
       return <>Learned from your session on <KnowledgeDate at={source.at} />{source.checkedByModel && " (checked by model)"}</>;
+    case "recorded":
+      return <>{source.description} · <KnowledgeDate at={source.at} /></>;
     case "team":
       return <>From the team file <code>{source.path}</code></>;
     case "agent-memory":
@@ -45,28 +47,35 @@ const checkKindLabels = {
 };
 const checkStatuses = { held: "upToDate", changed: "codeChanged", broken: "outOfDate" } as const;
 
-function Checks({ checks, now }: { checks: Detail["checks"]; now: Date }) {
-  if (!checks.length) return <p>No checks. MEX can’t tell automatically if this goes out of date.</p>;
+function Checks({ checks, summary, now }: { checks: Detail["checks"]; summary: Detail["checkSummary"]; now: Date }) {
+  if (!checks.length && !summary?.checkedAt) return <p>No checks. MEX can’t tell automatically if this goes out of date.</p>;
   return (
-    <ul className={styles.checks} role="list">
-      {checks.map(({ kind, target, result, checkedAt }, index) => (
-        <li key={index}>
-          <p className={styles.checkTarget}><span>{checkKindLabels[kind]}</span> <span aria-hidden="true">·</span> <code>{target}</code></p>
-          <div className={styles.checkMeta}>
-            <KnowledgeStatusLabel className={styles.status} status={result ? checkStatuses[result] : "notChecked"} />
-            {checkedAt && <span>Last checked <KnowledgeDate at={checkedAt} relativeTo={now} /></span>}
-          </div>
-        </li>
-      ))}
-    </ul>
+    <>
+      {summary && <div className={styles.checkMeta}>
+        <KnowledgeStatusLabel className={styles.status} status={summary.status} />
+        {summary.checkedAt && <span>Last checked <KnowledgeDate at={summary.checkedAt} relativeTo={now} /></span>}
+      </div>}
+      {checks.length > 0 && <ul className={styles.checks} role="list">
+        {checks.map(({ kind, target, result, checkedAt }, index) => (
+          <li key={index}>
+            <p className={styles.checkTarget}><span>{checkKindLabels[kind]}</span> <span aria-hidden="true">·</span> <code>{target}</code></p>
+            {!summary && <div className={styles.checkMeta}>
+              <KnowledgeStatusLabel className={styles.status} status={result ? checkStatuses[result] : "notChecked"} />
+              {checkedAt && <span>Last checked <KnowledgeDate at={checkedAt} relativeTo={now} /></span>}
+            </div>}
+          </li>
+        ))}
+      </ul>}
+    </>
   );
 }
 
 function UseSummary({ item, now }: { item: Detail; now: Date }) {
-  if (!item.lastUsedAt && item.useCount30Days === 0) return <p>Not used yet</p>;
+  if (!item.lastUsedAt && item.useCount30Days === 0) return <p>{item.useNote ?? "No recorded use in the last 30 days"}</p>;
   return (
     <p>Given to agents {number.format(item.useCount30Days)} {item.useCount30Days === 1 ? "time" : "times"} in the last 30 days
       {item.lastUsedAt && <> · last <KnowledgeDate at={item.lastUsedAt} relativeTo={now} /></>}
+      {item.useNote && <> · {item.useNote}</>}
     </p>
   );
 }
@@ -75,6 +84,7 @@ function HistoryEvent({ event }: { event: Detail["history"][number] }) {
   switch (event.type) {
     case "added": return <>Added <KnowledgeDate at={event.at} /></>;
     case "edited": return <>Edited <KnowledgeDate at={event.at} /></>;
+    case "learned": return <>Learned <KnowledgeDate at={event.at} /></>;
     case "model-check": return <>Checked by model: {event.outcome}, <KnowledgeDate at={event.at} /></>;
     case "git": return <>{event.action === "added" ? "Added" : "Edited"} by {event.actor} in <code>{event.sha}</code>, <KnowledgeDate at={event.at} /></>;
   }
@@ -303,7 +313,7 @@ export function KnowledgeDetailPanel({ item, backHref, titleRef, knowledge, narr
                   <p><SourceDescription source={item.source} /></p>
                   {item.evidence && <blockquote>{item.evidence}</blockquote>}
                 </DetailSection>
-                <DetailSection narrow={narrow} title="Checks"><Checks checks={item.checks} now={now} /></DetailSection>
+                <DetailSection narrow={narrow} title="Checks"><Checks checks={item.checks} now={now} summary={item.checkSummary} /></DetailSection>
                 <DetailSection inline narrow={narrow} title="Use"><UseSummary item={item} now={now} /></DetailSection>
                 <DetailSection narrow={narrow} title="History"><History events={item.history} /></DetailSection>
               </div>
