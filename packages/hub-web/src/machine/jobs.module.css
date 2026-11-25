@@ -1,0 +1,248 @@
+.page {
+  display: grid;
+  min-width: 0;
+  gap: 24px;
+  container-type: inline-size;
+}
+
+.section {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.section > h2,
+.finishedToggle h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.jobs {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  list-style: none;
+}
+
+.job + .job {
+  border-top: 1px solid var(--border);
+}
+
+.jobTop {
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  gap: 8px;
+  padding-inline-end: 12px;
+}
+
+.jobToggle {
+  display: grid;
+  min-width: 0;
+  min-height: 46px;
+  flex: 1;
+  grid-template-columns: 14px minmax(0, 30cqi) minmax(0, 27cqi) minmax(0, 1fr);
+  grid-template-areas: "chevron identity state work";
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: start;
+}
+
+.jobToggle:hover,
+.jobToggle[aria-expanded="true"] {
+  background: var(--surface-subtle);
+}
+
+.jobToggle:focus-visible,
+.finishedToggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.chevron {
+  grid-area: chevron;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.jobToggle[aria-expanded="true"] > .chevron,
+.finished[open] > .finishedToggle .chevron {
+  transform: rotate(90deg);
+}
+
+.identity,
+.activity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity {
+  grid-area: identity;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+.identity strong {
+  color: var(--foreground);
+  font-weight: 550;
+}
+
+.jobToggle > [data-slot="badge"] {
+  grid-area: state;
+}
+
+.work {
+  display: grid;
+  min-width: 0;
+  grid-area: work;
+  gap: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.work:empty {
+  display: none;
+}
+
+.nextAction {
+  display: flex;
+  align-self: center;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 3px;
+  padding-block: 6px;
+}
+
+.nextAction [data-slot="button"],
+.details > [data-slot="button"] {
+  font-size: 12px;
+}
+
+.disabledReason {
+  max-width: 16ch;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: end;
+}
+
+.details {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 16px;
+  padding: 7px 12px 8px 36px;
+  background: var(--surface-subtle);
+}
+
+.details > .nextAction {
+  padding-block: 0;
+}
+
+.details[hidden] {
+  display: none;
+}
+
+.job:last-child > .details {
+  border-end-end-radius: var(--radius-card);
+  border-end-start-radius: var(--radius-card);
+}
+
+.facts {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  column-gap: 18px;
+  row-gap: 4px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+  list-style: none;
+}
+
+.facts > li {
+  overflow-wrap: anywhere;
+}
+
+.finishedToggle {
+  width: fit-content;
+  padding: 4px 6px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  list-style: none;
+}
+
+.finishedToggle:hover {
+  background: var(--surface-subtle);
+}
+
+.finishedToggle::-webkit-details-marker {
+  display: none;
+}
+
+.finishedToggle h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.finished > .jobs {
+  margin-top: 8px;
+}
+
+.confirmation.confirmation {
+  width: min(calc(100% - 32px), 384px);
+  box-shadow: var(--overlay-shadow);
+  font-size: 14px;
+}
+
+.confirmation [data-slot="alert-dialog-title"],
+.confirmation [data-slot="alert-dialog-description"] {
+  margin: 0;
+}
+
+.confirmation [data-slot="alert-dialog-footer"] {
+  border-color: var(--border);
+}
+
+@container (max-width: 720px) {
+  .jobToggle {
+    grid-template-columns: 14px minmax(0, 1fr);
+    grid-template-areas: "chevron identity" ". state" ". work";
+    grid-template-rows: auto auto auto;
+    gap: 3px 7px;
+    padding-inline-end: 4px;
+  }
+
+  .jobToggle:has(.work:empty) {
+    grid-template-areas: "chevron identity" ". state";
+    grid-template-rows: auto auto;
+  }
+
+  .nextAction {
+    align-self: start;
+    padding-top: 8px;
+  }
+
+  .details {
+    align-items: flex-start;
+    padding-inline-start: 33px;
+  }
+}
