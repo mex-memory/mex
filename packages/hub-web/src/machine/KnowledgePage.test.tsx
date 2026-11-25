@@ -387,6 +387,7 @@ describe("Knowledge fixtures", () => {
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(within(screen.getByRole("main")).getByRole("link", { name: "Knowledge" }))
       .toHaveAttribute("href", "/repos/storefront/knowledge?fixture=home");
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
   it("shows and copies the Share command for a personal note", async () => {
@@ -621,3 +622,23 @@ describe("Live Knowledge", () => {
 });
 
 const listLink = (claim: string) => screen.findByRole("link", { name: new RegExp("^" + claim) });
+
+it("removes a forgotten item from another tab’s open detail after a Knowledge change", async () => {
+  class KnowledgeEvents extends EventTarget {
+    static current: KnowledgeEvents;
+    constructor() { super(); KnowledgeEvents.current = this; }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", KnowledgeEvents);
+  const note = item("mx_early123", "An open note");
+  let forgotten = false;
+  const { user } = renderLive((url) => {
+    if (url.pathname.includes("/items/")) return forgotten ? problem(404, "INVALID_REQUEST") : Response.json(note);
+    return livePage(forgotten ? [] : [note]);
+  });
+  await openItem(user, note.oneLine);
+  forgotten = true;
+  KnowledgeEvents.current.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ topics: ["knowledge"] }) }));
+  expect(await screen.findByRole("heading", { name: "Item unavailable" })).toBeVisible();
+  expect(screen.queryByText(note.text)).toBeNull();
+});

@@ -74,10 +74,10 @@ export function isRetired(reader: RecordReader, repoId: string, id: string): boo
   return reader.get("SELECT 1 FROM settings WHERE scope=? AND key=?", repoId, RETIRED_PREFIX + id) !== undefined;
 }
 
-function projectKnowledge(
+async function projectKnowledge(
   reader: RecordReader, hooks: RecordReader | undefined, location: LocationOptions, home: string,
-  repoId: string, now: number, available: number, env: NodeJS.ProcessEnv | undefined,
-): ProjectKnowledge {
+  repoId: string, now: number, available: number, env: NodeJS.ProcessEnv | undefined, signal: AbortSignal,
+): Promise<ProjectKnowledge> {
   const checkout = representativeCheckout(reader, hooks, repoId, now);
   const rows = new Map<string, KnowledgeRow>();
   const retired = new Map<string, RetiredRow>();
@@ -86,7 +86,7 @@ function projectKnowledge(
   let bytes = 0, seen = 0, consumed = 0, partial: string | undefined;
 
   const hints = checkout && localHintReader(reader, repoId, { ...location, projectPath: checkout, env }, now);
-  const add = (parts: string[], base: string, audience: Audience) => {
+  const add = async (parts: string[], base: string, audience: Audience) => {
     try {
       const directory = containedDirectory(base, parts);
       if (!directory) {
@@ -95,9 +95,10 @@ function projectKnowledge(
         return;
       }
       const verifyNotes = personalReadGuard(directory);
-      scan(directory, audience, audience === "team");
+      await scan(directory, audience, audience === "team");
       verifyNotes();
     } catch (error) {
+      if (signal.aborted) throw signal.reason;
       // A rotating notes directory is handled by the last-good snapshot.
       if (error instanceof KnowledgeError && ["STORE_BUSY", "STORE_CHANGED"].includes(error.code)) throw error;
       if (error instanceof KnowledgeError && error.code === "STORE_LIMIT") partial = SCAN_NOTE;
@@ -105,18 +106,26 @@ function projectKnowledge(
     }
   };
 
-  function scan(directory: string, audience: Audience, nested: boolean): void {
+  async function scan(directory: string, audience: Audience, nested: boolean): Promise<void> {
     watch.push(directory);
+    const identity = lstatSync(directory, { bigint: true });
     const handle = opendirSync(directory);
     try {
       let child: Dirent | null;
       while ((child = handle.readSync())) {
         if (++seen > KNOWLEDGE_LIMITS.entries || consumed >= available || bytes >= KNOWLEDGE_LIMITS.scanBytes) throw new KnowledgeError("STORE_LIMIT", SCAN_NOTE);
+        if (seen % 128 === 0) {
+          await setImmediate(undefined, { signal });
+          const current = lstatSync(directory, { bigint: true, throwIfNoEntry: false });
+          if (current?.ino !== identity.ino || current.dev !== identity.dev || realPath(directory) !== absolutePath(directory)) {
+            throw new KnowledgeError("STORE_CHANGED", "Knowledge storage changed while being read.");
+          }
+        }
         if (child.isSymbolicLink()) { partial ??= READ_NOTE; continue; }
         const name = child.name;
         if (nested && child.isDirectory() && ENTRY_KINDS.some((kind) => kind === name)) {
           const inner = containedDirectory(directory, [child.name]);
-          if (inner) scan(inner, audience, false);
+          if (inner) await scan(inner, audience, false);
           continue;
         }
         if (!child.isFile() || !child.name.endsWith(".md")) continue;
@@ -173,22 +182,24 @@ function projectKnowledge(
     } finally { handle.closeSync(); }
   }
 
-  add(["projects", repoId, "notes"], home, "onlyYou");
+  await add(["projects", repoId, "notes"], home, "onlyYou");
   if (checkout) {
-    add([".mex", "learned"], checkout, "team");
-    add(["projects", repoId, "hints"], home, "hint");
+    await add([".mex", "learned"], checkout, "team");
+    await add(["projects", repoId, "hints"], home, "hint");
   }
   if (checkout && hooks && rows.size) {
-    const ids = [...new Set([...rows.values()].map(({ id }) => id))];
-    const saved = hooks.all<{ entry_id: string; verdict: string; checked_at: string }>(`SELECT entry_id,verdict,checked_at
-      FROM verdicts WHERE project_id=? AND checkout=? ${checkoutCollation} AND entry_id IN (SELECT value FROM json_each(?)) LIMIT ?`,
-    repoId, checkout, JSON.stringify(ids), KNOWLEDGE_LIMITS.entries);
-    const verdicts = new Map(saved.map((value) => [value.entry_id, value]));
-    for (const row of rows.values()) {
-      const verdict = verdicts.get(row.id);
-      row.status = knowledgeStatus(verdict?.verdict);
-      row.checkedAt = verdict?.checked_at;
-    }
+    try {
+      const ids = [...new Set([...rows.values()].map(({ id }) => id))];
+      const saved = hooks.all<{ entry_id: string; verdict: string; checked_at: string }>(`SELECT entry_id,verdict,checked_at
+        FROM verdicts WHERE project_id=? AND checkout=? ${checkoutCollation} AND entry_id IN (SELECT value FROM json_each(?)) LIMIT ?`,
+      repoId, checkout, JSON.stringify(ids), KNOWLEDGE_LIMITS.entries);
+      const verdicts = new Map(saved.map((value) => [value.entry_id, value]));
+      for (const row of rows.values()) {
+        const verdict = verdicts.get(row.id);
+        row.status = knowledgeStatus(verdict?.verdict);
+        row.checkedAt = verdict?.checked_at;
+      }
+    } catch { partial ??= "Recent checks couldn’t be read."; }
   }
   return { rows, retired: [...retired.values()], watch, partial, bytes: consumed };
 }
@@ -208,18 +219,24 @@ export async function takeKnowledgeSnapshot(
     used -= projects.get(id)?.bytes ?? 0;
     projects.delete(id);
     let project: ProjectKnowledge | undefined;
+    let reader: RecordReader | undefined;
+    let hooks: RecordReader | undefined;
     try {
-      project = readStore(openRecordReadOnly, location, (reader) => {
-        if (!reader?.project(id)) return undefined;
-        let hooks: RecordReader | undefined;
+      reader = openRecordReadOnly(location);
+      if (reader?.diagnostic) throw new Error(reader.diagnostic);
+      if (reader?.project(id)) {
         try { hooks = openHooksReadOnly(location); } catch { /* Knowledge files are still readable. */ }
-        try { return projectKnowledge(reader, hooks?.diagnostic ? undefined : hooks, location, home, id, now(), METADATA_BYTES - used, env); }
-        finally { hooks?.close(); }
-      });
+        project = await projectKnowledge(reader, hooks?.diagnostic ? undefined : hooks, location, home,
+          id, now(), METADATA_BYTES - used, env, signal);
+      }
     } catch {
+      if (signal.aborted) throw signal.reason;
       const prior = previous?.projects.get(id);
       if (prior && prior.bytes <= METADATA_BYTES - used) project = { ...prior, partial: READ_NOTE };
       else project = { rows: new Map(), retired: [], watch: [], partial: READ_NOTE, bytes: 0 };
+    } finally {
+      hooks?.close();
+      reader?.close();
     }
     if (project) {
       used += project.bytes;

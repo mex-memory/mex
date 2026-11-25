@@ -234,6 +234,26 @@ describe("Knowledge list", () => {
     expect(await (await get(second)).json()).toMatchObject({ status: 409, code: "KNOWLEDGE_CHANGED" });
   });
 
+  it("keeps the last good page during a refresh and a pending note directory swap", async () => {
+    const repo = project("repo");
+    const id = "mx_personal";
+    const file = save(repo, "onlyYou", entry(id, "Original claim"));
+    await page();
+    clock += 120_001;
+    const pending = join(dirname(dirname(file)), "notes.pending");
+    writeFileSync(pending, "Changing notes");
+    const updating = await page("", false);
+    expect(updating.items[0].oneLine).toBe("Original claim");
+    expect(updating.updatingSince).toBeDefined();
+    const preserved = await page();
+    expect(preserved.items[0].oneLine).toBe("Original claim");
+    expect(preserved.partial).toEqual([{ repoId: repo.id, note: "Some items in this repo couldn’t be read." }]);
+    rmSync(pending);
+    save(repo, "onlyYou", entry(id, "New claim"));
+    clock += 120_001;
+    expect((await page()).items[0].oneLine).toBe("New claim");
+  });
+
   it("uses the time index to cap receipt reads before grouping", () => {
     const plan = hooks.prepare(`EXPLAIN QUERY PLAN WITH ${usageRange} SELECT count(*) FROM recent`)
       .all(at(-30 * DAY), at(), 100, 100_000);

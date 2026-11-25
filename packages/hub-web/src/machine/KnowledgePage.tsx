@@ -57,6 +57,7 @@ interface KnowledgeView {
   landing?: KnowledgeLandingData;
   areas: KnowledgeLandingData["groups"]["byArea"];
   detail?: KnowledgeDetail;
+  detailMissing?: boolean;
   detailLoad?: PageLoad;
   forgotten: readonly ForgottenItem[];
   forgottenCount?: number;
@@ -279,7 +280,7 @@ function ForgottenView({ items, repoNames, backHref, titleRef, load, loadMore, f
 }
 
 function useKnowledgeRoute({ project, projects }: KnowledgeScope) {
-  const { entryKey } = useParams();
+  const entryKey = useParams().entryKey?.replace(":personal:", ":onlyYou:");
   const [params] = useSearchParams();
   const showList = Boolean(entryKey || params.get("view") === "list" || filterNames.some((name) => params.get(name)?.trim()));
   const statusParam = params.get("status");
@@ -348,8 +349,9 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
 
   useLayoutEffect(() => {
     if (entryKey && entryKey !== previousKey.current && (narrow || !previousList.current)) document.scrollingElement?.scrollTo(0, 0);
-    if (entryKey && detailTitle.current && focusedDetail.current !== entryKey && (!initialAction || detail)) {
-      focusedDetail.current = entryKey;
+    const focusKey = view.detailMissing ? entryKey + ":missing" : entryKey;
+    if (entryKey && detailTitle.current && focusedDetail.current !== focusKey && (!initialAction || detail || view.detailMissing)) {
+      focusedDetail.current = focusKey;
       if (initialAction) setPendingAction(undefined);
       else detailTitle.current.focus({ preventScroll: true });
     } else if (!entryKey && !browser.current?.contains(document.activeElement)) {
@@ -360,7 +362,7 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
     if (!entryKey) focusedDetail.current = undefined;
     previousKey.current = entryKey;
     previousList.current = showList;
-  }, [entryKey, detail?.key, detailLoad?.loading, detailLoad?.error, initialAction, showList, narrow]);
+  }, [entryKey, detail?.key, detailLoad?.loading, detailLoad?.error, initialAction, showList, narrow, view.detailMissing]);
 
   useLayoutEffect(() => {
     if (firstNewRow.current !== null) {
@@ -547,7 +549,7 @@ function KnowledgeBrowser({ project, projects, route, view, knowledge, live }: K
             canEditHint={live}
             initialAction={initialAction}
             item={detail}
-            key={entryKey}
+            key={view.detailMissing ? entryKey + ":missing" : entryKey}
             knowledge={knowledge}
             narrow={narrow}
             now={now}
@@ -604,7 +606,7 @@ function FixtureKnowledgePage({ knowledge, ...scope }: KnowledgeScope & { knowle
     areas: filters.area ? knowledge.getLanding(scope.project?.id ?? filters.repoId).groups.byArea : [],
     forgotten, forgottenCount: forgotten.length,
     detail: !scope.project || item?.repoId === scope.project.id ? item : undefined,
-    loadMore: page.nextCursor ? () => setPaging({ filterKey, pageCount: paging.filterKey === filterKey ? paging.pageCount + 1 : 2 }) : undefined,
+    loadMore: entryKey !== "forgotten" && page.nextCursor ? () => setPaging({ filterKey, pageCount: paging.filterKey === filterKey ? paging.pageCount + 1 : 2 }) : undefined,
   };
   return <KnowledgeBrowser {...scope} knowledge={knowledge} route={route} view={view} />;
 }
@@ -637,13 +639,13 @@ function LiveKnowledgePage({ live, ...scope }: KnowledgeScope & { live: Knowledg
   }
   const items = list.data?.pages.flatMap((page) => page.items) ?? [];
   const forgottenItems = forgotten.data?.pages.flatMap((page) => page.items) ?? [];
-  const item = !scope.project || detail.data?.repoId === scope.project.id ? detail.data : undefined;
   const detailMissing = detail.error instanceof HubProblemError && detail.error.status === 404;
+  const item = !detailMissing && (!scope.project || detail.data?.repoId === scope.project.id) ? detail.data : undefined;
   const view: KnowledgeView = {
     items, total: firstPage?.total ?? 0, counts,
     landing: !showList && !(landing.data?.updatingSince && landing.data.groups.byKind.length === 0) ? landing.data : undefined,
     areas: landing.data?.groups.byArea ?? [],
-    detail: item, detailLoad: entryKey ? { loading: detail.isPending, error: detail.isError && !detailMissing, retry: () => void detail.refetch() } : undefined,
+    detail: item, detailMissing, detailLoad: entryKey ? { loading: detail.isPending, error: detail.isError && !detailMissing, retry: () => void detail.refetch() } : undefined,
     forgotten: forgottenItems, forgottenCount: firstForgotten && !forgotten.hasNextPage ? forgottenItems.length : undefined,
     updating: current?.updatingSince, partial: current?.partial,
     load: {
