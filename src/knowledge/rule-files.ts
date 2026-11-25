@@ -23,7 +23,7 @@ export const GENERATED_MARK = "<!-- mex:generated";
 const MANAGED_BLOCK = /<!--\s*mex-agent:[\w-]+:start\s*-->[\s\S]*?<!--\s*mex-agent:[\w-]+:end\s*-->/gu;
 
 const MAX_RULE_FILES = 200;
-const MAX_RULE_FILE_BYTES = 256 * 1024;
+export const MAX_RULE_FILE_BYTES = 256 * 1024;
 
 export interface RuleFile {
   path: string;

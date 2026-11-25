@@ -205,6 +205,64 @@ export const MachineKnowledgeConflictSchema = MachineProblemSchema.extend({
   attempted: z.union([MachineKnowledgeEditRequestSchema, MachineKnowledgeForgetRequestSchema]),
 });
 
+const knowledgePathSchema = z.string().min(1).max(4096);
+export const MachineKnowledgeCheckoutSchema = z.object({
+  repoId: z.string().min(1).max(64),
+  checkout: knowledgePathSchema,
+}).strict();
+
+const ruleAgentSchema = z.enum(["claude-code", "codex", "cursor", "copilot", "gemini", "opencode"]);
+const ruleFileSchema = z.object({
+  path: knowledgePathSchema,
+  agents: z.array(ruleAgentSchema),
+  scope: z.array(z.string().min(1)),
+  entryCount: countSchema,
+});
+
+export const MachineKnowledgeRulesSchema = z.object({
+  cache: z.discriminatedUnion("state", [
+    z.object({ state: z.literal("missing") }),
+    z.object({
+      state: z.enum(["current", "stale"]),
+      files: z.array(ruleFileSchema).max(200),
+      findings: z.array(z.object({
+        kind: z.enum(["conflict", "stale"]),
+        paths: z.array(knowledgePathSchema).min(1),
+        heading: z.string(),
+        message: z.string().min(1),
+      })),
+    }),
+  ]),
+  generated: z.array(z.object({ path: knowledgePathSchema, sharing: z.enum(["shared", "local"]) })),
+  updatingSince: isoTimeSchema.optional(),
+  issue: z.string().optional(),
+});
+
+export const MachineKnowledgeBriefRequestSchema = MachineKnowledgeCheckoutSchema.extend({
+  agent: z.enum(["claude-code", "codex"]),
+  path: knowledgePathSchema.optional(),
+}).strict();
+
+export const MachineKnowledgeBriefSchema = z.object({
+  text: z.string().max(512 * 1024),
+  // Map native token_bound to the estimate of the entire text. The limit is supplied separately.
+  tokenBound: countSchema,
+  tokenLimit: z.number().int().positive(),
+  items: z.array(z.object({
+    id: z.string().min(1),
+    line: z.string().min(1),
+    level: z.enum(["personal", "team", "rule-file", "hint"]),
+    verdict: z.enum(["held", "changed", "broken", "unknown"]),
+    tokens: countSchema,
+  })),
+  coverage: z.object({ files: z.array(ruleFileSchema) }),
+});
+
+export type MachineKnowledgeCheckout = z.infer<typeof MachineKnowledgeCheckoutSchema>;
+export type MachineKnowledgeRules = z.infer<typeof MachineKnowledgeRulesSchema>;
+export type MachineKnowledgeBriefRequest = z.infer<typeof MachineKnowledgeBriefRequestSchema>;
+export type MachineKnowledgeBrief = z.infer<typeof MachineKnowledgeBriefSchema>;
+
 const reviewAction = z.enum(["share", "keep", "edit", "use", "keepCurrent", "retire"]);
 const reviewContent = knowledgeContentSchema.omit({ oneLine: true }).extend({ claim: knowledgeContentSchema.shape.oneLine });
 const reviewNote = z.object({ key: knowledgeKeySchema, audience: MachineKnowledgeAudienceSchema });

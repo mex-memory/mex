@@ -49,6 +49,18 @@ export function KindSelect({ kind, onChange }: { kind: KnowledgeKind; onChange: 
   );
 }
 
+export function CheckoutField({ paths, path, onChange }: { paths: string[]; path: string; onChange: (path: string) => void }) {
+  const id = useId();
+  return (
+    <div className={styles.field}>
+      <label htmlFor={id}>Checkout</label>
+      <NativeSelect className={styles.select} id={id} onChange={(event) => onChange(event.target.value)} value={path}>
+        {paths.map((path) => <NativeSelectOption key={path} value={path}>{path}</NativeSelectOption>)}
+      </NativeSelect>
+    </div>
+  );
+}
+
 export function ScopeInputs({ patterns, onChange }: { patterns: string[]; onChange: (patterns: string[]) => void }) {
   const fields = useRef<HTMLFieldSetElement>(null);
   const focusIndex = useRef<number | null>(null);

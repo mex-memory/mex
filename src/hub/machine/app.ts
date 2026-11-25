@@ -17,10 +17,13 @@ import { HubEvents } from "./events.js";
 import { HomeData } from "./home.js";
 import { changeHubJob, readHubJobs } from "./jobs.js";
 import { KnowledgeData } from "./knowledge.js";
+import { KnowledgeBriefs } from "./knowledge-brief.js";
+import { parseKnowledgeCheckout } from "./knowledge-checkout.js";
 import { readKnowledgeItem } from "./knowledge-detail.js";
 import { readForgotten } from "./knowledge-forgotten.js";
 import { readKnowledgeLanding } from "./knowledge-landing.js";
 import { readKnowledgePage } from "./knowledge-list.js";
+import { RuleFilesData } from "./knowledge-rules.js";
 import { KnowledgeConflict, KnowledgeReplays, KnowledgeWrites, knowledgeReadProblem, knowledgeWriteProblem } from "./knowledge-writes.js";
 import { invalidReview, readReviewCard, readReviewPage, reviewUnavailable } from "./review.js";
 import { ReviewProblem, ReviewWrites, reviewWriteProblem } from "./review-writes.js";
@@ -80,6 +83,8 @@ export function createMachineHubApp(options: MachineHubOptions) {
 
   const home = new HomeData(location, now);
   const knowledge = new KnowledgeData(location, now, options.env);
+  const briefs = new KnowledgeBriefs(location, options.env);
+  const ruleFiles = new RuleFilesData(location, now);
   const agentOptions: MachineAgentOptions = { ...location, env: options.env, entry: options.agentEntry, userHome: options.agentUserHome };
   const agentRead = new ControlSnapshot(now, signal => takeAgentsSnapshot(agentOptions, signal), "Agent settings couldn’t be read. Try again or run mex doctor.");
   const settingsRead = new ControlSnapshot(now,
@@ -92,7 +97,7 @@ export function createMachineHubApp(options: MachineHubOptions) {
   const repair = new AgentRepair(agentOptions, now);
   const followUps = new Set<NodeJS.Immediate>();
   const keepOpen = () => withWriter((writer) => keepHubOpen(writer, now() + TAB_KEEPALIVE_MS));
-  const events = new HubEvents(location, home, knowledge, now, keepOpen, { agents: agentRead, settings: settingsRead, uninstall: uninstallRead, setup });
+  const events = new HubEvents(location, home, knowledge, now, keepOpen, { agents: agentRead, settings: settingsRead, uninstall: uninstallRead, setup, ruleFiles });
   const changed = async (repoId: string, notesChanged: boolean) => {
     await home.refreshProject(repoId);
     if (notesChanged) await knowledge.refreshProject(repoId);
@@ -180,7 +185,8 @@ export function createMachineHubApp(options: MachineHubOptions) {
       checkWrite(context.req.raw.headers, context.get("address"), session);
     }
     context.set("session", session);
-    if (context.req.path !== "/api/v1/setup" && !(context.req.path === "/api/v1/jobs" && context.req.query("job") !== undefined)) {
+    if (context.req.path !== "/api/v1/setup" && context.req.path !== "/api/v1/knowledge/rules"
+      && !(context.req.path === "/api/v1/jobs" && context.req.query("job") !== undefined)) {
       home.touch();
       agentRead.touch();
       settingsRead.touch();
@@ -273,6 +279,19 @@ export function createMachineHubApp(options: MachineHubOptions) {
     const { repo, cursor } = readStrictQuery(context.req.raw, ["repo", "cursor"]);
     return context.json(readForgotten(knowledge, repo, cursor));
   });
+
+  app.get("/api/v1/knowledge/rules", (context) => {
+    const { repo, checkout } = readStrictQuery(context.req.raw, ["repo", "checkout"]);
+    return context.json(ruleFiles.get(parseKnowledgeCheckout({ repoId: repo, checkout })));
+  });
+
+  app.post("/api/v1/knowledge/rules/refresh", (context) => machinePost(context, async (body) => {
+    const rules = await ruleFiles.refresh(parseKnowledgeCheckout(body));
+    events.ruleFilesChanged();
+    return rules;
+  }));
+
+  app.post("/api/v1/knowledge/brief", (context) => machinePost(context, (body) => briefs.preview(body)));
 
   app.post("/api/v1/knowledge/notes", (context) => knowledgePost(context, (body) => knowledgeWrites.create(body), 201));
   app.post("/api/v1/knowledge/items/:key/edit", (context) => knowledgePost(context, (body) => knowledgeWrites.edit(context.req.param("key"), body)));
@@ -440,6 +459,8 @@ export function createMachineHubApp(options: MachineHubOptions) {
     events.close();
     home.close();
     knowledge.close();
+    briefs.close();
+    ruleFiles.close();
     agentRead.close();
     settingsRead.close();
     uninstallRead.close();

@@ -8,6 +8,7 @@ import type { ForgottenItem, HomeOverview, HubJob, KnowledgeDetail, KnowledgeSta
 
 export type FixtureVariant = "home" | "populated" | "empty" | "stale" | "updating" | "conflict" | "calm"
   | "review-empty" | "review-handled" | "review-handled-unknown" | "review-busy" | "review-loading"
+  | "rules-stale" | "brief-failed"
   | "agents-broken" | "agents-terminal" | "settings-forced-off" | "setup";
 
 export interface KnowledgeFixture {

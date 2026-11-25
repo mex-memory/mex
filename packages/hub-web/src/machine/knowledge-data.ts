@@ -1,13 +1,49 @@
 import { useEffect } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryKey } from "@tanstack/react-query";
+import type { MachineKnowledgeCheckout } from "@mex/hub-contracts/machine";
 import { HubProblemError } from "./api";
-import { queryOptions, type HubEventState } from "./data";
-import { getForgotten, getKnowledgeItem, getKnowledgeLanding, getKnowledgePage, postKnowledgeEdit, postKnowledgeForget, postNote } from "./knowledge-api";
+import { queryOptions, type ControlConnection, type HubEventState } from "./data";
+import { getForgotten, getKnowledgeItem, getKnowledgeLanding, getKnowledgePage, getRuleFiles, postBriefPreview, postKnowledgeEdit, postKnowledgeForget, postNote, postRuleRefresh } from "./knowledge-api";
 import { retryKnowledgeBusy } from "./knowledge-write-state";
-import type { KnowledgeActions, KnowledgeCreateResult, KnowledgeEditResult, KnowledgeFilters, KnowledgeForgetResult } from "./types";
+import type { KnowledgeActions, KnowledgeCreateResult, KnowledgeEditResult, KnowledgeFilters, KnowledgeForgetResult, KnowledgeToolsPreview } from "./types";
 
 const key = ["knowledge"];
 const detailKey = (key: string | undefined) => ["knowledge", "item", key] as const;
+const rulesKey = ({ repoId, checkout }: MachineKnowledgeCheckout) => ["knowledge", "rules", repoId, checkout] as const;
+
+export function useRuleFiles(scope: MachineKnowledgeCheckout, { events, csrfToken, reportDataError }: ControlConnection) {
+  const client = useQueryClient();
+  const options = queryOptions(events);
+  const query = useQuery({
+    ...options, placeholderData: undefined, queryKey: rulesKey(scope),
+    queryFn: ({ signal }) => getRuleFiles(scope, signal),
+    refetchInterval: ({ state }) => state.data?.updatingSince ? 500 : options.refetchInterval,
+  });
+  useEffect(() => {
+    if (query.error) reportDataError(query.error);
+  }, [query.error, reportDataError]);
+  const refresh = useMutation({
+    networkMode: "always", retry: false,
+    mutationFn: (input: MachineKnowledgeCheckout) => postRuleRefresh(input, { csrfToken, idempotencyKey: crypto.randomUUID() }),
+    onSuccess: async (rules, input) => {
+      const queryKey = rulesKey(input);
+      await client.cancelQueries({ queryKey, exact: true });
+      client.setQueryData(queryKey, rules);
+    },
+    onError: reportDataError,
+  });
+  return { query, refresh: refresh.mutateAsync };
+}
+
+export function liveBriefPreview({ csrfToken, reportDataError }: ControlConnection): KnowledgeToolsPreview["previewBrief"] {
+  return async (input, signal) => {
+    try { return await postBriefPreview(input, { csrfToken, idempotencyKey: crypto.randomUUID() }, signal); }
+    catch (error) {
+      if (!signal.aborted) reportDataError(error);
+      throw new Error(error instanceof HubProblemError && error.problem?.detail || "Couldn’t preview the brief. Try again.");
+    }
+  };
+}
 
 function useResetChangedCursor<T>(queryKey: QueryKey, error: unknown) {
   const client = useQueryClient();

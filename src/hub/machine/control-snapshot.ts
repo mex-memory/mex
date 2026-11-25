@@ -38,9 +38,13 @@ export class ControlSnapshot<T extends { issue?: string }> {
 
   update(edit: (data: T) => T) {
     if (!this.#data) return;
-    this.#data = edit(this.#data);
-    this.#encoded = JSON.stringify(this.#data);
-    this.#version++;
+    this.#store(edit(this.#data));
+  }
+
+  replace(data: T) {
+    this.#reading?.abort();
+    this.#issue = this.#updatingSince = undefined;
+    this.#store(data);
   }
 
   touch() {
@@ -63,6 +67,12 @@ export class ControlSnapshot<T extends { issue?: string }> {
     this.#closed = true;
     clearTimeout(this.#timer);
     this.#reading?.abort();
+  }
+
+  #store(data: T) {
+    this.#data = data;
+    this.#encoded = JSON.stringify(data);
+    this.#version++;
   }
 
   #schedule() {

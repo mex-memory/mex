@@ -16,6 +16,15 @@ export const audienceLabels = {
   hint: "Hint from your agent",
 } satisfies Record<KnowledgeAudience, string>;
 
+export const ruleAgentLabels = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  copilot: "Copilot",
+  gemini: "Gemini",
+  opencode: "OpenCode",
+};
+
 export function scopeLabel(scope: readonly string[]) {
   if (scope.length !== 1) return scope.join(", ");
   if (scope[0] === "**") return "Whole repo";

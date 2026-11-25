@@ -36,7 +36,14 @@ main:has(.page) {
 }
 
 .header {
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
 }
 
 .addButton.addButton {
@@ -322,9 +329,11 @@ main:has(.page) {
   pointer-events: none;
 }
 
-.forgottenLink {
+.relatedLinks {
+  display: flex;
   min-height: 35px;
-  flex: none;
+  align-items: stretch;
+  gap: 14px;
   margin-inline-start: auto;
   padding-inline: 4px 0;
   white-space: nowrap;
@@ -890,7 +899,7 @@ main:has(.page) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .forgottenLink {
+  .relatedLinks {
     min-height: 28px;
   }
 

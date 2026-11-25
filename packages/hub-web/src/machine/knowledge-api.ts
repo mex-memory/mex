@@ -1,7 +1,9 @@
 import {
+  MachineKnowledgeBriefRequestSchema, MachineKnowledgeBriefSchema, MachineKnowledgeCheckoutSchema, MachineKnowledgeRulesSchema,
   MachineForgottenPageSchema, MachineKnowledgeConflictSchema, MachineKnowledgeDetailSchema,
   MachineKnowledgeCreateRequestSchema, MachineKnowledgeCreateResponseSchema, MachineKnowledgeEditRequestSchema, MachineKnowledgeEditResponseSchema,
   MachineKnowledgeForgetRequestSchema, MachineKnowledgeForgetResponseSchema, MachineKnowledgeLandingSchema, MachineKnowledgePageSchema,
+  type MachineKnowledgeBriefRequest, type MachineKnowledgeCheckout,
 } from "@mex/hub-contracts/machine";
 import { HubProblemError, requestJson } from "./api";
 import type { KnowledgeCreate, KnowledgeEdit, KnowledgeEditResult, KnowledgeFilters, KnowledgeForget, KnowledgeForgetResult } from "./types";
@@ -33,12 +35,24 @@ export function getForgotten(repo?: string, cursor?: string, signal?: AbortSigna
   return requestJson(query("/knowledge/forgotten", { repo, cursor }), MachineForgottenPageSchema, { signal });
 }
 
+export function getRuleFiles({ repoId, checkout }: MachineKnowledgeCheckout, signal?: AbortSignal) {
+  return requestJson(query("/knowledge/rules", { repo: repoId, checkout }), MachineKnowledgeRulesSchema, { signal });
+}
+
 interface WriteHeaders { csrfToken: string; idempotencyKey: string }
-function write<T>(path: string, schema: { parse(value: unknown): T }, body: unknown, { csrfToken, idempotencyKey }: WriteHeaders) {
+function write<T>(path: string, schema: { parse(value: unknown): T }, body: unknown, { csrfToken, idempotencyKey }: WriteHeaders, signal?: AbortSignal) {
   return requestJson(path, schema, {
-    method: "POST", body: JSON.stringify(body),
+    method: "POST", body: JSON.stringify(body), signal,
     headers: { "x-mex-csrf": csrfToken, "idempotency-key": idempotencyKey, "content-type": "application/json" },
   });
+}
+
+export function postRuleRefresh(scope: MachineKnowledgeCheckout, headers: WriteHeaders) {
+  return write("/knowledge/rules/refresh", MachineKnowledgeRulesSchema, MachineKnowledgeCheckoutSchema.parse(scope), headers);
+}
+
+export function postBriefPreview(input: MachineKnowledgeBriefRequest, headers: WriteHeaders, signal: AbortSignal) {
+  return write("/knowledge/brief", MachineKnowledgeBriefSchema, MachineKnowledgeBriefRequestSchema.parse(input), headers, signal);
 }
 
 export async function postNote(input: KnowledgeCreate, headers: WriteHeaders) {

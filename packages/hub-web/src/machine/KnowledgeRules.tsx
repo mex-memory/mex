@@ -1,0 +1,166 @@
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import type { MachineKnowledgeCheckout, MachineKnowledgeRules, MachineProject } from "@mex/hub-contracts/machine";
+import { ArrowLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
+import { Button } from "../components/primitives/button";
+import { HubProblemError } from "./api";
+import type { ControlConnection } from "./data";
+import { useRuleFiles } from "./knowledge-data";
+import { CheckoutField } from "./knowledge-fields";
+import { ruleAgentLabels, scopeLabel } from "./knowledge-labels";
+import type { KnowledgeToolsPreview } from "./types";
+import { HubPageHeader } from "./ui";
+import page from "./knowledge.module.css";
+import styles from "./knowledge-rules.module.css";
+import shared from "./machine.module.css";
+
+type SavedRules = Exclude<MachineKnowledgeRules["cache"], { state: "missing" }>;
+type RefreshPhase = "refreshing" | "done" | { error: string };
+const number = new Intl.NumberFormat();
+
+export function KnowledgeRuleFiles({ files, findings = [] }: {
+  files: SavedRules["files"];
+  findings?: SavedRules["findings"];
+}) {
+  return (
+    <ul aria-label="Rule files" className={styles.files} role="list">
+      {files.map(({ path, agents, scope, entryCount }) => {
+        const review = findings.filter(({ paths }) => paths[0] === path);
+        return (
+          <li className={styles.file} key={path}>
+            <div className={styles.fileRow}>
+              <code>{path}</code>
+              <span className={styles.entryCount}>{number.format(entryCount)} {entryCount === 1 ? "entry" : "entries"}</span>
+              <p className={styles.fileInfo}>
+                <span>{agents.length ? agents.map((agent) => ruleAgentLabels[agent]).join(", ") : "No agents"}</span>
+                <span aria-hidden="true">·</span>
+                <span><span className={shared.srOnly}>Applies to </span>{scopeLabel(scope)}</span>
+              </p>
+            </div>
+            {review.length > 0 && (
+              <ul aria-label={`Review findings for ${path}`} className={styles.findings} role="list">
+                {review.map(({ kind, heading, message }, index) => (
+                  <li key={index}>
+                    <strong>{kind === "conflict" ? "Conflict" : ["Stale", heading].filter(Boolean).join(" · ")}</strong>
+                    <span>{message}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function RulesCheckout({ scope, rules, readIssue, refreshRules, children }: {
+  scope: MachineKnowledgeCheckout;
+  rules?: MachineKnowledgeRules;
+  readIssue?: string;
+  refreshRules: (scope: MachineKnowledgeCheckout) => Promise<unknown>;
+  children: ReactNode;
+}) {
+  const { cache, generated = [] } = rules ?? {};
+  const statusId = useId();
+  const generatedId = useId();
+  const [refreshes, setRefreshes] = useState<Record<string, RefreshPhase>>({});
+  const phase = refreshes[scope.checkout];
+  const refreshing = phase === "refreshing";
+  const issue = readIssue ?? rules?.issue;
+  const notice = refreshing ? "Refreshing rule files…" : typeof phase === "object" ? phase.error :
+    phase === "done" && cache?.state === "current" && !issue ? "Rule files refreshed." : undefined;
+  const cacheNote = cache?.state === "stale" ? "Rule files changed since the last refresh." :
+    issue ?? (!rules || cache?.state === "missing" && rules.updatingSince ? "Reading rule files…" :
+      cache?.state === "missing" ? "Rule files haven’t been scanned." : undefined);
+
+  function setPhase(next: RefreshPhase) {
+    setRefreshes((current) => ({ ...current, [scope.checkout]: next }));
+  }
+
+  async function refresh() {
+    if (refreshing) return;
+    setPhase("refreshing");
+    try {
+      await refreshRules(scope);
+      setPhase("done");
+    } catch (error) {
+      setPhase({ error: error instanceof HubProblemError && error.problem?.detail || "Couldn’t refresh rule files. Try again." });
+    }
+  }
+
+  return (
+    <>
+      <div className={styles.checkoutBar}>
+        {children}
+        <Button aria-describedby={refreshing ? statusId : undefined} disabled={refreshing} focusableWhenDisabled onClick={refresh} size="sm" type="button" variant="outline">
+          <RefreshCw aria-hidden="true" /> Refresh
+        </Button>
+      </div>
+      <p className={styles.notice} hidden={!notice && !cacheNote} id={statusId} role="status">{notice ?? cacheNote}</p>
+      {cache && cache.state !== "missing" && (cache.files.length > 0 ? (
+        <KnowledgeRuleFiles files={cache.files} findings={cache.findings} />
+      ) : cache.state === "current" && <p className={styles.empty}>No rule files found.</p>)}
+      {generated.length > 0 && (
+        <section aria-labelledby={generatedId} className={styles.generated}>
+          <h2 id={generatedId}>Generated by MEX</h2>
+          <ul className={styles.files} role="list">
+            {generated.map(({ path, sharing }) => (
+              <li className={`${styles.file} ${styles.fileRow}`} key={`${sharing}:${path}`}>
+                <code>{path}</code>
+                <span className={styles.entryCount}>{sharing === "local" ? "Only you" : "Team"}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+}
+
+function LiveRulesCheckout({ scope, live, children }: { scope: MachineKnowledgeCheckout; live: ControlConnection; children: ReactNode }) {
+  const { query, refresh } = useRuleFiles(scope, live);
+  return <RulesCheckout scope={scope} rules={query.data} refreshRules={refresh}
+    readIssue={query.isError ? "Rule files couldn’t be read." : undefined}>{children}</RulesCheckout>;
+}
+
+export function KnowledgeRules({ project, projects, tools, live }: {
+  project?: MachineProject;
+  projects: readonly MachineProject[];
+} & ({ tools: KnowledgeToolsPreview; live?: undefined } | { tools?: undefined; live: ControlConnection })) {
+  const { pathname } = useLocation();
+  const [params] = useSearchParams();
+  const back = new URLSearchParams(params);
+  back.delete("view");
+  const title = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => { title.current?.focus(); }, []);
+  const [selected, setSelected] = useState("");
+  const checkouts = project?.checkouts.filter(({ exists }) => exists).map(({ path }) => path) ?? [];
+  const checkout = checkouts.includes(selected) ? selected : checkouts[0];
+  const scope = project && checkout ? { repoId: project.id, checkout } : undefined;
+  const field = checkouts.length > 1 ? <CheckoutField onChange={setSelected} path={checkout} paths={checkouts} /> : (
+    <p className={shared.muted}><span className={shared.srOnly}>Checkout </span><code>{checkout}</code></p>
+  );
+
+  return (
+    <div className={`${page.page} ${styles.page}`}>
+      <Link className={`${shared.textLink} ${page.back}`} to={`${pathname}${back.size ? `?${back}` : ""}`}><ArrowLeft aria-hidden="true" /> Knowledge</Link>
+      <HubPageHeader subtitle={project?.name ?? "All repos"} title="Rule files" titleRef={title} />
+      {scope ? live ? (
+        <LiveRulesCheckout scope={scope} live={live}>{field}</LiveRulesCheckout>
+      ) : <RulesCheckout scope={scope} rules={tools.readRules(scope)} refreshRules={tools.refreshRules}>{field}</RulesCheckout>
+        : project ? <p className={styles.empty}>Checkout folder not found.</p> : projects.length ? (
+        <>
+          <p className={shared.muted}>Choose a repo to see its rule files.</p>
+          <ul aria-label="Repos" className={styles.files} role="list">
+            {projects.map(({ id, name }) => (
+              <li key={id}><Link className={`${styles.file} ${styles.repoLink}`} to={`/repos/${encodeURIComponent(id)}/knowledge?${params}`}>
+                {name} <ChevronRight aria-hidden="true" />
+              </Link></li>
+            ))}
+          </ul>
+        </>
+      ) : <p className={styles.empty}>Register a repo to see its rule files.</p>}
+    </div>
+  );
+}
