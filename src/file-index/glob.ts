@@ -64,8 +64,5 @@ function segmentSource(segment: string): string {
 export function globPrefix(glob: string): string {
   const value = normalizeGlob(glob);
   const wildcard = value.search(/[*?{]/);
-  if (wildcard < 0) return value;
-  const prefix = value.slice(0, wildcard);
-  // A trailing globstar can skip the slash along with the descendant path.
-  return /^(?:\*\*\/)*\*\*$/u.test(value.slice(wildcard)) ? prefix.replace(/\/$/u, "") : prefix;
+  return wildcard < 0 ? value : value.slice(0, wildcard);
 }

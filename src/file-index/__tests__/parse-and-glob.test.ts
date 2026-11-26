@@ -90,8 +90,10 @@ describe("scope globs", () => {
     expect(globToRegExp("src/**").test("Src/A.ts")).toBe(process.platform === "win32");
   });
   it("finds the literal prefix for a range scan", () => {
-    expect(globPrefix("apps/api/**")).toBe("apps/api");
-    expect(globPrefix("apps/api/**/**")).toBe("apps/api");
+    expect(globPrefix("apps/api/**")).toBe("apps/api/");
+    expect(globPrefix("apps/api/**/**")).toBe("apps/api/");
+    // A sibling such as "apps/api2" must not share a directory scope's prefix.
+    expect(globPrefix("apps/api/**")).not.toBe("apps/api");
     expect(globPrefix("**/*.ts")).toBe("");
     expect(globPrefix("src/{a,b}/x")).toBe("src/");
     expect(globPrefix("README.md")).toBe("README.md");

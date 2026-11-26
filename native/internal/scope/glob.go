@@ -117,14 +117,7 @@ func segmentSource(segment string) string {
 func globPrefix(glob string) string {
 	value := normalizeGlob(glob)
 	if i := strings.IndexAny(value, "*?{"); i >= 0 {
-		prefix, suffix := value[:i], value[i:]
-		for strings.HasPrefix(suffix, "**/") {
-			suffix = suffix[3:]
-		}
-		if suffix == "**" {
-			return strings.TrimSuffix(prefix, "/")
-		}
-		return prefix
+		return value[:i]
 	}
 	return value
 }

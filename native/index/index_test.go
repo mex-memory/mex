@@ -41,7 +41,7 @@ func TestGlobDialect(t *testing.T) {
 			t.Errorf("%q against %q: got %v want %v", c.glob, c.path, got, c.want)
 		}
 	}
-	for glob, want := range map[string]string{"apps/api/**": "apps/api", "apps/api/**/**": "apps/api", "**/*.ts": "", "src/{a,b}/x": "src/", "README.md": "README.md"} {
+	for glob, want := range map[string]string{"apps/api/**": "apps/api/", "apps/api/**/**": "apps/api/", "**/*.ts": "", "src/{a,b}/x": "src/", "README.md": "README.md"} {
 		if got := globPrefix(glob); got != want {
 			t.Errorf("prefix %q: got %q want %q", glob, got, want)
 		}
