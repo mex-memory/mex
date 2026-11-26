@@ -26,8 +26,8 @@ export function globToRegExp(glob: string): RegExp {
   segments.forEach((segment, index) => {
     const last = index === segments.length - 1;
     if (segment === "**") {
-      if (last) out += index === 0 ? ".*" : "(?:/.*)?";
-      else { out += index === 0 ? "(?:.*/)?" : "/(?:.*/)?"; needSlash = false; }
+      if (last) out += index === 0 ? "[^\\n]*" : "(?:/[^\\n]*)?";
+      else { out += index === 0 ? "(?:[^\\n]*/)?" : "/(?:[^\\n]*/)?"; needSlash = false; }
       return;
     }
     if (needSlash) out += "/";
@@ -35,14 +35,17 @@ export function globToRegExp(glob: string): RegExp {
     needSlash = true;
   });
   // Windows checkouts compare paths without case. The same glob is case-sensitive on other systems.
-  return new RegExp(`^${out}$`, process.platform === "win32" ? "i" : "");
+  return new RegExp(`^${out}$`, process.platform === "win32" ? "iu" : "u");
 }
 
 function segmentSource(segment: string): string {
   let out = "";
   for (let i = 0; i < segment.length; i++) {
     const char = segment[i]!;
-    if (char === "*") { out += "[^/]*"; continue; }
+    if (char === "*") {
+      if (segment[i - 1] !== "*") out += "[^/]*";
+      continue;
+    }
     if (char === "?") { out += "[^/]"; continue; }
     if (char === "{") {
       const close = segment.indexOf("}", i);
@@ -61,5 +64,8 @@ function segmentSource(segment: string): string {
 export function globPrefix(glob: string): string {
   const value = normalizeGlob(glob);
   const wildcard = value.search(/[*?{]/);
-  return wildcard < 0 ? value : value.slice(0, wildcard);
+  if (wildcard < 0) return value;
+  const prefix = value.slice(0, wildcard);
+  // A trailing globstar can skip the slash along with the descendant path.
+  return /^(?:\*\*\/)*\*\*$/u.test(value.slice(wildcard)) ? prefix.replace(/\/$/u, "") : prefix;
 }

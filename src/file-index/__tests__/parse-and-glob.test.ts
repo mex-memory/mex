@@ -75,6 +75,7 @@ describe("scope globs", () => {
     ["apps/{api,web}/**", "apps/web/x.ts", true],
     ["apps/{api,web}/**", "apps/worker/x.ts", false],
     ["a?.ts", "ab.ts", true],
+    ["a?.ts", "a🌱.ts", true],
     ["a?.ts", "a/.ts", false],
     ["file(1).ts", "file(1).ts", true],
     ["**", "anything/at/all", true],
@@ -89,7 +90,8 @@ describe("scope globs", () => {
     expect(globToRegExp("src/**").test("Src/A.ts")).toBe(process.platform === "win32");
   });
   it("finds the literal prefix for a range scan", () => {
-    expect(globPrefix("apps/api/**")).toBe("apps/api/");
+    expect(globPrefix("apps/api/**")).toBe("apps/api");
+    expect(globPrefix("apps/api/**/**")).toBe("apps/api");
     expect(globPrefix("**/*.ts")).toBe("");
     expect(globPrefix("src/{a,b}/x")).toBe("src/");
     expect(globPrefix("README.md")).toBe("README.md");

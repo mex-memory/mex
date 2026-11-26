@@ -14,6 +14,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/judgement"
 	"github.com/mex-memory/mex/native/internal/rulechange"
+	pathscope "github.com/mex-memory/mex/native/internal/scope"
 	localrecord "github.com/mex-memory/mex/native/record"
 )
 
@@ -400,11 +401,7 @@ func touches(l Loaded, checkout string, changed map[string]bool) bool {
 
 // matchScope is a cheap prefix test for "does this edit fall in scope".
 func matchScope(scope, path string) bool {
-	prefix := scope
-	if i := strings.IndexAny(prefix, "*?[{"); i >= 0 {
-		prefix = prefix[:i]
-	}
-	return strings.HasPrefix(path, prefix)
+	return strings.HasPrefix(path, pathscope.Prefix(scope))
 }
 
 // inputsHash fingerprints everything an entry's verdict depends on: its own

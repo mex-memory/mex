@@ -11,6 +11,7 @@ import (
 	"github.com/mex-memory/mex/native/delivery/rank"
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/contract"
+	pathscope "github.com/mex-memory/mex/native/internal/scope"
 	"github.com/mex-memory/mex/native/internal/tokens"
 	"github.com/mex-memory/mex/native/record"
 )
@@ -108,27 +109,17 @@ func vocabularyHits(text string, snap *entries.Snapshot, gate func(*entries.Item
 func scopeAnchors(checkout string, e *entries.Entry, idx *index.Reader) (files, globs []string) {
 	seen := map[string]bool{}
 	for _, raw := range e.Scope {
-		s := strings.TrimLeft(strings.ReplaceAll(raw, `\`, "/"), "/")
-		for strings.HasPrefix(s, "./") {
-			s = s[2:]
-		}
-		if s == "" || s == "**" || seen[s] || strings.Contains(s, "..") || strings.ContainsAny(s, "{}") {
+		s := pathscope.Normalize(raw)
+		if s == "**" || seen[s] || strings.Contains(s, "..") {
 			continue
 		}
 		seen[s] = true
-		switch {
-		case strings.HasSuffix(s, "/"):
-			if m, _, err := idx.PathsMatching(s+"**", 1); err == nil && len(m) > 0 {
-				globs = append(globs, s+"**")
-			}
-		case strings.ContainsAny(s, "*?["):
-			if m, _, err := idx.PathsMatching(s, 1); err == nil && len(m) > 0 {
-				globs = append(globs, s)
-			}
-		default:
+		if pathscope.Literal(s) {
 			if idx.HasPath(s) && onDisk(checkout, s) {
 				files = append(files, s)
 			}
+		} else if m, _, err := idx.PathsMatching(s, 1); err == nil && len(m) > 0 {
+			globs = append(globs, s)
 		}
 	}
 	return files, globs
