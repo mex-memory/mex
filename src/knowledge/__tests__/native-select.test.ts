@@ -45,6 +45,17 @@ describe("layer A selection", () => {
     });
   });
 
+  it("leaves learned file globs and mixed folder and file scopes to scoped delivery", () => {
+    const ids = ["mx_deeparea", "mx_deepglob", "mx_deepmix"];
+    const { selected, skipped } = selectNative([
+      team(learned(ids[0]!, [1], 10, { scope: ["src/**"] })),
+      team(learned(ids[1]!, [1], 10, { scope: ["src/{api,web}/**"] })),
+      team(learned(ids[2]!, [1], 10, { scope: ["src/**", "tests/api.ts"] })),
+    ], held(...ids));
+    expect(selected.map(c => c.entry.mex.id)).toEqual([ids[0]]);
+    expect(skipped.map(item => item.id)).toEqual(ids.slice(1));
+  });
+
   describe("always-on budget for learned repo-wide entries", () => {
     it("counts distinct pull requests, and none for a docs lesson", () => {
       expect(learnedSupport(learned("mx_deepa1", [1, 2, 2, 3]))).toBe(3);

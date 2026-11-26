@@ -36,6 +36,7 @@ const repeatGuidance = "Leave this on `queueTransport` because retry dispatch mu
 const policyClaim = "Route retry dispatch through `queueTransport` in `src/changed.ts`.";
 const docQuote = "Keep the verification report in `src/verification.txt` when changing the renderer.";
 const docClaim = "Keep the renderer verification report in `src/verification.txt`.";
+const docScope = "src/**/verification.{txt,md}";
 const duplicate = "Use `renderFrame` for all adapter frames.";
 const weeklyHint = "Keep `MAX_ATTEMPTS` at three in the retry package.";
 const weeklyRepeat = "Leave `MAX_ATTEMPTS` at three, since a fourth attempt repeats an external write.";
@@ -169,7 +170,7 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     }
     if (prompt.startsWith("You read the contributor documentation")) {
       if (!prompt.includes(docQuote)) return reply({ rules: [] });
-      return reply({ rules: [{ text: docClaim, kind: "docs-comments", scope: ["src/verification.txt"], source: "CONTRIBUTING.md", quote: docQuote }] });
+      return reply({ rules: [{ text: docClaim, kind: "docs-comments", scope: [docScope], source: "CONTRIBUTING.md", quote: docQuote }] });
     }
     if (prompt.startsWith("Find a code pattern")) {
       const items = JSON.parse(prompt.split("\n").at(-1)!);
@@ -238,6 +239,9 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     expect(deny).toContain("return stable(label);");
     expect(deny).toContain("learned, trial");
     expect(runCheck({ home, projectPath: checkout }).entries.find(item => item.id === doc.entryId)?.verdict).toBe("held");
+    expect(parseEntry(snapshotNotes(writer, project).files.get(doc.entryId)!).mex.scope).toEqual([docScope]);
+    expect(read("doc-outside", adapter)).not.toContain(docClaim);
+    expect(read("doc-in-scope", "src/verification.txt")).toContain(docClaim);
     const keys = ["enter"];
     const reviewed = await reviewLearned({ root: checkout, projectId: project, write: () => {}, home, env: process.env,
       interactive: true, mode: { width: 80, plain: true, ascii: true, color: false }, keys: async () => keys.shift() ?? "quit" });

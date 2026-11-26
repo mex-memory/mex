@@ -25,6 +25,7 @@ import { command, type PatternStage, type PinnedTree } from "./git.js";
 import { safePath } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
 import { polarityMismatch, squash, unclippedQuote, readsAsComment, statesAction } from "./lesson-text.js";
+import { pinnedScope } from "./scope.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
 
 export const PROOF_LIMITS = {
@@ -129,13 +130,6 @@ function overlap(a: string, b: string): number {
   return x.size && y.size ? shared / Math.min(x.size, y.size) : 0;
 }
 
-function scopeMatches(tree: PinnedTree, glob: string): boolean {
-  let pattern: RegExp;
-  try { pattern = globToRegExp(glob); } catch { return false; }
-  for (const path of tree.paths()) if (pattern.test(path)) return true;
-  return false;
-}
-
 export function patternScopeCoverage(tree: Pick<PinnedTree, "paths">, scope: readonly string[], stage?: PatternStage) {
   const globs = scope.map(globToRegExp);
   let files = 0;
@@ -209,9 +203,15 @@ function fixFrom(draft: WriterEntry, pairs: readonly EvidencePair[]): ProvenFix 
   return { snippet, path: region.path, commit: region.commit, lines: `${start}-${end}` };
 }
 
-/** Git pathspecs for scope globs; "**" means the whole tree. */
-function pathspecs(scope: readonly string[]): string[] {
-  return scope.includes("**") ? ["."] : scope.map(glob => `:(glob)${glob}`);
+/** Replay the files the scope covers at the pin, using literal pathspecs. */
+function pathspecs(tree: PinnedTree, scope: readonly string[]): string[] {
+  if (scope.includes("**")) return ["."];
+  const patterns = scope.map(globToRegExp);
+  const paths: string[] = [];
+  for (const path of tree.paths()) {
+    if (patterns.some(pattern => pattern.test(path)) && safePath(path)) paths.push(`:(literal)${path}`);
+  }
+  return paths;
 }
 
 /** Count later commits whose added lines contain a literal, from `git log -p -U0` output. */
@@ -279,11 +279,10 @@ export async function proveEntry(draft: WriterEntry, cluster: DraftSupport, cont
     result.reasons.push(clause.text);
     result.quotes.push(...quotes.filter(quote => backing.has(quote.id)));
   }
-  if (draft.scope.length === 1 && draft.scope[0] === "**") result.scope = ["**"];
-  else {
-    result.scope = [...new Set(draft.scope.filter(glob => !glob.startsWith("/") && !glob.includes("..") && scopeMatches(context.tree, glob)))];
-    if (result.scope.length !== draft.scope.length || !result.scope.length) return drop("some scope globs match no file today");
-  }
+  const scopes = [...new Set(draft.scope)];
+  if (!scopes.length || scopes.length !== draft.scope.length || (scopes.length > 1 && scopes.includes("**"))
+    || scopes.some(glob => pinnedScope(glob, context.tree.paths()) !== glob)) return drop("some scope globs match no file today");
+  result.scope = scopes;
 
   if (draft.symbol) {
     const text = await context.tree.read(draft.symbol.file);
@@ -369,7 +368,7 @@ export async function proveEntry(draft: WriterEntry, cluster: DraftSupport, cont
   const replayed = result.when.filter(item => item.type !== "required" && item.match === "literal");
   if (replayed.length) {
     const since = cluster.members.map(member => member.candidate.at).sort().at(-1)!;
-    const log = await (context.history ?? gitHistory(context.tree))(pathspecs(result.scope), since);
+    const log = await (context.history ?? gitHistory(context.tree))(pathspecs(context.tree, result.scope), since);
     if (log !== undefined) {
       result.historyAdds = Math.max(...replayed.map(item => addedOccurrences(log, item.pattern)));
       if (result.historyAdds > PROOF_LIMITS.historyAdds) {

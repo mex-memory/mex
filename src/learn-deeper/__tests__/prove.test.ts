@@ -275,6 +275,35 @@ describe("proving a learned rule", () => {
     expect(result.dropped).toBe("some scope globs match no file today");
   });
 
+  it("routes the proven glob and exact path unchanged, and requires both to hold", async () => {
+    const path = "packages/api/src/users.ts";
+    const cluster = clusterOf([thread(3, path)]);
+    const scope = ["packages/api/**/order?.{ts,js}", path];
+    const entry = draft(cluster, { scope, when: [], fix: undefined });
+    const proved = await proveEntry(entry, cluster, context());
+    const routed = routeEntry(proved, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    expect(routed).toMatchObject({ proposal: { anchors: { scope } } });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proposal.checks?.filter(check => check.kind === "scope").map(check => check.target)).toEqual(
+      scope.map(glob => ({ glob })),
+    );
+    const missing = await proveEntry(entry, cluster, context({ tree: tree({ [path]: HEAD[path] }) }));
+    expect(missing.dropped).toBe("some scope globs match no file today");
+    const unsafe = await proveEntry({ ...entry, scope: ["packages/{api,.git}/**", path] }, cluster, context());
+    expect(unsafe.dropped).toBe("some scope globs match no file today");
+  });
+
+  it("replays the pinned files matched by a brace glob", async () => {
+    const file = "packages/api/src/users.ts";
+    const cluster = clusterOf([thread(3, file)]);
+    const history = vi.fn(async () => "");
+    const proof = await proveEntry(draft(cluster, { scope: ["packages/api/**/{users,orders}.ts"] }), cluster, context({ history }));
+    expect(proof.when).toHaveLength(1);
+    expect(history).toHaveBeenCalledWith([
+      ":(literal)packages/api/src/users.ts", ":(literal)packages/api/src/orders.ts",
+    ], expect.any(String));
+  });
+
   it("rejects a pattern that matches its own ok example", async () => {
     const cluster = clusterOf([thread(3, "packages/api/src/users.ts")]);
     const proof = await proveEntry(draft(cluster, { examples: { flag: "console.log(x)", ok: "console.log(x) // allowed in tests" } }), cluster, context());

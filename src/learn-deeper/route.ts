@@ -115,7 +115,7 @@ export function routeEntry(proof: ProofResult, plan: { host: string; slug: strin
   const { cluster, draft } = proof;
   const members = cluster.members.map(member => member.candidate);
   const checks: ProposedCheck[] = [];
-  const scopes = proof.scope.map(slashPath);
+  const scopes = proof.scope;
   for (const scope of scopes) checks.push({ kind: "scope", role: "complete", target: { glob: scope } } as ProposedCheck);
   const reviews = members.filter(candidate => pullLink(candidate) && candidate.nodeIds.length);
   for (const candidate of [...new Map(reviews.map(candidate => [candidate.link + "\n" + candidate.hash, candidate])).values()].slice(0, ROUTE_LIMITS.sourceChecks)) {

@@ -1,10 +1,10 @@
 import { expect, it } from "vitest";
-import { parseNorms, packObservations, normPrompt } from "../norm-writer.js";
-import { observation, fixtureNorm, fixturePath } from "./fixtures/observations.js";
+import { parseDocs, parseNorms, packObservations, normPrompt } from "../norm-writer.js";
+import { candidate, observation, fixtureNorm, fixturePath } from "./fixtures/observations.js";
 
 const norm = { text: fixtureNorm, kind: "api-design", scope: [fixturePath], patternable: false };
-const parse = (items: ReturnType<typeof observation>[], support = items.map(item => item.id), extra = {}) =>
-  parseNorms(JSON.stringify({ policies: [], norms: [{ ...norm, support, ...extra }] }), items, [], new Map(), [fixturePath]);
+const parse = (items: ReturnType<typeof observation>[], support = items.map(item => item.id), extra = {}, paths = [fixturePath]) =>
+  parseNorms(JSON.stringify({ policies: [], norms: [{ ...norm, support, ...extra }] }), items, [], new Map(), paths);
 
 it("combines repeated decisions across distinct PRs and counts each PR only once", () => {
   const first = observation(1, { form: "decision", why: "Queue ordering.", stated_as_rule: false });
@@ -29,6 +29,51 @@ it("refuses unsupported ids, generic wording, unknown scope and later disputed e
   expect(parse([one], [one.id], { scope: ["other/**"] }).drops).toEqual({ "invalid-claim-or-scope": 1 });
   const later = observation(2, { at: "2026-11-16T00:00:00.000Z", response: "disputed" });
   expect(parse([later, one]).drops).toEqual({ support: 1 });
+});
+
+it.each([
+  [["src/**/*.?s"], ["src/**/*.?s"]],
+  [["src"], ["src/**"]],
+  [["src/", "src/**", "src"], ["src/**"]],
+  [["repo"], ["**"]],
+  [["**/**", "src"], ["src/**"]],
+])("resolves %j against the pinned files as %j", (scope, expected) => {
+  const { drafts, drops } = parse([observation(1)], undefined, { scope });
+  expect(drops).toEqual({});
+  expect(drafts[0]?.entry.scope).toEqual(expected);
+});
+
+it("keeps both the tracked directory and exact file of a mixed scope", () => {
+  const file = "tokio-util/tests/task_join_map.rs";
+  const { drafts } = parse([observation(1)], undefined,
+    { scope: ["tokio/tests", file, "tokio/missing", "tokio/**/*.md"] }, ["tokio/tests/rt.rs", file]);
+  expect(drafts[0]?.entry.scope).toEqual(["tokio/tests/**", file]);
+});
+
+it.each(["src/**/*.md", "sr", "src/queue.ts/"])("drops a scope with no tracked match for %s", scope => {
+  expect(parse([observation(1)], undefined, { scope: [scope] }).drops).toEqual({ "invalid-claim-or-scope": 1 });
+});
+
+const secret = "AKIA" + "A".repeat(16);
+it.each([
+  "/src/**", "C:/src/**", "src\\**", "./src/**", "src//**", "src/../**",
+  ".git/**", ".MEX/**", "{src,.g}{,it}/**", "{src,..}/**",
+  "src/que\u200bue*", `src/${secret}*`,
+])("drops unsafe scope %s even when the matcher has a file", scope => {
+  const paths = [fixturePath, ".git/config", ".MEX/settings.yml", "src/que\u200bue.ts", `src/${secret}.ts`];
+  expect(parse([observation(1)], undefined, { scope: [scope] }, paths).drops).toEqual({ "invalid-claim-or-scope": 1 });
+});
+
+it("does not use a hidden filename as the only evidence of a match", () => {
+  const { drops } = parse([observation(1)], undefined, { scope: ["src/**"] }, ["src/que\u200bue.ts"]);
+  expect(drops).toEqual({ "invalid-claim-or-scope": 1 });
+});
+
+it("accepts a matching brace glob from a doc rule", () => {
+  const source = "CONTRIBUTING.md", scope = ["src/**/*.{ts,js}"];
+  const doc = candidate(1, fixtureNorm, { kind: "doc", path: source });
+  const reply = JSON.stringify({ rules: [{ text: fixtureNorm, quote: fixtureNorm, kind: "conventions", scope, source }] });
+  expect(parseDocs(reply, [doc], [source, fixturePath]).drafts[0]?.entry.scope).toEqual(scope);
 });
 
 it("sorts the writer's observations and splits a large input by related kinds", () => {

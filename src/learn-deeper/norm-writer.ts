@@ -1,14 +1,14 @@
 import { z } from "zod";
-import { globToRegExp } from "../file-index/glob.js";
 import { hasSecret, stripHidden } from "../knowledge/gates.js";
 import { claimHash } from "../knowledge/state.js";
 import { draftSupport, type DraftSupport } from "./draft-evidence.js";
 import type { Candidate } from "./harvest/types.js";
 import { WRITER_CHAR_LIMIT } from "./harvest/estimate.js";
-import { newCandidate, safePath } from "./harvest/evidence.js";
+import { newCandidate } from "./harvest/evidence.js";
 import { readsAsComment, statesAction, squash, polarityMismatch } from "./lesson-text.js";
 import { processConfirmed } from "./prove.js";
 import { replyJson } from "./reply.js";
+import { pinnedScope } from "./scope.js";
 import { findQuote, NormKind, NormScope, type Observation } from "./triage.js";
 import { WriterEntry } from "./write.js";
 import { docWriter, normWriter } from "./writer-prompts.js";
@@ -74,15 +74,11 @@ export function docsPrompt(items: readonly Candidate[]): string {
 function unique<T>(items: readonly T[]): T[] { return [...new Set(items)]; }
 
 function scopeFor(scope: z.infer<typeof NormScope>, paths: readonly string[]): string[] {
-  if (scope === "repo" || scope.length === 1 && scope[0] === "**") return ["**"];
-  return unique(scope).filter(glob => {
-    if (!safePath(glob) || glob === "**") return false;
-    try {
-      const pattern = globToRegExp(glob.endsWith("/") ? glob + "**" : glob);
-      return paths.some(path => pattern.test(path));
-    }
-    catch { return false; }
-  }).map(glob => glob.endsWith("/") ? glob + "**" : glob);
+  const entries = scope === "repo" || scope.length === 1 && scope[0] === "repo" ? ["**"] : scope;
+  return unique(unique(entries).flatMap(input => {
+    const glob = pinnedScope(input, paths);
+    return glob && (glob !== "**" || entries.length === 1) ? [glob] : [];
+  }));
 }
 
 const sentences = new Intl.Segmenter("en", { granularity: "sentence" });
