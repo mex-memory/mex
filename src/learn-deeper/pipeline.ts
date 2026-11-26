@@ -32,7 +32,7 @@ import type { Candidate, HarvestCursor, HarvestDeps, HarvestPlan } from "./harve
 import { branchScope, staleDoc } from "./history-docs.js";
 import { networkGroups, networkProofKey, networkRowKey, readNetworkGroups } from "./network-proof.js";
 import { collectGateEvidence, gateBatches, gatePrompt, parseGate, type GateRule, type GateVerdict } from "./norm-gate.js";
-import { defaultRuleTexts, DEFAULTS_SETTING } from "../knowledge/agent-defaults.js";
+import { defaultRuleTexts, defaultsScope, DEFAULTS_REPORT, DEFAULTS_SETTING, parseDefaultsReport } from "../knowledge/agent-defaults.js";
 import { docsPrompt, normPrompt, packObservations, parseDocs, parseNorms, type Draft, type EarlierNorm } from "./norm-writer.js";
 import { observationCutoff, readObservations, saveObservations, supportObservations } from "./observations.js";
 import { LEARN_KIND, promptEstimate, type LearningPlan } from "./plan.js";
@@ -577,11 +577,13 @@ async function evaluateDrafts(input: PipelineInput, name: string, counts: Pipeli
   if (!rules.length) return verdicts;
   const project = input.context.job.project_id;
   const defaultsOn = !project || input.context.writer.setting(project, DEFAULTS_SETTING) !== "off";
+  const defaults = defaultsOn
+    ? parseDefaultsReport(input.context.writer.setting(defaultsScope(input.plan.checkout), DEFAULTS_REPORT)) : undefined;
   const evidence = { ...await collectGateEvidence(input.deps.tree, rules, earlier.filter(rule => !rule.refused)),
-    ...(defaultsOn ? { defaults: defaultRuleTexts() } : {}) };
+    defaults: defaultRuleTexts(defaults) };
   for (const [i, batch] of gateBatches(rules, evidence).entries()) {
     const apply = (text: string, requested: readonly GateRule[]) => {
-      const outcome = parseGate(text, requested);
+      const outcome = parseGate(text, requested, evidence);
       for (const result of outcome.results) if (requested.some(rule => rule.id === result.id)) verdicts.set(result.id, result.verdict);
       return requested.filter(rule => outcome.missing.includes(rule.id) || !verdicts.has(rule.id));
     };
@@ -749,8 +751,10 @@ async function writeWindow(input: PipelineInput, state: PipelineState, name: str
     if (old && input.context.writer.setting(project, learnedWaitingKey(old.id))) draft.support.refused = true;
     const routed = routeEntry(proof, input.plan.origin, draft.model);
     if ("dropped" in routed) { add(counts, "proof-dropped"); return []; }
+    const quote = draft.support.source === "docs" && routed.route === "process-rule" ? proof.quotes[0]?.quote : undefined;
     const rule: GateRule = { id: draft.support.key, text: routed.proposal.text, kind: routed.proposal.kind,
-      route: routed.route, scope: routed.proposal.anchors?.scope ?? [], source: draft.support.source };
+      route: routed.route, scope: routed.proposal.anchors?.scope ?? [], source: draft.support.source,
+      ...(quote ? { document: { path: routed.proposal.source.ref, quote } } : {}) };
     return [{ draft, proof, old, rule }];
   });
   const verdicts = await evaluateDrafts(input, name, counts, queue.filter(item => !item.old).map(item => item.rule), earlier);

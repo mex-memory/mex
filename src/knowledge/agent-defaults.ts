@@ -33,9 +33,6 @@ const { rules } = z.object({
   })).length(Object.keys(topics).length),
 }).parse(pack);
 
-/** The default rules every agent gets when the defaults are on, in pack order. */
-export const defaultRuleTexts = (): string[] => rules.map(rule => rule.text);
-
 const directive = /\b(?:always|never|must|shall|should|required|only|prefer|avoid|do not|don't|cannot|may not|make sure|ensure|take care|we (?:use|require|expect))\b|^(?:add|check|describe|document|don't|follow|keep|limit|match|preserve|remove|report|reuse|run|skip|use|write|update|regenerate)\b/iu;
 const conflict: Partial<Record<RuleId, RegExp>> = {
   scope: /\b(?:include|bundle|combine|fix|perform)\b.{0,55}\b(?:unrelated|opportunistic|drive-by)\b/iu,
@@ -78,6 +75,13 @@ export interface DefaultsReport {
 export interface AgentDefaults {
   rules: typeof rules;
   report: DefaultsReport;
+}
+
+/** The last defaults selection for this checkout, in pack order. */
+export function defaultRuleTexts(report: DefaultsReport | undefined): string[] {
+  if (!report?.enabled) return [];
+  const omitted = new Set(report.omitted.map(rule => rule.id));
+  return rules.filter(rule => !omitted.has(rule.id)).map(rule => rule.text);
 }
 
 const contributorPath = /(?:^|\/)(?:contributing|(?:cod(?:e|ing)[-_ ]?)?style|testing|development|developer[-_ ]guide|maintaining|conventions|pull[-_ ]request[-_ ]template)(?:[._-][^/]*)?\.(?:mdx?|rst|txt)$|(?:^|\/)(?:contributing|pull_request_template)\/.+\.(?:mdx?|rst|txt)$|^(?:docs?|documentation)\/.*(?:contribut|development|coding[-_ ]style).*\.(?:mdx?|rst|txt)$/iu;

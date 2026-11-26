@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { additionalUninstallPaths, uninstallAgents } from "../../install/index.js";
 import { openRecord } from "../../record/index.js";
 import { setCheckoutEnabled } from "../../controls/index.js";
-import { DEFAULTS_REPORT, DEFAULTS_SETTING, defaultsScope, selectAgentDefaults } from "../agent-defaults.js";
+import { DEFAULTS_REPORT, DEFAULTS_SETTING, defaultRuleTexts, defaultsScope, selectAgentDefaults } from "../agent-defaults.js";
 import { serializeEntry } from "../entry.js";
 import { changeNativeFile } from "../native-journal.js";
 import { rebuildNative } from "../native.js";
@@ -76,6 +76,9 @@ describe("agent defaults", () => {
       { id: "changelog", reason: "conflict", path: "docs/internals/contributing/writing.rst" },
     ]));
     expect(rules.some(rule => rule.id === "unused")).toBe(true);
+    expect(defaultRuleTexts(report)).toEqual(rules.map(rule => rule.text));
+    expect(defaultRuleTexts({ ...report, enabled: false })).toEqual([]);
+    expect(defaultRuleTexts(undefined)).toEqual([]);
     expect(report.unavailable).toEqual(["Cursor", "Gemini CLI", "Kiro", "Antigravity"]);
     const result = rebuildNative(f.options, { setupDefaults: {} });
     const reader = openRecord(f.options);

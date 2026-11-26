@@ -37,7 +37,7 @@ export interface GateEvidence {
   earlier: { id: string; claim: string }[];
   drafts: { id: string; claim: string; scope: string[] }[];
   named: ReadonlyMap<string, NamedEvidence[]>;
-  /** The agent defaults every agent here already gets, when the setting is on. */
+  /** The defaults selected for the checkout, when the setting is on. */
   defaults?: readonly string[];
 }
 
@@ -48,8 +48,7 @@ export interface GateEvidence {
 const INSTRUCTION_LINES = 400, INSTRUCTION_BYTES = 24_000;
 
 function instructionPath(path: string): boolean {
-  return !!ruleFormat(path) || /^\.cursor\/rules\//iu.test(path)
-    || /(?:^|\/)(?:agents(?:\.override)?|claude(?:\.local)?|gemini)\.md$|^\.github\/copilot-instructions\.md$/iu.test(path);
+  return !!ruleFormat(path);
 }
 
 function linesOf(raw: string, instructions: boolean): string[] | undefined {

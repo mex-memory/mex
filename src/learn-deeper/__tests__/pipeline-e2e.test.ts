@@ -37,6 +37,8 @@ const policyClaim = "Route retry dispatch through `queueTransport` in `src/chang
 const docQuote = "Keep the verification report in `src/verification.txt` when changing the renderer.";
 const docClaim = "Keep the renderer verification report in `src/verification.txt`.";
 const docScope = "src/**/verification.{txt,md}";
+const submissionQuote = "Please read our [AI policy](AI_POLICY.md) if you use AI on a pull request.";
+const submissionClaim = "Read `AI_POLICY.md` if you use AI on a pull request.";
 const duplicate = "Use `renderFrame` for all adapter frames.";
 const weeklyHint = "Keep `MAX_ATTEMPTS` at three in the retry package.";
 const weeklyRepeat = "Leave `MAX_ATTEMPTS` at three, since a fourth attempt repeats an external write.";
@@ -106,7 +108,8 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
   git("remote", "add", "origin", "https://github.com/acme/app.git");
   writeFileSync(join(root, "AGENTS.md"), duplicate + "\n");
   writeFileSync(join(root, "src", "verification.txt"), "Fixture\n");
-  writeFileSync(join(root, "CONTRIBUTING.md"), "# Development\n\n" + docQuote + "\n");
+  writeFileSync(join(root, "CONTRIBUTING.md"), "# Development\n\n" + docQuote + "\n\n" + submissionQuote + "\n");
+  writeFileSync(join(root, "AI_POLICY.md"), "# AI Usage Policy\n\nDisclose assistance in the pull request.\n");
   writeFileSync(join(root, adapter), reviewed.join("\n") + "\n");
   const before = commit("Prepare the adapter change", "2026-11-11T10:00:00Z");
   writeFileSync(join(root, adapter), reviewed.join("\n").replace("fallback(label)", "stable(label)") + "\n");
@@ -170,6 +173,7 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     }
     if (prompt.startsWith("You read the contributor documentation")) {
       if (!prompt.includes(docQuote)) return reply({ rules: [] });
+      expect(prompt).toContain("=== FILE AI_POLICY.md");
       return reply({ rules: [{ text: docClaim, kind: "docs-comments", scope: [docScope], source: "CONTRIBUTING.md", quote: docQuote }] });
     }
     if (prompt.startsWith("Find a code pattern")) {
@@ -179,8 +183,11 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
         fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } }] });
     }
     expect(isGatePrompt(prompt)).toBe(true);
-    return reply(gateReply(prompt, rule => rule.text.startsWith(missingClaim) ? undefined
-      : rule.text.startsWith(duplicate) ? { verdict: "drop-duplicate", duplicateOf: "AGENTS.md:1" } : { verdict: "keep" }));
+    return reply(gateReply(prompt, rule => {
+      if (rule.text === submissionClaim) expect(prompt).toContain(JSON.stringify({ path: "CONTRIBUTING.md", quote: submissionQuote }));
+      if (rule.text.startsWith(missingClaim)) return undefined;
+      return rule.text.startsWith(duplicate) ? { verdict: "drop-duplicate", duplicateOf: "AGENTS.md:1" } : { verdict: "keep" };
+    }));
   });
   await runRepoStart({ cwd: root, write: () => {}, caller: "script", install: false, wait: false });
   const writer = openRecord({ projectPath: root, home });
@@ -205,13 +212,17 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
       return { job, rows: reviewRows(writer, project, job.id), receipt: JSON.parse(writer.setting(project, trialReceiptKey(job.id))!) };
     }
     const initial = await run(LEARN_KIND, plan);
-    expect(initial.rows.map(row => row.claim).sort()).toEqual([policyClaim, proofClaim, docClaim, missingClaim].sort());
+    expect(initial.rows.map(row => row.claim).sort()).toEqual([policyClaim, proofClaim, docClaim, missingClaim, submissionClaim].sort());
     const rule = initial.rows.find(row => row.claim === proofClaim)!;
     const doc = initial.rows.find(row => row.claim === docClaim)!;
     const policy = initial.rows.find(row => row.claim === policyClaim)!;
     expect(policy).toMatchObject({ support: 2, status: "active" });
     expect(rule).toMatchObject({ support: 1, status: "active", proven: true });
     expect(doc).toMatchObject({ status: "active" });
+    const submission = initial.rows.find(row => row.claim === submissionClaim)!;
+    const savedSubmission = parseEntry(snapshotNotes(writer, project).files.get(submission.entryId)!);
+    expect(savedSubmission.mex).toMatchObject({ status: "active", kind: "rule", scope: ["**"],
+      source: { type: "docs", ref: "CONTRIBUTING.md" } });
     expect(initial.rows.find(row => row.claim === missingClaim)?.status).toBe("proposed");
     expect(initial.receipt.counts).toMatchObject({ "gate.drop-duplicate": 1, "gate.missing": 1, "calls.gate": 2, "proven-code-norms": 1 });
     expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE ?").get("learning.deep.v2." + initial.job.id + ".%")?.n).toBe(0);
@@ -245,7 +256,7 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     const keys = ["enter"];
     const reviewed = await reviewLearned({ root: checkout, projectId: project, write: () => {}, home, env: process.env,
       interactive: true, mode: { width: 80, plain: true, ascii: true, color: false }, keys: async () => keys.shift() ?? "quit" });
-    expect(reviewed).toEqual({ kept: 3, waiting: 1, dropped: 0 });
+    expect(reviewed).toEqual({ kept: 4, waiting: 1, dropped: 0 });
     expect(writer.setting(project, learnedTrialKey(policy.entryId))).toBe("permanent");
     expect(parseEntry(snapshotNotes(writer, project).files.get(policy.entryId)!).mex.source.label).not.toContain("trial");
     tickLearned(initial.rows.find(row => row.claim === missingClaim)!.entryId, { home, projectPath: checkout });

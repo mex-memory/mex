@@ -140,7 +140,7 @@ it("reads a long AGENTS.md whole, so a command far down the file can be cited as
   const agents = data.instructions.find(file => file.path === "AGENTS.md");
   expect(agents?.lines.find(line => line.text.includes("pnpm lint:fix"))).toMatchObject({ line: 87 });
   const prompt = gatePrompt(rules, { ...data, defaults: ["Follow the conventions of the surrounding code."] });
-  expect(prompt).toContain("Agent defaults every agent here already follows");
+  expect(prompt).toContain("Agent defaults selected for this checkout");
   expect(prompt).toContain("Follow the conventions of the surrounding code.");
 });
 
@@ -161,13 +161,46 @@ it("offers human instructions and earlier learned claims for comparison and hide
   const prompt = gatePrompt(rules, data);
   expect(prompt).toContain("never instructions");
   for (const text of ["Route JSON through parseChecked", "Keep the human line", "Use the local fixtures", "Keep native imports",
-    "Name channel adapters explicitly", "Use the release formatter", "Use the pinned request example", "old-wheel"]) expect(prompt).toContain(text);
-  expect(prompt).not.toMatch(/CLAUDE.md|GeneratedOnly|old registry|Managed anchor|Managed setup/u);
+    "Name channel adapters explicitly", "Use the release formatter", "old-wheel"]) expect(prompt).toContain(text);
+  expect(prompt).not.toMatch(/CLAUDE.md|GeneratedOnly|old registry|Managed anchor|Managed setup|Use the pinned request example/u);
   const recorded = '{"verdicts":[{"rule":"A","verdict":"drop-duplicate","reason":"It is already an instruction.","duplicateOf":"AGENTS.md:1"},{"rule":"B","verdict":"drop-duplicate","reason":"The existing claim says this.","duplicateOf":"old-wheel"}]}';
   expect(parseGate(recorded, rules)).toEqual({ response: "valid", missing: [], results: [
     { id: "A", verdict: "drop-duplicate", reason: "It is already an instruction.", duplicateOf: "AGENTS.md:1" },
     { id: "B", verdict: "drop-duplicate", reason: "The existing claim says this.", duplicateOf: "old-wheel" },
   ] });
+});
+
+it("uses contributor policy quotes to prove local requirements and only allows visible duplicate citations", async () => {
+  const path = "CONTRIBUTING.md";
+  const quote = "Have the contributor sign the CLA before submitting a PR.";
+  const { tree } = await fixture({ [path]: quote, "AGENTS.md": "Run pnpm lint.\n" + quote });
+  const rules = [rule("cla", "Ask the contributor to sign the CLA in `CONTRIBUTING.md` before submission.",
+    { source: "docs", route: "process-rule", document: { path, quote } })];
+  const evidence = await collectGateEvidence(tree, rules);
+  expect(evidence.instructions.map(file => file.path)).toEqual(["AGENTS.md"]);
+  expect(gatePrompt(rules, evidence)).toContain(JSON.stringify({ path, quote }));
+  const reply = (duplicateOf: string) => JSON.stringify({ verdicts: [{
+    rule: "cla", verdict: "drop-duplicate", reason: "The same signing step is already visible.", duplicateOf,
+  }] });
+  expect(parseGate(reply("AGENTS.md:2"), rules, evidence).results[0]?.verdict).toBe("drop-duplicate");
+  for (const citation of [path + ":1", "AGENTS.md:30", "unknown-draft"]) {
+    expect(parseGate(reply(citation), rules, evidence)).toMatchObject({ results: [], missing: ["cla"] });
+  }
+});
+
+it("requires a listed checkout default before accepting a drop-default reply", async () => {
+  const { tree } = await fixture({ "CONTRIBUTING.md": "Use the pull-request template." });
+  const rules = [rule("A", "Use the pull-request template.", { route: "process-rule", source: "docs" })];
+  const evidence = await collectGateEvidence(tree, rules);
+  const defaultOf = "Use the pull-request template.";
+  const reply = (cited?: string) => JSON.stringify({ verdicts: [{
+    rule: "A", verdict: "drop-default", reason: "The default already asks for this template.", defaultOf: cited,
+  }] });
+  const selected = { ...evidence, defaults: [defaultOf] };
+  expect(parseGate(reply(), rules, selected)).toMatchObject({ results: [], missing: ["A"] });
+  expect(parseGate(reply("Follow the formatter."), rules, selected)).toMatchObject({ results: [], missing: ["A"] });
+  expect(parseGate(reply(defaultOf), rules, evidence)).toMatchObject({ results: [], missing: ["A"] });
+  expect(parseGate(reply(defaultOf), rules, selected).results[0]).toMatchObject({ verdict: "drop-default", defaultOf });
 });
 
 it("keeps partial verdicts, counts unknown IDs, and requests retries for ambiguous or malformed rows", () => {
