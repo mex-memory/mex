@@ -102,9 +102,9 @@ export function quoteChecks(draft: WriterEntry, cluster: DraftSupport) {
       const rawQuote = citation.quote.trim();
       const quote = squash(rawQuote);
       const cited = quote.length >= 4 ? (byId.get(citation.id) ?? []).filter(({ text }) => text.includes(quote)) : [];
-      const eligible = !polarityMismatch(clause.text, quote) && cited.some(({ text }) => unclippedQuote(quote, text));
+      const eligible = !polarityMismatch(clause.text, quote) && cited.some(({ raw }) => unclippedQuote(rawQuote, raw));
       // Exact proof uses the original text so whitespace inside a code operand cannot change meaning.
-      const exact = eligible && clause.text.trim() === rawQuote && cited.some(({ raw }) => unclippedQuote(rawQuote, raw));
+      const exact = eligible && clause.text.trim() === rawQuote && cited.some(({ raw }) => unclippedQuote(rawQuote, raw, true));
       return { citation, found: cited.length > 0, exact, question: eligible ? { clause: clause.text, quote: rawQuote } : undefined };
     }),
   }));

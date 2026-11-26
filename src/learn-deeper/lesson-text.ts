@@ -21,32 +21,99 @@ export function polarityMismatch(clause: string, quote: string): boolean {
   return a.alternatives.length === 2 && b.alternatives.length === 2 && useA === avoidB && avoidA === useB;
 }
 
-/** A quote cannot clip a negation or condition off the statement it cites. */
-export function unclippedQuote(quote: string, source: string): boolean {
-  const word = /[\p{L}\p{N}_$]/u;
-  const restriction = /\b(?:not|no|never|don't|doesn't|cannot|avoid|without|only|unless|except|until|if|when|before|after|rather|instead of)\b/iu;
-  for (let start = 0; start < source.length;) {
-    const at = source.indexOf(quote, start);
-    if (at < 0) break;
-    const end = at + quote.length;
-    start = at + 1;
-    if (word.test(quote[0]!) && word.test(source[at - 1] ?? "") ||
-        word.test(quote.at(-1)!) && word.test(source[end] ?? "")) continue;
-    const prefix = source.slice(0, at).split(/[.!?;:]\s+/u).at(-1)!;
-    if (restriction.test(prefix)) continue;
-    const rest = source.slice(end);
-    const suffix = rest.split(/[.!?;:](?=\s|$)/u, 1)[0]!.split(/\b(?:because|so that|such as)\b/iu, 1)[0]!;
-    if (!restriction.test(suffix)) return true;
+const RESTRICTION = /\b(?:not|no|never|don['’]t|doesn['’]t|can['’]t|cannot|won['’]t|shouldn['’]t|mustn['’]t|avoid|without|only|unless|except(?:ion)?|otherwise|until|if|when|before|after|rather|instead)\b/iu;
+const WORD = /[\p{L}\p{N}_$]/u;
+const LIST = /^[ \t]*(?:[-+*]|\d+[.)]|#\.)[ \t]+/u;
+const HEADING = /^ {0,3}(?:#{1,6}|={1,6})[ \t]+/u;
+const UNDERLINE = /^[ \t]*(?:-{3,}|={3,}|~{3,}|\^{3,}|_{3,})[ \t]*$/u;
+const FOLLOW_ON = /^(?:but\s+only|only\s+(?:if|when|in|on|for|with|after|before)|unless|except|otherwise|(?:(?:one|the(?:\s+only)?)\s+)?exception)\b/iu;
+const SENTENCES = new Intl.Segmenter("en", { granularity: "sentence" });
+const INLINE_CODE = /(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/gu;
 
-    // A complete sentence doesn't inherit an unrelated restriction from the next one.
-    // Keep explicit follow-on qualifiers, pronoun references, and shared subjects in context.
-    if (!/[.!?]$/u.test(quote) || !/^\s/u.test(rest)) continue;
-    const next = suffix.trimStart();
-    if (next.search(restriction) === 0 || /^(?:and|but|however|otherwise|this|that|it|the rule)\b/iu.test(next)) continue;
-    const words = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}_$]{4,}/gu) ?? [];
-    const cited = new Set(words(quote));
-    if (!words(next).some(word => cited.has(word))) return true;
+interface Span { start: number; end: number }
+
+/** Keep wrapped prose and explicit continuations together, and start fresh at unrelated list items. */
+function quoteBlocks(source: string): Span[] {
+  const lines = source.split("\n");
+  const blocks: Span[] = [];
+  let offset = 0, blank = false;
+  let block: Span | undefined;
+  for (const [index, line] of lines.entries()) {
+    const start = offset;
+    offset += line.length + 1;
+    const text = line.trimEnd();
+    if (!text) { blank = true; continue; }
+    const end = start + text.length;
+    const item = LIST.exec(text);
+    if (HEADING.test(text) || UNDERLINE.test(text) || !item && UNDERLINE.test(lines[index + 1] ?? "")) {
+      blocks.push({ start, end });
+      block = undefined;
+      blank = false;
+      continue;
+    }
+    const continuation = FOLLOW_ON.test(text.slice(item?.[0].length ?? 0).trimStart().replace(/^[*_]+/u, ""));
+    if (!block || (item || blank) && !continuation) {
+      block = { start, end };
+      blocks.push(block);
+    } else block.end = end;
+    blank = false;
   }
+  return blocks;
+}
+
+function sentenceSpans(source: string, block: Span): Span[] {
+  // Preserve source offsets while hiding punctuation in code, list numbers and soft line breaks.
+  const text = source.slice(block.start, block.end)
+    .replace(INLINE_CODE, code => code.replace(/[.!?]/gu, "x"))
+    .replace(/^[ \t]*(?:\d+[.)]|#\.)[ \t]+/gmu, marker => marker.replace(".", " "))
+    .replace(/\s/gu, " ");
+  return [...SENTENCES.segment(text)].map(({ index, segment }) =>
+    ({ start: block.start + index, end: block.start + index + segment.trimEnd().length }));
+}
+
+function qualifies(next: string, quote: string): boolean {
+  const text = squash(next.replace(LIST, "")).replace(/^[*_]+/u, "");
+  if (FOLLOW_ON.test(text)) return true;
+  // Look for references and shared words in the leading clause of the next sentence.
+  const lead = text.split(/[;:](?=\s|$)|\b(?:because|so that|such as)\b/iu, 1)[0]!;
+  if (!RESTRICTION.test(lead)) return false;
+  if (lead.search(RESTRICTION) === 0 || /^(?:and|but|however|this|that|it|the rule)\b/iu.test(lead)) return true;
+  const words = (value: string) => value.toLowerCase().match(/[\p{L}\p{N}_$]{4,}/gu) ?? [];
+  const cited = new Set(words(quote));
+  return words(lead).some(word => cited.has(word));
+}
+
+function* quoteContexts(quote: string, source: string, exact: boolean) {
+  if (!quote.trim()) return;
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const pattern = exact ? escape(quote) : quote.trim().split(/\s+/u).map(escape).join("\\s+");
+  const matches = source.matchAll(new RegExp(`(?=(${pattern}))`, "gu"));
+  let layout: ReturnType<typeof quoteBlocks> | undefined;
+  for (const match of matches) {
+    const at = match.index, found = match[1]!, end = at + found.length;
+    if (WORD.test(found[0]!) && WORD.test(source[at - 1] ?? "") ||
+        WORD.test(found.at(-1)!) && WORD.test(source[end] ?? "")) continue;
+    const blocks = layout ??= quoteBlocks(source);
+    const first = blocks.find(block => block.end > at);
+    const last = blocks.find(block => block.end >= end);
+    if (!first || !last) continue;
+    const starts = sentenceSpans(source, first);
+    const ends = first === last ? starts : sentenceSpans(source, last);
+    const head = starts.find(sentence => sentence.end > at);
+    const tail = ends.findIndex(sentence => sentence.end >= end);
+    if (!head || tail < 0) continue;
+    const lastSentence = ends[tail]!;
+    const suffix = source.slice(end, lastSentence.end);
+    const next = ends[tail + 1];
+    const clipped = RESTRICTION.test(source.slice(head.start, at)) || RESTRICTION.test(suffix)
+      || next !== undefined && qualifies(source.slice(next.start, next.end), found);
+    yield { clipped };
+  }
+}
+
+/** A quote cannot clip a negation or condition off the statement it cites. */
+export function unclippedQuote(quote: string, source: string, exact = false): boolean {
+  for (const { clipped } of quoteContexts(quote, source, exact)) if (!clipped) return true;
   return false;
 }
 
