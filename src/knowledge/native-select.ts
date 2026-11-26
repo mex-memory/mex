@@ -7,14 +7,14 @@ import type { KnowledgeEntry } from "./entry.js";
 export type Verdict = "held" | "changed" | "broken" | "unknown";
 export interface Candidate { level: "team" | "personal"; entry: KnowledgeEntry; }
 
-/** Kinds a session needs up front. Code facts are checked at edits; hints are never broad. */
-const KINDS = new Set(["rule", "decision", "pitfall", "procedure", "recipe"]);
+/** Kinds a session needs up front, in tie-break order. */
+const KIND_ORDER = ["rule", "decision", "pitfall", "procedure", "recipe"];
 /** Evidence strong enough to load into every session. */
 const STRONG = new Set(["person", "docs", "ci", "review"]);
 /** Longer entries belong in a moment, not in every session. */
 export const MAX_NATIVE_TEXT = 600;
-/** Learned repo-wide entries load every session, so only the best-supported few fit; the rest stay in recall. */
-export const MAX_LEARNED_ALWAYS_ON_TOKENS = 300;
+/** About one MEX default rules pack of additional prose per session. */
+export const MAX_LEARNED_ALWAYS_ON_TOKENS = 450;
 
 /** A folder or the whole repo, not a file pattern. */
 export function isBroad(scope: string): boolean {
@@ -54,7 +54,7 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
     if (m.status === "proposed") skip(c, "not yet accepted");
     else if (m.status !== "active") skip(c, "retired");
     else if (m.source.type === "rule-file") skip(c, "already in a rule file");
-    else if (!KINDS.has(m.kind)) skip(c, `a ${m.kind} isn't loaded every session`);
+    else if (!KIND_ORDER.includes(m.kind)) skip(c, `a ${m.kind} isn't loaded every session`);
     else if (!STRONG.has(m.evidence)) skip(c, "evidence too weak");
     else if (isLearned(c.entry) && m.when?.length) skip(c, "delivered at the matching edit");
     else if (isLearned(c.entry) && m.scope.includes("**") && !m.scope.every(scope => scope === "**")) skip(c, "mixed repo and folder scopes");
@@ -69,31 +69,39 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
   return { selected: kept, skipped };
 }
 
-/** The distinct pull requests a learned entry's source checks and source cite. Docs lessons have none. */
+/** The distinct pull requests a learned entry's source checks and source cite. */
 export function learnedSupport({ mex }: KnowledgeEntry): number {
-  if (mex.source.type === "docs") return 0;
-  const pull = (url: string) => /^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/pull\/\d+/u.exec(url)?.[0]?.toLowerCase();
+  const pull = (url: string) => /^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/pull\/\d+(?=[/?#]|$)/iu.exec(url)?.[0]?.toLowerCase();
   const links = [mex.source.ref, ...mex.checks.flatMap(check => check.kind === "source" && "url" in check.target ? [check.target.url] : [])];
   return new Set(links.map(pull).filter(Boolean)).size;
 }
 
-const KIND_ORDER = ["rule", "decision", "pitfall", "procedure"];
-const kindRank = (kind: string) => { const at = KIND_ORDER.indexOf(kind); return at < 0 ? KIND_ORDER.length : at; };
-const textTokens = (text: string) => Math.ceil(text.length / 4);
+/** Explicit policy, recurrence, a reproducible pattern, then a single review. */
+function evidenceRank({ mex }: KnowledgeEntry, support: number): number {
+  if (mex.checks.some(check => check.kind === "quote" && check.role === "complete")) return 4;
+  if (support >= 2) return 3;
+  if (mex.checks.some(check => check.kind === "fixture" && check.role === "complete")) return 2;
+  return support;
+}
 
-/** Keep the best-supported learned repo-wide entries within one budget across levels; stop at the first that doesn't fit. */
+/** Keep whole learned rules within the same estimated token budget across levels. */
 function withinLearnedBudget(selected: Candidate[], skip: (c: Candidate, reason: string) => void): Candidate[] {
   const repoWide = (c: Candidate) => learnedRepoWide(c.entry);
-  const ranked = selected.filter(repoWide).map(c => ({ c, support: learnedSupport(c.entry),
-    proven: c.entry.mex.checks.some(check => check.kind === "fixture") ? 0 : 1, kind: kindRank(c.entry.mex.kind) }))
-    .sort((a, b) => b.support - a.support || a.proven - b.proven || a.kind - b.kind
-      || a.c.entry.mex.id.localeCompare(b.c.entry.mex.id));
+  const ranked = selected.filter(repoWide).map(c => {
+    const support = learnedSupport(c.entry);
+    return { c, support, evidence: evidenceRank(c.entry, support), kind: KIND_ORDER.indexOf(c.entry.mex.kind) };
+  }).sort((a, b) => b.evidence - a.evidence || b.support - a.support || a.kind - b.kind
+    || a.c.entry.mex.id.localeCompare(b.c.entry.mex.id) || Number(b.c.level === "team") - Number(a.c.level === "team"));
   const out = new Set<Candidate>();
-  let tokens = 0, full = false;
+  let tokens = 0;
   for (const { c } of ranked) {
-    const cost = textTokens(c.entry.text);
-    if (!full && tokens + cost <= MAX_LEARNED_ALWAYS_ON_TOKENS) { tokens += cost; out.add(c); }
-    else { full = true; skip(c, "over the always-on budget for learned rules; available through recall"); }
+    const cost = Math.ceil((Buffer.byteLength(nativeItem(c.entry)) + 1) / 4);
+    if (tokens + cost > MAX_LEARNED_ALWAYS_ON_TOKENS) {
+      skip(c, "over the always-on budget for learned rules; available through recall");
+      continue;
+    }
+    tokens += cost;
+    out.add(c);
   }
   return selected.filter(c => !repoWide(c) || out.has(c));
 }
