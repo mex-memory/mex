@@ -67,9 +67,24 @@ entries go into shared files; personal notes into local files.
 Entries with checks need a held result from the current native evaluator;
 cached verdicts do not authorize publication after the source changes. If
 current checks are unavailable, checked entries are left out.
-Learned entries for the whole repo share a budget of 300 tokens: the ones
-learned from the most PRs go first, then by kind and id, and the first one
-that doesn't fit ends the list. The rest stay available through `mex recall`.
+
+Repository-wide learned rules share a 450 estimated token budget across
+team and personal entries. This is about one MEX default rules pack. Each
+whole bullet costs its UTF-8 byte length divided by four and rounded up,
+including the entry ID comment and line break.
+
+A held, complete quote check establishes a written project policy. These
+rules rank first, followed by rules from multiple distinct PRs, rules with
+a complete fixture, and rules from a single PR. Ties use the distinct PR
+count, then kind (rule, decision, pitfall, procedure, recipe), then ID.
+If both stores have the same ID and rank, the team copy goes first.
+When a rule exceeds the space left, the selector tries the next rule.
+
+Repository-wide learned rules deliver the stored claim when it matches the
+body or has a sentence boundary where the body continues. The 600-character
+limit applies to the delivered form. The full entry and any rules that miss
+the budget remain available through `mex recall`. Folder rules use path
+delivery.
 
 ## Which files (who loads what)
 

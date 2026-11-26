@@ -80,11 +80,13 @@ lesson from one reviewer can start ticked once the code proves it. Written polic
 | --- | --- |
 | A code rule with a proven pattern | At the edit that adds the anti-pattern in scope: the speed bump stops it once, with the team's fix |
 | A decision with a proven rejected pattern | At the edit that brings the rejected approach back, in scope or in a manifest |
-| A rule, decision or pitfall with a scope and no pattern | At the first read or edit of a file it governs, or through path-scoped rule files where the agent has them |
-| A process rule (branches, commit and PR text, releases) | In the agent's rule files, every session, within a small budget that the best-supported rules fill first |
+| A rule, decision or pitfall with a path scope and no pattern | At the first read or edit of a file it governs, or through path-scoped rule files where the agent has them |
+| A repository-wide rule with no edit trigger | Each session, as a complete claim within the [learned rule budget](rule-files.md#which-entries-layer-a) |
 | Anything learned | On `mex recall <id>`, with its reason, fix, source and current verdict |
 
-Nothing learned goes into the session-start brief.
+Learned entries are excluded from the ordinary session-start brief.
+Codex can receive selected repository-wide rules through its native-rule
+fallback when a contributor's AGENTS.md or override takes the root slot.
 
 ## Staying true
 
