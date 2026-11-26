@@ -40,6 +40,16 @@ it("tells an instruction from a description of a trap", () => {
     expect(statesAction(claim, "process"), claim).toBe(false);
 });
 
+it.each([
+  "Assign the setting on the fixture that owns it.",
+  "Access the endpoint through the test client.",
+  "Bring breaking changes to the maintainers before implementation.",
+  "Buffer partial updates until the record is complete.",
+  "Serialize socket writes through the shared writer.",
+])("recognizes the imperative in %j", claim => {
+  expect(statesAction(claim, "pitfall")).toBe(true);
+});
+
 it("tells a pasted review comment from a stated rule", () => {
   for (const claim of comments) expect(readsAsComment(claim), claim).toBe(true);
   for (const claim of [...instructions, ...descriptions]) expect(readsAsComment(claim), claim).toBe(false);

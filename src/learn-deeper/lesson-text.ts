@@ -157,6 +157,7 @@ const IMPERATIVE = new RegExp("^(?:always|never|do not|don't|avoid|prefer|use|ke
   + "convert|encode|decode|trim|normalize|resolve|append|route|register|mock|stub|assert|bind|attach|emit|apply|configure|honor|"
   + "respect|support|reserve|verify|confirm|review|discuss|coordinate|file|link|label|tag|squash|rebase|merge|commit|push|branch|"
   + "save|inspect|let|allow|accept|declare|define|depend|derive|expose|hide|initialize|install|isolate|measure|prefix|pick|choose|"
+  + "access|assign|bring|buffer|serialize|"
   + "when|for|in|if|to|before|after|only|once|unless)\\b", "iu");
 const MODAL = /\b(?:should|must|shall|needs? to|has to|have to|instead|rather than|never|always|avoid|prefer|please)\b/iu;
 const CONVENTION = /^we (?:don't|do not|never|always|only|use|keep|prefer|avoid|require|want|add|support|chose|decided)\b/iu;
