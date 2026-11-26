@@ -304,8 +304,8 @@
       "body": "This proposal uses a different transport.",
       "author": {
         "__typename": "User",
-        "login": "fern-owner",
-        "name": "Fern Example"
+        "login": "iris-dev",
+        "name": "Iris Example"
       },
       "changedFiles": 3,
       "files": {

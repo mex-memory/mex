@@ -14,8 +14,9 @@ import { authored, decides, decisionsFirst, hasDecisionsSection } from "../harve
 import { reviewedFiles, ReviewRead } from "../harvest/forge.js";
 import { Gaps } from "../harvest/evidence.js";
 import { align, hunkSpan, RegionReader, reviewRegions } from "../harvest/regions.js";
-import { prUnits, renderUnits } from "../pr-units.js";
+import { packUnits, prUnits, renderUnits } from "../pr-units.js";
 import { sourceDigest } from "../source.js";
+import { parseTriage, triagePrompt } from "../triage.js";
 
 const source = { host: "github.com", slug: "fiction/transports" } as const;
 const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T00:00:00.000Z" };
@@ -147,9 +148,9 @@ afterAll(() => {
 const CHOSEN = "We chose one adapter name rather than two.";
 
 function forge({ paging = false, weekly = false, issue = false, reverts = false, textOnly = false, fork = false, mergedCount = 1, deep = false,
-  merged: mergedRow = {}, closed: closedRow = {} }: {
+  merged: mergedRow = {}, closed: closedRow = {}, permissions = {} }: {
     paging?: boolean; deep?: boolean; weekly?: boolean; issue?: boolean; reverts?: boolean; textOnly?: boolean; fork?: boolean; mergedCount?: number;
-    merged?: object; closed?: object;
+    merged?: object; closed?: object; permissions?: Record<string, string | null>;
   } = {}) {
   const captures: string[] = [];
   const data = JSON.parse(raw.replaceAll("OID_ORIGINAL", original).replaceAll("OID_MERGE", merge));
@@ -183,7 +184,7 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
     return row;
   });
   if (weekly) for (const [number, day] of [[51, 21], [52, 27]]) merged.push({ ...data.merged, number,
-    mergedAt: `2026-11-${day}T10:00:00Z`, reviewThreads: { nodes: [] }, body: CHOSEN, author: data.closed[0].author });
+    mergedAt: `2026-11-${day}T10:00:00Z`, reviewThreads: { nodes: [] }, body: CHOSEN, author: data.closed[0].timelineItems.nodes[0].actor });
   const issues = issue ? [{ id: "I_fixture61", number: 61, title: "Do not support the older protocol",
     body: "Clients still need the handshake.", stateReason: "NOT_PLANNED", closedAt: "2026-11-19T10:00:00Z",
     comments: { nodes: [{ ...data.closed[0].comments.nodes[0], id: "IC_fixture61", body: "The older protocol has no version handshake." }] } }] : [];
@@ -197,9 +198,11 @@ function forge({ paging = false, weekly = false, issue = false, reverts = false,
       const review = forkFixture.reviews.find((item: { contents: { path: string } }) => item.contents.path === file);
       return review ? Response.json(review.contents) : new Response(null, { status: 404 });
     }
-    if (/\/collaborators\/(?:fern|cedar)-owner\/permission$/u.test(path)) {
+    const collaborator = /\/collaborators\/((?:fern|cedar)-owner)\/permission$/u.exec(path)?.[1];
+    if (collaborator) {
       captures.push("permission");
-      return Response.json({ permission: "write" });
+      const permission = permissions[collaborator];
+      return permission === null ? new Response(null, { status: 403 }) : Response.json({ permission: permission ?? "write" });
     }
     expect(path).toBe("/graphql");
     const { query, variables }: { query: string; variables: Record<string, string> } = JSON.parse(String(init?.body));
@@ -616,7 +619,7 @@ describe("PR descriptions", () => {
     expect((await read("merged", { authorAssociation: "CONTRIBUTOR" })).found).toBe(4);
     const nothing = { nodes: [], totalCount: 0 };
     expect((await read("closed", {})).kinds).toEqual(["closed-pr", "review-summary"]);
-    expect((await read("closed", { comments: nothing })).kinds).toEqual(["closed-pr", "review-summary"]);
+    expect((await read("closed", { comments: nothing })).kinds).toEqual(["review-summary"]);
     expect((await read("closed", { comments: nothing, reviews: nothing })).found).toBe(0);
   }, GIT_FIXTURE_TIMEOUT);
 
@@ -646,10 +649,12 @@ describe("PR descriptions", () => {
     expect(Object.values(cursor.run?.access ?? {})).toContain(true);
   });
 
-  const closedCase = async (body: string, comment: string) => {
+  const closeWindow = { since: "2026-11-15T00:00:00Z", until: "2026-11-17T00:00:00Z" };
+  const closedCase = async (body: string, comment: string, createdAt?: string) => {
     const row = JSON.parse(raw).closed[0];
-    const { candidates } = await drain(options({ since: "2026-11-15T00:00:00Z", until: "2026-11-17T00:00:00Z" }), forge({ closed: { body,
-      comments: { ...row.comments, nodes: [{ ...row.comments.nodes[0], body: comment }] }, reviews: { ...row.reviews, nodes: [] } } }));
+    const note = row.comments.nodes[0];
+    const { candidates } = await drain(options(closeWindow), forge({ closed: { body,
+      comments: { ...row.comments, nodes: [{ ...note, body: comment, createdAt: createdAt ?? note.createdAt }] }, reviews: { ...row.reviews, nodes: [] } } }));
     return candidates.find(candidate => candidate.id === "gh:closed:41");
   };
   it("takes a closed change's signal from the maintainer's words, not from the description beside them", async () => {
@@ -658,10 +663,80 @@ describe("PR descriptions", () => {
   }, GIT_FIXTURE_TIMEOUT);
 
   it.each([
-    ["Superseded by #12.", false], ["Closing this in favour of the other change.", false], ["Thanks! Please rebase.", false], ["It does not fix the issue.", false],
+    ["Superseded by #12.", false], ["This PR was superseded by #12. Thanks!", false], ["Duplicate of #12.", false],
+    ["Closing this in favour of the other change.", false], ["Closing this as stale.", false], ["Thanks! Please rebase.", false],
+    ["The transport design is still being discussed. Agree on the interface before posting a patch.", true],
+    ["It does not fix the issue.", true],
     ["We can’t accept a second transport.", true], ["This is unnecessary: the adapter already retries.", true], ["That should not live here.", true], ["I'd prefer one transport.", true],
-  ])("reads a closed change only when the maintainer gives a reason: %s", async (comment, read) => {
+  ])("includes a nearby explanation and filters closure boilerplate: %s", async (comment, read) => {
     expect(!!await closedCase("We decided to use two transports instead.", comment)).toBe(read);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("requires older remarks to have their own decision signal", async () => {
+    const earlier = "2026-11-13T10:00:00Z";
+    expect(await closedCase("Try a second transport.", "There's a design meeting tomorrow.", earlier)).toBeUndefined();
+    expect(await closedCase("Try a second transport.", "We never run two transports here.", earlier)).toBeDefined();
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it.each([
+    [null, "2026-11-15T11:00:00Z", true, true],
+    ["read", "2026-11-15T11:00:00Z", true, false],
+    [null, "2026-11-13T11:00:00Z", true, false],
+    [null, "2026-11-15T11:00:00Z", false, false],
+  ])("uses association only for an unavailable permission near a verified maintainer close (%s, %s, %s)", async (permission, at, verified, included) => {
+    const row = fixture.closed[0];
+    const reason = "Agree on the transport design before submitting an implementation.";
+    const { candidates } = await drain(options(closeWindow), forge({
+      permissions: { "cedar-owner": permission },
+      closed: { comments: { ...row.comments, nodes: [{ ...row.comments.nodes[0], author, authorAssociation: "MEMBER", body: reason, createdAt: at }] },
+        reviews: verified ? row.reviews : { nodes: [] } },
+    }));
+    const text = renderUnits(prUnits(candidates)).text;
+    const candidate = candidates.find(item => item.kind === "closed-pr");
+    expect(Boolean(candidate)).toBe(included);
+    if (included) expect(text).toContain("maintainer: " + reason);
+    else expect(text).not.toContain("maintainer: " + reason);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("uses a separate maintainer's reason when the author closes the PR", async () => {
+    const row = fixture.closed[0];
+    const own = { ...row.comments.nodes[0], body: "We will not use this change." };
+    const reason = { ...own, id: "IC_independent", body: "The transport already handles this retry for callers.", author };
+    const closed = async (notes: object[]) => (await drain(options(closeWindow), forge({
+      closed: { author: owner, comments: { ...row.comments, nodes: notes } },
+    }))).candidates.filter(candidate => candidate.pull === 41);
+    expect(await closed([own])).toEqual([]);
+    const candidates = await closed([own, reason]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.lines?.map(line => [line.id, line.role])).toEqual([["IC_independent", "maintainer"]]);
+  }, GIT_FIXTURE_TIMEOUT);
+
+  it("packs short, citeable closure reasons and keeps the triage quote and reason checks", async () => {
+    const row = fixture.closed[0];
+    const reason = "Agree on the transport design before submitting an implementation.";
+    const first = { ...row.comments.nodes[0], body: reason + " " + "A longer discussion followed. ".repeat(80) };
+    const second = { ...first, id: "IC_second", body: "The design discussion is still open.", author };
+    const older = { ...second, id: "IC_third", body: "A third close discussion comment.", createdAt: "2026-11-16T09:00:00Z" };
+    const { candidates } = await drain(options(closeWindow), forge({
+      closed: { comments: { ...row.comments, nodes: [first, second, older] }, reviews: { nodes: [] } },
+    }));
+    const closure = candidates.find(candidate => candidate.kind === "closed-pr")!;
+    expect(closure.lines?.map(line => line.id)).toEqual([first.id, second.id]);
+    expect(Buffer.byteLength(closure.lines![0]!.text)).toBeLessThanOrEqual(800);
+    const units = packUnits(prUnits(candidates))[0]!;
+    const prompt = triagePrompt(units);
+    expect(prompt).toContain("consider a maintainer's reason for declining the change");
+    expect(prompt).toContain("maintainer: " + reason);
+    expect(prompt).toContain("Description: This proposal uses a different transport.");
+    expect(prompt).not.toContain(older.body);
+    const item = [...renderUnits(units).lines.values()].find(line => line.line.id === first.id)!.id;
+    const reply = { item, quote: reason, norm: reason, why: "The transport design is still being discussed.", kind: "process",
+      scope: "repo", form: "decision", stated_as_rule: false, response: "unknown" };
+    const parse = (row: object) => parseTriage(JSON.stringify({ observations: [row] }), units, new Map([[closure.id, closure]]));
+    expect(parse(reply).observations[0]).toMatchObject({ sourceKind: "closed-pr", pull: 41,
+      quote: reason, source: { node: first.id, hash: sourceDigest(first.body) } });
+    expect(parse({ ...reply, why: "" }).drops).toEqual({ "no-policy-reason": 1 });
+    expect(parse({ ...reply, quote: "The model invented this quote." }).drops).toEqual({ "quote-not-found": 1 });
   }, GIT_FIXTURE_TIMEOUT);
 
   const threadCase = async (author: string, said: Array<[login: string, body: string]>) => {

@@ -1,4 +1,4 @@
-import { object, positive, rows, SourceError } from "../forge.js";
+import { associatedWriter, object, positive, rows, SourceError } from "../forge.js";
 import { Reviewers } from "../reviewers.js";
 import { repository, validAt, type SourceWindow } from "../source.js";
 import { authored, decides, decisionsFirst, hasDecisionsSection } from "./description.js";
@@ -15,6 +15,8 @@ const REPLIES = 4;
 const FILE_PAGE = 24;
 const SEARCH_PAGE = 32;
 const MAX_PERMISSION_READS = 12;
+const CLOSE_REASON_BYTES = 800;
+const CLOSE_REASONS = 2;
 // Share these reads across all threads in a batch. Allow a few missing fork
 // objects without turning a busy review into a long chain of requests.
 const MAX_REVIEWED_FILE_REQUESTS = 8;
@@ -174,6 +176,15 @@ export function trivialDiscussion(text: string): boolean {
   return /^(?:(?:@\S+|\[reviewer\])\s+)?(?:thanks(?: a lot| so much| for (?:this|the (?:fix|review|feedback|report|update)))?|thank you(?: so much)?|lgtm|looks good(?: to me)?|great|nice|merged|released|done|ok(?:ay)?|cool|approved|agreed|fixed|updated)(?:\s*(?:in|as|on)\s+(?:#\d+|[a-f\d]{7,40}|v?\d+(?:\.\d+){1,3}))?[.!\s]*$/iu.test(text.trim());
 }
 
+function closureStatus(text: string): boolean {
+  const body = text.trim().replace(/\s+/gu, " ").replace(/^(?:@\S+|\[reviewer\])[,\s:]+/u, "")
+    .replace(/[.!]\s*(?:thanks|thank you)[.!]*$/iu, "").replace(/[.!]+$/u, "");
+  if (trivialDiscussion(body) || /^(?:thanks[!.]\s+)?please rebase$/iu.test(body)) return true;
+  if (/^(?:i(?:['’]ll| will) )?clos(?:e|ed|ing)(?: (?:this(?: pr)?|out))?(?: (?:for now|as not planned))?$/iu.test(body)) return true;
+  const replacement = /^(?:this (?:pr|change) (?:is|was|has been) )?(?:superseded by|duplicate of|(?:fixed|merged) (?:in|as)|clos(?:ed|ing)(?: this(?: pr)?)? in favou?r of) (.+)$/iu.exec(body)?.[1];
+  return !!replacement && /^(?:(?:pr )?(?:[\w.-]+\/[\w.-]+)?#\d+|https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/(?:pull|issues)\/\d+|the other (?:pr|change))$/iu.test(replacement);
+}
+
 function directPermission(row: Raw, login: string): boolean | undefined {
   if (typeof row.authorCanPushToRepository === "boolean") return row.authorCanPushToRepository;
   const review = object(row.pullRequestReview);
@@ -188,7 +199,7 @@ export class ReviewRead {
   private permissionReads = 0;
 
   /** `access`: what the run has learned so far, by hashed login. A review row outranks an earlier refused lookup. */
-  constructor(private readonly client: Client, private readonly gaps: Gaps, private readonly access: Record<string, boolean> = {}) {}
+  constructor(private readonly client: Client, private readonly gaps: Gaps, private readonly access: Record<string, boolean | null> = {}) {}
 
   observe(row: Raw): void {
     const author = person(row.author, this.reviewers);
@@ -200,7 +211,9 @@ export class ReviewRead {
 
   private key(login: string): string { return reviewerKey(this.client.repo.slug, login); }
 
-  private async writer(row: Raw, login: string): Promise<boolean> {
+  knowsWriter(login: string): boolean { return this.access[this.key(login)] === true; }
+
+  private async writer(row: Raw, login: string): Promise<boolean | null> {
     const known = directPermission(row, login) ?? this.access[this.key(login)];
     if (known !== undefined) return known;
     if (this.permissionReads >= MAX_PERMISSION_READS) {
@@ -211,15 +224,16 @@ export class ReviewRead {
     const reply = await this.client.get(`/repos/${this.client.repo.slug}/collaborators/${encodeURIComponent(login)}/permission`, true);
     const permission = string(object(reply?.value)?.permission);
     if (!permission) this.gaps.messages.add("Some authors' write access could not be verified.");
-    const writer = ["write", "maintain", "admin"].includes(permission ?? "");
+    const writer = permission ? ["write", "maintain", "admin"].includes(permission) : null;
     this.access[this.key(login)] = writer;
     return writer;
   }
 
   /** Whether the author of a comment or a change may push. One the forge calls an outsider is known without asking. */
-  async canWrite(row: Raw, login: string): Promise<boolean> {
+  async canWrite(row: Raw, login: string, allowAssociation = false): Promise<boolean> {
     if ((directPermission(row, login) ?? this.access[this.key(login)]) === undefined && OUTSIDERS.includes(string(row.authorAssociation) ?? "")) return false;
-    return this.writer(row, login);
+    const writer = await this.writer(row, login);
+    return writer === true || writer === null && allowAssociation && associatedWriter(row.authorAssociation) === true;
   }
 
   private comment(row: Raw, start?: string, end?: string): Comment | undefined {
@@ -231,11 +245,11 @@ export class ReviewRead {
     return { id, at, raw, login: author.login, databaseId: databaseId(row.fullDatabaseId) };
   }
 
-  async comments(rows: Raw[], start?: string, end?: string): Promise<Comment[]> {
+  async comments(rows: Raw[], start?: string, end?: string, allowAssociation?: (comment: Comment) => boolean): Promise<Comment[]> {
     const result: Comment[] = [];
     for (const row of rows) {
       const comment = this.comment(row, start, end);
-      if (comment && await this.canWrite(row, comment.login)) result.push(comment);
+      if (comment && await this.canWrite(row, comment.login, allowAssociation?.(comment))) result.push(comment);
     }
     return result;
   }
@@ -407,6 +421,7 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
       const rendered = await read.line(item, author, plan.until);
       if (!rendered) continue;
       const { line, writer, comment } = rendered;
+      if (source === "closed" && (comment.login === author?.login || closureStatus(line.text))) continue;
       if (!writer) { context.push(line); continue; }
       if (trivialDiscussion(line.text)) continue;
       const fragment = kind === "conversation" ? "issuecomment-" : "pullrequestreview-";
@@ -419,10 +434,11 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     }
   };
   if (source !== "merged") {
-    if (source === "closed" && row.state !== "CLOSED") return [];
+    const closed = source === "closed";
+    if (closed && (row.state !== "CLOSED" || row.mergedAt != null)) return [];
     const events = connection(row.timelineItems).nodes;
     const closure = events.at(-1), closer = person(closure?.actor);
-    if (source === "closed" && !closer) {
+    if (closed && !closer) {
       gaps.messages.add("Some closed changes had no verifiable closing actor.");
       return [];
     }
@@ -435,41 +451,64 @@ export async function changeCandidates(plan: HarvestPlan, change: Change, thread
     const facts = discussions(row).sort((a, b) => (timestamp(b.submittedAt ?? b.createdAt) ?? "")
       .localeCompare(timestamp(a.submittedAt ?? a.createdAt) ?? ""));
     const distance = (value: unknown) => Date.parse(timestamp(value) ?? "") - Date.parse(point.at);
-    const closing = facts.filter(fact => {
-      const author = person(fact.author);
-      const near = distance(fact.submittedAt ?? fact.createdAt);
-      return author?.login === closer?.login && near >= -24 * 60 * 60 * 1000 && near <= 60_000;
-    }).sort((a, b) => Math.abs(distance(a.submittedAt ?? a.createdAt)) - Math.abs(distance(b.submittedAt ?? b.createdAt)))[0];
+    const nearClose = (value: unknown) => {
+      const delta = distance(value);
+      return delta >= -24 * 60 * 60 * 1000 && delta <= 60_000;
+    };
+    const closing = facts.filter(fact => person(fact.author)?.login === closer?.login && nearClose(fact.submittedAt ?? fact.createdAt))
+      .sort((a, b) => Math.abs(distance(a.submittedAt ?? a.createdAt)) - Math.abs(distance(b.submittedAt ?? b.createdAt)))[0];
     if (labels.nodes.some(label => inactivity.test(string(label.name) ?? "")) || inactivity.test(string(closing?.body) ?? "")) return [];
-    const comments = await read.comments(closing ? [closing, ...facts.filter(fact => fact !== closing)] : facts, undefined, plan.until);
-    const followed = read.discussion(comments);
-    if (source === "closed" && !comments.length) return [];
-    if (source === "issue" && !(comments.length && (row.stateReason === "NOT_PLANNED" || notPlanned.test(followed.raw))
-      || rootCause.test((prText ? rawDescription : "") + "\n" + followed.raw))) return [];
-    const proposal = source === "closed" && prText ? excerpt(prText, PROPOSAL_BYTES) : prText;
-    const description = proposal && comments.length ? "\n\n" + proposal : proposal ?? "";
-    const text = cleanText(followed.raw + description, gaps, read.reviewers);
-    if (!text) return [];
-    const node = nodeId(row.id);
-    const nodeIds = prText ? [...followed.nodeIds, node ?? ""] : followed.nodeIds;
-    const reviewIds = new Set(connection(row.reviews).nodes.map(item => item.id));
-    const lines = comments.flatMap(comment => {
-      if (source === "closed" && reviewIds.has(comment.id)) return [];
-      const clean = cleanText(comment.raw, gaps, read.reviewers);
-      return clean && !trivialDiscussion(clean) ? [{ id: comment.id, at: comment.at, text: clean,
-        role: comment.login === author?.login ? "maintainer (PR author)" as const : "maintainer" as const,
-        hash: evidenceDigest([comment.raw]), reviewer: comment.login === author?.login ? undefined : reviewerKey(plan.source.slug, comment.login) }] : [];
+    // A write-verified closer and a nearby discussion provide stronger evidence together than association alone.
+    const comments = await read.comments(closing ? [closing, ...facts.filter(fact => fact !== closing)] : facts, undefined, plan.until,
+      closed && closer && closer.login !== author?.login ? comment => nearClose(comment.at) && read.knowsWriter(closer.login) : undefined);
+    const proposal = closed && prText ? excerpt(prText, PROPOSAL_BYTES) : prText;
+    const reviewIds = new Set(closed ? connection(row.reviews).nodes.map(item => item.id) : []);
+    const notes = comments.flatMap(comment => {
+      if (closed && (comment.login === author?.login || reviewIds.has(comment.id))) return [];
+      const text = cleanText(comment.raw, gaps, read.reviewers);
+      if (!text || (closed ? closureStatus(text) : trivialDiscussion(text))) return [];
+      const own = comment.login === author?.login;
+      const line: DiscussionLine = { id: comment.id, at: comment.at, text, role: own ? "maintainer (PR author)" : "maintainer",
+        hash: evidenceDigest([comment.raw]), reviewer: own ? undefined : reviewerKey(plan.source.slug, comment.login) };
+      return [{ comment, line }];
     });
-    const candidate = newCandidate({ ...base, ...followedFields(followed), nodeIds, id: `gh:${source}:${pull}`, kind: source === "closed" ? "closed-pr" : "issue",
-      link, hash: evidenceDigest(prText ? [...followed.bodies, rawDescription] : followed.bodies), text, prText: proposal, lines }, { smallPr }, followed.raw);
-    if (source === "issue") return [candidate];
+    const makeCandidate = (followed: Discussion, lines: DiscussionLine[], compact = false) => {
+      const description = proposal && followed.bodies.length ? "\n\n" + proposal : proposal ?? "";
+      const text = compact ? lines.map(line => line.text).join("\n\n") + description : cleanText(followed.raw + description, gaps, read.reviewers);
+      if (!text) return;
+      const nodeIds = prText ? [...followed.nodeIds, nodeId(row.id) ?? ""] : followed.nodeIds;
+      return newCandidate({ ...base, ...followedFields(followed), nodeIds, id: `gh:${source}:${pull}`, kind: closed ? "closed-pr" : "issue",
+        link, hash: evidenceDigest(prText ? [...followed.bodies, rawDescription] : followed.bodies), text, prText: proposal, lines }, { smallPr }, followed.raw);
+    };
+    if (!closed) {
+      const followed = read.discussion(comments);
+      if (!(comments.length && (row.stateReason === "NOT_PLANNED" || notPlanned.test(followed.raw))
+        || rootCause.test((prText ? rawDescription : "") + "\n" + followed.raw))) return [];
+      const candidate = makeCandidate(followed, notes.map(note => note.line));
+      return candidate ? [candidate] : [];
+    }
     readDescription();
-    // Superseded, stacked and abandoned changes are closed without a reason anyone could rule something out with.
-    if (candidate.signal === "strong" || contrastive(followed.raw)) candidates.push(candidate);
+    const followed = read.discussion(notes.map(note => note.comment));
+    const candidate = notes.length ? makeCandidate(followed, notes.map(note => note.line)) : undefined;
+    const established = candidate && (candidate.signal === "strong" || contrastive(followed.raw));
+    // A recent explanation can carry the team's decision in plain language. Keep only a short sample in this case.
+    const near = established ? [] : notes.filter(note => nearClose(note.line.at)).slice(0, CLOSE_REASONS);
+    if (near.length) {
+      const compact = makeCandidate(read.discussion(near.map(note => note.comment)),
+        near.map(({ line }) => ({ ...line, text: excerpt(line.text, CLOSE_REASON_BYTES) })), true);
+      if (compact) candidates.push(compact);
+    } else if (established) {
+      candidates.push(candidate);
+    }
     await discussionCandidates("review-summary", row.reviews);
+    if (near.length) return candidates;
     for (const item of connection(row.comments).nodes) {
       const rendered = await read.line(item, author, plan.until);
-      if (rendered && !rendered.writer) context.push(rendered.line);
+      if (!rendered || notes.some(note => note.line.id === rendered.line.id) || closureStatus(rendered.line.text)) continue;
+      if (rendered.comment.login === author?.login) {
+        const { id, at, text } = rendered.line;
+        context.push({ id, at, text, role: "PR author" });
+      } else if (!rendered.writer) context.push(rendered.line);
     }
     return attachContext();
   }
