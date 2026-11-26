@@ -84,7 +84,7 @@ export async function verifyRule(rule: { claim: string; scope: readonly string[]
   const body = safeRaw([rule.claim, rule.why].filter(Boolean).join("\n"));
   if (!body?.trim()) return undefined;
   const target: GateRule = { id: "verify", text: excerpt(body, 3_200), scope: rule.scope.slice(0, 8)
-    .flatMap(path => safeRaw(path) === path ? [excerpt(path, 180)] : []), source: "review", kind: "rule", route: "code-rule" };
+    .filter(path => safeRaw(path) === path), source: "review", kind: "rule", route: "code-rule" };
   const evidence = await collectGateEvidence(tree, [target]);
   const files = evidenceFiles(evidence, target.id);
   if (!files.some(file => file.lines.length)) return undefined;

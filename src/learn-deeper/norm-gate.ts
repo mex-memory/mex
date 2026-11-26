@@ -63,7 +63,7 @@ function promptHeader(evidence: GateEvidence): string {
 
 function renderRule(rule: GateRule, evidence: GateEvidence): string {
   return JSON.stringify({ id: rule.id, text: excerpt(safeRaw(rule.text) ?? "", 3_200), kind: excerpt(rule.kind, 80),
-    route: excerpt(rule.route, 80), scope: rule.scope.slice(0, 8).map(path => excerpt(path, 180)), source: rule.source,
+    route: excerpt(rule.route, 80), scope: rule.scope.slice(0, 8), source: rule.source,
     named: evidence.named.get(rule.id) ?? [] });
 }
 

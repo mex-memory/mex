@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { posix } from "node:path";
+import { globPrefix, globToRegExp } from "../file-index/glob.js";
 import { backgroundEnvironment } from "../filter/environment.js";
 import { GENERATED_MARK, ruleFormat } from "../knowledge/rule-files.js";
 import type { PinnedTree } from "./git.js";
@@ -95,12 +96,14 @@ function namesOf(rule: GateRule, text: string, branches: string[]): string[] {
   const words = [...prose.matchAll(/\bv?\d+(?:\.\d+){1,3}(?:-[\w.-]+)?\b|\b[a-z][a-z0-9]*[A-Z]\w*\b|\b[A-Z][a-z0-9]+[A-Z]\w*\b|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/gu)]
     .map(match => match[0]);
   const extracted = rule.names ?? [...spans, ...paths, ...options, ...commands, ...words, ...branches];
+  const names = extracted.slice(0, 40)
+    .map(value => value.trim().replace(/^['"]|['"]$/gu, "").replace(/[.,;:]+$/u, "").replace(/^(--[\w-]+)=\S+$/u, "$1"))
+    .filter(name => name.length <= 180);
   const unique = new Map<string, string>();
-  for (const value of [...extracted.slice(0, 40), ...rule.scope.slice(0, MAX_NAMES)]) {
-    const name = value.trim().replace(/^['"]|['"]$/gu, "").replace(/[.,;:]+$/u, "").replace(/^(--[\w-]+)=\S+$/u, "$1");
-    if (!name || name === "**" || name.length > 180 || /[\u0000-\u001f\u007f]/u.test(name) || safeRaw(name) !== name) continue;
+  for (const name of [...names, ...rule.scope.slice(0, MAX_NAMES)]) {
+    if (!name || name === "**" || /[\u0000-\u001f\u007f]/u.test(name) || safeRaw(name) !== name) continue;
     const key = cleanPath(name).toLowerCase();
-    if (!unique.has(key)) unique.set(key, name);
+    if (!unique.has(key) || rule.scope.includes(name)) unique.set(key, name);
   }
   return [...unique.values()].slice(0, MAX_NAMES);
 }
@@ -183,9 +186,10 @@ function packFiles(files: EvidenceFile[], budget: number): EvidenceFile[] {
 }
 
 interface Resolution { paths: string[]; status: Status }
-function pathResolver(paths: string[], libOutputs: ReadonlySet<string>): (name: string) => Resolution | undefined {
-  const entries = paths.map(path => ({ path, key: path.toLowerCase() }))
+function pathResolver(paths: string[], libOutputs: ReadonlySet<string>) {
+  const namedPaths = paths.map(path => ({ path, key: path.toLowerCase() }))
     .sort((a, b) => compare(a.key, b.key) || compare(a.path, b.path));
+  const scopePaths = [...paths].sort(compare).map(path => ({ path, key: path }));
   const exactPaths = new Set(paths);
   const byBase = new Map<string, string[]>();
   for (const path of [...paths].sort(byDepth)) {
@@ -194,7 +198,7 @@ function pathResolver(paths: string[], libOutputs: ReadonlySet<string>): (name: 
     if (names.length < MAX_SITES) names.push(path);
     byBase.set(key, names);
   }
-  function lowerBound(key: string): number {
+  function lowerBound(entries: typeof namedPaths, key: string): number {
     let lo = 0, hi = entries.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
@@ -205,27 +209,30 @@ function pathResolver(paths: string[], libOutputs: ReadonlySet<string>): (name: 
   }
   const cache = new Map<string, Resolution | undefined>();
   let checks = 0;
-  function resolve(name: string): Resolution | undefined {
+  function resolve(name: string, scoped: boolean): Resolution | undefined {
     const value = cleanPath(name);
     if (/^(?:[a-z]+:|\/)|(?:^|\/)\.\.(?:\/|$)/iu.test(value)) return undefined;
     const base = value.replace(/\/$/u, "");
     const key = base.toLowerCase();
-    const glob = GLOB.test(base);
+    // Saved scopes use the delivery dialect. Names in prose may use shell globs.
+    const pattern = scoped && name === value ? globToRegExp(value) : undefined;
+    const glob = pattern !== undefined || GLOB.test(base);
+    const entries = pattern ? scopePaths : namedPaths;
     const hits: string[] = [];
     if (glob) {
-      const prefix = key.slice(0, key.search(/[*?[{]/u));
-      for (let i = lowerBound(prefix); i < entries.length && entries[i]!.key.startsWith(prefix); i++) {
+      const prefix = pattern ? (process.platform === "win32" ? "" : globPrefix(value)) : key.slice(0, key.search(/[*?[{]/u));
+      for (let i = lowerBound(entries, prefix); i < entries.length && entries[i]!.key.startsWith(prefix); i++) {
         if (++checks > MAX_GLOB_CHECKS) return hits.length ? { paths: hits, status: "found" } : { paths: [], status: "unchecked" };
         const candidate = entries[i]!;
-        if (posix.matchesGlob(candidate.key, key)) hits.push(candidate.path);
+        if (pattern ? pattern.test(candidate.path) : posix.matchesGlob(candidate.key, key)) hits.push(candidate.path);
         if (hits.length === MAX_SITES) break;
       }
     } else {
-      const exact = entries[lowerBound(key)];
+      const exact = entries[lowerBound(entries, key)];
       if (!value.endsWith("/") && exact?.key === key) hits.push(exactPaths.has(base) ? base : exact.path);
       if (!hits.length) {
         const prefix = key + "/";
-        for (let i = lowerBound(prefix); i < entries.length && entries[i]!.key.startsWith(prefix); i++) {
+        for (let i = lowerBound(entries, prefix); i < entries.length && entries[i]!.key.startsWith(prefix); i++) {
           hits.push(entries[i]!.path);
           if (hits.length === MAX_SITES) break;
         }
@@ -238,9 +245,10 @@ function pathResolver(paths: string[], libOutputs: ReadonlySet<string>): (name: 
     if (glob || /^(?:\.\/|[\w.@-]+[/\\])/u.test(name) || PATH_SUFFIX.test(value)) return { paths: [], status: "NOT FOUND" };
     return undefined;
   }
-  return name => {
-    if (!cache.has(name)) cache.set(name, resolve(name));
-    return cache.get(name);
+  return (name: string, scoped: boolean) => {
+    const key = scoped ? `scope\0${name}` : name;
+    if (!cache.has(key)) cache.set(key, resolve(name, scoped));
+    return { key, resolved: cache.get(key) };
   };
 }
 
@@ -344,7 +352,9 @@ export async function collectGateEvidence(tree: PinnedTree, rules: readonly Gate
   const requests = rules.map(rule => {
     const text = excerpt(safeRaw(rule.text) ?? "", 4_096);
     const branches = branchNames(text);
-    const names = namesOf(rule, text, branches).map(name => ({ name, resolved: branches.includes(name) ? undefined : resolvePath(name) }));
+    const names = namesOf(rule, text, branches).map(name => ({
+      name, ...(branches.includes(name) ? { key: `branch\0${name}`, resolved: undefined } : resolvePath(name, rule.scope.includes(name))),
+    }));
     return { id: rule.id, names };
   });
   const needles = new Set([...new Set(requests.flatMap(({ names }) => names.flatMap(({ name, resolved }) => resolved ? [] : needlesFor(name))))].slice(0, MAX_NEEDLES));
@@ -352,11 +362,11 @@ export async function collectGateEvidence(tree: PinnedTree, rules: readonly Gate
 
   const matches = new Map<string, Match[]>();
   for (const { names } of requests) {
-    for (const { name, resolved } of names) {
-      if (matches.has(name)) continue;
+    for (const { key, name, resolved } of names) {
+      if (matches.has(key)) continue;
       const sites = resolved ? resolved.paths.map(path => ({ path, line: 1 }))
         : needlesFor(name).flatMap(key => lookup.hits.get(key) ?? []);
-      matches.set(name, sites);
+      matches.set(key, sites);
     }
   }
   // Prefer the first hit for each term before adding more usage sites.
@@ -372,10 +382,10 @@ export async function collectGateEvidence(tree: PinnedTree, rules: readonly Gate
   const named = new Map<string, NamedEvidence[]>();
   for (const { id, names } of requests) {
     const items: NamedEvidence[] = [];
-    for (const { name, resolved } of names) {
+    for (const { key, name, resolved } of names) {
       const sites: EvidenceFile[] = [];
       const keys = needlesFor(name);
-      const candidates = matches.get(name) ?? [];
+      const candidates = matches.get(key) ?? [];
       for (const { path, line } of candidates) {
         if (sites.some(site => site.path === path)) continue;
         const lines = await cache.get(path);
@@ -408,7 +418,7 @@ export async function collectGateEvidence(tree: PinnedTree, rules: readonly Gate
     }), 2_400),
     drafts: compactEntries(rules.slice(0, 200).flatMap(({ id, text, scope }) => {
       const safe = safeRaw(text);
-      return safe === undefined ? [] : [{ id: excerpt(id, 120), claim: excerpt(safe, 260), scope: scope.slice(0, 3).map(path => excerpt(path, 120)) }];
+      return safe === undefined ? [] : [{ id: excerpt(id, 120), claim: excerpt(safe, 260), scope: scope.slice(0, 3) }];
     }), 3_000),
     named,
   };

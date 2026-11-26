@@ -113,6 +113,25 @@ it("looks up scoped paths, globs, named terms, and options with bounded, pinned 
   expect(await collectGateEvidence(tree, rules)).toEqual(data);
 });
 
+it("looks up saved scopes with the same globs that match delivery paths", async () => {
+  const { tree } = await fixture({
+    "src/.wire1.ts": "First fixture\n",
+    "src/nested/.wire2.js": "Second fixture\n",
+    "src/[wire].ts": "Literal file\n",
+    "src/w.ts": "Outside the literal scope\n",
+  });
+  const scope = ["src/**/.wire?.{ts,js}", "src/[wire].ts"];
+  const evidence = await collectGateEvidence(tree, [
+    rule("scope", undefined, { names: [], scope }),
+    rule("mention", undefined, { names: ["src/[wire].ts"] }),
+  ]);
+  expect(evidence.named.get("scope")?.map(item => [item.name, item.status, item.sites.map(site => site.path)])).toEqual([
+    [scope[0], "found", ["src/.wire1.ts", "src/nested/.wire2.js"]],
+    [scope[1], "found", ["src/[wire].ts"]],
+  ]);
+  expect(evidence.named.get("mention")?.[0]?.sites.map(site => site.path)).toEqual(["src/w.ts"]);
+});
+
 it("reads a long AGENTS.md whole, so a command far down the file can be cited as a duplicate", async () => {
   const filler = Array.from({ length: 86 }, (_, i) => `Background note ${i + 1} about the project layout.`).join("\n");
   const { tree } = await fixture({ "AGENTS.md": filler + "\nRun `pnpm lint:fix` before every commit.\n", "src/index.ts": "export {};\n" });
