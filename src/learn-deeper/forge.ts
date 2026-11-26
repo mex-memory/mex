@@ -42,6 +42,11 @@ export function positive(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+// GitHub's associations can include read-only access. Use them only when the permission check is unavailable.
+export function associatedWriter(association: unknown): true | undefined {
+  return association === "MEMBER" || association === "OWNER" || association === "COLLABORATOR" ? true : undefined;
+}
+
 export function pinnedChangedPaths(value: unknown, field: string, tree: Pick<PinnedTree, "has">): string[] {
   if (!Array.isArray(value)) return [];
   const paths = value.slice(0, MAX_REVIEW_FILES).flatMap(value => {

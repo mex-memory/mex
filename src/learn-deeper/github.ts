@@ -1,4 +1,4 @@
-import { ForgeClient, MAX_REVIEW_FILES, object, pinnedChangedPaths, positive, readChangedPaths, rows, SourceError,
+import { associatedWriter, ForgeClient, MAX_REVIEW_FILES, object, pinnedChangedPaths, positive, readChangedPaths, rows, SourceError,
   type Inventory, type Pull, type RepositoryAccess, type ReviewBatch, type ReviewRequest } from "./forge.js";
 import { Reviewers } from "./reviewers.js";
 import { redactReviews, repository, reviewSource, sourceBands, spreadPulls, validAt,
@@ -55,13 +55,6 @@ interface Comment {
   writer?: boolean; association?: unknown; path?: string; topLevel: boolean; outdated: boolean;
 }
 interface ChangeEvidence { comments: Comment[]; changedPaths: string[]; }
-
-// Membership and collaborator status can include read-only access. Treat them as
-// fallback evidence only when GitHub cannot answer the permission check, never
-// over an explicit lack of write access.
-function associatedWriter(association: unknown): true | undefined {
-  return association === "MEMBER" || association === "OWNER" || association === "COLLABORATOR" ? true : undefined;
-}
 
 function collectGraphComments(value: unknown, pull: Pull, request: ReviewRequest, gaps: Set<string>): ChangeEvidence {
   const pr = object(value);
