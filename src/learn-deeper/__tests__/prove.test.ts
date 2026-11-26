@@ -8,6 +8,7 @@ import { realPath } from "../../record/project.js";
 import { draftSupport, type DraftSupport as Cluster } from "../draft-evidence.js";
 import type { PinnedTree } from "../git.js";
 import type { Candidate, Region } from "../harvest/types.js";
+import { parseDocs } from "../norm-writer.js";
 import { PIPELINE_LIMITS } from "../pipeline.js";
 import { addedOccurrences, proveEntry, processConfirmed, type ProofContext } from "../prove.js";
 import { keptQuote, routeEntry } from "../route.js";
@@ -108,6 +109,24 @@ it("keeps a quote that runs over a line break, as the gate will look for it", ()
     expect(kept.text).toContain(kept.quote);
   }
   expect(keptQuote(proof("Handlers use the api logger.", "Handlers use console."))).toBeUndefined();
+});
+
+it("proves a submission policy reference with the normal pinned document checks", async () => {
+  const quote = "If you use an LLM for your contribution, read the [AI policy](AI_POLICY.md) before opening a PR.";
+  const doc = contributorDoc(quote);
+  const pinned = tree({ "AI_POLICY.md": "# AI policy\n", "CONTRIBUTING.md": quote });
+  const { drafts } = parseDocs('{"rules":[]}', [doc], [...pinned.paths()]);
+  expect(drafts).toHaveLength(1);
+  const { entry, support } = drafts[0]!;
+  const proof = await proveEntry(entry, support, context({ tree: pinned }));
+  const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+  expect(routed).toMatchObject({
+    route: "process-rule", proposal: {
+      text: "If you use an LLM for your contribution, read `AI_POLICY.md` before opening a PR.",
+      anchors: { scope: ["**"] },
+      checks: expect.arrayContaining([{ kind: "quote", role: "complete", target: expect.objectContaining({ file: "CONTRIBUTING.md", exact: quote }) }]),
+    },
+  });
 });
 
 describe("proving a learned rule", () => {

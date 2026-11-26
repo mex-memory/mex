@@ -9,6 +9,7 @@ import { readsAsComment, statesAction, squash, polarityMismatch } from "./lesson
 import { processConfirmed } from "./prove.js";
 import { replyJson } from "./reply.js";
 import { narrowsRepo, pinnedScope } from "./scope.js";
+import { submissionPolicyReferences } from "./submission-policy.js";
 import { findQuote, NormKind, NormScope, type Observation } from "./triage.js";
 import { WriterEntry } from "./write.js";
 import { docWriter, normWriter } from "./writer-prompts.js";
@@ -174,8 +175,8 @@ export function parseDocs(text: string, candidates: readonly Candidate[], paths:
   const parsed = docReply.safeParse(replyJson(text));
   const drafts: Draft[] = [], drops: Record<string, number> = {};
   const drop = (reason: string) => { drops[reason] = (drops[reason] ?? 0) + 1; };
-  if (!parsed.success) { drop("envelope"); return { drafts, drops }; }
-  for (const value of parsed.data.rules) {
+  if (!parsed.success) drop("envelope");
+  for (const value of parsed.data?.rules ?? []) {
     const data = doc.safeParse(value);
     if (!data.success) { drop("format"); continue; }
     const { text, kind, source, scope } = data.data;
@@ -186,6 +187,14 @@ export function parseDocs(text: string, candidates: readonly Candidate[], paths:
     const draft = toDraft(text, kind, scopeFor(scope, paths), [candidate], [{ id: candidate.id, quote }], [], "docs", false);
     if (draft) drafts.push(draft);
     else drop("invalid-claim-or-scope");
+  }
+  for (const { candidate, path, text, quote } of submissionPolicyReferences(candidates, new Set(paths))) {
+    if (drafts.some(({ entry }) => entry.route === "process-rule" && entry.scope[0] === "**"
+      && entry.claim.includes("`" + path + "`") && /\b(?:read|follow)\b/iu.test(entry.claim)
+      && entry.clauses[0]?.quotes.some(citation => citation.id === candidate.id && citation.quote === quote))) continue;
+    if (hasSecret(quote) || !doc.safeParse({ source: candidate.path, text, quote, kind: "process", scope: "repo" }).success) continue;
+    const draft = toDraft(text, "process", ["**"], [candidate], [{ id: candidate.id, quote }], [], "docs", false);
+    if (draft) drafts.push(draft);
   }
   return { drafts, drops };
 }

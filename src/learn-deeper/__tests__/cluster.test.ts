@@ -76,6 +76,44 @@ it("accepts a matching brace glob from a doc rule", () => {
   expect(parseDocs(reply, [doc], [source, fixturePath]).drafts[0]?.entry.scope).toEqual(scope);
 });
 
+it("retains a named AI policy reference the docs reply omitted, with its condition and source", () => {
+  const source = "docs/contributing/pull-requests.mdx", path = "docs/AI_Contribution_Policy.mdx";
+  const quote = "Please read our [AI Contribution Policy](../AI_Contribution_Policy.mdx) if you use AI on a pull request.";
+  const doc = candidate(1, quote, { kind: "doc", path: source });
+  const { drafts, drops } = parseDocs('{"rules":[]}', [doc], [source, path, fixturePath]);
+  expect(drops).toEqual({});
+  expect(drafts).toMatchObject([{
+    entry: { kind: "rule", route: "process-rule", scope: ["**"], when: [],
+      claim: "Read `" + path + "` if you use AI on a pull request.",
+      clauses: [{ quotes: [{ id: doc.id, quote }] }] },
+    support: { source: "docs", members: [{ candidate: doc }] },
+    patternable: false,
+  }]);
+});
+
+it("does not add a second draft when the docs reply preserves the quoted policy reference", () => {
+  const source = "CONTRIBUTING.md", path = "AI_POLICY.md";
+  const quote = "If you use AI tools for a contribution, please follow the\n[AI policy](AI_POLICY.md) before opening a PR.";
+  const doc = candidate(1, quote, { kind: "doc", path: source });
+  const text = "Follow `AI_POLICY.md` before opening a PR with AI-assisted changes.";
+  const reply = JSON.stringify({ rules: [{ text, quote, source, scope: "repo", kind: "process" }] });
+  expect(parseDocs(reply, [doc], [source, path]).drafts.map(draft => draft.entry.claim)).toEqual([text]);
+});
+
+it.each([
+  "Do not read [AI policy](AI_POLICY.md) when submitting a PR.",
+  "Please read [AI policy](https://example.invalid/AI_POLICY.md) if you use AI in a PR.",
+  "Please read [AI policy](https://example.invalid/../../AI_POLICY.md) if you use AI in a PR.",
+  "Please read [AI policy](../AI_POLICY.md) if you use AI in a PR.",
+  "Please read [AI policy](untracked/AI_POLICY.md) if you use AI in a PR.",
+  "Please read [AI policy](AI_POLICY.md).",
+  "```md\nRead [AI policy](AI_POLICY.md) if you use AI in a PR.\n```",
+])("leaves unsupported policy references to the docs writer in %s", text => {
+  const source = "CONTRIBUTING.md";
+  const doc = candidate(1, text, { kind: "doc", path: source });
+  expect(parseDocs('{"rules":[]}', [doc], [source, "AI_POLICY.md"]).drafts).toEqual([]);
+});
+
 it("lets a verified non-global scope locate an otherwise unnamed norm", () => {
   const text = "Keep retry tests deterministic.";
   const one = observation(1, { norm: text, quote: text });

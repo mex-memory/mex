@@ -35,6 +35,8 @@ export const docWriter = `You read the contributor documentation of one reposito
 
 Keep only rules that are specific to this repository: its conventions, commands, file placement, tests, documentation, changelog or news entries, commit and pull-request format, compatibility and deprecation policy, and anything else a contribution must satisfy. Keep only rules a capable coding agent would not follow anyway without being told.
 
+Look for requirements contributors must meet to submit or request review: a human-signed agreement, an AI policy to read or follow, a disclosure or required template field, a target branch, or a named check. Write each as a separate short action with its condition and the relevant policy or template path. If the guide explicitly directs contributors to a named policy, capture that action even when you also write individual requirements from the policy. For requirements across the repository use kind "process" and scope "repo"; the evidence path is not the scope. Ask the human contributor to complete their own agreement. Skip bare reminders to follow templates or run checks that add no local requirement.
+
 Skip: generic advice, community etiquette (code of conduct, how to find or claim tickets, how to ask for help), and procedures only maintainers perform (merging, releasing, triaging, granting access).
 
 For each rule give:
