@@ -76,6 +76,16 @@ it("accepts a matching brace glob from a doc rule", () => {
   expect(parseDocs(reply, [doc], [source, fixturePath]).drafts[0]?.entry.scope).toEqual(scope);
 });
 
+it("lets a verified non-global scope locate an otherwise unnamed norm", () => {
+  const text = "Keep retry tests deterministic.";
+  const one = observation(1, { norm: text, quote: text });
+  const paths = [fixturePath, "README.md"];
+  expect(parse([one], undefined, { text, scope: ["src"] }, paths).drafts[0]?.entry.scope).toEqual(["src/**"]);
+  for (const scope of [["repo"], ["**/*"], ["src", "README.md"], ["missing/**"]]) {
+    expect(parse([one], undefined, { text, scope }, paths).drops).toEqual({ unnamed: 1 });
+  }
+});
+
 it("sorts the writer's observations and splits a large input by related kinds", () => {
   const recent = observation(1, { at: "2026-11-17T00:00:00.000Z" });
   const past = observation(2, { at: "2026-11-16T00:00:00.000Z" });

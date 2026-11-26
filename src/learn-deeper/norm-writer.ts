@@ -8,7 +8,7 @@ import { newCandidate } from "./harvest/evidence.js";
 import { readsAsComment, statesAction, squash, polarityMismatch } from "./lesson-text.js";
 import { processConfirmed } from "./prove.js";
 import { replyJson } from "./reply.js";
-import { pinnedScope } from "./scope.js";
+import { narrowsRepo, pinnedScope } from "./scope.js";
 import { findQuote, NormKind, NormScope, type Observation } from "./triage.js";
 import { WriterEntry } from "./write.js";
 import { docWriter, normWriter } from "./writer-prompts.js";
@@ -155,10 +155,11 @@ export function parseNorms(text: string, items: readonly Observation[], earlier:
     const newest = observations.at(-1)!;
     const solo = newest.stated_as_rule && newest.response !== "disputed" && newest.pull !== undefined;
     if (!extend && pulls.length < 2 && !solo || newest.response === "disputed") { drop("support"); continue; }
-    if (!namedInRepo(text, observations.flatMap(item => [item.quote, item.norm]), paths)) { drop("unnamed"); continue; }
+    const scopes = scopeFor(scope, paths);
+    if (!namedInRepo(text, observations.flatMap(item => [item.quote, item.norm]), paths) && !narrowsRepo(scopes, paths)) { drop("unnamed"); continue; }
     const members = observations.map(item => observedCandidate(item, candidates));
     const source = observations.some(item => item.pull !== undefined) ? "review" : "history";
-    const draft = toDraft(text, kind, scopeFor(scope, paths), members,
+    const draft = toDraft(text, kind, scopes, members,
       observations.map(item => ({ id: item.id, quote: item.quote })), observations, source, patternable, extend, !!refusal);
     if (draft) {
       draft.entry.lint = data.data.lint;

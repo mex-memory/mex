@@ -34,3 +34,10 @@ export function pinnedScope(input: string, paths: Iterable<string>): string | un
   }
   return foundDirectory ? directory : undefined;
 }
+
+/** The proven scope locates an area only if it leaves some pinned files outside it. */
+export function narrowsRepo(scope: readonly string[], paths: readonly string[]): boolean {
+  if (!scope.length || scope.includes("**")) return false;
+  const patterns = scope.map(globToRegExp);
+  return paths.some(path => patterns.every(pattern => !pattern.test(path)) && safePath(path));
+}
