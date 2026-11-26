@@ -44,6 +44,8 @@ Extract two sorts of observation from lines marked "maintainer":
 1. A stated expectation that applies beyond this pull request (a convention, a rule, a policy).
 2. A decision about this pull request together with the reason for it, when that reason is a policy that would apply to other pull requests. Examples of such reasons: it is a breaking change, so it waits for a major release; it is a new feature, so it goes to the next minor release or another branch; it would grow the bundle or code size; it does not belong in the core or in this package; it duplicates an existing feature; it is out of the pull request's scope; it would break compatibility with another project or runtime; it needs a test, docs or a changelog entry first. Decisions whose reason is only about this pull request's own bug or logic are not observations.
 
+In a closed PR, consider a maintainer's reason for declining the change as a possible decision even when phrased informally. Look for when the reason applies and what contributors should do. Skip closes that only report supersession, inactivity or status.
+
 Kinds:
 - placement: where code belongs (modules, layers, packages, what must stay out of a core or shared part)
 - api-design: how public APIs, options, types or names should be shaped here
