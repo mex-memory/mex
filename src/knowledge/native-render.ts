@@ -3,7 +3,7 @@
  * the generated marker, so MEX never reads it back as a source, and each item
  * carries its entry id as an HTML comment.
  */
-import type { Candidate } from "./native-select.js";
+import { nativeItem, type Candidate } from "./native-select.js";
 import { GENERATED_MARK } from "./rule-files.js";
 import { DEFAULTS_HEADING, type AgentDefaults } from "./agent-defaults.js";
 
@@ -26,10 +26,6 @@ const EVIDENCE_ORDER = ["person", "ci", "docs", "review", "mined", "observed"];
 export function byStrength(a: Candidate, b: Candidate): number {
   return EVIDENCE_ORDER.indexOf(a.entry.mex.evidence) - EVIDENCE_ORDER.indexOf(b.entry.mex.evidence)
     || a.entry.mex.id.localeCompare(b.entry.mex.id);
-}
-
-export function nativeItem(c: Candidate): string {
-  return `- ${c.entry.text.replace(/\s+/gu, " ").trim()} <!-- mex:${c.entry.mex.id} -->`;
 }
 
 function frame(format: NativeFormat, area: string): { head: string; tail: string } {
@@ -58,7 +54,7 @@ export function renderNative(format: NativeFormat, area: string, candidates: Can
   const lines: string[] = [], ids: string[] = [], dropped: string[] = [];
   let bytes = Buffer.byteLength(head + tail);
   for (const c of ordered) {
-    const line = `${nativeItem(c)}\n`;
+    const line = `${nativeItem(c.entry)}\n`;
     const size = Buffer.byteLength(line);
     if (bytes + size > CAPS[format]) { dropped.push(c.entry.mex.id); continue; }
     bytes += size;

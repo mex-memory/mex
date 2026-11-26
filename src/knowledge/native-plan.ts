@@ -19,8 +19,8 @@
 import { createHash } from "node:crypto";
 import { join, posix } from "node:path";
 import type { NativeAgent } from "./agents-in-use.js";
-import { byStrength, CODEX_FRAME_BYTES, nativeItem, PR_DECISIONS_LINE, renderNative, type NativeFormat, type Rendered } from "./native-render.js";
-import { areaOf, isLearned, type Candidate } from "./native-select.js";
+import { byStrength, CODEX_FRAME_BYTES, PR_DECISIONS_LINE, renderNative, type NativeFormat, type Rendered } from "./native-render.js";
+import { areaOf, isLearned, nativeItem, type Candidate } from "./native-select.js";
 import { claudeReadsAgentsIn, GENERATED_MARK } from "./rule-files.js";
 import { containedDirectory, readBoundedTextFile } from "./files.js";
 import { realPath } from "../record/project.js";
@@ -159,7 +159,7 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
       const id = candidate.entry.mex.id;
       const areas = [...new Set(candidate.entry.mex.scope.map(areaOf))].filter(area => !area || !isLearned(candidate.entry));
       if (!areas.length || seen.has(id)) continue;
-      entries.push({ id, level: candidate.level, areas, text: candidate.entry.text, line: nativeItem(candidate) });
+      entries.push({ id, level: candidate.level, areas, text: candidate.entry.text, line: nativeItem(candidate.entry) });
       seen.add(id);
     }
     plan.fallback = {

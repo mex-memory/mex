@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/record"
 )
 
@@ -28,11 +30,31 @@ type fallbackPlan struct {
 }
 
 // Match JavaScript's whitespace normalization in the native renderer.
-func fallbackEntryLine(text, id string) string {
+func normalizeFallbackText(text string) string {
 	parts := strings.FieldsFunc(text, func(r rune) bool {
 		return r == '\uFEFF' || unicode.IsSpace(r) && r != '\u0085'
 	})
-	return "- " + strings.Join(parts, " ") + " <!-- mex:" + id + " -->"
+	return strings.Join(parts, " ")
+}
+
+func fallbackEntryLine(text, id string) string {
+	return "- " + normalizeFallbackText(text) + " <!-- mex:" + id + " -->"
+}
+
+func matchesFallbackEntry(item fallbackEntry, entry *entries.Entry) bool {
+	if entry.Text != item.Text {
+		return false
+	}
+	if item.Line == fallbackEntryLine(entry.Text, entry.ID) {
+		return true // A plan written before compact delivery can still use the body.
+	}
+	if !entry.Learned() || slices.ContainsFunc(entry.Scope, func(scope string) bool { return scope != "**" }) {
+		return false
+	}
+	claim := normalizeFallbackText(entry.OneLine)
+	return strings.TrimRight(claim, ".!?") != claim &&
+		strings.HasPrefix(normalizeFallbackText(entry.Text), claim+" ") &&
+		item.Line == fallbackEntryLine(claim, entry.ID)
 }
 
 // A native file takes precedence even if its manifest is missing or stale:

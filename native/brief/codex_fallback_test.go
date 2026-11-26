@@ -109,3 +109,38 @@ func TestCodexFallbackRechecksPresenceScopeAndCache(t *testing.T) {
 		t.Fatal("corrupt fallback prevented the normal brief", r)
 	}
 }
+
+func TestCodexFallbackVerifiesTheCurrentLearnedClaim(t *testing.T) {
+	opts := setup(t)
+	opts.IncludeCodexFallback = true
+	put(t, opts.Checkout, "AGENTS.md", "Repository instructions.\n")
+	put(t, opts.Checkout, "package.json", `{"scripts":{"test":"unit"}}`)
+	const id = "mx_deeprelease"
+	const claim = "Use the stable branch for release fixes."
+	const reason = "The next branch is for features."
+	const body = claim + " " + reason
+	checks := "[{kind: key, role: complete, target: {file: package.json, pointer: /scripts/test}, saw: {value: unit}, files: {}}]"
+	rule := strings.Replace(entry(id, claim, "rule", "**", checks), "\n---\n"+claim, "\n---\n"+body, 1)
+	path := ".mex/learned/" + id + ".md"
+	put(t, opts.Checkout, path, rule)
+	line := fallbackEntryLine(claim, id)
+	plan := fallbackPlan{Entries: []fallbackEntry{{ID: id, Text: body, Line: line, Level: "team", Areas: []string{""}}}}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveFallback(t, opts, string(encoded))
+	if r := build(t, opts); r.CodexFallback != codexFallbackHeading+line+"\n" ||
+		len(r.NativeLoaded) != 1 || r.NativeLoaded[0].ID != id {
+		t.Fatal("missing compact learned rule or receipt", r)
+	}
+	put(t, opts.Checkout, path, strings.Replace(rule, `one_line: "`+claim+`"`, `one_line: "Use the next branch."`, 1))
+	if r := build(t, opts); r.CodexFallback != "" {
+		t.Fatal("delivered a stale claim", r)
+	}
+	put(t, opts.Checkout, path, rule)
+	put(t, opts.Checkout, "package.json", `{"scripts":{}}`)
+	if r := build(t, opts); r.CodexFallback != "" {
+		t.Fatal("delivered a claim after its check failed", r)
+	}
+}

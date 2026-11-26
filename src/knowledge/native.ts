@@ -12,7 +12,7 @@ import { parseEntry } from "./entry.js";
 import { containedDirectory, readEntryFile, personalReadGuard } from "./files.js";
 import { gateEntry } from "./gates.js";
 import { CODEX_FALLBACK, ownedByPerson, planNative } from "./native-plan.js";
-import { selectNative, type Candidate } from "./native-select.js";
+import { isLearned, nativeRuleText, selectNative, type Candidate } from "./native-select.js";
 import { writeNative, type NativeWrite } from "./native-write.js";
 import { references } from "./references.js";
 import { teamEntries } from "./team.js";
@@ -97,7 +97,8 @@ export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions
   const { selected } = selectNative(candidates, verdicts);
   const defaults = settings.registered && (rebuild.setupDefaults || settings.previous)
     ? selectAgentDefaults(project.root, { ...rebuild.setupDefaults, enabled: settings.defaultsOn && settings.on,
-      generated: selected.filter(c => c.entry.mex.scope.includes("**")).map(c => c.entry.text) })
+      generated: selected.filter(c => c.entry.mex.scope.includes("**"))
+        .map(({ entry }) => isLearned(entry) ? nativeRuleText(entry) : entry.text) })
     : undefined;
   const plan = planNative(project.root, agents, selected, settings.prDecisions, defaults?.rules, settings.on && !rebuild.sharedOnly);
   if (defaults?.rules.length && !agents.length && !defaults.report.unavailable.length) defaults.report.unavailable.push("agents without a native rule file");

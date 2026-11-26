@@ -462,7 +462,7 @@ func Build(opts Options) (Result, error) {
 		if area != "" {
 			scope = area + "/**"
 		}
-		if e.Status != "active" || e.Text != item.Text || item.Line != fallbackEntryLine(e.Text, item.ID) ||
+		if e.Status != "active" || !matchesFallbackEntry(item, e) ||
 			!contains(e.Scope, scope) || e.Source.Type == "rule-file" || strength(e) == 4 ||
 			(e.Kind != "rule" && e.Kind != "decision" && e.Kind != "pitfall" && e.Kind != "procedure" && e.Kind != "recipe") ||
 			e.Learned() && (area != "" || len(e.When) != 0) {

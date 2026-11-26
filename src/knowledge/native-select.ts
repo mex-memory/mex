@@ -25,6 +25,24 @@ export function isLearned({ mex }: KnowledgeEntry): boolean {
   return mex.source.producer === "learn-deeper" || mex.id.startsWith("mx_deep");
 }
 
+function learnedRepoWide(entry: KnowledgeEntry): boolean {
+  return isLearned(entry) && entry.mex.scope.every(scope => scope === "**");
+}
+
+const oneLine = (text: string) => text.replace(/\s+/gu, " ").trim();
+
+/** The producer stores the claim first and appends reasons to the body. */
+export function nativeRuleText(entry: KnowledgeEntry): string {
+  const text = oneLine(entry.text);
+  if (!learnedRepoWide(entry)) return text;
+  const claim = oneLine(entry.mex.one_line);
+  return /[.!?]$/u.test(claim) && text.startsWith(claim + " ") ? claim : text;
+}
+
+export function nativeItem(entry: KnowledgeEntry): string {
+  return `- ${nativeRuleText(entry)} <!-- mex:${entry.mex.id} -->`;
+}
+
 export interface Selection { selected: Candidate[]; skipped: Array<{ id: string; reason: string }>; }
 
 export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<string, Verdict> = new Map()): Selection {
@@ -43,7 +61,7 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
     else if (!m.scope.every(isBroad)) skip(c, "scoped to files, not an area");
     else if (verdict === "broken" || verdict === "changed") skip(c, `verdict is ${verdict}`);
     else if ((isLearned(c.entry) || m.checks.length) && verdict !== "held") skip(c, "current checks have not held");
-    else if (c.entry.text.length > MAX_NATIVE_TEXT) skip(c, "too long for a rule file");
+    else if ((learnedRepoWide(c.entry) ? nativeRuleText(c.entry).length : c.entry.text.length) > MAX_NATIVE_TEXT) skip(c, "too long for a rule file");
     else selected.push(c);
   }
   const kept = withinLearnedBudget(selected, skip);
@@ -65,7 +83,7 @@ const textTokens = (text: string) => Math.ceil(text.length / 4);
 
 /** Keep the best-supported learned repo-wide entries within one budget across levels; stop at the first that doesn't fit. */
 function withinLearnedBudget(selected: Candidate[], skip: (c: Candidate, reason: string) => void): Candidate[] {
-  const repoWide = (c: Candidate) => isLearned(c.entry) && c.entry.mex.scope.every(scope => scope === "**");
+  const repoWide = (c: Candidate) => learnedRepoWide(c.entry);
   const ranked = selected.filter(repoWide).map(c => ({ c, support: learnedSupport(c.entry),
     proven: c.entry.mex.checks.some(check => check.kind === "fixture") ? 0 : 1, kind: kindRank(c.entry.mex.kind) }))
     .sort((a, b) => b.support - a.support || a.proven - b.proven || a.kind - b.kind

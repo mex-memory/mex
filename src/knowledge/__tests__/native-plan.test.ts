@@ -104,6 +104,23 @@ describe("Copilot's path-scoped instructions", () => {
 });
 
 describe("learned routing", () => {
+  it("uses the complete claim in native files and the fallback plan", () => {
+    const claim = "Open release fixes against the stable branch.";
+    const body = `${claim} ${"The release branch is maintained independently. ".repeat(16).trim()}`;
+    const learned = team("mx_deeprelease");
+    learned.entry.text = body;
+    learned.entry.mex.one_line = claim;
+    const { selected } = selectNative([learned], new Map([["team/mx_deeprelease", "held"]]));
+    const root = repo({ "AGENTS.md": "Repository instructions." });
+    const plan = planNative(root, ["claude-code", "codex"], selected, false, [], true);
+    const line = `- ${claim} <!-- mex:mx_deeprelease -->`;
+    expect(plan.files.map(file => file.ids)).toEqual([["mx_deeprelease"]]);
+    expect(plan.files[0]?.text).toContain(line + "\n");
+    expect(plan.files[0]?.text).not.toContain("maintained independently");
+    expect(plan.fallback?.entries).toEqual([{ id: "mx_deeprelease", level: "team", areas: [""], text: body, line }]);
+    expect(learned.entry.text).toBe(body);
+  });
+
   it("adds exactly one Decisions instruction when the trial is on", () => {
     const root = repo({ "CLAUDE.md": "Existing instructions.\n" });
     const agents = ["codex", "claude-code", "copilot"] as const;
