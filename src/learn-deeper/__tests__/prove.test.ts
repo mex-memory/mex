@@ -66,6 +66,12 @@ function clusterOf(candidates: Candidate[], _lesson?: string): Cluster {
   return draftSupport(candidates, [], source, "fixture");
 }
 
+function contributorDoc(text: string): Candidate {
+  return { id: "doc:CONTRIBUTING.md#commits", kind: "doc", link: "CONTRIBUTING.md", hash: sha(text), nodeIds: [], at: "2026-05-01T00:00:00Z",
+    path: "CONTRIBUTING.md", text, document: { headings: ["Contributing", "Commits"], consumerUsage: false }, reviewers: [],
+    weights: { actedOn: false, familiar: false, guidelineLink: false, generalising: false, smallPr: false, hotUnknown: false }, signal: "weak" };
+}
+
 function draft(cluster: Cluster, over: Partial<WriterEntry> = {}): WriterEntry {
   const id = cluster.members[0]!.candidate.id;
   const everyone = cluster.members.filter(member => member.candidate.text.includes(loggingClaim)).slice(0, 4)
@@ -85,6 +91,13 @@ function draft(cluster: Cluster, over: Partial<WriterEntry> = {}): WriterEntry {
 const context = (over: Partial<ProofContext> = {}): ProofContext => ({
   tree: tree(HEAD), check: { projectPath: "." }, patterns: fakePatterns(), history: async () => "", ...over,
 });
+
+function proveDoc(source: string, claim: string, quote: string) {
+  const doc = contributorDoc(source);
+  const cluster = clusterOf([doc]);
+  return proveEntry(draft(cluster, { route: "process-rule", when: [], fix: undefined, scope: ["**"], claim, why: "",
+    clauses: [{ text: claim, quotes: [{ id: doc.id, quote }] }] }), cluster, context());
+}
 
 it("keeps a quote that runs over a line break, as the gate will look for it", () => {
   const proof = (text: string, quote: string) => ({ cluster: { members: [{ candidate: { id: "doc:CONTRIBUTING.md#style", text } }] },
@@ -467,17 +480,66 @@ describe("proving a learned rule", () => {
   });
 
   it("anchors a doc lesson to its quoted passage, complete when the doc is the only evidence", async () => {
-    const text = "Commit messages start with a conventional prefix like fix: or feat:.";
-    const doc: Candidate = { id: "doc:CONTRIBUTING.md#commits", kind: "doc", link: "CONTRIBUTING.md", hash: sha(text), nodeIds: [], at: "2026-05-01T00:00:00Z",
-      path: "CONTRIBUTING.md", text: text.replace("with a", "with\n  a"), document: { headings: ["Contributing", "Commits"], consumerUsage: false }, reviewers: [],
-      weights: { actedOn: false, familiar: false, guidelineLink: false, generalising: false, smallPr: false, hotUnknown: false }, signal: "weak" };
-    const cluster = clusterOf([doc], "Commit messages use conventional prefixes.");
-    const proof = await proveEntry(draft(cluster, { route: "process-rule", when: [], fix: undefined, scope: ["**"], claim: "Commit messages start with a conventional prefix.",
-      clauses: [{ text: "Commit messages start with a conventional prefix.", quotes: [{ id: doc.id, quote: "Commit messages start with a conventional prefix" }] }] }), cluster, context());
+    const proof = await proveDoc("Commit messages start with\n  a conventional prefix like fix: or feat:.",
+      "Commit messages start with a conventional prefix.", "Commit messages start with a conventional prefix");
     const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
     if ("dropped" in routed) throw new Error(routed.dropped);
     expect(routed.proposal.checks!.find(check => check.kind === "quote")).toMatchObject({ role: "complete", target: { file: "CONTRIBUTING.md", heading: "Commits" } });
     expect(routed.proposal.source.type).toBe("docs");
+  });
+
+  it("stores the whole sentence that rescues a clipped doc quote and anchors the document check to it", async () => {
+    const sentence = "- Run the release check\n  only after all artifacts are signed.";
+    const source = `## Publishing\n\n${sentence} Keep the manifest nearby.\n- Do not upload debug builds.`;
+    const claim = "Run the release check only after all artifacts are signed.";
+    const proof = await proveDoc(source, claim, "Run the release check");
+    expect(proof.dropped).toBeUndefined();
+    expect(proof.quotes.map(item => item.quote)).toEqual([sentence]);
+    const routed = routeEntry(proof, { host: "github.com", slug: "acme/app" }, { id: "best", version: "test" });
+    if ("dropped" in routed) throw new Error(routed.dropped);
+    expect(routed.proposal.source.quote).toBe(`- ${claim}`);
+    expect(routed.proposal.checks).toContainEqual(expect.objectContaining({ kind: "quote", role: "complete",
+      target: expect.objectContaining({ exact: `- ${claim}` }),
+    }));
+  });
+
+  it("tries the containing paragraph when a whole sentence still clips a follow-on qualifier", async () => {
+    const paragraph = "Use the shared cache. But only for tagged builds.";
+    const proof = await proveDoc(`${paragraph}\n\nDo not cache the test output.`,
+      "Use the shared cache, but only for tagged builds.", "Use the shared cache.");
+    expect(proof.dropped).toBeUndefined();
+    expect(proof.quotes.map(item => item.quote)).toEqual([paragraph]);
+  });
+
+  it("ignores a restriction in the next list item at proof", async () => {
+    const quote = "Write release notes for API changes.";
+    const proof = await proveDoc(`1. ${quote}\n2. Never include API fixture data in release notes.`, quote, quote);
+    expect(proof.dropped).toBeUndefined();
+    expect(proof.quotes.map(item => item.quote)).toEqual([quote]);
+  });
+
+  it.each([
+    ["Run the smoke tests only on signed builds.", "Run the smoke tests.", "Run the smoke tests"],
+    ["Run the smoke tests only on signed builds.", "Run the smoke tests only on preview builds.", "Run the smoke tests"],
+    ["Run the smoke tests only on signed builds, except on Fridays.", "Run the smoke tests only on signed builds.", "Run the smoke tests"],
+    ["Do not run the smoke tests on signed builds.", "Run the smoke tests on signed builds.", "run the smoke tests on signed builds."],
+    ["Use the shared cache. Unless the worker is public.", "Use the shared cache.", "Use the shared cache."],
+  ])("drops a quote from %j when the claim loses or changes its restriction", async (source, claim, quote) => {
+    const proof = await proveDoc(source, claim, quote);
+    expect(proof.dropped).toBe("the claim isn't supported by a verbatim quote");
+  });
+
+  it("keeps a restriction in a quote that already carries the whole sentence", async () => {
+    const sentence = "Run the smoke tests only on signed builds.";
+    const proof = await proveDoc(sentence, sentence, sentence);
+    expect(proof.dropped).toBeUndefined();
+    expect(proof.quotes.map(item => item.quote)).toEqual([sentence]);
+  });
+
+  it("does not rescue a quote whose full restriction would exceed the saved quote limit", async () => {
+    const sentence = "Run the release check only after the release owner has signed every artifact and the staging registry confirms every checksum against the manifest committed with the release.";
+    const proof = await proveDoc(sentence, sentence, "Run the release check");
+    expect(proof.dropped).toBe("the claim isn't supported by a verbatim quote");
   });
 
   it("counts later commits that added a literal", () => {

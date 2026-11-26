@@ -107,7 +107,7 @@ function* quoteContexts(quote: string, source: string, exact: boolean) {
     const next = ends[tail + 1];
     const clipped = RESTRICTION.test(source.slice(head.start, at)) || RESTRICTION.test(suffix)
       || next !== undefined && qualifies(source.slice(next.start, next.end), found);
-    yield { clipped };
+    yield { clipped, sentence: head === lastSentence ? head : undefined, block: first === last ? first : undefined };
   }
 }
 
@@ -115,6 +115,35 @@ function* quoteContexts(quote: string, source: string, exact: boolean) {
 export function unclippedQuote(quote: string, source: string, exact = false): boolean {
   for (const { clipped } of quoteContexts(quote, source, exact)) if (!clipped) return true;
   return false;
+}
+
+/** Only consider a containing sentence, then a containing paragraph or list item. */
+export function quoteExpansions(quote: string, source: string): string[] {
+  const sentences = new Set<string>(), paragraphs = new Set<string>();
+  const text = ({ start, end }: Span) => source.slice(start, end).trim();
+  for (const { clipped, sentence, block } of quoteContexts(quote, source, false)) {
+    if (!clipped || !block) continue;
+    if (sentence) sentences.add(text(sentence));
+    paragraphs.add(text(block));
+  }
+  const original = squash(quote);
+  return [...new Set([...sentences, ...paragraphs])].filter(excerpt => squash(excerpt) !== original);
+}
+
+/** Require the complete restricted wording, with room to fold explicit follow-ons into one sentence. */
+export function keepsRestrictions(claim: string, excerpt: string): boolean {
+  const wording = (text: string) => {
+    // Normalize prose spacing and code delimiters while preserving code operands byte for byte.
+    const code: string[] = [];
+    const prose = squash(text.replace(INLINE_CODE, (span, delimiter: string) => {
+      code.push(span.slice(delimiter.length, -delimiter.length));
+      return "`code`";
+    }).replace(new RegExp(LIST.source, "gmu"), ""))
+      .replace(/[.,;]\s+(but\s+only|unless)\b/giu, (_, qualifier: string) => " " + qualifier.toLowerCase())
+      .replace(/\.$/u, "");
+    return JSON.stringify([prose, code]);
+  };
+  return wording(claim) === wording(excerpt);
 }
 
 // An entry is an instruction an agent can follow. A claim that only describes a trap ("X does not cover

@@ -15,6 +15,7 @@
  * A pattern that fails stays out: the entry is still useful as prose, and a weak pattern is never shipped.
  */
 import { globToRegExp } from "../file-index/glob.js";
+import { KNOWLEDGE_LIMITS, sourceQuoteWordCount } from "../knowledge/entry.js";
 import { checkPatterns, type PatternCandidate } from "../knowledge/pattern-check.js";
 import type { GateContext } from "../knowledge/gate.js";
 import { sanitizeText } from "../knowledge/gates.js";
@@ -22,9 +23,9 @@ import { references, type References } from "../knowledge/references.js";
 import { linterRuleEnabled } from "./linter-config.js";
 import { draftSupport, type DraftSupport } from "./draft-evidence.js";
 import { command, type PatternStage, type PinnedTree } from "./git.js";
-import { safePath } from "./harvest/evidence.js";
+import { safePath, safeRaw } from "./harvest/evidence.js";
 import type { Candidate } from "./harvest/types.js";
-import { polarityMismatch, squash, unclippedQuote, readsAsComment, statesAction } from "./lesson-text.js";
+import { keepsRestrictions, polarityMismatch, quoteExpansions, readsAsComment, squash, statesAction, unclippedQuote } from "./lesson-text.js";
 import { pinnedScope } from "./scope.js";
 import { evidencePairs, type EvidencePair, type WriterEntry } from "./write.js";
 
@@ -103,9 +104,20 @@ export function quoteChecks(draft: WriterEntry, cluster: DraftSupport) {
       const quote = squash(rawQuote);
       const cited = quote.length >= 4 ? (byId.get(citation.id) ?? []).filter(({ text }) => text.includes(quote)) : [];
       const eligible = !polarityMismatch(clause.text, quote) && cited.some(({ raw }) => unclippedQuote(rawQuote, raw));
+      // Store the checked excerpt whole so the saved quote and the document check keep its restrictions.
+      const expanded = !eligible && cluster.source === "docs" ? cited.map(({ raw }) =>
+        quoteExpansions(rawQuote, raw).find(excerpt => {
+          const normalized = squash(excerpt);
+          return normalized.length <= KNOWLEDGE_LIMITS.textCharacters && sourceQuoteWordCount(normalized) <= KNOWLEDGE_LIMITS.sourceQuoteWords
+            && safeRaw(excerpt) === excerpt && unclippedQuote(excerpt, raw, true)
+            && !polarityMismatch(clause.text, normalized) && keepsRestrictions(draft.claim, excerpt);
+        }))
+        .find(excerpt => excerpt !== undefined) : undefined;
+      const checked = eligible ? rawQuote : expanded;
       // Exact proof uses the original text so whitespace inside a code operand cannot change meaning.
-      const exact = eligible && clause.text.trim() === rawQuote && cited.some(({ raw }) => unclippedQuote(rawQuote, raw, true));
-      return { citation, found: cited.length > 0, exact, question: eligible ? { clause: clause.text, quote: rawQuote } : undefined };
+      const exact = checked === clause.text.trim() && (expanded !== undefined || cited.some(({ raw }) => unclippedQuote(rawQuote, raw, true)));
+      return { citation: expanded === undefined ? citation : { ...citation, quote: expanded }, found: cited.length > 0, exact,
+        question: checked === undefined ? undefined : { clause: clause.text, quote: checked } };
     }),
   }));
 }

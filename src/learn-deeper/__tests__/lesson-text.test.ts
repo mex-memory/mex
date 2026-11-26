@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { unclippedQuote } from "../lesson-text.js";
+import { keepsRestrictions, unclippedQuote } from "../lesson-text.js";
 
 describe("quote restrictions", () => {
   it.each([
@@ -48,4 +48,10 @@ describe("quote restrictions", () => {
   it("still rejects a quotation inside a word", () => {
     expect(unclippedQuote("test the build", "Retest the build.")).toBe(false);
   });
+});
+
+it("allows different inline code delimiters while keeping the operand's exact text", () => {
+  const excerpt = "- Use ``cache   key`` only in offline tests.";
+  expect(keepsRestrictions("Use `cache   key` only in offline tests.", excerpt)).toBe(true);
+  expect(keepsRestrictions("Use `cache key` only in offline tests.", excerpt)).toBe(false);
 });
