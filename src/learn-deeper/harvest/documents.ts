@@ -14,10 +14,16 @@ const excludedDocs = {
   files: /^(?:security|support|authors?|contributors?)$/iu,
 };
 const docName = (name: string) => name.replace(/[._ -]/gu, "");
+const aiPolicy = /^(?:ai|llm)(?:[._ -](?:contribution|usage|use))?[._ -]policy$/iu;
 const guides = /^(?:contributing|development|developing|architecture|maintaining|hacking|(?:code[-_. ])?style|conventions|testing|release[-_. ]process|building[-_. ]from[-_. ]source|developer[-_. ]guide|maintainer[-_. ]guide|getting[-_. ]started[-_. ]developing)(?:[._-][^/]*)?$/iu;
 const adrHeading = /\b(?:alternatives?|considered options?|options considered|rejected|consequences?|decisions?)\b/iu;
 const contributor = /\b(?:contribut\w*|develop(?:ment|ing|ers?)|architecture|maintain\w*|building from source|local setup|running tests|testing|hacking|release process|style|conventions)\b/iu;
 const consumer = /\b(?:install(?:ation|ing)?|quick[- ]?start|usage|using the package|getting started|examples?|api reference)\b/iu;
+
+export function aiPolicyPath(path: string): boolean {
+  const name = posix.basename(path);
+  return prose.test(name) && aiPolicy.test(name.replace(prose, ""));
+}
 
 export function documentPathKind(path: string): DocKind | "heading" | undefined {
   if (!safePath(path) || !prose.test(path)) return undefined;
@@ -27,12 +33,13 @@ export function documentPathKind(path: string): DocKind | "heading" | undefined 
     || /^(?:agents(?:\.override)?|claude(?:\.local)?|gemini|copilot-instructions)$/iu.test(name)
     || /(?:^|\/)\.(?:cursor|claude|mex)\/|(?:^|\/)\.github\/instructions\//iu.test(path)
     || segments.some(part => ["node_modules", "vendor"].includes(part.toLowerCase()))) return undefined;
-  if (templatePath.test(path) || segments[0] === ".github" && segments.length === 2 && /^contributing/iu.test(name)) return "doc";
+  const policy = aiPolicyPath(path);
+  if (templatePath.test(path) || segments[0] === ".github" && segments.length === 2 && (policy || /^contributing/iu.test(name))) return "doc";
   if (segments.some(part => part.startsWith("."))) return undefined;
   if (excludedDocs.files.test(docName(name))
     || [...segments.slice(0, -1), name].some(part => excludedDocs.sections.test(docName(part)))) return undefined;
   if (/(?:^|\/)(?:adrs?|decisions|rfcs)\//iu.test(path) || /adr/iu.test(name)) return "adr";
-  if (guides.test(name) || /^contributing/iu.test(name)) return "doc";
+  if (policy || guides.test(name) || /^contributing/iu.test(name)) return "doc";
   if (/(?:^|\/)docs?\//iu.test(path)) return contributor.test(path.replace(prose, "").replace(/[\/._-]+/gu, " ")) ? "doc" : "heading";
   if (/^readme$/iu.test(name)) return "doc";
 }
@@ -94,6 +101,7 @@ export function documentCandidates(point: HarvestPoint, kind: DocKind, raw: stri
   const used = new Set<string>();
   const output: Candidate[] = [];
   const readme = /^readme$/iu.test(posix.basename(path).replace(prose, ""));
+  const policy = aiPolicyPath(path);
   const hasContributorSection = tree.some(heading => contributor.test(heading.name));
   const title = tree[0]?.level === 1 ? tree[0].name : "";
   const slots = [{ level: 0, name: "", start: 0, end: 0 }, ...tree];
@@ -102,7 +110,7 @@ export function documentCandidates(point: HarvestPoint, kind: DocKind, raw: stri
     if (heading.level) stack.push(heading);
     const names = stack.map(item => item.name);
     const body = raw.slice(heading.end, slots[i + 1]?.start ?? raw.length).trim();
-    const consumerUsage = names.some(name => consumer.test(name));
+    const consumerUsage = !policy && names.some(name => consumer.test(name));
     const base = heading.name ? slug(heading.name) : "intro";
     let seen = counts.get(base) ?? 0;
     let anchor = seen ? `${base}-${seen}` : base;
