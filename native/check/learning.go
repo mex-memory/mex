@@ -66,6 +66,13 @@ func (ev *Evaluator) scopeCheck(c Check) CheckResult {
 		}
 		return CheckResult{Status: Floor, Reason: "no current file proves the scope"}
 	}
+	// An exact file is checked on disk: a rename or delete must not wait for the
+	// file index to catch up, or recall and the check stage hold a stale rule.
+	if glob := str(c.Target, "glob"); safeRelative(glob) && !strings.ContainsAny(glob, "*?[]{}") {
+		if r := ev.files.read(glob); errors.Is(r.err, errMissing) {
+			return CheckResult{Status: Gone, Reason: glob + " no longer exists", Now: 0}
+		}
+	}
 	ix, ok := ev.index.(interface {
 		PathsMatching(string, int) ([]string, bool, error)
 	})

@@ -2,6 +2,8 @@ package check
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -89,6 +91,33 @@ func TestLearnedScopeAndPatternBaselines(t *testing.T) {
 				t.Fatalf("want %s: %+v", tc.want, r)
 			}
 		})
+	}
+}
+
+func TestLearnedExactScopeReadsTheDisk(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "src/context.ts", "export const context = 1\n")
+	ix := &testScopeIndex{fakeIndex: &fakeIndex{counts: map[string]int{}}, paths: []string{"src/context.ts"}}
+	ev := evaluator(t, root)
+	ev.UseIndex(ix)
+	scope, err := ev.Record("scope", Complete, map[string]any{"glob": "src/context.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Entry{Status: "active", Checks: []Check{scope}}
+	if r := ev.Evaluate(e); r.Verdict != Held {
+		t.Fatalf("the file is there: %+v", r)
+	}
+	// The team renames the file; the index hasn't caught up and still lists it.
+	write(t, root, "src/ctx.ts", "export const context = 1\n")
+	if err := os.Remove(filepath.Join(root, "src", "context.ts")); err != nil {
+		t.Fatal(err)
+	}
+	// Each check run starts a fresh evaluator, as `mex check`, recall and the hook do.
+	ev = evaluator(t, root)
+	ev.UseIndex(ix)
+	if r := ev.Evaluate(e); r.Verdict != Broken {
+		t.Fatalf("a renamed exact scope must not hold from the index: %+v", r)
 	}
 }
 
