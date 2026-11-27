@@ -96,7 +96,8 @@ it("prints the normal estimate and measured source counts through the non-intera
   const usage = details.find(line => line.startsWith("Usage: "))!;
   const amounts = [...usage.matchAll(/\d[\d,]+/gu)].map(match => Number(match[0].replaceAll(",", "")));
   expect(amounts[0]).toBeGreaterThan(0);
-  expect(amounts[1]).toBe(Math.floor(1.5 * amounts[0]!));
+  expect(amounts[1]).toBeGreaterThan(Math.floor(1.5 * amounts[0]!));
+  expect(usage).toContain("(estimated) · it pauses before a call that may exceed");
   expect(details).toContain("What it found: Most of the rule language we counted was in contributor docs.");
   expect(details).toContain("What it reads: 5 pull requests (reviews, discussions, descriptions), 1 contributor doc, 10 closed issues · last 18 months");
 

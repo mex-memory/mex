@@ -537,8 +537,9 @@ it("estimates each v2.2 stage and has no baseline spend for an empty run", () =>
   const details = estimateHarvest(forecastCounts({ merged: 48, doc: 17 }), "claude");
   const empty = estimateHarvest({}, "codex");
   expect(Object.values(empty).every(value => value === 0)).toBe(true);
-  expect([details.triage, details.writer, details.documents, details.pattern, details.gate].every(value => value > 0)).toBe(true);
-  expect(details.total).toBe(details.triage + details.writer + details.documents + details.pattern + details.gate);
+  expect([details.triage, details.writer, details.documents, details.pattern, details.patternRepair, details.gate].every(value => value > 0)).toBe(true);
+  expect(details.total).toBe(details.triage + details.writer + details.documents + details.pattern + details.patternRepair + details.gate);
+  expect(details.ceiling).toBe(Math.floor(details.total * 1.5));
   expect(details.total).toBeLessThan(DEFAULT_HARVEST_BUDGET);
 });
 

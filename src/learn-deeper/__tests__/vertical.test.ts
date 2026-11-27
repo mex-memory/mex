@@ -173,7 +173,7 @@ it("quotes the ceiling before any model call, accounts for doc writing and evide
   } } }));
   registerJobKind(createLearnKind({ model }));
   const confirm = vi.fn(async (lines: readonly string[], details: readonly string[] = []) => {
-    expect(details.join("\n")).toMatch(/Usage: about [\d,]+ tokens.*pauses and asks at [\d,]+/u);
+    expect(details.join("\n")).toMatch(/Usage: about [\d,]+ tokens.*\(estimated\).*may exceed the [\d,]+ token ceiling/u);
     expect(lines.join("\n")).toContain("private repo");
     expect(model).not.toHaveBeenCalled();
     return true;
@@ -184,7 +184,10 @@ it("quotes the ceiling before any model call, accounts for doc writing and evide
   try {
     const job = jobRow(writer), plan = Plan.parse(JSON.parse(job.params));
     expect(job.project_id).toBe(result.projectId);
-    expect(plan.ceiling).toBe(Math.floor(plan.estimate * 1.5));
+    const usage = confirm.mock.calls[0]![1]?.find(line => line.startsWith("Usage:"));
+    expect(usage).toContain(`about ${plan.estimate.toLocaleString("en-US")} tokens`);
+    expect(usage).toContain(`${plan.ceiling.toLocaleString("en-US")} token ceiling`);
+    expect(plan.ceiling).toBeGreaterThan(Math.floor(plan.estimate * 1.5));
     const done = await advance(writer, job);
     expect(done, String(done.reason)).toMatchObject({ state: "done", results: 1, tokens_used: 2400 });
     expect(state(done).v2.counts).toMatchObject({ "tokens.docs": 1200, "tokens.gate": 1200, saved: 1 });

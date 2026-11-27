@@ -176,7 +176,8 @@ it("checks a waiting rule from pinned evidence only after consent and stages the
       if (keys.length === 1) expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
       return keys.shift()!;
     }, model: model as never });
-  expect(lines.join(" ").replace(/ +/gu, " ")).toMatch(/About 32,000 tokens, estimated/u);
+  const screen = lines.join(" ").replace(/ +/gu, " ");
+  expect(screen).toMatch(/About 32,000 tokens, estimated\. The ceiling is 48,000 tokens/u);
   expect(model).toHaveBeenCalledTimes(1);
   expect(result).toEqual({ kept: 1, trials: 0, waiting: 0, dropped: 0 });
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("active");

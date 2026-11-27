@@ -31,14 +31,14 @@ export async function previewHarvest(plan: HarvestPlan, deps: HarvestDeps, curso
     cursor = batch.cursor;
   }
   const census = censusFor(candidates, tree);
-  const estimate = estimateCensus(census, plan.agent).total;
-  return { ...plan, census, estimate, ceiling: quoteCeiling(estimate), gaps: [...gaps] };
+  const { total: estimate, ceiling } = estimateCensus(census, plan.agent);
+  return { ...plan, census, estimate, ceiling, gaps: [...gaps] };
 }
 
 const FORGE_PER_BATCH = 4;
 const LOCAL_PER_BATCH = 2;
 const SEARCHES_PER_BATCH = 6;
-// The token budget is what the person agreed to, so it should end a run before this does. A tenth of GitHub's hourly
+// The harvest budget should end a run before this does. A tenth of GitHub's hourly
 // allowance covers the searches and detail reads of a long window, with room for permission checks and blobs.
 const DEFAULT_REQUEST_BUDGET = 512;
 const FORGE_BUDGET_GAP = "Learning reached its forge request budget.";
@@ -149,9 +149,10 @@ export async function planHarvest(options: HarvestOptions, deps: HarvestDeps = {
       mode !== "weekly" || !cursor?.sources[source] || point.at > cursor.sources[source]!.newest.at).length;
   };
   const projected = estimateHarvest(forecastCounts({ merged: count("merged"), closed: count("closed"), issue: options.issues ? count("issue") : 0,
-    revert: localCount("revert"), cause: localCount("cause"), adr: localCount("adr"), doc: localCount("doc") }), options.agent).total;
-  const estimate = Math.min(projected, budget);
-  return { ...normalized, id: randomUUID(), mode, budget, requestBudget, defaultHead, inventory, gaps: gaps.list(), estimate, ceiling: quoteCeiling(estimate) };
+    revert: localCount("revert"), cause: localCount("cause"), adr: localCount("adr"), doc: localCount("doc") }), options.agent);
+  const estimate = Math.min(projected.total, budget);
+  const ceiling = Math.min(projected.ceiling, quoteCeiling(budget));
+  return { ...normalized, id: randomUUID(), mode, budget, requestBudget, defaultHead, inventory, gaps: gaps.list(), estimate, ceiling };
 }
 
 function scanFor(plan: HarvestPlan, cursor: HarvestCursor): HarvestScan {

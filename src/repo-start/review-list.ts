@@ -167,7 +167,7 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   const next = context.keys ?? (() => readKey());
   const rewrites = new Map<string, string>(), drops = new Set<string>();
   const canCheck = items.some(item => item.entry.mex.status === "proposed");
-  const checkHint = `v check this rule against the code (about ${VERIFY_ESTIMATE / 1000}k tokens)`;
+  const checkHint = `v check this rule against the code (${VERIFY_ESTIMATE / 1000}k tokens estimated)`;
   const summary = trials.size ? "Tick to keep a rule permanently. Unticked trials stay live on Enter."
     : "Tick the rules your agents should get.";
   const guidance = trialItems.some(item => broad.has(item))

@@ -226,7 +226,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       }
       return;
     }
-    // A preview without an installed runner uses the higher-overhead estimate.
+    // A preview without an installed runner uses Codex, which has measured learning runs.
     let agent: LearningPlan["agent"] = selected?.id ?? "codex";
     const head = await revision(root);
     const tree = head && await PinnedTree.open(root, head);
@@ -240,10 +240,10 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
     const scanned = await planHarvest({ checkout: root, head, source: access.source, agent, ...window, issues }, harvestDeps, cursor);
     let harvest = await previewHarvest(scanned, harvestDeps, cursor);
     const census = harvest.census!;
-    // The census doesn't depend on the agent, so picking another one only reprices it.
+    // Reprice the preview when the user chooses a different runner.
     const inventoryFor = (chosen: LearningPlan["agent"]) => {
-      const estimate = estimateCensus(census, chosen).total;
-      return { ...harvest, agent: chosen, estimate, ceiling: quoteCeiling(estimate) };
+      const { total: estimate, ceiling } = estimateCensus(census, chosen);
+      return { ...harvest, agent: chosen, estimate, ceiling };
     };
     const pulls = harvest.inventory.bands.reduce((sum, band) => sum + (band.source === "issue" ? 0 : band.count), 0);
     const closedIssues = harvest.inventory.bands.reduce((sum, band) => sum + (band.source === "issue" ? band.count : 0), 0);
@@ -335,7 +335,7 @@ export async function offerLearning(options: OfferOptions): Promise<void> {
       ["What it found", censusLine(census)],
       ["Agent", `${nameOfAgent} · ${models}`],
       ["Time", `about ${duration} (estimated) · in the background`],
-      ["Usage", `about ${count(estimate)} tokens of your plan (estimated) · it pauses and asks at ${count(ceiling)} tokens${share ? ` · ${share}` : ""}`],
+      ["Usage", `about ${count(estimate)} tokens of your plan (estimated) · it pauses before a call that may exceed the ${count(ceiling)} token ceiling${share ? ` · ${share}` : ""}`],
       ["Rules", "each is checked against the code, then goes live in your sessions as a trial · ones agents keep ignoring are dropped · nothing is shared"],
       ["Afterwards", plan.refresh
         ? "looks for new reviews every 7–14 days when idle, within 3% of your plan · `mex learn --no-weekly` for this run only"
@@ -381,7 +381,13 @@ async function raiseCeiling(root: string, project: string, write: Print): Promis
   const writer = openRecord();
   let spent: number;
   try { spent = recordedModelSpend(writer, job.id); } finally { writer.close(); }
-  const ceiling = Math.max(spent, plan.ceiling) + quoteCeiling(plan.estimate);
+  const harvestCeiling = plan.harvest?.ceiling;
+  // Recover the original estimate from the saved floor(1.5 × estimate) so
+  // repeated raises still add the original allowance, including procedures.
+  const increment = typeof harvestCeiling === "number" && Number.isSafeInteger(harvestCeiling) && harvestCeiling >= 0
+    ? quoteCeiling(Math.ceil(harvestCeiling / 1.5) + (plan.procedures ? procedureEstimate(plan.agent) : 0))
+    : quoteCeiling(plan.estimate);
+  const ceiling = Math.max(spent, plan.ceiling) + increment;
   if (!await askEnter([`Raise the learning ceiling from ${count(plan.ceiling)} to ${count(ceiling)} tokens?`,
     `This job has already used or reserved ${count(spent)} tokens. It will continue from its saved batch.`], [], write)) return;
   await import("./job.js");

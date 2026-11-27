@@ -1,7 +1,7 @@
 import { tokenCount } from "../../model-runner/consent.js";
 import { ruleFormat } from "../../knowledge/rule-files.js";
 import type { PinnedTree } from "../git.js";
-import { promptEstimate } from "../plan.js";
+import { promptEstimate, quoteCeiling } from "../plan.js";
 import { maintainerLine, packUnits, prUnits, renderUnits } from "../pr-units.js";
 import type { Candidate, CandidateCounts, HarvestEvidenceSize, HarvestOptions } from "./types.js";
 
@@ -87,8 +87,8 @@ export function packDocumentSources(docs: readonly Candidate[]): Candidate[][] {
   return batches;
 }
 
-function estimateStages(census: Census, agent: HarvestOptions["agent"]) {
-  // The sampled Codex runs paid around 16K tokens per no-tools call.
+function ceilingStages(census: Census, agent: HarvestOptions["agent"]) {
+  // Keep the original allowances so a calibrated quote cannot change which calls fit.
   const overhead = agent === "codex" ? 16_000 : tokenCount(promptEstimate("", agent, 0));
   const counts = census.candidates;
   const inputs = Object.values(counts).reduce((total, count) => total + (count ?? 0), 0) - (counts.doc ?? 0);
@@ -102,12 +102,32 @@ function estimateStages(census: Census, agent: HarvestOptions["agent"]) {
     * overhead + observations * 155 + norms * 175 : 0;
   const documents = census.docBatches * overhead + input(census.documentBytes) + docs * 200;
   const patternBatches = Math.ceil(withPairs / PATTERNS_PER_BATCH);
-  const pattern = (patternBatches + Math.ceil(patternBatches / 2)) * overhead + withPairs * 1_100;
+  const pattern = patternBatches * overhead + withPairs * 1_100;
+  const patternRepair = Math.ceil(patternBatches / 2) * overhead;
   const gate = Math.ceil((norms + docs) / ESTIMATED_GATE_BATCH) * overhead + (norms + docs) * 380;
-  return { triage, writer, documents, pattern, gate, total: triage + writer + documents + pattern + gate };
+  return { triage, writer, documents, pattern, patternRepair, gate };
 }
 
-export const estimateCensus = estimateStages;
+function stageTotal(stages: ReturnType<typeof ceilingStages>): number {
+  return stages.triage + stages.writer + stages.documents + stages.pattern + stages.patternRepair + stages.gate;
+}
+
+export function estimateCensus(census: Census, agent: HarvestOptions["agent"]) {
+  const allowances = ceilingStages(census, agent);
+  const ceiling = quoteCeiling(stageTotal(allowances));
+  // Two sets of Codex runs calibrate these stages. Other agents retain their original forecast.
+  // Triage follows the size of the packed text plus about 5K per batch. For the
+  // following stages use rounded medians of measured usage / the original allowances.
+  const stages = agent === "codex" ? {
+    triage: census.triageBatches * 5_000 + Math.ceil(census.triageCharacters / BYTES_PER_TOKEN),
+    writer: Math.round(allowances.writer * 0.56),
+    documents: Math.round(allowances.documents * 0.50),
+    pattern: Math.round(allowances.pattern * 0.08),
+    patternRepair: Math.round(allowances.patternRepair * 0.12),
+    gate: Math.round(allowances.gate * 0.60),
+  } : allowances;
+  return { ...stages, total: stageTotal(stages), ceiling };
+}
 
 export function estimateHarvest(counts: CandidateCounts, agent: HarvestOptions["agent"]) {
   const all = Object.values(counts).reduce((total, count) => total + (count ?? 0), 0);
@@ -115,7 +135,7 @@ export function estimateHarvest(counts: CandidateCounts, agent: HarvestOptions["
   const countsForCensus: Census = { candidates: counts, documentBytes: docs * 2_000, ruleWords: docs * 5, ruleWordsPerKiB: docs ? 2.56 : 0,
     decisions: 0, agentFiles: 0, prUnits: 0, units: 0, triageBatches: Math.ceil(triageCharacters / 55_000), triageCharacters,
     docBatches: Math.ceil(docs * 2_000 / DOC_CHAR_LIMIT) };
-  return estimateStages(countsForCensus, agent);
+  return estimateCensus(countsForCensus, agent);
 }
 
 export const emptyHarvestEvidence: HarvestEvidenceSize = { candidates: 0, triageTokens: 0, writerTokens: 0, largestWriterTokens: 0 };

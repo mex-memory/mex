@@ -19,7 +19,7 @@ export const VERIFY_TURNS = 1;
 export const VERIFY_TIMEOUT_MS = 2 * 60_000;
 /** One text call, with ~20k tokens of runner overhead, bounded evidence and a short reply. */
 export const VERIFY_ESTIMATE = 32_000;
-/** The same 1.5× multiple as a learning run. An answer over this is discarded and is not a review decision. */
+/** Verify discards an answer that exceeds this limit. */
 export const VERIFY_CEILING = Math.floor(VERIFY_ESTIMATE * 1.5);
 
 export function verifySpend(usage: { input?: number; output?: number; cache_read?: number; cache_write?: number } | undefined): number {

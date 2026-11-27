@@ -142,10 +142,9 @@ text an agent has already loaded stays until that agent starts again. Generated 
 session is running. Recall of a proposed or retired learned entry says the same. The Hub screen is deferred; it reads
 the same `learning.deep.review.<jobId>` rows the terminal lists, including rows from a weekly, failed, or cancelled run.
 
-`v` then a number offers to have the person's own agent read the checkout, read-only, and say whether a waiting rule
-holds; the estimate is shown first, and so is the ceiling of 1.5 times that estimate. An answer over the ceiling is
-discarded and is not a review decision. One response already in flight can still be billed. The check stops after 8
-tool calls or two minutes, and a stopped run gives no answer. Evidence has to name a file in the checkout and a line
+`v` then a number offers one call to the person's own agent using evidence collected from the checkout. It shows an
+estimated 32,000 tokens and a 48,000-token answer limit before consent. The run can still be billed if it exceeds
+that limit and the answer is discarded. The call has a two-minute timeout. Evidence has to name a file in the checkout and a line
 that file contains. Keep is staged only when the producer gate accepts the rule as active. A rewrite is staged only
 when the gate accepts the new wording, and saving it leaves the rule waiting for a tick. A wording the gate rejects
 stays as it was. Drop remains the person's retirement on save.
@@ -172,9 +171,10 @@ Without a terminal (an agent, a script, CI) nothing is asked; the next `mex` in 
 
 - `mex learn --dry-run` shows the estimate, ceiling, source counts and gaps. It reads review history and git, spends no
   tokens, and saves and queues nothing.
-- The estimate is shown before anything starts; Enter starts it, one key skips it. It runs through the person's own
-  Claude Code or Codex with no tools, in an empty private folder, and never from an agent, a script or CI. The
-  ceiling is 1.5 times the estimate.
+- The token estimate and ceiling are shown before anything starts. Enter starts it and one key skips it.
+  It runs through the person's own Claude Code or Codex with no tools, in an empty private folder, and never from
+  an agent, a script or CI. The Codex estimate is calibrated on measured runs. The ceiling keeps the original call
+  allowances. Learning pauses if it cannot reserve enough tokens for a call within the approved ceiling.
 - Weekly learning runs within the automatic 3% allowance, only when no agent session is active.
 - Everything the run reads (comments, code regions, pull request text) is deleted when the run ends, however it
   ends; the rules, their proofs and the kept quote remain. Learned rules stay personal ("learned, not shared")
@@ -205,7 +205,7 @@ scopes. A proven `when:` can still fire at a matching edit.
 | PR Decisions section | `learning.prDecisions`, off | No extra model call. The instruction adds one line to local generated rule files | Among PR descriptions read, count those with and without a nonempty Decisions section. The count describes adoption in that sample |
 | Always-on learned rules | `learning.alwaysOn`, off | No model call. Up to about 450 tokens of repo-wide learned rules in the person's local rule files, every session | Not counted separately. The fresh-repo test of learn deeper scored this route: it caught more review objections but failed the wrong-advice bar, so it stays opt-in |
 | Linter suggestions | Included in learn deeper | Part of the writer call | The receipt counts saved suggestions to enable a linter rule. A settled delivery of that entry counts as followed or ignored. A name in a comment is not treated as enabled |
-| Closed issues | `learning.deep.issues`, off | Qualifying issues spend from the learning estimate | The receipt counts issue sources kept after sorting. A settled delivery of a saved entry with issue evidence counts as followed or ignored |
+| Closed issues | `learning.deep.issues`, off | Qualifying issues count toward the harvest budget | The receipt counts issue sources kept after sorting. A settled delivery of a saved entry with issue evidence counts as followed or ignored |
 
 Stop records paths and rule IDs and returns before the background job runs. The job checks the diff in an empty
 private directory and keeps diff text in memory for the call. Each pointer stores the rule ID, location and line
