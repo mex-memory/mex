@@ -254,6 +254,15 @@ func (ev *Evaluator) quoteCheck(c Check) CheckResult {
 	}
 	texts := quoteSections(string(data), file, str(c.Target, "heading"))
 	prefix, suffix := normalizeQuote(str(c.Target, "prefix")), normalizeQuote(str(c.Target, "suffix"))
+	// A vanished heading may have been renamed. Only an unambiguous exact
+	// match can carry the rule across that change. When the heading is still
+	// present, a copy elsewhere cannot stand in for the recorded section.
+	if len(texts) == 0 {
+		text := normalizeQuote(string(data))
+		if at := strings.Index(text, exact); at >= 0 && at == strings.LastIndex(text, exact) {
+			return CheckResult{Status: Pass, Now: textHash(exact)}
+		}
+	}
 	for _, text := range texts {
 		if at, score := quoteLocation(text, exact, prefix, suffix); at >= 0 && (len(texts) == 1 || score > 0) {
 			return CheckResult{Status: Pass, Now: textHash(exact)}

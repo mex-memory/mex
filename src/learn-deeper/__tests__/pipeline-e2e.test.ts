@@ -15,6 +15,7 @@ import type { runModel } from "../../model-runner/index.js";
 import { queueJob } from "../../record/background.js";
 import { openRecord } from "../../record/index.js";
 import { ownerId, registerJobKind, runOneBatch, type JobRow } from "../../record/jobs.js";
+import { runJobsList } from "../../record/jobs-command.js";
 import { ZERO } from "../../record/usage.js";
 import { runRepoStart } from "../../repo-start/command.js";
 import { reviewLearned } from "../../repo-start/review-list.js";
@@ -23,6 +24,7 @@ import { ForgeClient } from "../forge.js";
 import { PinnedTree } from "../git.js";
 import { harvestBatch, planHarvest, previewHarvest } from "../harvest/index.js";
 import { createLearnKind } from "../job.js";
+import { learningProof, noteKey } from "../coverage.js";
 import { gateReply, isGatePrompt } from "./fixtures/gate.js";
 import { readObservations } from "../observations.js";
 import { learnedTrialKey, reviewRows, trialReceiptKey } from "../pipeline.js";
@@ -108,6 +110,134 @@ const patternCases = [
     failure: "matches its own \"ok\" example", repaired: true },
 ];
 
+function fixtureClient(current: () => { head: string; pulls: ReturnType<typeof pull>[] }) {
+  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/repos/acme/app") return Response.json({ full_name: "acme/app", default_branch: "main", private: false });
+    if (path === "/repos/acme/app/branches/main") return Response.json({ commit: { sha: current().head } });
+    if (path === "/repos/acme/app/collaborators/cedar-owner/permission") return Response.json({ permission: "write" });
+    if (path !== "/graphql") throw Error("Unexpected fixture path " + path);
+    const { query, variables } = JSON.parse(String(init?.body)) as { query: string; variables: Record<string, string> };
+    if (query.includes("HarvestSearch(")) {
+      return Response.json({ data: Object.fromEntries(Object.entries(variables).flatMap(([key, term]) => {
+        const match = /^q(\d+)$/u.exec(key);
+        if (!match) return [];
+        const dates = /merged:([^ ]+)\.\.([^ ]+)$/u.exec(term);
+        const nodes = dates ? current().pulls.filter(pr => Date.parse(pr.mergedAt) >= Date.parse(dates[1]!) && Date.parse(pr.mergedAt) <= Date.parse(dates[2]!)) : [];
+        return [["s" + match[1], { issueCount: nodes.length, nodes, pageInfo: { hasNextPage: false } }]];
+      })) });
+    }
+    const repository = Object.fromEntries([...query.matchAll(/(p\d+):pullRequest\(number:(\d+)\)/gu)]
+      .map(([, alias, number]) => [alias, current().pulls.find(pr => pr.number === Number(number)) ?? null]));
+    return Response.json({ data: { repository } });
+  });
+  return new ForgeClient(source, "fixture-login", fetch);
+}
+
+it("publishes the first triage window's rule and adds later support to the same entry", async () => {
+  const fixture = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-early-")));
+  const home = join(fixture, ".mex"), root = join(fixture, "repo");
+  mkdirSync(join(root, "src"), { recursive: true });
+  for (const [key, value] of Object.entries({ MEX_HOME: fixture, MEX_HOOK_BINARY: binary, MEX_BACKGROUND: "0", MEX_OFF: "", MEX_OFFLINE: "1", NO_COLOR: "1",
+    CLAUDE_CONFIG_DIR: join(home, "claude"), CODEX_HOME: join(home, "codex"), GH_TOKEN: "forge-fixture-token" })) vi.stubEnv(key, value);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe" }).trim();
+  const commit = (subject: string, date: string) => {
+    git("add", adapter);
+    git("-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", subject, "--date", date);
+    return git("rev-parse", "HEAD");
+  };
+  git("init", "-qb", "main");
+  git("remote", "add", "origin", "https://github.com/acme/app.git");
+  writeFileSync(join(root, adapter), reviewed.join("\n") + "\n");
+  const before = commit("Prepare the adapter", "2026-11-11T10:00:00Z");
+  writeFileSync(join(root, adapter), reviewed.join("\n").replace("fallback(label)", "stable(label)") + "\n");
+  const head = commit("Update the adapter", "2026-11-13T10:00:00Z");
+  // Both PRs occupy one time band, so one is still unread at the first triage window.
+  const first = pull(31, "2026-11-19T10:00:00Z", [discussion(101, guidance, "2026-11-19T08:00:00Z")], { before, after: head });
+  const later = pull(30, "2026-11-18T10:00:00Z", [discussion(201, repeatGuidance, "2026-11-18T08:00:00Z")], { before, after: head });
+  const client = fixtureClient(() => ({ head, pulls: [first, later] }));
+  const triaged: string[][] = [];
+  let earlyId: string | undefined;
+  const model = vi.fn<typeof runModel>(async ({ prompt, role }) => {
+    if (role === "cheap") {
+      const items = [...prompt.matchAll(/^\[(i\d+)\] (?:maintainer(?: \(PR author\))?)(?: \([^\n]+\))?: ([^\n]+)/gmu)]
+        .filter(([, , quote]) => quote === guidance || quote === repeatGuidance);
+      triaged.push(items.map(([, , quote]) => quote!));
+      return reply({ observations: items.map(([, item, quote]) => ({
+        item, quote, norm: policyClaim, kind: "placement", scope: [adapter], form: "stated", why: "",
+        stated_as_rule: quote === guidance, response: "unknown",
+      })) });
+    }
+    if (prompt.startsWith("You turn observations")) {
+      const items = prompt.split("\n").filter(line => line.startsWith('{"id":"sha256:'))
+        .map(line => JSON.parse(line) as { id: string; quote: string });
+      const selected = items.filter(item => item.quote === (earlyId ? repeatGuidance : guidance));
+      expect(selected).toHaveLength(1);
+      if (earlyId) expect(prompt).toContain(JSON.stringify({ id: earlyId, claim: policyClaim, refused: false }));
+      return reply({ policies: [], norms: [{
+        text: earlyId ? "Send retry dispatch through `queueTransport` in `src/changed.ts`." : policyClaim,
+        kind: "placement", scope: [adapter], patternable: false, support: selected.map(item => item.id),
+        ...(earlyId ? { extends: earlyId } : {}),
+      }] });
+    }
+    expect(isGatePrompt(prompt)).toBe(true);
+    expect(earlyId).toBeUndefined();
+    return reply(gateReply(prompt, () => ({ verdict: "keep" })));
+  });
+  const writer = openRecord({ projectPath: root, home });
+  try {
+    const { path: checkout, project_id: project } = writer.checkout(root)!;
+    setCheckoutEnabled(writer, checkout, true);
+    await buildIndex({ root: checkout, projectId: project, recordDirectory: writer.location.directory, workers: 0 });
+    const window = { since: "2026-11-01T00:00:00.000Z", until: "2026-11-20T10:00:00.000Z" };
+    const tree = (await PinnedTree.open(checkout, head))!;
+    const harvest = await previewHarvest(await planHarvest({ checkout, head, source, agent: "codex", ...window }, { client, tree }), { client, tree });
+    const plan = Plan.parse({ checkout, head, origin: source, source, agent: "codex", setup: "mixed", visibility: "public", ...window,
+      preferred: [], pulls: [], docs: [], gaps: [], refresh: true, estimate: harvest.estimate, ceiling: harvest.ceiling, harvest });
+    registerJobKind(createLearnKind({ client: async () => client, model, now: () => Date.parse(window.until), firstRules: 1 }));
+    const { job } = queueJob(writer, { kind: LEARN_KIND, projectId: project, params: plan });
+    const get = () => writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(job.id) as unknown as JobRow;
+    const run = () => runOneBatch(writer, ownerId("foreground"), { only: new Set([job.id]) });
+    await run();
+    expect(JSON.parse(get().checkpoint!).v2).toMatchObject({ phase: "triage", triaged: 0, harvestDone: false });
+    expect(snapshotNotes(writer, project).files.size).toBe(0);
+
+    await run();
+    expect(JSON.parse(get().checkpoint!).v2).toMatchObject({ phase: "harvest", triaged: 1, harvestDone: false });
+    expect(triaged).toEqual([[guidance]]);
+    const rows = reviewRows(writer, project, job.id);
+    expect(rows).toMatchObject([{ claim: policyClaim, status: "active", support: 1 }]);
+    earlyId = rows[0]!.entryId;
+    const firstNotes = snapshotNotes(writer, project).files;
+    const raw = firstNotes.get(earlyId)!;
+    expect([...firstNotes.keys()]).toEqual([earlyId]);
+    expect(parseEntry(raw).mex).toMatchObject({ id: earlyId, one_line: policyClaim, status: "active" });
+    const proof = () => learningProof(plan, raw, writer.setting(project, noteKey(earlyId!)));
+    const earlyProof = proof();
+    expect(earlyProof).toMatchObject({ support: { pulls: [31] },
+      sources: [{ link: expect.stringContaining("/pull/31") }] });
+    const output = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runJobsList({});
+      expect(output.mock.calls.flat().join(" ")).toMatch(/Deep analysis\s+queued.*1 result so far/u);
+    } finally { output.mockRestore(); }
+
+    for (let i = 0; i < 20 && get().state === "queued"; i++) await run();
+    expect(get().state, String(get().reason)).toMatch(/^done/u);
+    expect(triaged).toEqual([[guidance], [repeatGuidance]]);
+    expect([...snapshotNotes(writer, project).files]).toEqual([[earlyId, raw]]);
+    expect(proof()).toMatchObject({ support: { pulls: [31, 30] }, sources: [
+      earlyProof!.sources[0], { link: expect.stringContaining("/pull/30") },
+    ] });
+    expect(readObservations(writer.db, project, window.since).filter(item => item.normId === earlyId).map(item => item.pull).sort())
+      .toEqual([30, 31]);
+    expect(JSON.parse(writer.setting(project, trialReceiptKey(job.id))!).counts).toMatchObject({ "gate.keep": 1, "support-updates": 1 });
+  } finally {
+    writer.close();
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}, 120_000);
+
 function fixtureCheckout() {
   const fixture = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-e2e-")));
   const home = join(fixture, ".mex"), root = join(fixture, "repo");
@@ -144,27 +274,7 @@ it.each(patternCases)("$name", async ({ initial: triggers, repair, failure, repa
   const second = pull(40, "2026-11-19T10:00:00Z", [discussion(201, repeatGuidance, "2026-11-18T10:00:00Z")], { before, after });
   const later = pull(53, "2026-11-24T10:00:00Z", [discussion(301, weeklyRepeat, "2026-11-23T10:00:00Z")], { before, after });
   let head = after, pulls = [first, second], now = Date.parse("2026-11-20T10:00:00Z");
-  const fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-    const path = new URL(String(url)).pathname;
-    if (path === "/repos/acme/app") return Response.json({ full_name: "acme/app", default_branch: "main", private: false });
-    if (path === "/repos/acme/app/branches/main") return Response.json({ commit: { sha: head } });
-    if (path === "/repos/acme/app/collaborators/cedar-owner/permission") return Response.json({ permission: "write" });
-    if (path !== "/graphql") throw Error("Unexpected fixture path " + path);
-    const { query, variables } = JSON.parse(String(init?.body)) as { query: string; variables: Record<string, string> };
-    if (query.includes("HarvestSearch(")) {
-      return Response.json({ data: Object.fromEntries(Object.entries(variables).flatMap(([key, term]) => {
-        const match = /^q(\d+)$/u.exec(key);
-        if (!match) return [];
-        const dates = /merged:([^ ]+)\.\.([^ ]+)$/u.exec(term);
-        const nodes = dates ? pulls.filter(pr => Date.parse(pr.mergedAt) >= Date.parse(dates[1]!) && Date.parse(pr.mergedAt) <= Date.parse(dates[2]!)) : [];
-        return [["s" + match[1], { issueCount: nodes.length, nodes, pageInfo: { hasNextPage: false } }]];
-      })) });
-    }
-    const repository = Object.fromEntries([...query.matchAll(/(p\d+):pullRequest\(number:(\d+)\)/gu)]
-      .map(([, alias, number]) => [alias, pulls.find(pr => pr.number === Number(number)) ?? null]));
-    return Response.json({ data: { repository } });
-  });
-  const client = new ForgeClient(source, "fixture-login", fetch);
+  const client = fixtureClient(() => ({ head, pulls }));
   const patternCalls: Array<{ id: string; previous?: { fields?: { when: unknown[] }; failures: string[] } }> = [];
   const model = vi.fn<typeof runModel>(async request => {
     const { prompt } = request;
