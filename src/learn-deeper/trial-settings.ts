@@ -5,6 +5,7 @@ const trials = {
   "learning.stopCheck": ["MEX checks changed code against scoped prose rules in the background, within the 3% automatic allowance.", "MEX skips prose rule checks after Stop and spends no tokens on them."],
   "learning.procedures": ["Deep analysis can name procedures from co-changes, with up to five cheap calls within the 3% automatic allowance.", "Deep analysis skips procedure naming and spends no tokens on it."],
   "learning.prDecisions": ["MEX rule files ask for a Decisions section in PR descriptions. This adds no model call.", "MEX rule files omit the PR Decisions instruction. This costs no tokens."],
+  "learning.alwaysOn": ["Your local MEX rule files load up to about 450 tokens of repo-wide learned rules in every session. This adds no model call.", "Repo-wide learned rules stay out of rule files; agents read them with mex recall. This costs no tokens."],
   "learning.deep.issues": ["Deep analysis can read qualifying closed issues within its estimated budget.", "Deep analysis skips closed issues and spends no tokens on them."],
 } as const;
 

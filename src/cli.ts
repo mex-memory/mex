@@ -1144,6 +1144,7 @@ program
     "  learning.stopCheck     Check scoped prose rules after an agent session.",
     "  learning.procedures    Learn procedures from files that change together.",
     "  learning.prDecisions   Ask for a Decisions section in PR descriptions.",
+    "  learning.alwaysOn      Load repo-wide learned rules in every session.",
     "  learning.deep.issues   Include qualifying closed issues as sources.",
     "",
     "Set a trial with mex config set <setting> <on|off> --project.",
@@ -1429,7 +1430,7 @@ configCmd
         const writer = openRecord();
         try {
           const { confirmation, project } = setLearningTrial(writer, key, value, process.cwd());
-          if (key === "learning.prDecisions") {
+          if (key === "learning.prDecisions" || key === "learning.alwaysOn") {
             const { queueJob, ensureBackground } = await import("./record/background.js");
             for (const checkout of writer.db.prepare("SELECT path FROM checkouts WHERE project_id=?").all(project)) {
               queueJob(writer, { kind: "native-files", projectId: project, params: { checkout: String(checkout.path), local: true } });
