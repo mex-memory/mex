@@ -609,11 +609,23 @@ describe("pattern replies", () => {
     const reply = JSON.stringify({ patterns: [
       { id: "unknown", when: [anti] }, { id: item.id, when: [anti, required] }, { id: item.id, when: [] },
     ] });
-    expect([...parsePatterns(reply, [item])]).toEqual([[item.id, { when: [{ ...anti, type: "rejected" }, required] }]]);
-    expect([...parsePatterns("not JSON", [item])]).toEqual([]);
+    const parsed = parsePatterns(reply, [item]);
+    expect([...parsed.fields]).toEqual([[item.id, { when: [{ ...anti, type: "rejected" }, required] }]]);
+    expect(parsed.failures.size).toBe(0);
+    const malformed = parsePatterns("not JSON", [item]);
+    expect(malformed.fields.size).toBe(0);
+    expect(malformed.failures.get(item.id)).toBe("The pattern reply was malformed.");
   });
   it("does not let a pattern writer replace the norm's instruction", () => {
-    expect(parsePatterns(JSON.stringify({ patterns: [{ id: item.id, claim: "Changed.", when: [anti] }] }), [item]).size).toBe(0);
+    const parsed = parsePatterns(JSON.stringify({ patterns: [{ id: item.id, claim: "Changed.", when: [anti] }] }), [item]);
+    expect(parsed.fields.size).toBe(0);
+    expect(parsed.failures.get(item.id)).toBe("The pattern row was malformed.");
+  });
+  it("distinguishes a deliberate abstention from an omitted row or trigger list", () => {
+    const parse = (patterns: unknown[]) => parsePatterns(JSON.stringify({ patterns }), [item]);
+    expect(parse([{ id: item.id, when: [] }])).toEqual({ fields: new Map([[item.id, { when: [] }]]), failures: new Map() });
+    expect(parse([{ id: item.id }]).failures.get(item.id)).toBe("The pattern row was malformed.");
+    expect(parse([]).failures.get(item.id)).toBe("The reply omitted this rule's pattern row.");
   });
 });
 

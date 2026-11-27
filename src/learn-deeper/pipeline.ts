@@ -546,31 +546,39 @@ async function proveDrafts(input: PipelineInput, name: string, counts: PipelineS
     const reply = await call(input, stage, patternPrompt(list), "best", list.length);
     add(counts, "calls.pattern");
     add(counts, "tokens.pattern", reply.tokens);
-    let fields = parsePatterns(reply.text, list);
-    const prove = async (items: PatternInput[]) => {
+    const { fields, failures } = parsePatterns(reply.text, list);
+    const prove = async (items: PatternInput[], patterns: typeof fields, acceptPartial: boolean) => {
       const pending = items.flatMap(({ id }) => {
-        const pattern = fields.get(id), draft = drafts.find(item => item.support.key === id);
+        const pattern = patterns.get(id), draft = drafts.find(item => item.support.key === id);
         return pattern && draft ? [{ support: draft.support, entry: { ...draft.entry, ...pattern } }] : [];
       });
       if (!pending.length) return;
       await withProofContext(input, pending.map(item => item.entry), pending.flatMap(item => item.support.members.flatMap(member =>
         member.candidate.path ? [member.candidate.path] : [])), async proof => {
-        for (const item of pending) proofs.set(item.support.key, await proveEntry(item.entry, item.support, proof));
+        for (const item of pending) {
+          const result = await proveEntry(item.entry, item.support, proof);
+          if (acceptPartial || (result.when.length > 0 && result.when.length === item.entry.when.length)) {
+            proofs.set(item.support.key, result);
+          }
+        }
       });
     };
-    await prove(list);
+    await prove(list, fields, true);
     const repairs = list.flatMap(item => {
       const proof = proofs.get(item.id), previous = fields.get(item.id);
-      return proof && previous?.when.length && !proof.when.length && !proof.dropped
-        ? [{ ...item, previous: { fields: previous, failures: proof.failures } }] : [];
+      const failure = failures.get(item.id);
+      if (failure) return [{ ...item, previous: { failures: [failure] } }];
+      if (!proof || proof.dropped || !previous || proof.when.length === previous.when.length) return [];
+      // An unsuccessful repair falls back to the original prose draft.
+      proofs.delete(item.id);
+      return [{ ...item, previous: { fields: previous, failures: proof.failures } }];
     });
     if (repairs.length) {
       const repair = await retry(input, stage + ".repair", patternPrompt(repairs), "best", repairs.length);
       if (repair) {
         add(counts, "calls.pattern-repair");
         add(counts, "tokens.pattern", repair.tokens);
-        fields = parsePatterns(repair.text, repairs);
-        await prove(repairs);
+        await prove(repairs, parsePatterns(repair.text, repairs).fields, false);
       }
     }
   }

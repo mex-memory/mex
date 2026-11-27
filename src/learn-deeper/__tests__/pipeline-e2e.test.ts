@@ -18,14 +18,16 @@ import { ownerId, registerJobKind, runOneBatch, type JobRow } from "../../record
 import { ZERO } from "../../record/usage.js";
 import { runRepoStart } from "../../repo-start/command.js";
 import { reviewLearned } from "../../repo-start/review-list.js";
+import { draftSupport } from "../draft-evidence.js";
 import { ForgeClient } from "../forge.js";
 import { PinnedTree } from "../git.js";
-import { planHarvest, previewHarvest } from "../harvest/index.js";
+import { harvestBatch, planHarvest, previewHarvest } from "../harvest/index.js";
 import { createLearnKind } from "../job.js";
 import { gateReply, isGatePrompt } from "./fixtures/gate.js";
 import { readObservations } from "../observations.js";
 import { learnedTrialKey, reviewRows, trialReceiptKey } from "../pipeline.js";
 import { LEARN_KIND, Plan } from "../plan.js";
+import { proveEntry } from "../prove.js";
 import { SCHEDULE, WEEKLY_KIND } from "../weekly-schedule.js";
 import { LEARNED_TRIAL_LABEL } from "../trial-outcomes.js";
 
@@ -92,7 +94,21 @@ function pull(number: number, at: string, texts: ReturnType<typeof discussion>[]
   return pr;
 }
 
-it("delivers checked trial rules, withholds removed evidence, and learns a repeated policy weekly", async () => {
+const anti = (pattern: string) => ({ type: "anti", match: "literal", pattern });
+const good = anti("fallback(");
+const bad = anti("return ");
+const patternCases = [
+  { name: "delivers checked trial rules, withholds removed evidence, and learns a repeated policy weekly", initial: [good] },
+  { name: "saves prose when all triggers fail twice", initial: [bad], repair: [bad], failure: "matches its own \"ok\" example" },
+  { name: "saves prose when some triggers fail twice", initial: [good, bad], repair: [good, bad], failure: "matches its own \"ok\" example" },
+  { name: "saves prose when a repair omits a partially proven pattern row", initial: [good, bad], failure: "matches its own \"ok\" example" },
+  { name: "saves prose after a malformed pattern row", initial: [{ ...good, match: "regex" }], repair: [bad], failure: "malformed" },
+  { name: "saves prose after an omitted pattern row", repair: [bad], failure: "omitted" },
+  { name: "saves the proven pattern from a successful repair", initial: [bad], repair: [good],
+    failure: "matches its own \"ok\" example", repaired: true },
+];
+
+function fixtureCheckout() {
   const fixture = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-e2e-")));
   const home = join(fixture, ".mex"), root = join(fixture, "repo");
   mkdirSync(join(root, "src"), { recursive: true });
@@ -107,6 +123,11 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     CLAUDE_CONFIG_DIR: join(home, "claude"), CODEX_HOME: join(home, "codex"), GH_TOKEN: "forge-fixture-token" })) vi.stubEnv(name, value);
   git("init", "-qb", "main");
   git("remote", "add", "origin", "https://github.com/acme/app.git");
+  return { fixture, home, root, commit };
+}
+
+it.each(patternCases)("$name", async ({ initial: triggers, repair, failure, repaired }) => {
+  const { fixture, home, root, commit } = fixtureCheckout();
   writeFileSync(join(root, "AGENTS.md"), duplicate + "\n");
   writeFileSync(join(root, "src", "verification.txt"), "Fixture\n");
   writeFileSync(join(root, "CONTRIBUTING.md"), "# Development\n\n" + docQuote + "\n\n" + submissionQuote + "\n");
@@ -144,6 +165,7 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     return Response.json({ data: { repository } });
   });
   const client = new ForgeClient(source, "fixture-login", fetch);
+  const patternCalls: Array<{ id: string; previous?: { fields?: { when: unknown[] }; failures: string[] } }> = [];
   const model = vi.fn<typeof runModel>(async request => {
     const { prompt } = request;
     expect(prompt).not.toMatch(/Iris Example|Cedar Example|Fern Example/u);
@@ -180,7 +202,10 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     if (prompt.startsWith("Find a code pattern")) {
       const items = JSON.parse(prompt.split("\n").at(-1)!);
       expect(items).toHaveLength(1);
-      return reply({ patterns: [{ id: items[0].id, when: [{ type: "anti", match: "literal", pattern: "fallback(" }],
+      const [item] = items;
+      patternCalls.push(item);
+      const when = item.previous ? repair : triggers;
+      return reply({ patterns: when === undefined ? [] : [{ id: item.id, when,
         fix: { pair: 0, start: 3, end: 3 }, examples: { flag: "return fallback(label);", ok: "return stable(label);" } }] });
     }
     expect(isGatePrompt(prompt)).toBe(true);
@@ -218,14 +243,26 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     const doc = initial.rows.find(row => row.claim === docClaim)!;
     const policy = initial.rows.find(row => row.claim === policyClaim)!;
     expect(policy).toMatchObject({ support: 2, status: "active" });
-    expect(rule).toMatchObject({ support: 1, status: "active", proven: true });
+    const proven = !failure || repaired === true;
+    expect(rule).toMatchObject({ support: 1, status: "active", proven });
     expect(doc).toMatchObject({ status: "active" });
     const submission = initial.rows.find(row => row.claim === submissionClaim)!;
     const savedSubmission = parseEntry(snapshotNotes(writer, project).files.get(submission.entryId)!);
     expect(savedSubmission.mex).toMatchObject({ status: "active", kind: "rule", scope: ["**"],
       source: { type: "docs", ref: "CONTRIBUTING.md" } });
     expect(initial.rows.find(row => row.claim === missingClaim)?.status).toBe("proposed");
-    expect(initial.receipt.counts).toMatchObject({ "gate.drop-duplicate": 1, "gate.missing": 1, "calls.gate": 2, "proven-code-norms": 1 });
+    expect(initial.receipt.counts).toMatchObject({ "gate.drop-duplicate": 1, "gate.missing": 1, "calls.gate": 2, "calls.pattern": 1 });
+    expect(initial.receipt.counts["proven-code-norms"] ?? 0).toBe(Number(proven));
+    expect(initial.receipt.counts["calls.pattern-repair"] ?? 0).toBe(failure ? 1 : 0);
+    expect(patternCalls).toHaveLength(failure ? 2 : 1);
+    expect(model).toHaveBeenCalledTimes(failure ? 7 : 6);
+    expect(patternCalls[0]?.previous).toBeUndefined();
+    if (failure) {
+      const [first, second] = patternCalls;
+      expect(second?.id).toBe(first?.id);
+      expect(second?.previous?.failures.join(" ")).toContain(failure);
+      if (triggers?.includes(bad)) expect(second?.previous?.fields?.when).toEqual(triggers);
+    }
     expect(writer.db.prepare("SELECT count(*) n FROM settings WHERE key LIKE ?").get("learning.deep.v2." + initial.job.id + ".%")?.n).toBe(0);
     expect(readObservations(writer.db, project, window.since, true).some(item => item.norm === weeklyClaim)).toBe(true);
     expect(writer.setting(project, learnedTrialKey(policy.entryId))).toBe("trial");
@@ -247,6 +284,20 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
       old_string: "  return " + current + "(label);", new_string: "  return fallback(label);" } });
     expect(hook("bump", "SessionStart", { source: "startup" })).not.toContain(proofClaim);
     const deny = hook("bump", "PreToolUse", edit("stable"));
+    if (failure) {
+      const saved = parseEntry(snapshotNotes(writer, project).files.get(rule.entryId)!);
+      if (repaired) {
+        expect(saved.mex.when).toEqual([good]);
+        expect(deny).toContain("deny");
+        expect(deny).toContain("return stable(label);");
+      } else {
+        expect(saved.mex.when).toBeUndefined();
+        expect(saved.mex.fix).toBeUndefined();
+        expect(deny).not.toContain("deny");
+        expect(read("prose", adapter)).toContain(proofClaim);
+      }
+      return;
+    }
     expect(deny).toContain("deny");
     expect(deny).toContain("return stable(label);");
     expect(deny).toContain("learned, trial");
@@ -326,6 +377,68 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     expect(model).toHaveBeenCalledTimes(calls);
   } finally {
     writer.close();
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}, 180_000);
+
+it("proves a reverted change against its re-land as well as its revert", async () => {
+  const { fixture, home, root, commit } = fixtureCheckout();
+  try {
+    const land = (code: string, subject: string, body?: string) => {
+      writeFileSync(join(root, adapter), code + "\n");
+      return commit(body ? subject + "\n\n" + body : subject, `2026-11-1${day++}T10:00:00Z`);
+    };
+    let day = 0;
+    const initial = "export const attempts = initialRetry();";
+    const original = "export const attempts = uncheckedRetry(sharedRetry());";
+    const relanded = "export const attempts = conditionalRetry(sharedRetry());";
+    land(initial, "Set up retries");
+    const before = land(original, "Tune retries (#14)");
+    land(original + " legacyRetry();", "Keep the old retry observer");
+    const reason = "Use conditionalRetry because the extra retry can repeat delivery.";
+    const reverted = land(initial, 'Revert "Tune retries (#14)" (#15)', `This reverts commit ${before}.\n\n${reason}`);
+    const after = land(relanded, "Re-land: Tune retries (#16)");
+
+    const tree = (await PinnedTree.open(root, after))!;
+    const plan = await planHarvest({ checkout: root, head: after, source, agent: "codex", requestBudget: 0,
+      since: "2026-11-10T00:00:00Z", until: "2026-11-15T00:00:00Z" }, { tree });
+    const batch = await harvestBatch(plan, undefined, { tree });
+    const candidate = batch.candidates.find(item => item.id === `git:revert:${reverted}`)!;
+    expect(candidate).toMatchObject({
+      text: reason,
+      related: { pulls: [15, 14, 16], reland: {
+        before: { commit: before, path: adapter, text: original },
+        after: { commit: after, path: adapter, text: relanded },
+      } },
+    });
+
+    await runRepoStart({ cwd: root, write: () => {}, caller: "script", install: false, wait: false });
+    const writer = openRecord({ projectPath: root, home });
+    try {
+      const { path: checkout, project_id: project } = writer.checkout(root)!;
+      const checkIndex = { projectId: project, recordDirectory: writer.location.directory };
+      await buildIndex({ root: checkout, ...checkIndex, workers: 0 });
+      const support = draftSupport([candidate], [], "history", "retry-reland");
+      const prove = (pattern: string) => proveEntry({
+        cluster: support.key, route: "ruled-out", kind: "decision", claim: reason, why: "", aliases: [], scope: [adapter],
+        clauses: [{ text: reason, quotes: [{ id: candidate.id, quote: reason }] }],
+        when: [{ type: "rejected", match: "literal", pattern }], fix: { pair: 1, start: 1, end: 1 },
+        examples: { flag: `return ${pattern}count);`, ok: initial },
+      }, support, { tree, check: { projectPath: checkout, checkTree: checkout, checkIndex } });
+
+      const accepted = await prove("uncheckedRetry(");
+      expect(accepted.when).toMatchObject([{ pattern: "uncheckedRetry(", pairs: [1, 0] }]);
+      expect(accepted.fix).toMatchObject({ commit: after, snippet: relanded });
+      for (const [pattern, failure] of [["sharedRetry(", "matches the fixed code of pair 1"], ["legacyRetry(", "failed contrast on pair 1"]] as const) {
+        const rejected = await prove(pattern);
+        expect(rejected.dropped).toBeUndefined();
+        expect(rejected.when).toEqual([]);
+        expect(rejected.failures).toEqual([expect.stringContaining(failure)]);
+      }
+    } finally {
+      writer.close();
+    }
+  } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
 }, 180_000);
