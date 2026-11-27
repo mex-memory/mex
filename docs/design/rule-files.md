@@ -68,9 +68,17 @@ Entries with checks need a held result from the current native evaluator;
 cached verdicts do not authorize publication after the source changes. If
 current checks are unavailable, checked entries are left out.
 
-Repository-wide learned rules share a 450 estimated token budget across
-team and personal entries. This is about one MEX default rules pack. Each
-whole bullet costs its UTF-8 byte length divided by four and rounded up,
+Repository-wide learned rules are left out of rule files unless the person
+turns on `learning.alwaysOn` for the project (`mex config set
+learning.alwaysOn on --project`). Agents read them with `mex recall`; learned
+rules scoped to a folder or to files are delivered as before. In the fresh-repo
+test (OSS-92 v4), always-on learned rules raised wrong advice past the bar set
+for it, so the default is off.
+
+When it is on, those rules go into that person's local files only, so shared
+files stay the same for everyone. They share a 450 estimated token budget
+across team and personal entries. This is about one MEX default rules pack.
+Each whole bullet costs its UTF-8 byte length divided by four and rounded up,
 including the entry ID comment and line break.
 
 A held, complete quote check establishes a written project policy. These
