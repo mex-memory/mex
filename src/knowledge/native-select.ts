@@ -17,8 +17,8 @@ export const MAX_NATIVE_TEXT = 600;
 export const MAX_LEARNED_ALWAYS_ON_TOKENS = 450;
 /**
  * The project setting that loads repo-wide learned rules in every session.
- * Off unless the person turns it on: on fresh repos, always-on learned rules
- * added more wrong advice than they prevented (OSS-92 v4, bar 3).
+ * Off unless the person turns it on: in the fresh-repo test, always-on learned
+ * rules raised wrong advice past the bar set for it (OSS-92 v4, bar 3).
  */
 export const LEARNED_ALWAYS_ON_SETTING = "learning.alwaysOn";
 
