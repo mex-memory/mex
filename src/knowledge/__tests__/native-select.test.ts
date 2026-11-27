@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { entry } from "./fixtures.js";
 import type { KnowledgeEntry } from "../entry.js";
-import { areaOf, isBroad, learnedSupport, MAX_LEARNED_ALWAYS_ON_TOKENS, nativeRuleText, selectNative, type Candidate } from "../native-select.js";
+import { areaOf, isBroad, LEARNED_ALWAYS_ON_SETTING, learnedSupport, MAX_LEARNED_ALWAYS_ON_TOKENS, nativeRuleText, selectNative, type Candidate } from "../native-select.js";
 
 const team = (e: KnowledgeEntry): Candidate => ({ level: "team", entry: e });
 const pr = (n: number) => `https://github.com/acme/app/pull/${n}`;
@@ -68,7 +68,20 @@ describe("layer A selection", () => {
     expect(skipped.map(item => item.id)).toEqual(ids.slice(1));
   });
 
+  it("keeps learned repo-wide rules out of rule files unless the person turns them on", () => {
+    const entries = [team(learned("mx_deepwide1", [1, 2], 20)), team(learned("mx_deeparea1", [1], 20, { scope: ["src/**"] })), team(entry("mx_human01"))];
+    const verdicts = held("mx_deepwide1", "mx_deeparea1", "mx_human01");
+    const off = selectNative(entries, verdicts);
+    expect(off.selected.map(c => c.entry.mex.id)).toEqual(["mx_deeparea1", "mx_human01"]);
+    expect(off.skipped).toEqual([{ id: "mx_deepwide1",
+      reason: "learned repo-wide rules load every session only with learning.alwaysOn on; available through recall" }]);
+    expect(LEARNED_ALWAYS_ON_SETTING).toBe("learning.alwaysOn");
+    expect(selectNative(entries, verdicts, { learnedAlwaysOn: true }).selected.map(c => c.entry.mex.id))
+      .toEqual(["mx_deeparea1", "mx_deepwide1", "mx_human01"]);
+  });
+
   describe("always-on budget for learned repo-wide entries", () => {
+    const on = { learnedAlwaysOn: true };
     it("counts distinct pull requests across the ref and source checks", () => {
       const reviewed = learned("mx_deepa1", [1, 2, 2, 3], 10, {
         source: { type: "review", ref: "https://github.com/ACME/APP/pull/1/files?change=1", producer: "learn-deeper" },
@@ -87,7 +100,7 @@ describe("layer A selection", () => {
         learned("mx_deepstale", [], 150, docs),
       ].map(team);
       const verdicts = held(...entries.map(c => c.entry.mex.id));
-      const { selected, skipped } = selectNative(entries, new Map([...verdicts, ["team/mx_deepstale", "changed"]]));
+      const { selected, skipped } = selectNative(entries, new Map([...verdicts, ["team/mx_deepstale", "changed"]]), on);
       expect(selected.map(c => c.entry.mex.id)).toEqual(["mx_deepdocs", "mx_deepproof", "mx_deeprepeat"]);
       expect(skipped.map(s => s.id)).toEqual(["mx_deepstale", "mx_deepsingle", "mx_deepweakdoc"]);
     });
@@ -102,9 +115,9 @@ describe("layer A selection", () => {
         learned("mx_deeprul", [3, 4], 150),
       ].map(team);
       const verdicts = held(...entries.map(c => c.entry.mex.id));
-      const selection = selectNative(entries, verdicts);
+      const selection = selectNative(entries, verdicts, on);
       expect(selection.selected.map(c => c.entry.mex.id)).toEqual(["mx_deepaa1", "mx_deeprul", "mx_deepzz1"]);
-      expect(selectNative([...entries].reverse(), verdicts)).toEqual(selection);
+      expect(selectNative([...entries].reverse(), verdicts, on)).toEqual(selection);
     });
 
     it("charges complete rendered lines in UTF-8 bytes and tries later rules when one won't fit", () => {
@@ -117,7 +130,7 @@ describe("layer A selection", () => {
         unicode,
         learned("mx_deepfit1", [6], 150),
       ].map(team);
-      const { selected, skipped } = selectNative(entries, held(...entries.map(c => c.entry.mex.id)));
+      const { selected, skipped } = selectNative(entries, held(...entries.map(c => c.entry.mex.id)), on);
       expect(selected.map(c => c.entry.mex.id)).toEqual(["mx_deepbig1", "mx_deepbig2", "mx_deepfit1"]);
       expect(skipped).toEqual([{ id: "mx_deepwide", reason: "over the always-on budget for learned rules; available through recall" }]);
       expect(MAX_LEARNED_ALWAYS_ON_TOKENS).toBe(450);
@@ -139,7 +152,7 @@ describe("layer A selection", () => {
         team(learned("mx_deepteam2", [1, 2], 150)),
         { level: "personal", entry: learned("mx_deepmine1", [3], 150) },
         { level: "personal", entry: learned("mx_deepmine2", [4], 150) },
-      ], new Map([...held("mx_deepteam1", "mx_deepteam2"), ["personal/mx_deepmine1", "held"], ["personal/mx_deepmine2", "held"]]));
+      ], new Map([...held("mx_deepteam1", "mx_deepteam2"), ["personal/mx_deepmine1", "held"], ["personal/mx_deepmine2", "held"]]), on);
       expect(selected.map(c => c.entry.mex.id)).toEqual(["mx_deepmine1", "mx_deepteam1", "mx_deepteam2"]);
       expect(skipped.map(s => s.id)).toEqual(["mx_deepmine2"]);
     });
@@ -153,7 +166,7 @@ describe("layer A selection", () => {
         team(learned("mx_deeparea1", [2], 140, { scope: ["src/**"] })),
         team(entry("mx_human01", {}, "y".repeat(560))),
         team(entry("mx_human02", { scope: ["src/**"] }, "z".repeat(560))),
-      ], held(...ids));
+      ], held(...ids), on);
       expect(selected.map(c => c.entry.mex.id)).toEqual(["mx_deeparea1", "mx_deepfull1", "mx_deepfull2", "mx_deepfull3", "mx_human01", "mx_human02"]);
       expect(skipped).toEqual([]);
     });

@@ -110,7 +110,7 @@ describe("learned routing", () => {
     const learned = team("mx_deeprelease");
     learned.entry.text = body;
     learned.entry.mex.one_line = claim;
-    const { selected } = selectNative([learned], new Map([["team/mx_deeprelease", "held"]]));
+    const { selected } = selectNative([learned], new Map([["team/mx_deeprelease", "held"]]), { learnedAlwaysOn: true });
     const root = repo({ "AGENTS.md": "Repository instructions." });
     const plan = planNative(root, ["claude-code", "codex"], selected, false, [], true);
     const line = `- ${claim} <!-- mex:mx_deeprelease -->`;
@@ -143,7 +143,7 @@ describe("learned routing", () => {
     const pattern = team("mx_deepcode", "src/**");
     pattern.entry.mex.when = [{ type: "anti", match: "literal", pattern: "oldAccessor()" }];
     const { selected } = selectNative([process, folder, ordinary, pattern, team("mx_deepunchecked")],
-      new Map([["team/mx_deeproot", "held"], ["personal/mx_deepfolder", "held"], ["team/mx_deepcode", "held"]]));
+      new Map([["team/mx_deeproot", "held"], ["personal/mx_deepfolder", "held"], ["team/mx_deepcode", "held"]]), { learnedAlwaysOn: true });
     expect(selected.map(candidate => candidate.entry.mex.id)).not.toContain("mx_deepunchecked");
     const root = repo();
     const agents = ["codex", "claude-code", "copilot"] as const;

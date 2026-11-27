@@ -15,6 +15,12 @@ const STRONG = new Set(["person", "docs", "ci", "review"]);
 export const MAX_NATIVE_TEXT = 600;
 /** About one MEX default rules pack of additional prose per session. */
 export const MAX_LEARNED_ALWAYS_ON_TOKENS = 450;
+/**
+ * The project setting that loads repo-wide learned rules in every session.
+ * Off unless the person turns it on: on fresh repos, always-on learned rules
+ * added more wrong advice than they prevented (OSS-92 v4, bar 3).
+ */
+export const LEARNED_ALWAYS_ON_SETTING = "learning.alwaysOn";
 
 /** A folder or the whole repo, not a file pattern. */
 export function isBroad(scope: string): boolean {
@@ -25,7 +31,7 @@ export function isLearned({ mex }: KnowledgeEntry): boolean {
   return mex.source.producer === "learn-deeper" || mex.id.startsWith("mx_deep");
 }
 
-function learnedRepoWide(entry: KnowledgeEntry): boolean {
+export function learnedRepoWide(entry: KnowledgeEntry): boolean {
   return isLearned(entry) && entry.mex.scope.every(scope => scope === "**");
 }
 
@@ -44,8 +50,13 @@ export function nativeItem(entry: KnowledgeEntry): string {
 }
 
 export interface Selection { selected: Candidate[]; skipped: Array<{ id: string; reason: string }>; }
+export interface SelectOptions {
+  /** The person turned on learning.alwaysOn. Without it, repo-wide learned rules stay in recall. */
+  learnedAlwaysOn?: boolean;
+}
 
-export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<string, Verdict> = new Map()): Selection {
+export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<string, Verdict> = new Map(),
+  options: SelectOptions = {}): Selection {
   const selected: Candidate[] = [], skipped: Selection["skipped"] = [];
   const skip = (c: Candidate, reason: string) => skipped.push({ id: c.entry.mex.id, reason });
   for (const c of candidates) {
@@ -62,6 +73,7 @@ export function selectNative(candidates: Candidate[], verdicts: ReadonlyMap<stri
     else if (verdict === "broken" || verdict === "changed") skip(c, `verdict is ${verdict}`);
     else if ((isLearned(c.entry) || m.checks.length) && verdict !== "held") skip(c, "current checks have not held");
     else if ((learnedRepoWide(c.entry) ? nativeRuleText(c.entry).length : c.entry.text.length) > MAX_NATIVE_TEXT) skip(c, "too long for a rule file");
+    else if (learnedRepoWide(c.entry) && !options.learnedAlwaysOn) skip(c, `learned repo-wide rules load every session only with ${LEARNED_ALWAYS_ON_SETTING} on; available through recall`);
     else selected.push(c);
   }
   const kept = withinLearnedBudget(selected, skip);
