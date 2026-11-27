@@ -76,8 +76,7 @@ function copilotPath(area: string, sharing: Sharing): string {
 
 function byArea(candidates: Candidate[]): Map<string, Candidate[]> {
   const areas = new Map<string, Candidate[]>();
-  for (const c of candidates) for (const scope of c.entry.mex.scope) {
-    const area = areaOf(scope);
+  for (const c of candidates) for (const area of c.repoWide ? [""] : c.entry.mex.scope.map(areaOf)) {
     areas.set(area, [...areas.get(area) ?? [], c]);
   }
   return new Map([...areas.entries()].sort(([a], [b]) => a.localeCompare(b)));
@@ -116,7 +115,8 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
             : overridden ? "is shadowed by AGENTS.override.md" : "is yours, so MEX doesn't write into it";
           const fallbacks = [
             agentsGroup.some(c => !isLearned(c.entry)) ? "Your other notes reach Codex at session start instead." : "",
-            !fallbackOn && agentsGroup.some(c => isLearned(c.entry)) ? "Use mex recall to read your learned rules in Codex." : "",
+            agentsGroup.some(c => isLearned(c.entry) && (!fallbackOn || !c.entry.mex.scope.every(scope => scope === "**")))
+              ? "Use mex recall to read your learned rules in Codex." : "",
           ];
           notes.push(`${path} ${reason}. ${fallbacks.filter(Boolean).join(" ")}`);
         } else {
@@ -157,6 +157,7 @@ export function planNative(root: string, agents: readonly NativeAgent[], selecte
     const entries: CodexFallback["entries"] = [];
     for (const candidate of [...selected].sort(byStrength)) {
       const id = candidate.entry.mex.id;
+      if (candidate.repoWide && !candidate.entry.mex.scope.every(scope => scope === "**")) continue;
       const areas = [...new Set(candidate.entry.mex.scope.map(areaOf))].filter(area => !area || !isLearned(candidate.entry));
       if (!areas.length || seen.has(id)) continue;
       entries.push({ id, level: candidate.level, areas, text: candidate.entry.text, line: nativeItem(candidate.entry) });

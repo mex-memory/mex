@@ -184,11 +184,21 @@ func vocabularyPointers(ev contract.Event, env Environment, snap *entries.Snapsh
 		return nil
 	}
 	defer closeRescueIndex(env, idx)
+	broadLearned := entries.BroadLearned(func() []string {
+		paths, err := idx.IndexedPaths()
+		if err != nil {
+			return nil
+		}
+		return paths
+	})
 	var full *entries.Snapshot
 	var out []vocabularyPointer
 	for n, hit := range hits {
 		if n >= vocabularyScan || len(out) >= vocabularyLimit {
 			break
+		}
+		if broadLearned(hit.item.Entry) {
+			continue
 		}
 		files, globs := scopeAnchors(ev.Checkout, hit.item.Entry, idx)
 		body := hit.item.Entry.OneLine

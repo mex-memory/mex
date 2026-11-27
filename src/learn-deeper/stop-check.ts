@@ -9,6 +9,7 @@ import { knowledgeProject } from "../knowledge/context.js";
 import { EntryIdSchema, isLearnedEntry, parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { containedDirectory, readBoundedTextFile } from "../knowledge/files.js";
 import { hasSecret } from "../knowledge/gates.js";
+import { learnedScopeClassifier } from "../knowledge/learned-scope.js";
 import { snapshotNotes } from "../knowledge/personal-store.js";
 import { repoFile } from "../knowledge/references.js";
 import { teamEntries } from "../knowledge/team.js";
@@ -84,15 +85,16 @@ function currentRules(writer: RecordWriter, request: Request) {
   if (!verdicts) return [];
   const notes = snapshotNotes(writer, request.project).files;
   const team = teamEntries(options).entries;
+  const broadScope = learnedScopeClassifier({ checkout: project.root, projectId: project.projectId, recordDirectory: project.location.directory });
   return request.rules.flatMap(rule => {
     const raw = notes.get(rule.id);
     const shared = team.find(item => item.entry.mex.id === rule.id)?.entry;
     let entry: KnowledgeEntry | undefined;
     try { entry = raw ? parseEntry(raw) : shared; } catch { return []; }
     if (!entry || raw && shared || project.retired.has(rule.id) || !isLearnedEntry(entry.mex) || entry.mex.kind !== "rule"
-      || entry.mex.status !== "active" || entry.mex.when?.length || entry.mex.scope.includes("**") || verdicts.get(`${raw ? "personal" : "team"}/${rule.id}`) !== "held") return [];
+      || entry.mex.status !== "active" || entry.mex.when?.length || verdicts.get(`${raw ? "personal" : "team"}/${rule.id}`) !== "held") return [];
     const paths = pathsMatch(entry, rule.paths);
-    return paths.length ? [{ id: rule.id, text: entry.text, paths }] : [];
+    return paths.length && !broadScope(entry.mex.scope) ? [{ id: rule.id, text: entry.text, paths }] : [];
   });
 }
 

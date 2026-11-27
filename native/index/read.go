@@ -151,6 +151,24 @@ func (r *Reader) AsOf() string { return r.pointer.AsOf }
 // Head is the commit HEAD named when the snapshot's files were listed; "" when unknown.
 func (r *Reader) Head() string { return r.pointer.Head }
 
+// IndexedPaths returns paths with a usable record in this immutable snapshot.
+func (r *Reader) IndexedPaths() ([]string, error) {
+	rows, err := r.db.Query("SELECT path FROM paths WHERE reason IS NULL AND hash IS NOT NULL AND lang IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, rows.Err()
+}
+
 // relative turns a path into the index's form: relative to the checkout, '/'.
 func (r *Reader) relative(path string) (string, bool) {
 	if filepath.IsAbs(path) {

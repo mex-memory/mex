@@ -184,6 +184,17 @@ Without a terminal (an agent, a script, CI) nothing is asked; the next `mex` in 
 Change the project trials with `mex config set <key> on|off --project`. The learning receipt keeps trial totals
 and the IDs of entries the trials saved. Delivery outcomes are counted separately from proposals.
 
+Learned prose scoped only to exact file paths stays scoped to those files.
+A `**` scope always counts as repository-wide. With at least 20 indexed source
+files, a rule with a glob counts as repository-wide if its scopes together
+match at least 30% of those files, counting each file once. Below 20 indexed
+source files, filename globs with no directory restriction, such as `**/*.go`,
+also count as repository-wide. One such Go rule
+accounted for 74% of one grader's wrong learned deliveries in the fresh-repo
+test of learn deeper on 10 repos (measured). With `learning.alwaysOn` off, these rules stay available in
+`mex recall` and review. File-touch delivery and prose Stop checks use narrower
+scopes. A proven `when:` can still fire at a matching edit.
+
 | Trial | Setting and default | Cost | How outcomes are counted |
 | --- | --- | --- | --- |
 | Prose checks after Stop | `learning.stopCheck`, off | One cheap call for up to three scoped rules and up to 12 KiB of diff. Runs when agents are idle, within the 3% automatic allowance | The next prompt gets each pointer once. Recall or a change to the flagged line counts as followed. A delivered pointer with neither counts as ignored when the observation ends |

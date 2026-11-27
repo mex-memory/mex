@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { buildIndex } from "../../file-index/build.js";
 import { openRecord } from "../../record/index.js";
 import { setLearningTrial } from "../../learn-deeper/trial-settings.js";
 import { serializeEntry } from "../entry.js";
@@ -18,7 +19,7 @@ vi.mock("../check.js", async original => ({
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
-function fixture() {
+function fixture(scope = "**") {
   const base = mkdtempSync(join(tmpdir(), "mex-always-on-")), root = join(base, "repo"), home = join(base, "home");
   dirs.push(base);
   execFileSync("git", ["init", "-q", root]);
@@ -27,6 +28,7 @@ function fixture() {
   writeFileSync(join(root, "CONTRIBUTING.md"), "Always use the stable branch for release fixes.\n");
   const human = entry("mx_team01", { source: { type: "docs", ref: "CONTRIBUTING.md" }, evidence: "docs" }, "Releases go through the release workflow, because tags trigger publishing.");
   const learned = entry("mx_deepwide1", {
+    scope: [scope],
     source: { type: "docs", ref: "CONTRIBUTING.md", producer: "learn-deeper" }, evidence: "docs",
     checks: [{ kind: "quote", role: "complete", files: {}, saw: { hash: `sha256:${"0".repeat(64)}` },
       target: { file: "CONTRIBUTING.md", exact: "Always use the stable branch for release fixes.", prefix: "", suffix: "" } }],
@@ -64,4 +66,26 @@ describe("learning.alwaysOn", () => {
     rebuildNative(f.options, { force: true });
     expect(f.read(".claude/rules/mex-local.md")).not.toContain("mx_deepwide1");
   });
+});
+
+it("writes a broad Go rule only to the person's root rule file when enabled", async () => {
+  const f = fixture("**/*.go");
+  for (let i = 0; i < 6; i++) writeFileSync(join(f.root, `source${i}.go`), "package main\n");
+  for (let i = 0; i < 14; i++) writeFileSync(join(f.root, `client${i}.ts`), "export const client = 1;\n");
+  const writer = openRecord(f.options);
+  try {
+    await buildIndex({ root: f.root, projectId: writer.checkout(f.root)!.project_id, recordDirectory: writer.location.directory, workers: 0 });
+    const off = rebuildNative(f.options, { force: true, agents: ["claude-code"] });
+    expect(off.selected).toBe(1);
+    expect(f.read(".claude/rules/mex-local.md")).not.toContain("mx_deepwide1");
+    setLearningTrial(writer, "learning.alwaysOn", "on", f.root);
+    const on = rebuildNative(f.options, { force: true, agents: ["claude-code"] });
+    expect(on.selected).toBe(2);
+    expect(f.read(".claude/rules/mex-local.md")).toContain("Open release fixes against the stable branch. <!-- mex:mx_deepwide1 -->");
+    expect(f.read(".claude/rules/mex-local.md")).not.toContain("paths:");
+    expect(f.read(".claude/rules/mex.md")).not.toContain("mx_deepwide1");
+    setLearningTrial(writer, "learning.alwaysOn", "off", f.root);
+    rebuildNative(f.options, { force: true, agents: ["claude-code"] });
+    expect(f.read(".claude/rules/mex-local.md")).not.toContain("mx_deepwide1");
+  } finally { writer.close(); }
 });

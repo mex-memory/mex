@@ -296,6 +296,9 @@ it("receipts linter suggestions and alternatives only after the gate saves them"
 it("checks a scoped diff only when idle and settles a once-delivered pointer by rule id", async () => {
   const f = fixture();
   try {
+    // Keep api below the broad-scope cutoff so this exercises scoped prose.
+    writeFileSync(join(f.root, "sdk", "config.ts"), "export const config = {};\n");
+    writeFileSync(join(f.root, "sdk", "types.ts"), "export type Client = { id: string };\n");
     await f.index();
     const accepted = await propose([{ producer: "learn-deeper", key: "prose-rule", kind: "rule", text: "Use a named endpoint value so logs show the full route.",
       source: { type: "mined", ref: "api/endpoint.ts" }, evidenceClass: "mined", model: "none", anchors: { scope: ["api/**"] },

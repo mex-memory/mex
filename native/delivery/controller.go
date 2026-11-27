@@ -112,6 +112,7 @@ func momentKind(ev contract.Event) bool {
 type group struct {
 	project, checkout string
 	snap              *entries.Snapshot
+	broadLearned      func(*entries.Entry) bool
 	cands             []candidate
 	firstRel          string
 	ranked            []rank.Result
@@ -504,6 +505,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 		finish := phase(env.Trace, "snapshot-load")
 		if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, project, checkout); err == nil && len(snap.Items) > 0 {
 			g.snap = &snap
+			g.broadLearned = entries.CheckoutBroadLearned(env.RecordDirectory, project, checkout)
 		}
 		finish()
 		byCheckout[key] = g
@@ -584,7 +586,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				hintGates[g.project] = gate
 			}
 			g.views = append(g.views, v)
-			found := moments(v, g.snap, gate, noise.suppressed)
+			found := moments(v, g.snap, gate, noise.suppressed, g.broadLearned)
 			if len(found) > 0 && g.firstRel == "" {
 				g.firstRel = v.rel
 			}
@@ -595,7 +597,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 					g.shellEdits = append(g.shellEdits, c.rel)
 				}
 			}
-			if procs := shellProcedures(v, env, g.snap); len(procs) > 0 {
+			if procs := shellProcedures(v, env, g.snap, g.broadLearned); len(procs) > 0 {
 				g.cands = append(g.cands, procs...)
 				for _, c := range procs {
 					g.shellEdits = append(g.shellEdits, c.rel)

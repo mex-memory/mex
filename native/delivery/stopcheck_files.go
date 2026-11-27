@@ -36,7 +36,7 @@ const (
 // tool, and that no later command rewrote. A shell command or generator
 // changing it is not a hand edit; a command after the edit that left the
 // file newer than the edit, or removed it, regenerated or reverted it.
-func generatedFindings(ev contract.Event, env Environment, h *record.Hooks, snap *entries.Snapshot, turn stopTurn, state *bumpState) []stopFinding {
+func generatedFindings(ev contract.Event, env Environment, h *record.Hooks, snap *entries.Snapshot, turn stopTurn, state *bumpState, broadLearned func(*entries.Entry) bool) []stopFinding {
 	var out []stopFinding
 	var full map[string]*entries.Item // loaded once, only for a finding
 	for i := range snap.Items {
@@ -52,7 +52,7 @@ func generatedFindings(ev contract.Event, env Environment, h *record.Hooks, snap
 			}
 			edited = append(edited, rel)
 		}
-		if len(edited) == 0 || !supported(h, ev, e) {
+		if len(edited) == 0 || !supported(h, ev, e) || broadLearned(e) {
 			continue
 		}
 		sort.Strings(edited)

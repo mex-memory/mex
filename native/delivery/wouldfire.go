@@ -33,6 +33,7 @@ const (
 // recording session state. Each rule gets one example, with edit stops first.
 func WouldFire(items []*entries.Item, edits []WouldFireEdit) []WouldFireMatch {
 	snap, anchors := &entries.Snapshot{}, &entries.Snapshot{}
+	broadLearned := entries.BroadLearned(nil)
 	for _, it := range items {
 		if it == nil || it.Entry == nil || it.Entry.Status == "retired" {
 			continue
@@ -69,7 +70,7 @@ func WouldFire(items []*entries.Item, edits []WouldFireEdit) []WouldFireMatch {
 		if edit.Path == "" || edit.Added == "" {
 			continue
 		}
-		for _, b := range matchEdit(snap, edit.Path, boundedText(edit.Added, wouldFireBytes), boundedText(edit.Removed, wouldFireBytes)) {
+		for _, b := range matchEdit(snap, edit.Path, boundedText(edit.Added, wouldFireBytes), boundedText(edit.Removed, wouldFireBytes), broadLearned) {
 			if add(b.item, edit, b.trigger.Type, b.trigger.Pattern) {
 				return out
 			}
@@ -79,7 +80,7 @@ func WouldFire(items []*entries.Item, edits []WouldFireEdit) []WouldFireMatch {
 		return out
 	}
 	for _, edit := range edits {
-		for _, c := range moments(toolView{name: contract.ToolEdit, rel: edit.Path}, anchors, nil, nil) {
+		for _, c := range moments(toolView{name: contract.ToolEdit, rel: edit.Path}, anchors, nil, nil, broadLearned) {
 			if c.moment == momentAnchor && add(c.item, edit, momentAnchor, "") {
 				return out
 			}

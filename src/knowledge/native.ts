@@ -12,7 +12,8 @@ import { parseEntry } from "./entry.js";
 import { containedDirectory, readEntryFile, personalReadGuard } from "./files.js";
 import { gateEntry } from "./gates.js";
 import { CODEX_FALLBACK, ownedByPerson, planNative } from "./native-plan.js";
-import { isLearned, LEARNED_ALWAYS_ON_SETTING, learnedRepoWide, nativeRuleText, selectNative, type Candidate } from "./native-select.js";
+import { learnedScopeClassifier } from "./learned-scope.js";
+import { LEARNED_ALWAYS_ON_SETTING, nativeRuleText, selectNative, type Candidate } from "./native-select.js";
 import { writeNative, type NativeWrite } from "./native-write.js";
 import { references } from "./references.js";
 import { teamEntries } from "./team.js";
@@ -96,14 +97,15 @@ export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions
   if (home && !rebuild.sharedOnly && settings.on) candidates.push(...personalNotes(home, project.projectId, project.retired, project.root));
   const verdicts = candidates.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
   // A person's choice, so it never reaches shared files, and nothing while MEX is off here.
-  const { selected } = selectNative(candidates, verdicts, { learnedAlwaysOn: settings.learnedAlwaysOn && settings.on && !rebuild.sharedOnly });
+  const broadScope = learnedScopeClassifier({ checkout: project.root, recordDirectory: project.location.directory, projectId: project.projectId });
+  const { selected } = selectNative(candidates, verdicts, { broadScope, learnedAlwaysOn: settings.learnedAlwaysOn && settings.on && !rebuild.sharedOnly });
   const defaults = settings.registered && (rebuild.setupDefaults || settings.previous)
     ? selectAgentDefaults(project.root, { ...rebuild.setupDefaults, enabled: settings.defaultsOn && settings.on,
-      generated: selected.filter(c => c.entry.mex.scope.includes("**"))
-        .map(({ entry }) => isLearned(entry) ? nativeRuleText(entry) : entry.text) })
+      generated: selected.filter(c => c.repoWide || c.entry.mex.scope.includes("**"))
+        .map(({ entry, repoWide }) => repoWide ? nativeRuleText(entry, true) : entry.text) })
     : undefined;
   // Team rules turned on by that choice go into this person's local files.
-  const planned = selected.map(c => c.level === "team" && learnedRepoWide(c.entry) ? { ...c, level: "personal" as const } : c);
+  const planned = selected.map(c => c.level === "team" && c.repoWide ? { ...c, level: "personal" as const } : c);
   const plan = planNative(project.root, agents, planned, settings.prDecisions, defaults?.rules, settings.on && !rebuild.sharedOnly);
   if (defaults?.rules.length && !agents.length && !defaults.report.unavailable.length) defaults.report.unavailable.push("agents without a native rule file");
   if (defaults?.rules.length && agents.includes("claude-code") && !plan.files.some(file => file.agents.includes("claude-code") && file.defaultCount)

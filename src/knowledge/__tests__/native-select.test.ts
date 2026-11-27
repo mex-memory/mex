@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { entry } from "./fixtures.js";
 import type { KnowledgeEntry } from "../entry.js";
+import { BROAD_LEARNED_REASON, coversMostCode } from "../learned-scope.js";
 import { areaOf, isBroad, LEARNED_ALWAYS_ON_SETTING, learnedSupport, MAX_LEARNED_ALWAYS_ON_TOKENS, nativeRuleText, selectNative, type Candidate } from "../native-select.js";
 
 const team = (e: KnowledgeEntry): Candidate => ({ level: "team", entry: e });
@@ -74,7 +75,7 @@ describe("layer A selection", () => {
     const off = selectNative(entries, verdicts);
     expect(off.selected.map(c => c.entry.mex.id)).toEqual(["mx_deeparea1", "mx_human01"]);
     expect(off.skipped).toEqual([{ id: "mx_deepwide1",
-      reason: "learned repo-wide rules load every session only with learning.alwaysOn on; available through recall" }]);
+      reason: BROAD_LEARNED_REASON }]);
     expect(LEARNED_ALWAYS_ON_SETTING).toBe("learning.alwaysOn");
     expect(selectNative(entries, verdicts, { learnedAlwaysOn: true }).selected.map(c => c.entry.mex.id))
       .toEqual(["mx_deeparea1", "mx_deepwide1", "mx_human01"]);
@@ -82,6 +83,28 @@ describe("layer A selection", () => {
 
   describe("always-on budget for learned repo-wide entries", () => {
     const on = { learnedAlwaysOn: true };
+    it("charges an indexed broad glob against the same budget as whole-repo rules", () => {
+      const entries = [
+        team(learned("mx_deepfirst", [1, 2, 3], 150)),
+        team(learned("mx_deepsecond", [4, 5, 6], 150)),
+        team(learned("mx_deepgoscope", [7, 8], 150, { scope: ["**/*.go"] })),
+        team(learned("mx_deeplast", [9], 150)),
+        team(entry("mx_person1", { scope: ["**/*.go"] })),
+      ];
+      const verdicts = held(...entries.map(c => c.entry.mex.id));
+      const paths = [
+        ...Array.from({ length: 6 }, (_, i) => `lib/file${i}.go`),
+        ...Array.from({ length: 14 }, (_, i) => `web/file${i}.ts`),
+      ];
+      const broadScope = (scopes: readonly string[]) => coversMostCode(scopes, () => paths);
+      const { selected, skipped } = selectNative(entries, verdicts, { ...on, broadScope });
+      expect(selected.map(c => c.entry.mex.id)).toEqual(["mx_deepfirst", "mx_deepgoscope", "mx_deepsecond"]);
+      expect(selected[1]?.entry.mex.scope).toEqual(["**/*.go"]);
+      expect(skipped).toEqual([
+        { id: "mx_person1", reason: "scoped to files, not an area" },
+        { id: "mx_deeplast", reason: "over the always-on budget for learned rules; available through recall" },
+      ]);
+    });
     it("counts distinct pull requests across the ref and source checks", () => {
       const reviewed = learned("mx_deepa1", [1, 2, 2, 3], 10, {
         source: { type: "review", ref: "https://github.com/ACME/APP/pull/1/files?change=1", producer: "learn-deeper" },

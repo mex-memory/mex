@@ -59,21 +59,30 @@ only pull.
 
 ## Which entries (layer A)
 
-An entry goes into rule files when it is active; a rule, decision, pitfall,
-procedure or recipe; backed by a person, docs, CI or review; scoped to the
-whole repo or a folder (`**` or `dir/**`, not a file pattern); not broken or
-changed; at most 600 characters; and not itself read from a rule file. Team
-entries go into shared files; personal notes into local files.
+Rule files take active rules, decisions, pitfalls, procedures and recipes
+backed by a person, docs, CI or review. They take whole-repo and folder scopes
+(`**` or `dir/**`), with the coverage rule below for learned entries. A rule file
+entry must be at most 600 characters, have no broken or changed verdict, and
+come from another source. Team entries go into shared files and personal notes
+go into local files.
 Entries with checks need a held result from the current native evaluator;
 cached verdicts do not authorize publication after the source changes. If
 current checks are unavailable, checked entries are left out.
 
-Repository-wide learned rules are left out of rule files unless the person
-turns on `learning.alwaysOn` for the project (`mex config set
-learning.alwaysOn on --project`). Agents read them with `mex recall`; learned
-rules scoped to a folder or to files are delivered as before. In the fresh-repo
-test (OSS-92 v4), always-on learned rules raised wrong advice past the bar set
-for it, so the default is off.
+A learned rule scoped only to exact file paths stays scoped to those files.
+A `**` scope always counts as repository-wide. With at least 20 indexed source
+files, a rule with a glob counts as repository-wide if its scopes together
+match at least 30% of those files, counting each file once. Below 20 indexed
+source files, filename globs with no directory restriction, such as `**/*.go`,
+also count as repository-wide.
+
+Repository-wide learned prose is available through `mex recall` and the review
+list. It loads into rule files only when the person turns on
+`learning.alwaysOn` for the project (`mex config set learning.alwaysOn on --project`).
+A learned rule with a proven `when:` still fires at its matching edit.
+In the fresh-repo test of learn deeper on 10 repos (measured), one learned rule scoped to `**/*.go`
+accounted for 74% of one grader's wrong learned deliveries. The setting
+defaults to off.
 
 When it is on, those rules go into that person's local files only, so shared
 files stay the same for everyone. They share a 450 estimated token budget

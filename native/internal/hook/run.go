@@ -449,7 +449,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	}
 	var completeStopPointer func(bool)
 	if ev.Kind == contract.Prompt && !failed && known && toModel.Context != adapter.ChannelNone && h.afterOutput != nil {
-		if pointer, complete := stopCheckPrompt(ev, recordDirectory, now); pointer != "" {
+		if pointer, complete := stopCheckPrompt(ev, h, recordDirectory, now); pointer != "" {
 			if reply.Context != "" {
 				reply.Context += "\n\n"
 			}

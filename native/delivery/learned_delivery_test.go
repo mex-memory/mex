@@ -3,14 +3,71 @@ package delivery
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
-	"path/filepath"
 )
+
+func TestGoScopeLearnedDeliveryUsesIndexedCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name, scope       string
+		goFiles, webFiles int
+		broad             bool
+	}{
+		{"no index", "**/*.go", 0, 0, true},
+		{"Go-heavy", "**/*.go", 6, 14, true},
+		{"Go-light", "**/*.go", 5, 15, false},
+		{"exact file", "src/a.go", 1, 2, false},
+	} {
+		for _, tool := range []string{"read", "edit"} {
+			t.Run(tc.name+"/"+tool, func(t *testing.T) {
+				f := rescueFixture(t)
+				if tc.goFiles > 0 {
+					paths := map[string][]plantedSymbol{"src/a.go": nil, "README.md": nil}
+					for i := 1; i < tc.goFiles; i++ {
+						paths[fmt.Sprintf("src/file%d.go", i)] = nil
+					}
+					for i := range tc.webFiles {
+						paths[fmt.Sprintf("web/file%d.ts", i)] = nil
+					}
+					plantIndex(t, f, paths)
+				}
+				f.entry(spec{id: "mx_review1", kind: "rule", scope: tc.scope, source: "review", evidence: "review",
+					producer: "learn-deeper", oneLine: "Keep adapter errors structured."})
+				f.entry(spec{id: "mx_pattern", kind: "rule", scope: "**/*.go", source: "review", evidence: "review",
+					producer: "learn-deeper", oneLine: "Use the structured accessor.", when: []string{"anti:oldAccessor()"}})
+				f.entry(spec{id: "mx_mined01", kind: "pitfall", scope: "**/*.go", source: "mined", producer: "code-facts",
+					evidence: "mined", oneLine: "Do not edit generated files."})
+				f.verdict("mx_review1", held)
+				f.verdict("mx_pattern", held)
+				f.verdict("mx_mined01", held)
+				f.start("startup")
+				p := f.file("src/a.go", "package src")
+				call := read(p, "package src")
+				if tool == "edit" {
+					call = edit(p, "newAccessor()")
+				}
+				got := f.send(f.event(contract.PostToolBatch, call))
+				if shown := strings.Contains(got, "Keep adapter errors structured."); shown == tc.broad {
+					t.Fatalf("broad=%v, shown=%v, context=%q", tc.broad, shown, got)
+				}
+				if tool == "read" {
+					mustHave(t, got, "Do not edit generated files.")
+				}
+				if reply := preEdit(f, edited(f, "src/a.go", "", "oldAccessor()")); reply.Decision != contract.Deny {
+					t.Fatalf("matching pattern edit was not stopped: %+v", reply)
+				} else {
+					mustHave(t, reply.Reason, "Use the structured accessor.")
+				}
+				t.Logf("prose delivered=%v, matching edit stopped=true", !tc.broad)
+			})
+		}
+	}
+}
 
 func TestSuppressedLearnedBumpDeliversScopedProse(t *testing.T) {
 	f := newFixture(t)

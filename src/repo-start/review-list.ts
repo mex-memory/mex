@@ -7,6 +7,7 @@
  */
 import { stripVTControlCharacters } from "node:util";
 import type { KnowledgeEntry } from "../knowledge/entry.js";
+import { BROAD_LEARNED_REASON, LEARNED_ALWAYS_ON_SETTING, learnedScopeClassifier } from "../knowledge/learned-scope.js";
 import { tombstone } from "../knowledge/state.js";
 import { openRecord, type RecordWriter } from "../record/index.js";
 import { readKey } from "./keys.js";
@@ -51,15 +52,21 @@ export async function listLearnedRules(projectPath: string, json = false): Promi
     import("../knowledge/context.js"), import("../knowledge/personal-store.js"), import("../knowledge/entry.js"),
   ]);
   const project = knowledgeProject({ projectPath });
+  const broadScope = learnedScopeClassifier({ checkout: project.root, projectId: project.projectId, recordDirectory: project.location.directory });
   const rules = [...readNotes(project.location.home, project.projectId).files.values()].flatMap(raw => {
     try {
       const { mex } = parseEntry(raw);
-      return isLearnedEntry(mex) ? [{ id: mex.id, status: mex.status, rule: clean(mex.one_line, false) }] : [];
+      if (!isLearnedEntry(mex)) return [];
+      const broad = !mex.when?.length && broadScope(mex.scope);
+      return [{ id: mex.id, status: mex.status, rule: clean(mex.one_line, false), ...(broad ? { deliveryReason: BROAD_LEARNED_REASON } : {}) }];
     } catch { return []; }
   }).sort((a, b) => a.id.localeCompare(b.id));
   if (json) console.log(JSON.stringify({ ok: true, rules }));
   else if (!rules.length) console.log("No learned rules in this repo yet.");
-  else for (const { id, status, rule } of rules) console.log(`${id}  ${status}  ${rule}`);
+  else for (const { id, status, rule, deliveryReason } of rules) {
+    console.log(`${id}  ${status}  ${rule}`);
+    if (deliveryReason) console.log(`  ${deliveryReason}`);
+  }
 }
 
 async function pending(writer: RecordWriter, projectId: string): Promise<Pending | undefined> {
@@ -126,6 +133,7 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   const at = context.home ? { home: context.home } : undefined;
   const writer = openRecord(at);
   let list: Pending | undefined;
+  const broadScope = learnedScopeClassifier({ checkout: context.root, projectId: context.projectId, recordDirectory: writer.location.directory });
   try { list = await pending(writer, context.projectId); } finally { writer.close(); }
   if (!list) return undefined;
   const width = Math.max(30, Math.min(80, context.mode.width ?? 80));
@@ -145,6 +153,7 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   const asked = new Set(!outcome ? waiting : [...waiting].sort((a, b) => b.row.support - a.row.support
     || Number(b.row.proven) - Number(a.row.proven) || a.row.entryId.localeCompare(b.row.entryId)).slice(0, ASK_LIMIT));
   const items = waiting.filter(item => asked.has(item));
+  const broad = new Set(list.items.filter(({ entry }) => !entry.mex.when?.length && broadScope(entry.mex.scope)));
   const later = waiting.length - items.length;
   const rich = context.rich;
   const counts = outcome
@@ -154,7 +163,8 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   const replay = new Map<string, string[]>();
   try {
     const { pastEdits, wouldFire } = await import("../learn-deeper/would-fire.js");
-    const fired = wouldFire(items.map(item => item.raw), await pastEdits(context.root), context.env);
+    const entries = items.filter(item => !broad.has(item)).map(item => item.raw);
+    const fired = entries.length ? wouldFire(entries, await pastEdits(context.root), context.env) : [];
     for (const item of fired) {
       const where = clean(`${item.commit.slice(0, 7)} ${item.path}${item.line ? `:${item.line}` : ""}`, context.mode.ascii);
       const lines = replay.get(item.entryId) ?? [];
@@ -167,15 +177,20 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   const rewrites = new Map<string, string>(), drops = new Set<string>();
   const canCheck = items.some(item => item.entry.mex.status === "proposed");
   const checkHint = `v check this rule against the code (about ${VERIFY_ESTIMATE / 1000}k tokens)`;
-  const summary = outcome ? "Rules that passed the checks are live now, and saving keeps them. Tick the ones below your agents should also get."
+  const summary = outcome ? "Saving keeps the rules that passed the checks. Tick any rules you also want to keep."
     : "Tick the rules your agents should get.";
+  const guidance = automatic.some(item => broad.has(item))
+    ? [summary, `Some learned rules cover most of the code. They load every session only with ${LEARNED_ALWAYS_ON_SETTING} on.`]
+    : [summary];
+  if (!items.length && guidance.length > 1) out(guidance.slice(1));
   const selected = !items.length ? [] : await multiSelect(items.map(item => {
     const claim = clean(item.entry.mex.one_line, context.mode.ascii);
-    const details = [...reviewDetails(item, context.mode.ascii, rich), ...(replay.get(item.row.entryId) ?? []).slice(0, 1)];
+    const details = [...reviewDetails(item, context.mode.ascii, rich),
+      ...(broad.has(item) ? [BROAD_LEARNED_REASON] : []), ...(replay.get(item.row.entryId) ?? []).slice(0, 1)];
     return { value: item, label: rich?.codeTint(claim) ?? claim, details, checked: item.entry.mex.status === "active" };
   }), {
     rich: rich ?? null,
-    title: [...title, ...(rich ? rich.text([summary]) : [summary]), ""],
+    title: [...title, ...(rich ? rich.text(guidance) : guidance), ""],
     hint: `↑↓ move · Space keep or leave waiting${canCheck ? ` · ${checkHint}` : ""} · Enter save`,
     plainHint: `Enter saves. Type a number to keep a rule or leave it waiting.${canCheck ? " v then a number checks a rule." : ""}`,
     ...(context.keys ? { read: next } : {}),

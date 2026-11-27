@@ -531,6 +531,7 @@ func Build(opts Options) (Result, error) {
 	// the code moved since (a pull, an edit in another session), a note the
 	// agent just loaded from them may no longer hold: retract it here and ask
 	// for a rebuild. Imported rule files are the person's own and untouched.
+	broadLearned := entries.CheckoutBroadLearned(directory, opts.ProjectID, opts.Checkout)
 	for _, c := range all {
 		if len(result.Corrections) >= maxCorrections {
 			break
@@ -539,7 +540,7 @@ func Build(opts Options) (Result, error) {
 		if (c.level != "personal" && c.level != "team") || retired[e.ID] || !result.Coverage.Covers(e.ID, opts.Agent, opts.Path) || !inTime(c) {
 			continue
 		}
-		if e.Learned() && e.Status == "active" && len(e.Scope) == 1 && e.Scope[0] == "**" {
+		if e.Status == "active" && len(e.When) == 0 && broadLearned(e) {
 			result.NativeLoaded = append(result.NativeLoaded, Item{ID: e.ID, Level: c.level})
 		}
 		if len(e.Checks) == 0 {

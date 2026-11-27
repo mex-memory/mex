@@ -253,6 +253,7 @@ func completeCheck(it *entries.Item) bool {
 func bumpCandidates(ev contract.Event, env Environment) []bump {
 	var out []bump
 	snaps := map[string]*entries.Snapshot{}
+	broad := map[string]func(*entries.Entry) bool{}
 	for _, v := range views(ev, env.Resolve) {
 		if !isEdit(v) || v.checkout == "" || v.project == "" || v.rel == "" || v.added == "" {
 			continue
@@ -267,6 +268,7 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 				snap = &loaded
 			}
 			snaps[key] = snap
+			broad[key] = entries.CheckoutBroadLearned(env.RecordDirectory, v.project, v.checkout)
 		}
 		if snap == nil {
 			continue
@@ -281,7 +283,7 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 			old = currentText(v.path)
 		}
 		added := boundedText(v.added, limit)
-		for _, m := range matchEdit(snap, v.rel, added, old) {
+		for _, m := range matchEdit(snap, v.rel, added, old, broad[key]) {
 			m.project, m.check = v.project, v.checkout
 			out = append(out, m)
 		}
@@ -293,7 +295,7 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 // one edit adds at rel: added is the new text, old what it replaces. It is the
 // speed bump's whole matching rule, shared with the "would have fired" replay
 // so the two can never disagree.
-func matchEdit(snap *entries.Snapshot, rel, added, old string) []bump {
+func matchEdit(snap *entries.Snapshot, rel, added, old string, broadLearned func(*entries.Entry) bool) []bump {
 	var out []bump
 	p := snap.Patterns()
 	for i := range snap.Items {
@@ -303,7 +305,7 @@ func matchEdit(snap *entries.Snapshot, rel, added, old string) []bump {
 			// A layer rule held by an import relation has no literal to
 			// match: the edit's imports are resolved instead.
 			if inScope(it, rel) {
-				if t, ok := relationBump(it, rel, added, old); ok {
+				if t, ok := relationBump(it, rel, added, old); ok && !broadLearned(it.Entry) {
 					out = append(out, bump{item: it, trigger: t, rel: rel})
 				}
 			}

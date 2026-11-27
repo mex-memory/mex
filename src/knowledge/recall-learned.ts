@@ -11,6 +11,7 @@ import { KnowledgeError } from "./contract.js";
 import type { KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readBoundedTextFile } from "./files.js";
 import { hasSecret } from "./gates.js";
+import { BROAD_LEARNED_REASON, learnedScopeClassifier } from "./learned-scope.js";
 import { isLearned } from "./native-select.js";
 import { claimHash } from "./state.js";
 import { expand, personalSnapshot, type StoredEntry } from "./store.js";
@@ -23,6 +24,7 @@ interface LearnedRecall {
   verdict: Verdict;
   action: "given" | "replaced" | "withheld";
   message: string;
+  deliveryReason?: string;
   claim?: string;
   why?: string;
   fix?: Fix;
@@ -100,7 +102,9 @@ export function describeLearnedRecall(item: StoredEntry, options: KnowledgeOptio
   const { verdict, checks } = learnVerdict(item, options, project);
   const mex: KnowledgeEntry["mex"] & { fix?: Fix } = item.entry.mex;
   const label = mex.source.label ? `${item.label} ${mex.source.label}` : item.label;
-  const result = { id, level: item.level, label, verdict };
+  const broadScope = learnedScopeClassifier({ checkout: project.root, projectId: project.projectId, recordDirectory: project.location.directory });
+  const result = { id, level: item.level, label, verdict,
+    ...(!mex.when?.length && broadScope(mex.scope) ? { deliveryReason: BROAD_LEARNED_REASON } : {}) };
   const boundary = mex.status === "proposed" || mex.status === "retired"
     ? " A shared copy is separate and stays until the team changes it. Rule text an agent already loaded stays until that agent starts again."
     : "";
@@ -123,6 +127,7 @@ export function describeLearnedRecall(item: StoredEntry, options: KnowledgeOptio
 
 export function formatLearnedRecall(item: LearnedRecall): string {
   const lines = [`${item.id} ${item.label}`, item.message];
+  if (item.deliveryReason) lines.push(item.deliveryReason);
   if (item.claim) lines.push("", item.claim);
   if (item.why) lines.push("", item.why);
   if (item.fix) {

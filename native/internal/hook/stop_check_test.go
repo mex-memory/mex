@@ -79,3 +79,45 @@ Use structured events so consumers can filter by type.
 		t.Fatalf("delivery receipt = %s, %v", shown, err)
 	}
 }
+
+func TestBroadLearnedProseStaysOutOfStopRequestsAndOldPointers(t *testing.T) {
+	h, _ := fakeHome(t, true)
+	root, err := place.RealPath(repo(t, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "mx_deepgoscope"
+	register(t, h, root, projectID, "on", "")
+	file := filepath.Join(root, "src", "file.go")
+	write(t, file, "package src\n")
+	write(t, filepath.Join(root, ".mex", "learned", id+".md"), `---
+mex:
+  id: `+id+`
+  kind: rule
+  scope: ["**/*.go"]
+  source: {type: docs, ref: CONTRIBUTING.md, producer: learn-deeper}
+  evidence: docs
+  one_line: Use structured events.
+  checks: [{kind: scope, role: complete, target: {glob: "**/*.go"}, saw: {count: 1}, files: {}}]
+  status: active
+  created: 2026-11-03
+---
+Use structured events so consumers can filter by type.
+`)
+	write(t, filepath.Join(h.mex, "hook-delivery", projectID+".json"), `{"version":1,"stop_check":true}`)
+	now := time.Now()
+	ev := contract.Event{Agent: "claude-code", SessionID: "first", ProjectID: projectID, Checkout: root}
+	noteChanged(ev, h.mex, []fileEdit{{path: file}})
+	if requestStopCheck(ev, h, h.mex, now) {
+		t.Fatal("a broad prose rule queued a Stop check")
+	}
+
+	pointer := stopCheckPointer{Project: projectID, Checkout: root, At: now.UnixMilli(),
+		Flags: []stopCheckFlag{{ID: id, Path: "src/file.go", Line: 1}}}
+	data, _ := json.Marshal(pointer)
+	write(t, filepath.Join(h.mex, stopCheckPointers, place.ShortHash(root)+".json"), string(data))
+	ev.Kind, ev.SessionID, ev.Prompt = contract.Prompt, "next", &contract.PromptIn{Typed: true}
+	if text, _ := stopCheckPrompt(ev, h, h.mex, now); text != "" {
+		t.Fatalf("stale pointer for a broad rule: %s", text)
+	}
+}

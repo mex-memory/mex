@@ -342,7 +342,7 @@ func backticked(s string) []string {
 var promptWordRE = lazy(`(?i)\b(test|tests|testing|build|lint|typecheck|type-check|format|migrate|deploy|bench|benchmark)\b`)
 
 // moments finds the candidates for one tool call in one snapshot.
-func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool, suppressed func(string, string) bool) []candidate {
+func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool, suppressed func(string, string) bool, broadLearned func(*entries.Entry) bool) []candidate {
 	var out []candidate
 	readText := ""
 	if v.name == contract.ToolRead && v.output != nil {
@@ -367,7 +367,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 		if e.Learned() {
 			prose := false
 			if learnedProse(e) && v.rel != "" && ((v.name == contract.ToolRead && !v.failed) || isEdit(v)) && inScope(it, v.rel) {
-				prose = len(e.When) == 0 || suppressed(v.project, e.ID)
+				prose = (len(e.When) == 0 || suppressed(v.project, e.ID)) && !broadLearned(e)
 			}
 			if prose {
 				out = append(out, candidate{item: it, moment: momentAnchor, tier: scopeTier(it, v.rel), rel: v.rel,
@@ -409,7 +409,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			case "procedure":
 				if v.created && createsMatch(it, v.rel) {
 					add(momentCreate, tierFile, false, false)
-				} else if momentRecipe(it, v.rel) {
+				} else if momentRecipe(it, v.rel) && !broadLearned(e) {
 					// A co-change or generator rule, at the first edit in its
 					// area: "after changes in internal/ls, run ...".
 					out = append(out, candidate{item: it, moment: momentEdit, tier: scopeTier(it, v.rel), rel: v.rel, lineOnly: true})
@@ -448,26 +448,20 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 	return out
 }
 
-// promptMoments: a typed prompt that names a rejected option brings its
-// decision; one that asks to test or build brings the matching recipe.
 func learnedProse(e *entries.Entry) bool {
 	if e.Status != "active" {
 		return false
 	}
 	switch e.Kind {
 	case "rule", "decision", "pitfall", "procedure":
+		return true
 	default:
 		return false
 	}
-	for _, scope := range e.Scope {
-		switch scope {
-		case "**", "**/*", "*", "./**":
-			return false
-		}
-	}
-	return len(e.Scope) > 0
 }
 
+// A typed prompt that names a rejected option brings its decision; one that
+// asks to test or build brings the matching recipe.
 func promptMoments(text string, snap *entries.Snapshot) []candidate {
 	var out []candidate
 	if len(text) > 32*1024 {

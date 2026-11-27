@@ -54,7 +54,7 @@ export function renderNative(format: NativeFormat, area: string, candidates: Can
   const lines: string[] = [], ids: string[] = [], dropped: string[] = [];
   let bytes = Buffer.byteLength(head + tail);
   for (const c of ordered) {
-    const line = `${nativeItem(c.entry)}\n`;
+    const line = `${nativeItem(c.entry, c.repoWide)}\n`;
     const size = Buffer.byteLength(line);
     if (bytes + size > CAPS[format]) { dropped.push(c.entry.mex.id); continue; }
     bytes += size;

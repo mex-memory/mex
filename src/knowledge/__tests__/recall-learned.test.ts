@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatLearnedRecall, recallLearned } from "../recall-learned.js";
+import { BROAD_LEARNED_REASON } from "../learned-scope.js";
 import { entry } from "./fixtures.js";
 
 const { expand, readChecks } = vi.hoisted(() => ({ expand: vi.fn(), readChecks: vi.fn() }));
@@ -19,8 +20,8 @@ const evidence = { type: "review", producer: "learn-deeper", ref: source,
   label: "from 2 PRs, 3 maintainers", quote: "Use the stable accessor for shared keys." } as const;
 const fix = { path: "src/keys.ts", lines: "2-3", commit: "a".repeat(40), snippet: "  const key = stableKey()\n  return key" };
 
-function subject(level: "personal" | "team", verdict: "held" | "changed" | "broken" | "unknown", scopePass = false) {
-  const prepared = entry(id, { evidence: "review", source: evidence, one_line: "Use the stable accessor." }, "It normalizes shared keys.");
+function subject(level: "personal" | "team", verdict: "held" | "changed" | "broken" | "unknown", scopePass = false, scope = "**") {
+  const prepared = entry(id, { evidence: "review", source: evidence, one_line: "Use the stable accessor.", scope: [scope] }, "It normalizes shared keys.");
   Object.assign(prepared.mex, { fix });
   expand.mockReturnValue({ entry: prepared, level, label: "[learned]" });
   readChecks.mockReturnValue({ items: [{ id, level, verdict }], results: [{ entry_id: id, checks: scopePass ? [{ kind: "scope", status: "pass" }] : [] }] });
@@ -30,6 +31,12 @@ function subject(level: "personal" | "team", verdict: "held" | "changed" | "brok
 }
 
 describe("recall by learned entry id", () => {
+  it("returns a broad filename rule and explains its always-on setting", () => {
+    const item = subject("personal", "held", false, "**/*.go");
+    expect(item).toMatchObject({ claim: "Use the stable accessor.", deliveryReason: BROAD_LEARNED_REASON });
+    expect(formatLearnedRecall(item)).toContain(BROAD_LEARNED_REASON);
+  });
+
   it("prints the current claim, why, code, provenance, label and personal quote", () => {
     const item = subject("personal", "held");
     expect(item).toMatchObject({ verdict: "held", action: "given", claim: "Use the stable accessor.",

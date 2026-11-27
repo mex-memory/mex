@@ -93,9 +93,10 @@ func requestStopCheck(ev contract.Event, h home, directory string, now time.Time
 		retired[id] = true
 	}
 	request := stopCheckRequest{Project: ev.ProjectID, Checkout: ev.Checkout, Agent: ev.Agent, Session: ev.SessionID, At: now.UnixMilli(), Head: observed.Position.Head}
+	broadLearned := entries.CheckoutBroadLearned(directory, ev.ProjectID, ev.Checkout)
 	for _, item := range snapshot.Items {
 		e := item.Entry
-		if e.Status != "active" || e.Kind != "rule" || !e.Learned() || item.Level == "hint" || retired[e.ID] || len(e.When) != 0 || len(e.Scope) == 0 || e.Scope[0] == "**" {
+		if e.Status != "active" || e.Kind != "rule" || !e.Learned() || item.Level == "hint" || retired[e.ID] || len(e.When) != 0 {
 			continue
 		}
 		var scoped []string
@@ -107,7 +108,7 @@ func requestStopCheck(ev contract.Event, h home, directory string, now time.Time
 				}
 			}
 		}
-		if len(scoped) > 0 {
+		if len(scoped) > 0 && !broadLearned(e) {
 			sort.Strings(scoped)
 			request.Rules = append(request.Rules, stopCheckRule{e.ID, scoped[:min(len(scoped), 8)]})
 		}
@@ -148,7 +149,7 @@ type stopCheckPointer struct {
 
 // Claim after rendering, only on a supported prompt. The exclusive claim
 // prevents two concurrently submitted prompts from carrying the same pointer.
-func stopCheckPrompt(ev contract.Event, directory string, now time.Time) (string, func(bool)) {
+func stopCheckPrompt(ev contract.Event, h home, directory string, now time.Time) (string, func(bool)) {
 	if ev.Kind != contract.Prompt || ev.Prompt == nil || !ev.Prompt.Typed || ev.Checkout == "" || ev.SessionID == "" || len(ev.SessionID) > 512 || ev.AgentID != "" {
 		return "", nil
 	}
@@ -163,13 +164,32 @@ func stopCheckPrompt(ev contract.Event, directory string, now time.Time) (string
 		pointer.Session != "" || len(pointer.Flags) == 0 || len(pointer.Flags) > 3 || now.UnixMilli()-pointer.At > (7*24*time.Hour).Milliseconds() {
 		return "", nil
 	}
-	var lines []string
 	for _, flag := range pointer.Flags {
 		if !stopCheckEntry.MatchString(flag.ID) {
 			return "", nil
 		}
-		lines = append(lines, "MEX thinks your last change may break a learned rule: `mex recall "+flag.ID+"`")
 	}
+	snapshot, err := entries.LoadLight(directory, h.mex, ev.ProjectID, ev.Checkout)
+	if err != nil {
+		return "", nil
+	}
+	broadLearned := entries.CheckoutBroadLearned(directory, ev.ProjectID, ev.Checkout)
+	var lines []string
+	var flags []stopCheckFlag
+	for _, flag := range pointer.Flags {
+		for _, item := range snapshot.Items {
+			e := item.Entry
+			if e.ID == flag.ID && e.Status == "active" && e.Learned() && e.Kind == "rule" && len(e.When) == 0 && !broadLearned(e) {
+				lines = append(lines, "MEX thinks your last change may break a learned rule: `mex recall "+flag.ID+"`")
+				flags = append(flags, flag)
+				break
+			}
+		}
+	}
+	if len(flags) == 0 {
+		return "", nil
+	}
+	pointer.Flags = flags
 	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return "", nil

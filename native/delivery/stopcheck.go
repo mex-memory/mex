@@ -116,8 +116,9 @@ func StopChecks(ev contract.Event, env Environment) contract.Reply {
 	var found []stopFinding
 	if len(turn.lastEdit) > 0 {
 		if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, ev.ProjectID, ev.Checkout); err == nil {
-			found = append(found, generatedFindings(ev, env, h, &snap, turn, state)...)
-			found = append(found, obligationFindings(ev, h, &snap, turn, state)...)
+			broadLearned := entries.CheckoutBroadLearned(env.RecordDirectory, ev.ProjectID, ev.Checkout)
+			found = append(found, generatedFindings(ev, env, h, &snap, turn, state, broadLearned)...)
+			found = append(found, obligationFindings(ev, h, &snap, turn, state, broadLearned)...)
 		}
 		if !state.Stopped[stopTestsRule] {
 			if f, ok := directTestsFinding(ev, env, turn, found); ok {
@@ -209,7 +210,7 @@ func (t stopTurn) ranAfter(after int64, match func(segment string) bool) bool {
 // obligationFindings: knowledge-08's CI path obligations ("after changes in
 // X, run Y") whose area the turn edited, where none of their commands ran
 // after the last edit in that area. Ran, not passed (re-plan decision 8).
-func obligationFindings(ev contract.Event, h *record.Hooks, snap *entries.Snapshot, turn stopTurn, state *bumpState) []stopFinding {
+func obligationFindings(ev contract.Event, h *record.Hooks, snap *entries.Snapshot, turn stopTurn, state *bumpState, broadLearned func(*entries.Entry) bool) []stopFinding {
 	var out []stopFinding
 	for i := range snap.Items {
 		it := &snap.Items[i]
@@ -242,7 +243,7 @@ func obligationFindings(ev contract.Event, h *record.Hooks, snap *entries.Snapsh
 		}) {
 			continue
 		}
-		if !supported(h, ev, e) {
+		if !supported(h, ev, e) || broadLearned(e) {
 			continue
 		}
 		sort.Strings(edited)
