@@ -533,3 +533,40 @@ func TestPruneStopCursorsKeepsThoseTheJournalStillCovers(t *testing.T) {
 	}
 	PruneStopCursors(t.TempDir(), time.Now()) // no folder yet: nothing to do
 }
+
+// A learned obligation sends the agent back only while the inputs its checks
+// read still support the hold cached at session start.
+func TestStopLearnedObligationNeedsCurrentInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		workflow string
+		deny     bool
+	}{
+		{"inputs unchanged", "on:\n  pull_request:\n    paths: [\"packages/api/**\"]\n", true},
+		{"workflow changed on disk", "on:\n  pull_request:\n    paths: [\"packages/web/**\"]\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			id := "mx_deep" + strings.Repeat("e", 32)
+			f.file(".github/workflows/api.yml", "on:\n  pull_request:\n    paths: [\"packages/api/**\"]\n")
+			f.file("packages/api/package.json", `{"scripts":{"test":"vitest"}}`)
+			f.heldLearned(ciObligationSpec(id, "packages/api", ".github/workflows/api.yml"))
+			f.start("startup")
+			f.file(".github/workflows/api.yml", tc.workflow)
+			h := fixtureHooksDB(t, f.dir)
+			var verdict string
+			if err := h.QueryRow("SELECT verdict FROM verdicts WHERE entry_id=?", id).Scan(&verdict); err != nil || verdict != held {
+				t.Fatalf("expected the session-start hold to stay cached: %q, %v", verdict, err)
+			}
+			_ = h.Close()
+			f.journal(editRow("packages/api/src/routes.ts"))
+			r := stopNow(f)
+			if tc.deny != (r.Decision == contract.Deny) {
+				t.Fatalf("deny = %v, want %v: %+v", r.Decision == contract.Deny, tc.deny, r)
+			}
+			if !tc.deny && strings.Contains(r.Reason+r.Context, "npm run -w packages/api test") {
+				t.Fatalf("stale obligation text reached the agent: %+v", r)
+			}
+		})
+	}
+}

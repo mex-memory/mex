@@ -3,6 +3,7 @@ package delivery
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mex-memory/mex/native/delivery/entries"
@@ -154,6 +155,14 @@ func TestMergedCards(t *testing.T) {
 	// A card that wasn't given carries nothing.
 	if text, folded := mergedCards([]answerCard{card}, plan, receipts[1:]); text != "" || len(folded) != 0 {
 		t.Fatalf("not given: %q %v", text, folded)
+	}
+	// A replaced entry went out as its pointer: its stored claim never
+	// rides along on the card.
+	plan[0].action = "replaced"
+	receipts[1].Action = "replaced"
+	text, folded = mergedCards([]answerCard{card}, plan, receipts)
+	if strings.Contains(text, "parse strips the query string.") || folded["mx_note01"] {
+		t.Fatalf("replaced note merged: %q %v", text, folded)
 	}
 }
 

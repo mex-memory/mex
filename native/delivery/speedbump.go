@@ -104,8 +104,24 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		}
 		return it
 	}
+	shapers := map[[2]string]*shapeEnv{}
+	defer func() {
+		for _, senv := range shapers {
+			senv.close()
+		}
+	}()
+	shapeBump := func(b bump, it *entries.Item, verdict string) shaped {
+		key := [2]string{b.project, b.check}
+		senv := shapers[key]
+		if senv == nil {
+			senv = &shapeEnv{recordDirectory: env.RecordDirectory, project: b.project, checkout: b.check, hooks: h}
+			shapers[key] = senv
+		}
+		return shape(candidate{item: it, rel: b.rel}, verdict, senv)
+	}
 	var stop []bump
 	var overrides []bump
+	var rechecking string
 	seen := map[string]bool{}
 	for _, b := range found {
 		id := b.item.Entry.ID
@@ -132,7 +148,11 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 			if ok {
 				verdict = v.Verdict
 			}
-			if !bumpGiven(h, env, b, it, verdict) {
+			shaped := shapeBump(b, it, verdict)
+			if shaped.action != "given" {
+				if shaped.action == "replaced" && rechecking == "" {
+					rechecking = learnedPointer(id)
+				}
 				continue
 			}
 		}
@@ -153,7 +173,7 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		if len(overrides) > 0 && state.save(file) == nil {
 			bumpReceipts(h, ev, env, epoch.Number, overrides, "control", "override")
 		}
-		return contract.Reply{}
+		return contract.Reply{Context: rechecking}
 	}
 	// One stop names every rule this edit breaks, so making the edit again
 	// never meets a second stop.
@@ -191,7 +211,7 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 			if ok {
 				verdict = v.Verdict
 			}
-			if bumpGiven(h, env, b, other, verdict) {
+			if shapeBump(b, other, verdict).action == "given" {
 				return strings.TrimSpace(other.Full)
 			}
 		}
@@ -202,13 +222,7 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 	for _, b := range stop {
 		noteViolation(env.RecordDirectory, b.project, b.item.Entry.ID, env.Now)
 	}
-	return contract.Reply{Decision: contract.Deny, Reason: reply}
-}
-
-func bumpGiven(h *record.Hooks, env Environment, b bump, item *entries.Item, verdict string) bool {
-	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: b.project, checkout: b.check, hooks: h}
-	defer senv.close()
-	return shape(candidate{item: item}, verdict, senv).action == "given"
+	return contract.Reply{Decision: contract.Deny, Reason: reply, Context: rechecking}
 }
 
 func bumpReceipts(h *record.Hooks, ev contract.Event, env Environment, epoch int, rules []bump, action, detail string) {

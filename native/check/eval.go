@@ -74,6 +74,9 @@ type Evaluator struct {
 	// behind caches whether the index predates the checkout's HEAD: 0 unread, 1 no, 2 yes.
 	behind    int
 	urlSource func(url, capturedHash string) (urlObservation, bool)
+	// A delivery check proves scope membership on disk and uses only exact
+	// symbol spans. It cannot wait for an index refresh or search for moves.
+	deliveryScopes map[string]bool
 }
 
 // NewEvaluator opens a checkout for reading. Reads never leave it.

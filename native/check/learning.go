@@ -60,6 +60,12 @@ func fixtureCheck(c Check, when []entries.Trigger) CheckResult {
 }
 
 func (ev *Evaluator) scopeCheck(c Check) CheckResult {
+	if ev.deliveryScopes != nil {
+		if ev.deliveryScopes[str(c.Target, "glob")] {
+			return CheckResult{Status: Pass}
+		}
+		return CheckResult{Status: Floor, Reason: "no current file proves the scope"}
+	}
 	ix, ok := ev.index.(interface {
 		PathsMatching(string, int) ([]string, bool, error)
 	})

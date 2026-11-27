@@ -15,7 +15,6 @@ import (
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
-	"github.com/mex-memory/mex/native/record"
 )
 
 const (
@@ -36,9 +35,8 @@ const (
 // tool, and that no later command rewrote. A shell command or generator
 // changing it is not a hand edit; a command after the edit that left the
 // file newer than the edit, or removed it, regenerated or reverted it.
-func generatedFindings(ev contract.Event, env Environment, h *record.Hooks, snap *entries.Snapshot, turn stopTurn, state *bumpState, broadLearned func(*entries.Entry) bool) []stopFinding {
+func generatedFindings(ev contract.Event, snap *entries.Snapshot, turn stopTurn, state *bumpState, broadLearned func(*entries.Entry) bool, supported func(*entries.Item, string) bool, fullItem func(*entries.Item) *entries.Item) []stopFinding {
 	var out []stopFinding
-	var full map[string]*entries.Item // loaded once, only for a finding
 	for i := range snap.Items {
 		it := &snap.Items[i]
 		e := it.Entry
@@ -52,20 +50,15 @@ func generatedFindings(ev contract.Event, env Environment, h *record.Hooks, snap
 			}
 			edited = append(edited, rel)
 		}
-		if len(edited) == 0 || !supported(h, ev, e) || broadLearned(e) {
+		if len(edited) == 0 {
 			continue
 		}
 		sort.Strings(edited)
-		if full == nil {
-			full = map[string]*entries.Item{}
-			if loaded, err := entries.Load(env.RecordDirectory, env.Home, ev.ProjectID, ev.Checkout); err == nil {
-				for j := range loaded.Items {
-					full[loaded.Items[j].Entry.ID] = &loaded.Items[j]
-				}
-			}
+		if broadLearned(e) || !supported(it, edited[0]) {
+			continue
 		}
 		why := "MEX has it recorded as generated."
-		if f := full[e.ID]; f != nil && f.Entry.OneLine != "" {
+		if f := fullItem(it); f != nil && f.Entry.OneLine != "" {
 			why = f.Entry.OneLine
 		}
 		out = append(out, stopFinding{rule: e.ID, files: edited, line: fmt.Sprintf(

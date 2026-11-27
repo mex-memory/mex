@@ -103,7 +103,7 @@ func (ev *Evaluator) symbolCheck(c Check) CheckResult {
 		}
 		return CheckResult{Status: Fail, Reason: fmt.Sprintf("%s in %s changed", symbol, file), Now: fp}
 	}
-	if res.Status != Gone {
+	if res.Status != Gone || ev.deliveryScopes != nil {
 		return res
 	}
 	if where, found := ev.relink(file, symbol, want); found {
@@ -166,6 +166,9 @@ func (ev *Evaluator) spanTrusted(file string, data []byte, start int, name strin
 	info, miss := ev.index.FileInfo(file)
 	if miss == nil && strings.HasPrefix(strings.TrimPrefix(hashBytes(data), "sha256:"), info.Hash) && info.Hash != "" {
 		return true
+	}
+	if ev.deliveryScopes != nil {
+		return false
 	}
 	lines := strings.Split(string(data), "\n")
 	if start < 1 || start > len(lines) {
@@ -367,6 +370,9 @@ func (ev *Evaluator) patternCount(target map[string]any) (int, CheckResult, bool
 	}
 	if match != "" && match != "literal" {
 		return 0, CheckResult{Status: Floor, Reason: "structural counts need an exact file"}, false
+	}
+	if ev.deliveryScopes != nil && file != "" {
+		return ev.liveLiteralCount(file, str(target, "pattern"))
 	}
 	if ev.index == nil {
 		return 0, CheckResult{Status: Floor, Reason: "no file index for pattern checks"}, false

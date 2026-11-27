@@ -8,9 +8,43 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/internal/contract"
 	"github.com/mex-memory/mex/native/record"
 )
+
+// A held fixture needs a check whose inputs still support the entry when the
+// candidate is delivered. Use the same cache key as the hook's free stage.
+func (f *fixture) heldLearned(s spec) {
+	f.t.Helper()
+	f.file("policy.json", `{"active":true}`)
+	s.checks = append(s.checks, `    - kind: key
+      role: complete
+      target: {file: policy.json, pointer: /active}
+      saw: {value: true}
+      files: {}
+`)
+	f.entry(s)
+	h, err := record.OpenHooks(record.Location{Directory: f.dir, Hooks: filepath.Join(f.dir, "hooks.db")})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer h.Close()
+	result, err := check.RunStage(check.StageOptions{Checkout: f.root, ProjectID: f.project, MexHome: f.home, RecordDirectory: f.dir})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for _, item := range result.Results {
+		if item.EntryID == s.id && item.Verdict == check.Held {
+			err := h.PutVerdicts(f.project, f.root, []record.Verdict{{EntryID: s.id, Verdict: item.Verdict, InputsHash: item.EvaluationHash}})
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			return
+		}
+	}
+	f.t.Fatalf("entry did not evaluate to held: %s, %+v", s.id, result)
+}
 
 func TestGoScopeLearnedDeliveryUsesIndexedCoverage(t *testing.T) {
 	for _, tc := range []struct {
@@ -36,14 +70,12 @@ func TestGoScopeLearnedDeliveryUsesIndexedCoverage(t *testing.T) {
 					}
 					plantIndex(t, f, paths)
 				}
-				f.entry(spec{id: "mx_review1", kind: "rule", scope: tc.scope, source: "review", evidence: "review",
+				f.heldLearned(spec{id: "mx_review1", kind: "rule", scope: tc.scope, source: "review", evidence: "review",
 					producer: "learn-deeper", oneLine: "Keep adapter errors structured."})
-				f.entry(spec{id: "mx_pattern", kind: "rule", scope: "**/*.go", source: "review", evidence: "review",
+				f.heldLearned(spec{id: "mx_pattern", kind: "rule", scope: "**/*.go", source: "review", evidence: "review",
 					producer: "learn-deeper", oneLine: "Use the structured accessor.", when: []string{"anti:oldAccessor()"}})
 				f.entry(spec{id: "mx_mined01", kind: "pitfall", scope: "**/*.go", source: "mined", producer: "code-facts",
 					evidence: "mined", oneLine: "Do not edit generated files."})
-				f.verdict("mx_review1", held)
-				f.verdict("mx_pattern", held)
 				f.verdict("mx_mined01", held)
 				f.start("startup")
 				p := f.file("src/a.go", "package src")
@@ -71,9 +103,8 @@ func TestGoScopeLearnedDeliveryUsesIndexedCoverage(t *testing.T) {
 
 func TestSuppressedLearnedBumpDeliversScopedProse(t *testing.T) {
 	f := newFixture(t)
-	f.entry(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
+	f.heldLearned(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
 		producer: "learn-deeper", oneLine: "Use the stable accessor.", when: []string{"anti:oldAccessor()"}, level: "personal"})
-	f.verdict("mx_review1", held)
 	f.start("startup")
 	db, err := sql.Open("sqlite", filepath.Join(f.dir, "record.db"))
 	if err != nil {
@@ -99,10 +130,9 @@ func TestSuppressedLearnedBumpDeliversScopedProse(t *testing.T) {
 
 func TestLearnedBumpShowsFixAndRecordsTheOverride(t *testing.T) {
 	f := newFixture(t)
-	f.entry(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
+	f.heldLearned(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
 		producer: "learn-deeper", label: "from 2 PRs, 3 maintainers", oneLine: "Use the stable accessor.",
 		when: []string{"anti:oldAccessor()"}, fix: "  const value = stableAccessor()\n  return value", level: "personal"})
-	f.verdict("mx_review1", held)
 	f.start("startup")
 	call := edited(f, "src/example.ts", "", "oldAccessor()")
 	reply := preEdit(f, call)
@@ -123,9 +153,8 @@ func TestLearnedBumpShowsFixAndRecordsTheOverride(t *testing.T) {
 
 func TestLearnedBumpCountsCodeOccurrences(t *testing.T) {
 	f := newFixture(t)
-	f.entry(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
+	f.heldLearned(spec{id: "mx_review1", kind: "rule", scope: "src/**", source: "review", evidence: "review",
 		producer: "learn-deeper", oneLine: "Use the stable accessor.", when: []string{"anti:oldAccessor("}, level: "personal"})
-	f.verdict("mx_review1", held)
 	f.start("startup")
 	for _, code := range []string{"// oldAccessor(x)", "\"oldAccessor(x)\"", "notoldAccessor(x)"} {
 		if reply := preEdit(f, edited(f, "src/example.ts", "", code)); reply.Decision != "" {
@@ -145,10 +174,9 @@ func TestLearnedBumpTrimsWholeLinesAcrossThreeReasons(t *testing.T) {
 		pattern := fmt.Sprintf("oldAccessor%d()", i)
 		first := fmt.Sprintf("%d%s", i, strings.Repeat("\u754c", 120))
 		last := fmt.Sprintf("omitted-%d%s", i, strings.Repeat("\u754c", 600))
-		f.entry(spec{id: id, kind: "rule", scope: "src/**", source: "review", evidence: "review",
+		f.heldLearned(spec{id: id, kind: "rule", scope: "src/**", source: "review", evidence: "review",
 			producer: "learn-deeper", label: "Learned from 3 reviews", oneLine: "Replace " + pattern,
 			when: []string{"anti:" + pattern}, text: strings.Repeat("Long reason. ", 600), fix: first + "\n" + last})
-		f.verdict(id, held)
 		patterns, firstLines, lastLines = append(patterns, pattern), append(firstLines, first), append(lastLines, last)
 	}
 	f.start("startup")
@@ -175,9 +203,8 @@ func TestLearnedAnchorTouchAtEitherLevel(t *testing.T) {
 			for _, tool := range []string{"read", "edit"} {
 				t.Run(level+"/"+kind+"/"+tool, func(t *testing.T) {
 					f := newFixture(t)
-					f.entry(spec{id: "mx_review1", level: level, kind: kind, scope: "src/**", producer: "learn-deeper",
+					f.heldLearned(spec{id: "mx_review1", level: level, kind: kind, scope: "src/**", producer: "learn-deeper",
 						source: "review", evidence: "review", oneLine: "Keep one canonical key."})
-					f.verdict("mx_review1", held)
 					f.start("startup")
 					touch := func(rel string) string {
 						p := f.file(rel, "export {}")
@@ -203,9 +230,8 @@ func TestLearnedAnchorTouchRecognizesOnlyLoadedRuleFile(t *testing.T) {
 	for _, scope := range []string{"src/**", "other/**"} {
 		t.Run(scope, func(t *testing.T) {
 			f := newFixture(t)
-			f.entry(spec{id: "mx_review1", kind: "decision", scope: "src/**", producer: "learn-deeper",
+			f.heldLearned(spec{id: "mx_review1", kind: "decision", scope: "src/**", producer: "learn-deeper",
 				source: "review", evidence: "review", oneLine: "Keep one canonical key."})
-			f.verdict("mx_review1", held)
 			f.file(".claude/rules/keys.md", "---\npaths:\n  - "+scope+"\n---\nKeep one canonical key. <!-- mex:mx_review1 -->\n")
 			f.start("startup")
 			got := f.send(f.event(contract.PostToolBatch, read(f.file("src/key.ts", ""), "")))
