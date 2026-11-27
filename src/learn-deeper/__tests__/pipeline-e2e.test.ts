@@ -271,7 +271,9 @@ it("delivers checked trial rules, withholds removed evidence, and learns a repea
     forget(policy.entryId, "The rule was withdrawn.", { home, projectPath: checkout });
     expect(readObservations(writer.db, project, window.since).filter(item => item.normId === policy.entryId).map(item => item.forgotten)).toEqual([true, true]);
 
-    now = Date.parse("2026-11-27T10:00:00Z");
+    // The hook stamps sessions with the wall clock, so "a week later" must also be past the real session
+    // idle window, or the weekly run waits for agents that are only this test's own hook calls.
+    now = Math.max(Date.parse("2026-11-27T10:00:00Z"), Date.now() + 11 * 60_000);
     pulls = [first, second, later];
     const weekly = await run(WEEKLY_KIND, JSON.parse(writer.setting(project, SCHEDULE)!));
     expect(weekly.rows).toMatchObject([{ claim: weeklyClaim, support: 2, status: "active" }]);
