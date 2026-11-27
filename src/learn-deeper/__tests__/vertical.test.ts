@@ -1,19 +1,18 @@
-import { gateReply, isGatePrompt } from "./fixtures/gate.js";
-import { execFileSync, spawn } from "node:child_process";
+import { isGatePrompt } from "./fixtures/gate.js";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { literalPattern } from "../../file-index/classify.js";
 import { buildIndex } from "../../file-index/build.js";
 import { openIndex } from "../../file-index/read.js";
 import { indexDirectory, writePatterns } from "../../file-index/store.js";
 import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
+import { snapshotNotes } from "../../knowledge/personal-store.js";
 import * as gateEngine from "../../knowledge/gate.js";
 import * as proofEngine from "../prove.js";
 import { propose } from "../../knowledge/gate.js";
-import { snapshotNotes } from "../../knowledge/personal-store.js";
 import { prepareShare } from "../../knowledge/share-plan.js";
 import { claimHash } from "../../knowledge/state.js";
 import { runModel } from "../../model-runner/index.js";
@@ -21,8 +20,7 @@ import * as agents from "../../model-runner/agents.js";
 import { CEILING_WAIT, recordedModelSpend } from "../../model-runner/consent.js";
 import { claimModelBatch, enqueueModelBatch, recoverModelBatches, withModelJob } from "../../model-runner/budget-queue.js";
 import { ModelRunError, ModelWaitError } from "../../model-runner/index.js";
-import { queueJob } from "../../record/background.js";
-import { openRecord, type RecordWriter } from "../../record/index.js";
+import { openRecord } from "../../record/index.js";
 import { enqueueJob, listJobs, ownerId, recoverInterruptedJobs, registerJobKind, requestJob, requeueReadyJobs, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { ZERO } from "../../record/usage.js";
 import { runRepoStart } from "../../repo-start/command.js";
@@ -35,132 +33,13 @@ import { CURSOR_KEY, reviewRows } from "../pipeline.js";
 import { sourceDigest } from "../source.js";
 import { DAY_MS, nextWeeklyAt, queueDueWeekly, saveWeeklySchedule, WEEKLY_KIND, weeklySchedule, weeklyWakeDue } from "../weekly-schedule.js";
 
-let suite: string, binary: string, fixture: string, repo: string;
-const original = { host: "github.com" as const, slug: "example/memory" };
-const path = "CONTRIBUTING.md";
-const sourceId = "doc:CONTRIBUTING.md#development";
-const quote = "Run npm run verify before cutting a release.";
-const claim = quote;
-const paraphrase = "Before cutting a release, run npm run verify.";
-const detectAgents = agents.detectAgents;
-const doc = (body = quote) => `# Development\n\n${body}\n`;
-const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-function commit(message: string) {
-  git("add", ".");
-  git("-c", "commit.gpgsign=false", "commit", "-qm", message);
-  return git("rev-parse", "HEAD");
-}
+import {
+  accept, advance, claim, commit, doc, docReply, due, fakeCli, fixture, fixtureModel, git, hook,
+  jobRow, mockGithub, notes, only, openWeekly, original, paraphrase, path, quote, rawRows, repo, sourceId, state,
+  useLearningFixture,
+} from "./fixtures/learning.js";
 
-beforeAll(() => {
-  suite = realpathSync(mkdtempSync(join(tmpdir(), "mex-learn-vertical-")));
-  binary = process.env.MEX_HOOK_BINARY ?? join(suite, process.platform === "win32" ? "mex-hook.exe" : "mex-hook");
-  if (!process.env.MEX_HOOK_BINARY) execFileSync("go", ["build", "-o", binary, "./cmd/mex-hook"], { cwd: resolve("native"), timeout: 240_000, stdio: "pipe" });
-}, 300_000);
-afterAll(() => rmSync(suite, { recursive: true, force: true }));
-beforeEach(() => {
-  fixture = realpathSync(mkdtempSync(join(suite, "case-")));
-  repo = join(fixture, "repo");
-  mkdirSync(repo);
-  git("init", "-qb", "main");
-  git("config", "user.name", "Fixture");
-  git("config", "user.email", "fixture@example.invalid");
-  git("remote", "add", "origin", "https://github.com/example/memory.git");
-  writeFileSync(join(repo, path), doc());
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", scripts: { verify: "node verify.js" } }));
-  commit("Add the contributor guide");
-  for (const [key, value] of Object.entries({ MEX_HOME: fixture, MEX_BACKGROUND: "0", MEX_OFFLINE: "1", MEX_HOOK_BINARY: binary,
-    CLAUDE_CONFIG_DIR: join(fixture, "claude"), CODEX_HOME: join(fixture, "codex"), GH_TOKEN: "forge-fixture-token" })) vi.stubEnv(key, value);
-  fakeCli("codex");
-  vi.stubGlobal("fetch", mockGithub());
-});
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  vi.unstubAllEnvs();
-  registerJobKind(createLearnKind());
-  registerJobKind(createLearnKind({}, true));
-  rmSync(fixture, { recursive: true, force: true, maxRetries: 4 });
-});
-
-function fakeCli(...names: string[]) {
-  const bin = join(fixture, "bin");
-  mkdirSync(bin, { recursive: true });
-  for (const name of names) writeFileSync(join(bin, name + (process.platform === "win32" ? ".cmd" : "")), "", { mode: 0o755 });
-  vi.spyOn(agents, "detectAgents").mockImplementation(options => detectAgents({ ...options, userHome: fixture, env: { PATH: bin } }));
-}
-
-function mockGithub(options: { head?: () => string; at?: string; fetches?: string[] } = {}) {
-  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(String(input));
-    options.fetches?.push(url.pathname);
-    expect(url.origin).toBe("https://api.github.com");
-    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer forge-fixture-token");
-    if (url.pathname === "/repos/example/memory") return Response.json({ full_name: "example/memory", default_branch: "main", private: true });
-    if (url.pathname.endsWith("/branches/main") && options.head) return Response.json({ commit: { sha: options.head() } });
-    if (url.pathname === "/graphql") {
-      const { query, variables } = JSON.parse(String(init?.body)) as { query: string; variables: Record<string, string> };
-      if (query.includes("HarvestSearch(")) return Response.json({ data: Object.fromEntries(Object.entries(variables).filter(([key]) => /^q\d+$/u.test(key))
-        .map(([key, search]) => {
-          const [start, end] = /merged:([^ ]+)\.\.([^ ]+)$/u.exec(search)?.slice(1) ?? [];
-          const nodes = options.at && start && end && Date.parse(options.at) >= Date.parse(start) && Date.parse(options.at) <= Date.parse(end)
-            ? [{ number: 1, mergedAt: options.at }] : [];
-          return [`s${key.slice(1)}`, { issueCount: nodes.length, nodes, pageInfo: { hasNextPage: false } }];
-        })) });
-      if (query.includes("pullRequest(number:")) return Response.json({ data: { repository: { p0: {
-        number: 1, state: "MERGED", mergedAt: options.at, title: "Refresh the renderer", body: " ",
-        comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [], totalCount: 0 }, files: { nodes: [] },
-      } } } });
-    }
-    throw new Error(`Unexpected fixture request ${url.pathname}`);
-  });
-}
-const reply = (value: object) => ({ text: JSON.stringify(value), selectedModel: "fixture", usage: { ...ZERO, model: "fixture-2026-11", estimated: false } });
-type ModelRequest = Parameters<typeof runModel>[0];
-function docReply(request: ModelRequest, id = sourceId, text = claim, citation = quote) {
-  if (isGatePrompt(request.prompt)) return reply(gateReply(request.prompt));
-  expect(request.role).toBe("best");
-  expect(request.prompt).toContain("=== FILE " + id.slice(4).split("#", 1)[0]);
-  return reply({ rules: [{ text, quote: citation, kind: "process", scope: "repo", source: id.slice(4).split("#", 1)[0] }] });
-}
-
-async function accept(ask = vi.fn(async (_lines: readonly string[]) => true)) {
-  const lines: string[] = [];
-  const result = await runRepoStart({ cwd: repo, write: line => lines.push(line), caller: "person", ask, install: false, wait: false });
-  return { result, lines, ask };
-}
-const jobRow = (writer: RecordWriter, kind = LEARN_KIND) => writer.db.prepare("SELECT * FROM jobs WHERE kind=? ORDER BY rowid DESC LIMIT 1").get(kind) as unknown as JobRow;
-const only = (job: JobRow) => ({ only: new Set([job.id]) });
-const state = (job: JobRow) => JSON.parse(job.checkpoint ?? "{}");
-const rawRows = (writer: RecordWriter, job: JobRow) => writer.db.prepare("SELECT key,value FROM settings WHERE key LIKE ?").all(`learning.deep.v2.${job.id}.%`);
-const notes = (writer: RecordWriter, job: JobRow) => [...snapshotNotes(writer, job.project_id!).files.values()].map(parseEntry);
-async function advance(writer: RecordWriter, job: JobRow, condition: (row: JobRow) => boolean = row => row.state !== "queued") {
-  const owner = ownerId("foreground");
-  for (let i = 0; i < 20; i++) {
-    const row = jobRow(writer, job.kind);
-    if (condition(row)) return row;
-    expect(await runOneBatch(writer, owner, only(job)), String(row.reason ?? "")).toBe("ran");
-  }
-  throw new Error(`Learning did not reach the expected state: ${JSON.stringify(jobRow(writer, job.kind))}`);
-}
-function openWeekly(home?: string) {
-  const writer = openRecord({ home, projectPath: repo, isNetwork: () => false });
-  writer.db.prepare("UPDATE checkouts SET state='on' WHERE path=?").run(writer.checkout(repo)!.path);
-  return writer;
-}
-function due(writer: RecordWriter, head: string, now: number) {
-  const checkout = writer.checkout(repo)!;
-  saveWeeklySchedule(writer, checkout.project_id, { checkout: checkout.path, origin: original, source: original, visibility: "private",
-    agent: "codex", setup: "best-only", preferred: [], head, since: new Date(now - DAY_MS * 8).toISOString(), due: now });
-  queueDueWeekly(writer, queueJob, now);
-  return jobRow(writer, WEEKLY_KIND);
-}
-function hook(event: string, session_id: string, extra: object = {}) {
-  return execFileSync(binary, ["codex", event], { cwd: repo, encoding: "utf8",
-    input: JSON.stringify({ cwd: repo, hook_event_name: event, session_id, ...extra }) });
-}
-function fixtureModel() {
-  return vi.fn<typeof runModel>(async request => docReply(request));
-}
+useLearningFixture();
 
 it("quotes the ceiling before any model call, accounts for doc writing and evidence, and saves a private process rule", async () => {
   const model = vi.fn<typeof runModel>(async request => runModel({ ...request, __internal: { spawn: (_file, _args, options) => {
@@ -508,9 +387,10 @@ it("waits for an active agent and requires a forge login before any weekly fetch
   } finally { writer.close(); }
 });
 
-it("finishes a published writer batch after its runner dies without another model call", async () => {
+it("keeps published rules when a dead writer stops with gaps on background startup", async () => {
   await accept();
   const model = fixtureModel(), kind = createLearnKind({ model });
+  const publish = vi.spyOn(gateEngine, "propose");
   registerJobKind(kind);
   let writer = openRecord();
   try {
@@ -529,10 +409,16 @@ it("finishes a published writer batch after its runner dies without another mode
     expect(notes(writer, job)).toHaveLength(1);
     writer.close();
     writer = openRecord();
-    expect(recoverInterruptedJobs(writer, ownerId("background"), () => false)).toBe(1);
-    expect(jobRow(writer).progress).toBe("Finishing the saved batch after interruption");
-    expect(await advance(writer, job)).toMatchObject({ state: "done", results: 1 });
+    expect(recoverInterruptedJobs(writer, ownerId("background"), () => false, true)).toBe(1);
+    expect(jobRow(writer).progress).toBe("Finishing after interrupted learning was cleared");
+    expect(rawRows(writer, job)).toEqual([]);
+    expect(await advance(writer, job)).toMatchObject({ state: "done with gaps", results: 1 });
+    const completed = listJobs({ all: (sql, ...args) => writer.db.prepare(sql).all(...args) as never },
+      50, { terminal: true }).find(item => item.id === job.id);
+    expect(completed?.summary).toContain("Learning stopped after an interruption.");
+    expect(completed?.summary).toContain("Run mex learn to start a new run.");
     expect(model).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledTimes(1);
     expect(reviewRows(writer, job.project_id!, job.id)).toHaveLength(1);
     expect(notes(writer, job)).toHaveLength(1);
     expect(rawRows(writer, job)).toEqual([]);

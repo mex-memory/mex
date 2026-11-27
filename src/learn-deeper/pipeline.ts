@@ -200,13 +200,14 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
   }
   const { writer, job } = context;
   const stage = `call.${name}`;
-  const started = load<{ lastBatch: number }>(context, stage);
+  const started = load<{ lastBatch: number; rejectedThrough?: number }>(context, stage);
+  const attemptScope = `job_id=? AND id>?
+    AND (json_extract(pricing,'$.stage')=? OR (json_extract(pricing,'$.stage') IS NULL AND id>?))`;
   const attempts = writer.db.prepare(`SELECT id,state,charged_units FROM model_batches
-    WHERE job_id=? AND (charged_units>0 OR state='running')
-    AND (json_extract(pricing,'$.stage')=? OR (json_extract(pricing,'$.stage') IS NULL AND id>?))
+    WHERE ${attemptScope} AND (charged_units>0 OR state='running')
     ORDER BY charged_units DESC LIMIT 1`);
   // Untagged old admissions can only be matched with the saved attempt boundary.
-  const findAttempt = () => attempts.get(job.id, stage, started?.lastBatch ?? null);
+  const findAttempt = () => attempts.get(job.id, started?.rejectedThrough ?? 0, stage, started?.lastBatch ?? null);
   let prior = findAttempt();
   // A dead running row must become charged before deciding whether to retry.
   if (prior?.state === "running") {
@@ -248,6 +249,13 @@ async function call(input: PipelineInput, name: string, prompt: string, role: "c
     return reply;
   }).catch(error => {
     updateActivity(input, subject, "Paused or interrupted", step);
+    // The provider explicitly refused this call. Its charge still counts, but
+    // unlike a dead runner it cannot have left an answer that would be lost.
+    if (error instanceof ModelRunError && (error.category === "usage_limit" || error.category === "authentication")) {
+      const rejected = writer.db.prepare(`SELECT max(id) id FROM model_batches WHERE ${attemptScope}
+        AND state IN ('done','interrupted')`).get(job.id, started?.rejectedThrough ?? 0, stage, lastBatch)?.id;
+      if (rejected != null) save(context, stage, { lastBatch, rejectedThrough: Number(rejected) });
+    }
     throw error;
   });
   let reply: Reply | undefined;

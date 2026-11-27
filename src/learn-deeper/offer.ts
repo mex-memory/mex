@@ -8,7 +8,7 @@ import type { ModelAgent, ModelSetup } from "../model-runner/index.js";
 import { agentName, detectAgents, modelAgent, runnableAgents, type AgentStatus, type RunnableAgent } from "../model-runner/agents.js";
 import { ensureBackground, markPending, queueJob } from "../record/background.js";
 import { openHooksReadOnly, openRecord, openRecordReadOnly, type CheckoutRow, type RecordReader } from "../record/index.js";
-import { requestJob, type JobRow } from "../record/jobs.js";
+import { ownerPid, processAlive, requestJob, type JobRow } from "../record/jobs.js";
 import { ownUsageStatus, ownUsageTotals, refreshOwnUsage, usageWindows } from "../record/own-usage.js";
 import { detectCaller } from "../repo-start/caller.js";
 import { confirmAnalysis } from "../repo-start/analysis-screen.js";
@@ -75,6 +75,13 @@ function latestJob(reader: RecordReader, project: string): JobRow | undefined {
 }
 
 function showJob(job: JobRow, write: Print): void {
+  if (job.state === "running") {
+    const pid = job.owner ? ownerPid(job.owner) : undefined;
+    if (pid === undefined || (pid !== process.pid && !processAlive(pid))) {
+      write("Deep analysis: interrupted. The background process will check saved work when it starts. Run `mex jobs` to check progress.");
+      return;
+    }
+  }
   write(`Deep analysis: ${job.state} · ${job.reason ?? job.progress ?? "see `mex jobs`"}`);
 }
 

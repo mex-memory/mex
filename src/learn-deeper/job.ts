@@ -89,7 +89,10 @@ function waitOn(error: unknown, state: Checkpoint, now: number): BatchResult<Che
   }
   if (error instanceof ModelRunError && (error.category === "authentication" || error.category === "usage_limit")) {
     const reset = error.resetTime ? Date.parse(error.resetTime) : NaN;
-    return { checkpoint: { ...state, retryAt: Number.isFinite(reset) && reset > now ? reset : now + 60_000 }, wait: error.message };
+    const wait = error.category === "usage_limit"
+      ? "The selected agent reached its usage limit. Learning will retry. Saved work is kept."
+      : error.message;
+    return { checkpoint: { ...state, retryAt: Number.isFinite(reset) && reset > now ? reset : now + 60_000 }, wait };
   }
   return undefined;
 }
@@ -141,9 +144,10 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       return reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? ORDER BY batch DESC LIMIT 1", job.id)[0]?.summary;
     },
     display(job, reader) {
-      const { outcome, gaps } = checkpoint(job);
-      const finalReason = !outcome && job.state === "done with gaps" ? kind.details?.(job, reader) : undefined;
-      const action = [job.reason, ...gaps, finalReason].find(gap => gap && /sign in|private repo|approved ceiling|run mex learn/iu.test(gap));
+      const { outcome, gaps, rawPurged } = checkpoint(job);
+      const finalReason = (!outcome || rawPurged) && job.state === "done with gaps" ? kind.details?.(job, reader) : undefined;
+      const action = [rawPurged ? finalReason : undefined, job.reason, ...gaps, finalReason].find(gap => gap &&
+        /sign in|private repo|approved ceiling|run mex learn|paid model reply could not be recovered/iu.test(gap));
       const summary = outcome ? [`read ${outcome.sources} sources`, `${outcome.learned} ${outcome.learned === 1 ? "rule" : "rules"} learned`,
         ...(outcome.toConfirm ? [`${outcome.toConfirm} to confirm`] : []), ...(action ? [action] : [])].join(" \u00b7 ")
         : action ?? undefined;
@@ -151,14 +155,15 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       return { used: Math.max(job.tokens_used, recordedModelSpend(reader, job.id)), ceiling: plan?.data?.ceiling, summary };
     },
     interrupted(job, writer, backgroundStartup) {
-      const project = job.project_id!;
-      if (backgroundStartup && clearLearningRows(writer.db, project, job.id)) {
+      if (backgroundStartup) {
+        const project = job.project_id!;
+        clearLearningRows(writer.db, project, job.id);
         const state = checkpoint(job);
-        // Harvest can be repeated for free. Once a model was admitted, the
-        // remaining input or answer may be gone, and replay could spend twice.
+        // Sources can be read again for free. A paid batch may already have
+        // run, so keep only durable results after clearing temporary data.
         const admitted = writer.db.prepare("SELECT 1 FROM model_batches WHERE job_id=? AND admitted_at IS NOT NULL").get(job.id);
         const saved = job.results || reviewRows(writer, project, job.id).length;
-        return admitted || saved
+        return state.rawPurged || admitted || saved
           ? { checkpoint: JSON.stringify({ ...state, finish: false, rawPurged: true }), progress: "Finishing after interrupted learning was cleared" }
           : { checkpoint: JSON.stringify({ ...state, v2: undefined }), progress: "Reading sources again after interruption" };
       }
@@ -204,7 +209,7 @@ export function createLearnKind(dependencies: Partial<Dependencies> = {}, weekly
       if (state.rawPurged) {
         // No source cursor advances when a run loses its input or model replies.
         const saved = reviewRows(writer, project, job.id).length;
-        const summary = "Learning was interrupted. Temporary sources and model replies were cleared.";
+        const summary = "Learning stopped after an interruption. Temporary sources and model replies were cleared. Run mex learn to start a new run.";
         return { ...finishGap(summary), results: Math.max(0, saved - job.results) };
       }
       try {
