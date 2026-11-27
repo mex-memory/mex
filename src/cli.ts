@@ -1133,8 +1133,8 @@ program
   .option("--no-weekly", "Run once without enrolling in weekly refresh")
   .addHelpText("after", [
     "",
-    "After a run finishes, run mex in a terminal to see the review list. Tick the",
-    "rules you want your agents to use. You can leave a rule unticked or drop it.",
+    "After a run finishes, run mex in a terminal to see the review list.",
+    "Passing rules start as trials. Tick a rule to keep it permanently.",
     "",
     "Weekly refresh checks for new reviews and docs every 7–14 days when idle,",
     "signed in, and within the 3% automatic allowance. Use --no-weekly for a",
@@ -1144,7 +1144,7 @@ program
     "  learning.stopCheck     Check scoped prose rules after an agent session.",
     "  learning.procedures    Learn procedures from files that change together.",
     "  learning.prDecisions   Ask for a Decisions section in PR descriptions.",
-    "  learning.alwaysOn      Load repo-wide learned rules in every session.",
+    "  learning.alwaysOn      Load repo-wide learned rules. Off by default to save tokens.",
     "  learning.deep.issues   Include qualifying closed issues as sources.",
     "",
     "Set a trial with mex config set <setting> <on|off> --project.",

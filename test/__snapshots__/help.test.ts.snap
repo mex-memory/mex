@@ -17,8 +17,8 @@ Options:
   --no-weekly            Run once without enrolling in weekly refresh
   -h, --help             display help for command
 
-After a run finishes, run mex in a terminal to see the review list. Tick the
-rules you want your agents to use. You can leave a rule unticked or drop it.
+After a run finishes, run mex in a terminal to see the review list.
+Passing rules start as trials. Tick a rule to keep it permanently.
 
 Weekly refresh checks for new reviews and docs every 7–14 days when idle,
 signed in, and within the 3% automatic allowance. Use --no-weekly for a
@@ -28,6 +28,7 @@ Project trials
   learning.stopCheck     Check scoped prose rules after an agent session.
   learning.procedures    Learn procedures from files that change together.
   learning.prDecisions   Ask for a Decisions section in PR descriptions.
+  learning.alwaysOn      Load repo-wide learned rules. Off by default to save tokens.
   learning.deep.issues   Include qualifying closed issues as sources.
 
 Set a trial with mex config set <setting> <on|off> --project.
@@ -42,8 +43,8 @@ Set a config value (e.g. agent.defaults on|off, telemetry on|off)
 Options:
   --project   Set agent.defaults, delivery.scorer, delivery.surface.<id>,
               learning.agent, learning.sharing or learning.stopCheck,
-              learning.procedures, learning.prDecisions, learning.deep.issues
-              for the registered project
+              learning.procedures, learning.prDecisions, learning.alwaysOn,
+              learning.deep.issues for the registered project
   -h, --help  display help for command
 "
 `;

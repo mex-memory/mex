@@ -62,6 +62,12 @@ it("uses the Codex fallback only for a blocked slot and restores local files on 
     }, learned)));
   } finally { writer.close(); }
   run("rules", "--write", "--now");
+  const settingOff = start("always-on-disabled");
+  expect(settingOff).toContain("## MEX rules (Codex fallback)");
+  expect(settingOff).toContain("Use the signed release tag.");
+  expect(settingOff).not.toContain("Publish artifacts from the stable lane.");
+  run("config", "set", "learning.alwaysOn", "on", "--project");
+  run("rules", "--write", "--now");
   const shadowed = start("human-root");
   expect(shadowed).toContain("## MEX rules (Codex fallback)");
   expect(shadowed).toContain("## MEX defaults");
