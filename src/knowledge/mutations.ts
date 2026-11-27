@@ -226,7 +226,7 @@ function setLearnedStatus(id: string, options: KnowledgeOptions, to: "active" | 
 export interface LearnedReviewDecision {
   id: string;
   raw: string;
-  decision: "keep" | "wait" | "drop";
+  decision: "keep" | "trial" | "wait" | "drop";
   support: number;
   /** A verify rewrite the producer gate already accepted. Saved as waiting, not as an edit command. */
   rewrite?: string;
@@ -234,7 +234,7 @@ export interface LearnedReviewDecision {
 
 /** Apply the whole review or leave it pending if any entry changed while it was open. */
 export function finishLearnedReview(jobId: string, project: string, decisions: readonly LearnedReviewDecision[],
-  options: KnowledgeOptions, now = new Date()): { kept: number; waiting: number; dropped: number } {
+  options: KnowledgeOptions, now = new Date()): { kept: number; trials: number; waiting: number; dropped: number } {
   const writer = openRecord(options);
   try {
     writer.db.exec("BEGIN IMMEDIATE");
@@ -243,11 +243,16 @@ export function finishLearnedReview(jobId: string, project: string, decisions: r
     const before = snapshotNotes(writer, project);
     const files = new Map(before.files);
     const metadata: Array<() => void> = [];
-    const outcome = { kept: 0, waiting: 0, dropped: 0 };
+    const outcome = { kept: 0, trials: 0, waiting: 0, dropped: 0 };
     for (const { id, raw, decision, rewrite } of decisions) {
       if (before.files.get(id) !== raw || tombstone(writer, project, id)) throw stale();
       const entry = parseEntry(raw);
       if (entry.mex.id !== id || !isLearnedEntry(entry.mex) || entry.mex.status === "retired" || learnedRefused(writer, project, entry, raw)) throw stale();
+      if (decision === "trial") {
+        if (entry.mex.status !== "active" || !entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL)) throw stale();
+        outcome.trials++;
+        continue;
+      }
       if (decision === "wait" && rewrite) {
         const text = rewrite.trim().replace(/\s+/gu, " ");
         const changed: KnowledgeEntry = { ...entry, text, mex: { ...entry.mex, one_line: text.slice(0, KNOWLEDGE_LIMITS.oneLineCharacters), status: "proposed" } };

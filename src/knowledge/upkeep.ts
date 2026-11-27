@@ -34,6 +34,21 @@ function dismiss(writer: RecordWriter, project: string, kind: Upkeep["kind"], id
   writer.db.prepare("UPDATE review SET state='dismissed' WHERE project_id=? AND id GLOB ? AND state='pending'").run(project, `${reviewPrefix(kind, id)}*`);
 }
 
+export function stageAgeReview(writer: RecordWriter, project: string, target: Omit<Upkeep, "version" | "status" | "kind">,
+  createdDay: string, at: number): void {
+  const created = Date.parse(createdDay);
+  let verified = created;
+  try {
+    // Honor recorded follows. Delivery of a prose rule cannot prove it was followed.
+    const row = JSON.parse(writer.setting(project, `knowledge.verified.${target.id}`) ?? "null");
+    if (row?.how === "person" || row?.how === "judge" || row?.how === "followed") {
+      verified = Math.max(created, Date.parse(row.at) || 0);
+    }
+  } catch { /* Creation is the baseline for older entries. */ }
+  if (at - verified < UNANCHORED_MAX_MS) { dismiss(writer, project, "age", target.id); return; }
+  stageUpkeep(writer, project, { ...target, kind: "age" }, "This rule has gone 90 days without verification.", `${target.entryHash}\n${verified}`, at);
+}
+
 export function upkeepAction(action: "restore" | "verify", id: string, options: KnowledgeOptions, at = Date.now()): void {
   if (isAgentCaller(options.env)) throw new KnowledgeError("INVALID_OPTION", "A person must make this Review decision.");
   const project = knowledgeProject(options);
@@ -110,16 +125,6 @@ export function upkeepScan(writer: RecordWriter, project: string, checkout: stri
       }
     }
     if (!unanchored(entry)) { dismiss(writer, project, "age", id); continue; }
-    const created = Date.parse(entry.mex.created);
-    let verified = created;
-    try {
-      // Honor recorded follows. Delivery of a prose rule cannot prove it was followed.
-      const row = JSON.parse(writer.setting(project, `knowledge.verified.${id}`) ?? "null");
-      if (row?.how === "person" || row?.how === "judge" || row?.how === "followed") {
-        verified = Math.max(created, Date.parse(row.at) || 0);
-      }
-    } catch { /* Creation is the baseline for older entries. */ }
-    if (at - verified < UNANCHORED_MAX_MS) { dismiss(writer, project, "age", id); continue; }
-    stageUpkeep(writer, project, { ...target, kind: "age" }, "This rule has gone 90 days without verification.", `${entryHash}\n${verified}`, at);
+    stageAgeReview(writer, project, target, entry.mex.created, at);
   }
 }

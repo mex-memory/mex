@@ -1,7 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
+import { join } from "node:path";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { isLearnedEntry, parseEntry } from "../knowledge/entry.js";
-import { unanchored, UNANCHORED_MAX_MS } from "../knowledge/upkeep.js";
+import { stageAgeReview, unanchored, UNANCHORED_MAX_MS } from "../knowledge/upkeep.js";
+import { LEARNED_ALWAYS_ON_SETTING, learnedScopeClassifier } from "../knowledge/learned-scope.js";
+import { tombstone } from "../knowledge/state.js";
 import { enqueueJob } from "../record/jobs.js";
 import { readTeamCoverage, teamRetired, type TeamCoverage } from "./coverage.js";
 import { ForgeClient, object, SourceError } from "./forge.js";
@@ -18,6 +21,7 @@ import type { BatchContext } from "../record/jobs.js";
 import { noteKey } from "./coverage.js";
 import { forgetObservations } from "./observations.js";
 import { LEARNED_TRIAL_LABEL } from "./trial-outcomes.js";
+import { sourceDigest } from "./source.js";
 
 export class RefreshDeferred extends Error {}
 
@@ -103,38 +107,42 @@ export async function queuePatternRecount(writer: RecordWriter, project: string,
   if (readPatterns(indexDirectory(writer.location.directory, project)).length) enqueueJob(writer, { kind: "file-index", projectId: project, params: { checkout, full: true } });
 }
 
-/** Age only active trials whose personal rule has never reached an agent. */
+/** Ask about old unanchored trials that could have reached an agent. */
 export async function sweepExpiredTrials({ writer, job }: BatchContext, plan: LearningPlan, now: number): Promise<void> {
   const project = job.project_id!;
-  const expired = new Set<string>();
+  const checkout = plan.checkout;
+  const broadScope = learnedScopeClassifier({ checkout, projectId: project, recordDirectory: writer.location.directory });
   const hooks = openHooksReadOnly({ home: writer.location.home });
   try {
     if (hooks?.diagnostic) return;
-    for (const raw of snapshotNotes(writer, project).files.values()) {
-      const entry = parseEntry(raw), { id, created, status, source } = entry.mex;
-      if (status !== "active" || !isLearnedEntry(entry.mex) || !source.label?.startsWith(LEARNED_TRIAL_LABEL)
-        || now - Date.parse(created) < UNANCHORED_MAX_MS || !unanchored(entry)) continue;
-      if (hooks?.get("SELECT 1 FROM deliveries WHERE project_id=? AND entry_id=? AND action='given' LIMIT 1", project, id)) continue;
-      expired.add(id);
-    }
-  } catch { return; }
-  finally { hooks?.close(); }
-  if (!expired.size) return;
-  const swept = new Set<string>();
-  await propose([], {
-    projectPath: plan.checkout, home: writer.location.home,
-    sweep: { producer: "learn-deeper", includes(entry) {
-      const yes = expired.has(entry.mex.id) && entry.mex.status === "active"
-        && !!entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL) && unanchored(entry);
-      if (yes) swept.add(entry.mex.id);
-      return yes;
-    }, tombstone: { reason: "This trial rule was never delivered in 90 days.", by: "mex learn" } },
-    validate(gate) {
-      const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
+    writer.db.exec("BEGIN IMMEDIATE");
+    try {
+      const live = writer.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
       if (live?.owner !== job.owner || live?.state !== "running") throw new Error("Learning lost its job before saving.");
-    },
-    onAccepted(gate) {
-      for (const id of swept) forgetObservations(gate.db, project, id);
-    },
-  });
+      const alwaysOn = writer.setting(project, LEARNED_ALWAYS_ON_SETTING) === "true";
+      const expired: Array<{ id: string; created: string; entryHash: string }> = [];
+      try {
+        for (const raw of snapshotNotes(writer, project).files.values()) {
+          const entry = parseEntry(raw), { id, created, status, source, scope, when } = entry.mex;
+          if (status !== "active" || !isLearnedEntry(entry.mex) || !source.label?.startsWith(LEARNED_TRIAL_LABEL)
+            || now - Date.parse(created) < UNANCHORED_MAX_MS || !unanchored(entry) || tombstone(writer, project, id)) continue;
+          if (!alwaysOn && !when?.length && broadScope(scope)) continue;
+          if (hooks?.get("SELECT 1 FROM deliveries WHERE project_id=? AND entry_id=? AND action='given' LIMIT 1", project, id)) continue;
+          expired.push({ id, created, entryHash: sourceDigest(raw) });
+        }
+      } catch {
+        // An incomplete scan cannot establish that a trial went undelivered.
+        writer.db.exec("ROLLBACK");
+        return;
+      }
+      for (const { id, created, entryHash } of expired) {
+        const path = join(writer.location.home, "projects", project, "notes", `${id}.md`);
+        stageAgeReview(writer, project, { checkout, id, path, level: "personal", entryHash }, created, now);
+      }
+      writer.db.exec("COMMIT");
+    } catch (error) {
+      writer.db.exec("ROLLBACK");
+      throw error;
+    }
+  } finally { hooks?.close(); }
 }

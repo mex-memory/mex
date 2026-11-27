@@ -7,7 +7,8 @@ import { parseEntry, serializeEntry } from "../../knowledge/entry.js";
 import { propose, type Proposal } from "../../knowledge/gate.js";
 import { openRecord, type RecordWriter } from "../../record/index.js";
 import { enqueueJob } from "../../record/jobs.js";
-import { reviewRowsKey, type ReviewRow } from "../../learn-deeper/pipeline.js";
+import { learnedTrialKey, reviewRowsKey, type ReviewRow } from "../../learn-deeper/pipeline.js";
+import { LEARNED_TRIAL_LABEL } from "../../learn-deeper/trial-outcomes.js";
 import { parseEdits } from "../../learn-deeper/would-fire.js";
 import { parseVerify, VERIFY_TIMEOUT_MS } from "../../learn-deeper/verify.js";
 import { learnedRefusalKey, learnedReviewedKey } from "../../knowledge/mutations.js";
@@ -62,7 +63,8 @@ it("reads past commits' added lines with their line numbers", () => {
 });
 
 it("lists learned rules, shows what would have stopped the person's own commits, and applies ticks", async () => {
-  const [a, b] = await propose([learned("a", "Log through apiLogger, not console.log.", "console.log(", "active"),
+  const [a, b] = await propose([{ ...learned("a", "Log through apiLogger, not console.log.", "console.log(", "active"),
+    label: LEARNED_TRIAL_LABEL + "Fixture" },
     learned("b", "Read config through loadConfig, not process.env.", "process.env.", "proposed")], options());
   if (a?.status !== "accepted" || b?.status !== "accepted") throw new Error(JSON.stringify([a, b]));
   writeFileSync(join(root, "src", "api.ts"), "export const ok = 1;\nconsole.log(ok);\n");
@@ -70,16 +72,19 @@ it("lists learned rules, shows what would have stopped the person's own commits,
   await finishedRun([{ id: a.entryId, claim: "Log through apiLogger, not console.log.", status: "active" },
     { id: b.entryId, claim: "Read config through loadConfig, not process.env.", status: "proposed" }]);
   const lines: string[] = [];
-  const keys = ["2", "enter"];
+  const keys = ["1", "2", "enter"];
   const result = await reviewLearned({ root, projectId: project, write: line => lines.push(line), mode: { color: false, ascii: true } as never,
     interactive: true, env: process.env, home, keys: async () => keys.shift()! });
-  expect(result).toEqual({ kept: 2, waiting: 0, dropped: 0 });
+  expect(result).toEqual({ kept: 2, trials: 0, waiting: 0, dropped: 0 });
   const text = lines.join("\n");
-  expect(text).toContain("1. [x] Log through apiLogger");
+  expect(text).toContain("Scoped trials");
+  expect(text).toContain("1. [ ] Log through apiLogger");
   expect(text).toContain("2. [ ] Read config");
   expect(text).toMatch(/Would have stopped an edit at [0-9a-f]{7} src\/api\.ts:2/u);
   expect(text).toContain(a.entryId);
   expect(text).toContain("mex rules --learned");
+  expect(writer.setting(project, learnedTrialKey(a.entryId))).toBe("permanent");
+  expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.source.label).not.toContain(LEARNED_TRIAL_LABEL);
   expect(parseEntry(readFileSync(notePath(b.entryId), "utf8")).mex.status).toBe("active");
   // Reviewed once: the next `mex` doesn't ask again.
   expect(await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "enter" })).toBeUndefined();
@@ -95,9 +100,41 @@ it("leaves unticked rules waiting, and asks nothing without a terminal", async (
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
   const result = await reviewLearned({ root, projectId: project, write: () => {}, mode: { color: false, ascii: true } as never, interactive: true, env: process.env, home, keys: async () => "enter" });
   // Enter alone never retires a rule: an unticked one keeps waiting, and `mex rules --learned` still lists it.
-  expect(result).toEqual({ kept: 0, waiting: 1, dropped: 0 });
+  expect(result).toEqual({ kept: 0, trials: 0, waiting: 1, dropped: 0 });
   expect(writer.setting(project, `knowledge.retired.${a.entryId}`)).toBeUndefined();
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("proposed");
+});
+
+it("drops only unticked trials when the bulk choice is saved", async () => {
+  const trial = (key: string, claim: string, pattern: string) => ({
+    ...learned(key, claim, pattern, "active"), label: LEARNED_TRIAL_LABEL + "Fixture",
+  });
+  const [kept, dropped, waiting] = await propose([
+    trial("keep-trial", "Use the checked loader.", "bareLoad("),
+    { ...trial("drop-trial", "Publish from the signed release lane.", "barePublish("), anchors: { scope: ["**"] } },
+    learned("waiting", "Use the pooled client.", "new Client(", "proposed"),
+  ], options());
+  if (kept?.status !== "accepted" || dropped?.status !== "accepted" || waiting?.status !== "accepted") {
+    throw new Error(JSON.stringify([kept, dropped, waiting]));
+  }
+  const job = await finishedRun([kept, dropped, waiting].map((result, i) => ({
+    id: result.entryId, claim: "", status: i < 2 ? "active" : "proposed",
+  })));
+  const lines: string[] = [];
+  const review = (keys: string[]) => reviewLearned({ root, projectId: project, write: line => lines.push(line),
+    mode: { plain: true, color: false, ascii: true, width: 80 }, interactive: true, env: process.env, home,
+    keys: async () => keys.shift() ?? "quit" });
+
+  expect(await review(["d", "q"])).toBeUndefined();
+  expect(writer.setting(project, learnedReviewedKey(job))).toBeUndefined();
+  expect(parseEntry(readFileSync(notePath(dropped.entryId), "utf8")).mex.status).toBe("active");
+  expect(await review(["1", "d", "enter"])).toEqual({ kept: 1, trials: 0, waiting: 1, dropped: 1 });
+  expect(lines).toContain("Repo-wide trials");
+  expect(lines).toContain("Enter drops unticked trials. Press d to undo.");
+  expect(writer.setting(project, learnedTrialKey(kept.entryId))).toBe("permanent");
+  expect(parseEntry(readFileSync(notePath(dropped.entryId), "utf8")).mex.status).toBe("retired");
+  expect(writer.setting(project, learnedRefusalKey(dropped.entryId))).toBeTruthy();
+  expect(parseEntry(readFileSync(notePath(waiting.entryId), "utf8")).mex.status).toBe("proposed");
 });
 
 it("lists a review row from a weekly run that failed", async () => {
@@ -141,7 +178,7 @@ it("checks a waiting rule from pinned evidence only after consent and stages the
     }, model: model as never });
   expect(lines.join(" ").replace(/ +/gu, " ")).toMatch(/About 32,000 tokens, estimated/u);
   expect(model).toHaveBeenCalledTimes(1);
-  expect(result).toEqual({ kept: 1, waiting: 0, dropped: 0 });
+  expect(result).toEqual({ kept: 1, trials: 0, waiting: 0, dropped: 0 });
   expect(parseEntry(readFileSync(notePath(a.entryId), "utf8")).mex.status).toBe("active");
 });
 
@@ -173,7 +210,7 @@ it("keeps all older review rows accessible and applies the choices only on Enter
   expect(writer.setting(project, learnedRefusalKey(rows[0]!.id))).toBeUndefined();
   expect(rows.every(({ id }) => parseEntry(readFileSync(notePath(id), "utf8")).mex.status === "active")).toBe(true);
 
-  expect(await review(["1", "12", "enter"])).toEqual({ kept: 10, waiting: 2, dropped: 0 });
+  expect(await review(["1", "12", "enter"])).toEqual({ kept: 10, trials: 0, waiting: 2, dropped: 0 });
   expect(lines.join("\n")).toContain("12 learned - 12 to confirm");
   expect(lines.join("\n")).toContain("12. [ ] Use adapter 12 when serving its endpoint.");
   expect(writer.setting(project, learnedReviewedKey(job))).toBeTruthy();

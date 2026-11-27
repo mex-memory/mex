@@ -212,7 +212,7 @@ async function reviewAfterAnalysis(context: DeeperContext, jobId?: string): Prom
   try {
     const { reviewLearned } = await import("./review-list.js");
     const review = await reviewLearned(context);
-    if (review) return review.kept;
+    if (review) return review.kept + review.trials;
     if (jobId) return readOutcome(context.location, jobId)?.keptAutomatically;
   } catch { /* the list waits for the next mex in a terminal */ }
 }

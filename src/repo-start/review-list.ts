@@ -1,7 +1,6 @@
 /**
- * Review the rules a deep analysis run learned. Rules the evidence gate kept are already live as trials; they aren't
- * asked, and saving the review keeps them for good. At most five rules that wait for a person are asked: a tick keeps
- * one, and an unticked one keeps waiting. The replay shows rules that would have stopped an edit or appeared on a file touch.
+ * Review the rules a deep analysis run learned. Passing rules are already live as trials. A tick keeps one
+ * permanently. The replay shows rules that would have stopped an edit or appeared on a file touch.
  *
  * Only a person at a terminal is asked. Anyone else gets one line, and the next `mex` in a terminal asks.
  */
@@ -13,9 +12,8 @@ import { openRecord, type RecordWriter } from "../record/index.js";
 import { readKey } from "./keys.js";
 import type { Rich } from "./rich.js";
 import { multiSelect } from "./select.js";
-import { readOutcome, type DeepOutcome } from "../learn-deeper/activity.js";
 import type { ReviewRow } from "../learn-deeper/pipeline.js";
-import { ASK_LIMIT } from "../learn-deeper/plan.js";
+import { LEARNED_TRIAL_LABEL } from "../learn-deeper/trial-outcomes.js";
 import { VERIFY_ESTIMATE } from "../learn-deeper/verify.js";
 import { agentName } from "../model-runner/agents.js";
 import type { ScreenMode } from "./screen.js";
@@ -36,7 +34,6 @@ export interface ReviewListContext {
   keys?: () => Promise<string>;
   /** Tests: the model runner the verify pass uses. */
   model?: typeof import("../model-runner/index.js").runModel;
-  outcome?: (jobId: string) => DeepOutcome | null;
 }
 
 type ReviewItem = {
@@ -128,8 +125,8 @@ function reviewDetails({ entry, row }: ReviewItem, ascii: boolean, rich?: Rich):
   ];
 }
 
-/** Show the review list if a finished run waits for it. Returns how many rules were kept, waiting and dropped. */
-export async function reviewLearned(context: ReviewListContext): Promise<{ kept: number; waiting: number; dropped: number } | undefined> {
+/** Show the review list if a finished run waits for it. */
+export async function reviewLearned(context: ReviewListContext): Promise<{ kept: number; trials: number; waiting: number; dropped: number } | undefined> {
   const at = context.home ? { home: context.home } : undefined;
   const writer = openRecord(at);
   let list: Pending | undefined;
@@ -145,20 +142,14 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
     for (const line of renderNotes([`${count === 1 ? "1 learned rule waits" : `${count} learned rules wait`} for your review: run \`mex\` in a terminal.`], context.mode)) context.write(line);
     return undefined;
   }
-  const outcome = context.outcome ? context.outcome(list.jobId) : readOutcome({ home: context.home }, list.jobId);
-  const automatic = outcome ? list.items.filter(({ entry, row }) => row.status === "active" && entry.mex.status === "active") : [];
-  // Rules the gate kept are live as trials. Only rules that wait for a person are asked: the best supported ones,
-  // shown in the run's own order.
-  const waiting = list.items.filter(item => !automatic.includes(item));
-  const asked = new Set(!outcome ? waiting : [...waiting].sort((a, b) => b.row.support - a.row.support
-    || Number(b.row.proven) - Number(a.row.proven) || a.row.entryId.localeCompare(b.row.entryId)).slice(0, ASK_LIMIT));
-  const items = waiting.filter(item => asked.has(item));
+  const trialItems = list.items.filter(({ entry }) => entry.mex.status === "active" && entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL));
+  const trials = new Set(trialItems);
   const broad = new Set(list.items.filter(({ entry }) => !entry.mex.when?.length && broadScope(entry.mex.scope)));
-  const later = waiting.length - items.length;
+  const items = [...trialItems.filter(item => !broad.has(item)), ...trialItems.filter(item => broad.has(item)),
+    ...list.items.filter(item => !trials.has(item))];
   const rich = context.rich;
-  const counts = outcome
-    ? `${outcome.learned} learned · ${automatic.length} passed the checks · ${items.length} to confirm`
-    : `${list.items.length} learned · ${items.length} to confirm`;
+  const counts = [`${items.length} learned`, trials.size ? `${trials.size} on trial` : "",
+    items.length > trials.size ? `${items.length - trials.size} to confirm` : ""].filter(Boolean).join(" · ");
   const title = rich ? rich.section("YOUR TEAM'S RULES", counts) : [`Your team's rules · ${counts}`.replace(/·/gu, "-"), ""];
   const replay = new Map<string, string[]>();
   try {
@@ -177,22 +168,26 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   const rewrites = new Map<string, string>(), drops = new Set<string>();
   const canCheck = items.some(item => item.entry.mex.status === "proposed");
   const checkHint = `v check this rule against the code (about ${VERIFY_ESTIMATE / 1000}k tokens)`;
-  const summary = outcome ? "Saving keeps the rules that passed the checks. Tick any rules you also want to keep."
+  const summary = trials.size ? "Tick to keep a rule permanently. Unticked trials stay live on Enter."
     : "Tick the rules your agents should get.";
-  const guidance = automatic.some(item => broad.has(item))
+  const guidance = trialItems.some(item => broad.has(item))
     ? [summary, `Some learned rules cover most of the code. They load every session only with ${LEARNED_ALWAYS_ON_SETTING} on.`]
     : [summary];
-  if (!items.length && guidance.length > 1) out(guidance.slice(1));
-  const selected = !items.length ? [] : await multiSelect(items.map(item => {
+  let dropUnticked = false;
+  const selected = await multiSelect(items.map(item => {
     const claim = clean(item.entry.mex.one_line, context.mode.ascii);
-    const details = [...reviewDetails(item, context.mode.ascii, rich),
-      ...(broad.has(item) ? [BROAD_LEARNED_REASON] : []), ...(replay.get(item.row.entryId) ?? []).slice(0, 1)];
-    return { value: item, label: rich?.codeTint(claim) ?? claim, details, checked: item.entry.mex.status === "active" };
+    const trial = trials.has(item);
+    const details = [...(trial ? [] : reviewDetails(item, context.mode.ascii, rich)),
+      ...(!trial && broad.has(item) ? [BROAD_LEARNED_REASON] : []), ...(replay.get(item.row.entryId) ?? []).slice(0, 1)];
+    const group = trial ? broad.has(item) ? "Repo-wide trials" : "Scoped trials" : trials.size ? "Other rules" : undefined;
+    return { value: item, label: rich?.codeTint(claim) ?? claim, group, details, checked: !trial && item.entry.mex.status === "active" };
   }), {
     rich: rich ?? null,
     title: [...title, ...(rich ? rich.text(guidance) : guidance), ""],
-    hint: `↑↓ move · Space keep or leave waiting${canCheck ? ` · ${checkHint}` : ""} · Enter save`,
-    plainHint: `Enter saves. Type a number to keep a rule or leave it waiting.${canCheck ? " v then a number checks a rule." : ""}`,
+    hint: `↑↓ move · Space tick${trials.size ? " · d drop unticked trials" : ""}${canCheck ? ` · ${checkHint}` : ""} · Enter save`,
+    plainHint: `Type a number to tick a rule.${trials.size ? " d marks unticked trials to drop." : ""}${canCheck ? " v then a number checks a rule." : ""} Enter saves.`,
+    compact: true,
+    onDropUnticked: trials.size ? drop => { dropUnticked = drop; } : undefined,
     ...(context.keys ? { read: next } : {}),
     ...(rich ? {} : { write: text => out(text.trimEnd().split("\n")) }),
     onCheck: canCheck ? async ({ value: item }) => {
@@ -210,24 +205,27 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
   const [{ finishLearnedReview }, { queueNativeRebuild }] = await Promise.all([
     import("../knowledge/mutations.js"), import("../knowledge/native-queue.js")]);
   const options = { projectPath: context.root, ...(context.home ? { home: context.home } : {}) };
-  const reviewed = [...automatic.map(item => ({ id: item.row.entryId, raw: item.raw, support: item.row.support, decision: "keep" as const })),
-    ...items.map(item => ({ id: item.row.entryId, raw: item.raw, support: item.row.support,
-    decision: selected.includes(item) ? "keep" as const : drops.has(item.row.entryId) ? "drop" as const : "wait" as const,
-    ...(rewrites.get(item.row.entryId) ? { rewrite: rewrites.get(item.row.entryId) } : {}) }))];
+  const reviewed = items.map(item => {
+    const id = item.row.entryId;
+    let decision: Decision | "trial" = "wait";
+    if (selected.includes(item)) decision = "keep";
+    else if (trials.has(item)) decision = dropUnticked ? "drop" : "trial";
+    else if (drops.has(id)) decision = "drop";
+    return { id, raw: item.raw, support: item.row.support, decision, rewrite: rewrites.get(id) };
+  });
   let result;
   try { result = finishLearnedReview(list.jobId, context.projectId, reviewed, options); }
   catch {
     out(["Could not save the review. Run mex to open it again."]);
     return undefined;
   }
-  queueNativeRebuild(context.root, { local: true });
-  const { kept, waiting: waits, dropped } = result;
-  const still = waits + later;
-  const saved = `${kept} ${kept === 1 ? "rule" : "rules"} kept`;
-  const delivery = [still ? `${still} waiting` : "", dropped ? `${dropped} dropped` : "",
-    kept ? "your agents get them from the next session" : ""].filter(Boolean).map(part => " · " + part).join("");
+  const { kept, trials: stillOnTrial, waiting: waits, dropped } = result;
+  if (kept || dropped) queueNativeRebuild(context.root, { local: true });
+  const saved = `${kept} kept permanently`;
+  const delivery = [stillOnTrial ? `${stillOnTrial} still on trial` : "", waits ? `${waits} waiting` : "",
+    dropped ? `${dropped} dropped` : ""].filter(Boolean).map(part => " · " + part).join("");
   const help = "`mex rules --learned` lists them all · `mex expand <id>` shows one with its evidence";
-  const ids = [...automatic, ...selected].map(({ entry }) => {
+  const ids = selected.map(({ entry }) => {
     const claim = clean(entry.mex.one_line, context.mode.ascii);
     return rich ? `  ${rich.dim(entry.mex.id)}  ${rich.codeTint(claim)}` : `  ${entry.mex.id}  ${claim}`;
   });
@@ -238,7 +236,7 @@ export async function reviewLearned(context: ReviewListContext): Promise<{ kept:
     try {
       const [{ expandTeam }, { sessionsActive }, { reviewBoundaryNotes }, { openRecord }] = await Promise.all([
         import("../knowledge/team.js"), import("../learn-deeper/weekly-schedule.js"), import("../learn-deeper/review-policy.js"), import("../record/index.js")]);
-      const shared = reviewed.filter(item => item.decision !== "keep").map(item => item.id).filter(id => {
+      const shared = reviewed.filter(item => item.decision === "wait" || item.decision === "drop").map(item => item.id).filter(id => {
         try { return !!expandTeam(id, options); } catch { return false; }
       });
       const record = openRecord(context.home ? { home: context.home, projectPath: context.root } : { projectPath: context.root });

@@ -52,8 +52,9 @@ wording ("always", "we don't", "instead use"), and a small pull request.
 | Repair | best | One turn for the entries that failed, with each failure's reason. A pattern that still fails is removed; the rule stays as text. A weak pattern is never kept |
 | Route and save | none | Each lesson becomes one entry through the producer gate, with the checks below |
 
-Single-signal lessons from one pull request start unticked, even with a proven edit pattern. A repeated
-lesson from one reviewer can start ticked once the code proves it. Written policy can also corroborate a review.
+A lesson the gate keeps goes live at once as a trial rule ("learned, trial"): it is delivered where it applies and
+pruned by use. It waits for a tick only when the gate gave no verdict, no quote was kept, or the person refused the
+same lesson before. Written policy can also corroborate a review.
 
 ## What a learned rule carries
 
@@ -124,9 +125,10 @@ branch, the person's copy is retired too: by id, by the source both were learned
 ## The review list
 
 At the end of a run, bare `mex` in a terminal lists everything that was learned, a page at a time: each rule's claim,
-why, fix and source. A lesson from one pull request waits for a tick regardless of pattern proof. A number toggles one. Enter
-goes to the next page and on the last one saves every decision together, `d` there drops the unticked, and `q` leaves
-without saving anything. If an entry changed meanwhile, nothing is saved and the list is shown again next time.
+why, fix and source. Trial rules are already live; they are grouped by where they apply (files, or the whole
+repository), one short line each. Enter keeps them as trials, a number ticks one to make it permanent, and `d` drops
+every unticked trial. A waiting rule stays waiting until it is ticked. Enter goes to the next page and on the last one
+saves every decision together, and `q` leaves without saving anything. If an entry changed meanwhile, nothing is saved and the list is shown again next time.
 
 A person can leave an item waiting without refusing it. Enter on a row that is already proposed records a wait at
 any support count. That wait is not a refusal: the claim is not tombstoned, and a different lesson is not forgotten.

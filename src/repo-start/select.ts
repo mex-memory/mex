@@ -47,6 +47,7 @@ export interface SelectOption<T> {
 export interface MultiSelectOption<T> extends SelectOption<T> {
   details?: readonly string[];
   checked?: boolean;
+  group?: string;
 }
 
 interface SelectOptions {
@@ -64,6 +65,8 @@ interface SelectOptions {
 
 interface MultiSelectOptions<T> extends SelectOptions {
   onCheck?: (option: MultiSelectOption<T>) => Promise<boolean | null | undefined>;
+  onDropUnticked?: (drop: boolean) => void;
+  compact?: boolean;
   plainHint?: string;
 }
 
@@ -88,6 +91,7 @@ async function choose<T>(
   if ((!input.isTTY && !settings.read) || !enabled.length) return null;
 
   let position = Math.max(0, enabled.indexOf(settings.focus ?? 0));
+  let dropUnticked = false;
   const checked = new Set(enabled.filter(i => options[i]!.checked));
   const toggle = (i: number) => { if (checked.has(i)) checked.delete(i); else checked.add(i); };
   const mode = screenMode();
@@ -109,6 +113,9 @@ async function choose<T>(
     const rowsByOption: string[][] = [];
     for (const [i, option] of options.entries()) {
       const lines: string[] = [];
+      if (option.group && option.group !== options[i - 1]?.group) {
+        lines.push(decorated ? `${MARGIN}${decorated.dim(option.group)}` : option.group);
+      }
       const tick = multiple ? (checked.has(i) ? "[✓] " : "[ ] ") : "";
       if (decorated) {
         const pointer = i === focus ? decorated.paint("orange", "›") : " ";
@@ -120,7 +127,7 @@ async function choose<T>(
         const wrapped = wrapText(text, Math.max(12, Math.min(100, columns() - 1) - indent.length));
         lines.push(`${MARGIN}${pointer} ${box}${wrapped[0]}`, ...wrapped.slice(1).map(line => indent + line));
         lines.push(...(option.details ?? []).map(line => indent + line));
-        if (multiple && i < options.length - 1) lines.push("");
+        if (multiple && !settings.compact && i < options.length - 1) lines.push("");
       } else {
         const number = String(option.disabled ? "-" : i + 1).padStart(numberWidth);
         const label = option.note ? `${pad(option.label, labelWidth)}  (${option.note})` : option.label;
@@ -128,7 +135,10 @@ async function choose<T>(
       }
       rowsByOption.push(lines);
     }
-    const footer = [...(settings.footer ?? []), "", decorated ? `${MARGIN}${decorated.dim(hint)}` : hint];
+    const marked = "Enter drops unticked trials. Press d to undo.";
+    const footer = [...(settings.footer ?? []), "",
+      ...(dropUnticked ? [decorated ? `${MARGIN}${decorated.dim(marked)}` : marked] : []),
+      decorated ? `${MARGIN}${decorated.dim(hint)}` : hint];
     if (block) {
       const budget = Math.max(1, rows() - 1 - terminalRows([...title, ...footer], columns()));
       let start = 0, end = rowsByOption.length;
@@ -160,6 +170,9 @@ async function choose<T>(
         position = (position + (key === "up" ? enabled.length - 1 : 1)) % enabled.length;
       } else if (block && key === "space" && multiple) {
         toggle(focus);
+      } else if (key === "d" && settings.onDropUnticked) {
+        dropUnticked = !dropUnticked;
+        settings.onDropUnticked(dropUnticked);
       } else if (key === "v" && settings.onCheck) {
         const key = block ? String(focus + 1) : await read();
         if (key === "quit" || key === "q") return null;
