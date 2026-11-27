@@ -133,7 +133,7 @@ describe("the end of setup", () => {
     });
     const showReview = vi.spyOn(review, "reviewLearned").mockImplementation(async context => {
       context.write("fixture: review saved");
-      return { kept: 2, waiting: 0, dropped: 0 };
+      return { kept: 2, trials: 0, waiting: 0, dropped: 0 };
     });
     const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });

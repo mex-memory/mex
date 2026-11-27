@@ -85,7 +85,7 @@ describe("release harness native token accounting", () => {
 
   it("withholds all affected weighted totals when any rate is missing", () => {
     const events = records(fixture("codex.jsonl"));
-    events[1].payload.model = "gpt-6.2-sol";
+    events[1].payload.model = "gpt-0-unpriced";
     const agentUsage = sessionUsage(events, "codex");
     const mexCalls = [{ agent: "claude", model: "claude-sonnet-5-5", input: 3, cacheWrite: 1, cacheRead: 4, output: 2 }];
     const row = { task: "fixture", arm: "mex", accepted: true, turns: 2, wallMs: 0, agentUsage, mexCalls };
@@ -94,7 +94,7 @@ describe("release harness native token accounting", () => {
     expect(report.chains[1]).toMatchObject({ usage: { dollars: null }, costPerAccepted: null });
     const rendered = renderReport(report, { agent: "codex", suite: "fixture", prices: { profile: "fixture", date: "2026-11-16" } });
     expect(rendered).toContain("| mex | 1 / 1 | 23 | 1 | 59 | 16 | to confirm | 2 | 0 | to confirm |");
-    expect(rendered).toContain("List prices to confirm for gpt-6.2-sol.");
+    expect(rendered).toContain("List prices to confirm for gpt-0-unpriced.");
   });
 });
 

@@ -63,5 +63,5 @@ it("sets each learning trial only for the registered project", () => {
     try { expect(after.setting(project, key!)).toBe("false"); } finally { after.close(); }
     if (key === "learning.stopCheck") expect(JSON.parse(readFileSync(mirror, "utf8")).stop_check).toBeUndefined();
   }
-  expect(run("unknown", "on").stderr).toContain("learning.stopCheck, learning.procedures, learning.prDecisions, learning.deep.issues");
+  expect(run("unknown", "on").stderr).toContain("learning.stopCheck, learning.procedures, learning.prDecisions, learning.alwaysOn, learning.deep.issues");
 }, 60_000);
