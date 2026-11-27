@@ -73,6 +73,7 @@ type payload struct {
 	ToolUseID      string          `json:"tool_use_id"`
 	ToolInput      json.RawMessage `json:"tool_input"`
 	ToolResponse   json.RawMessage `json:"tool_response"`
+	StopHookActive bool            `json:"stop_hook_active"`
 }
 
 func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
@@ -116,6 +117,8 @@ func (Profile) Parse(nativeEvent string, raw []byte) (contract.Event, error) {
 		if !out.OK {
 			ev.Kind = contract.PostToolFailure
 		}
+	case contract.Stop:
+		ev.StopActive = p.StopHookActive
 	}
 	if ev.Tool != nil {
 		ev.Tool.UseID = p.ToolUseID

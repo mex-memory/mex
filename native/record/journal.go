@@ -245,6 +245,33 @@ func (hooks *Hooks) JournalRows(sessionID string, limit int) ([]JournalEntry, er
 	return out, rows.Err()
 }
 
+// JournalAfter reads a session's rows after the row id after, in order, at
+// most limit of them. Text is cut to 8 KiB: readers on the hook path match
+// commands and paths, never whole prompts.
+func (hooks *Hooks) JournalAfter(sessionID string, after int64, limit int) ([]JournalEntry, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), hooks.budget.reader)
+	defer cancel()
+	rows, err := hooks.db.QueryContext(ctx, `SELECT id,ts,kind,substr(text,1,8192),exit_code,marks FROM journal WHERE session_id=? AND id>? ORDER BY id LIMIT ?`, sessionID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JournalEntry
+	for rows.Next() {
+		e := JournalEntry{SessionID: sessionID}
+		var code sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.TS, &e.Kind, &e.Text, &code, &e.Marks); err != nil {
+			return nil, err
+		}
+		if code.Valid {
+			c := int(code.Int64)
+			e.ExitCode = &c
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // ShowOnce claims a notice for a session. It reports true only for the first
 // claim of that notice ID, across sessions and agents.
 func (hooks *Hooks) ShowOnce(session Session, noticeID, ts string) (bool, error) {

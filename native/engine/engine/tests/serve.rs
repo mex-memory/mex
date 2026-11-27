@@ -31,7 +31,7 @@ impl Checkout {
             &path,
             json!({
                 "contract": CONTRACT_VERSION, "mode": mode, "root": self.0, "base": base,
-                "overlay": overlay, "output": base, "files": files, "languages": ["typescript"],
+                "overlay": overlay, "output": base, "files": files, "languages": ["typescript", "javascript"],
                 "configs": ["tsconfig.json"],
                 "factsCache": self.0.join("facts"),
                 "limits": {"memoryMb": 1024, "deadlineMs": 60000}
@@ -50,12 +50,16 @@ impl Checkout {
                 "import {leaf} from './leaf'; export function use() { return leaf(); }\n",
             ),
         ];
+        (self.build(&files), files)
+    }
+
+    fn build(&self, files: &[Value]) -> PathBuf {
         let path = self.0.join("base.db");
-        let mut child = spawn("build", &self.request("build", &path, &files, None));
+        let mut child = spawn("build", &self.request("build", &path, files, None));
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(b"start\n").unwrap();
         assert!(child.wait_with_output().unwrap().status.success());
-        (path, files)
+        path
     }
 }
 
@@ -263,5 +267,93 @@ fn keeps_captured_config_until_an_edit_replaces_it() {
     );
     assert_eq!(server.send(json!({"type":"edit","id":2,"output":output,"files":[caller],"configs":["tsconfig.json"]}))["type"], "result");
     assert!(!has_call());
+    assert_eq!(server.eof(), Some(0));
+}
+
+#[test]
+fn package_type_changes_reresolve_unchanged_importers_in_refresh_and_serve() {
+    let checkout = Checkout::new("package-type");
+    std::fs::write(
+        checkout.0.join("tsconfig.json"),
+        r#"{"compilerOptions":{"module":"nodenext"}}"#,
+    )
+    .unwrap();
+    let (base, files) = checkout.base();
+    let mut server = Server::start(&checkout.request("serve", &base, &files, None));
+    let call_kind: i64 = Connection::open(&base)
+        .unwrap()
+        .query_row(
+            "SELECT id FROM edge_kinds WHERE name = 'calls'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let has_call = |path: &Path| {
+        let db = Connection::open(path).unwrap();
+        if path != base {
+            assert!(
+                db.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM shadow_files WHERE path = 'use.ts')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+            );
+        }
+        db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM edges WHERE kind = ?1 AND target_name = 'leaf')",
+            [call_kind],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    };
+    assert!(has_call(&base));
+
+    let package = checkout.0.join("package.json");
+    let mut previous_refresh = None;
+    for (step, (manifest, expected_call)) in [
+        (Some(r#"{"type":"module"}"#), false),
+        (Some("{}"), true),
+        (Some(r#"{"type":"module"}"#), false),
+        (None, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut configs = vec!["tsconfig.json"];
+        if let Some(manifest) = manifest {
+            std::fs::write(&package, manifest).unwrap();
+            configs.push("package.json");
+        } else {
+            std::fs::remove_file(&package).unwrap();
+        }
+
+        let refresh = checkout.0.join(format!("refresh-{step}.db"));
+        let request = checkout.request("refresh", &base, &files, previous_refresh.as_deref());
+        let mut options: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
+        options["configs"] = json!(configs);
+        options["output"] = json!(refresh);
+        std::fs::write(&request, options.to_string()).unwrap();
+        let mut child = spawn("refresh", &request);
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"start\n").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(has_call(&refresh), expected_call, "refresh step {step}");
+        previous_refresh = Some(refresh);
+
+        let candidate = checkout.0.join(format!("serve-{step}.db"));
+        let result = server.send(json!({
+            "type": "edit", "id": step, "output": candidate, "files": [], "configs": configs
+        }));
+        assert_eq!(result["type"], "result", "{result}");
+        assert_eq!(has_call(&candidate), expected_call, "serve step {step}");
+        let published = checkout.0.join(format!("published-{step}.db"));
+        std::fs::rename(&candidate, &published).unwrap();
+        assert_eq!(
+            server.send(json!({"type":"accept","id":step,"overlay":published}))["type"],
+            "accepted"
+        );
+    }
     assert_eq!(server.eof(), Some(0));
 }

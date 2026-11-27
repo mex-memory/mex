@@ -29,6 +29,8 @@ struct Request {
 enum RequestSyntax {
     Import,
     Require,
+    ForceImport,
+    ForceRequire,
 }
 
 impl From<RequestSyntax> for Syntax {
@@ -36,6 +38,8 @@ impl From<RequestSyntax> for Syntax {
         match value {
             RequestSyntax::Import => Self::Import,
             RequestSyntax::Require => Self::Require,
+            RequestSyntax::ForceImport => Self::ForceImport,
+            RequestSyntax::ForceRequire => Self::ForceRequire,
         }
     }
 }

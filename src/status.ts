@@ -1,12 +1,14 @@
 /** Read-only machine and checkout status. No refresh, registration or model work. */
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { VERSION } from "./version.js";
 import { AGENT_NAMES as NAMES, installationChanges, type InstallRow } from "./install/index.js";
 import { MAX_SETTINGS_BYTES, readSnapshot, snapshotBytes } from "./install/files.js";
 import { EVENTS, installSettings, object, parseSettings, type Agent } from "./install/settings.js";
 import { binaryFileName, selfTestBinary } from "./hooks/shim/binary.js";
 import { openHooksReadOnly, openRecordReadOnly, recordLocation, type CheckoutRow, type RecordReader } from "./record/index.js";
+import { readHookErrors, type HookErrors } from "./record/hook-errors.js";
 import { realPath } from "./record/project.js";
 import type { LocationOptions } from "./record/location.js";
 import { listJobs } from "./record/jobs.js";
@@ -34,6 +36,7 @@ export interface StatusView {
   repository: { state: Switch; capture: Switch } | null;
   agents: AgentStatus[];
   binary: { state: "native" | "missing" | "unknown"; version?: string };
+  hookErrors: HookErrors | null;
   knowledge: KnowledgeStatus | null;
   background: { waiting: number; running: number; lastRun?: { name: string; at: string } } | null;
   modelUse: { runs: number; percent: number | null; capPercent: number; estimated: true } | null;
@@ -115,7 +118,8 @@ export function readStatus(options: StatusOptions = {}): StatusView {
   const reader = attempt(() => checkedReader(openRecordReadOnly(options))) ?? undefined;
   const root = attempt(() => checkoutRoot(options.cwd ?? process.cwd(), reader));
   const view: StatusView = { version: VERSION, repository: root ? { state: "unknown", capture: "unknown" } : null,
-    agents: [], binary: { state: "unknown" }, knowledge: null, background: null, modelUse: null };
+    agents: [], binary: { state: "unknown" }, hookErrors: location ? readHookErrors(location.directory) : null,
+    knowledge: null, background: null, modelUse: null };
   try {
     view.outputLevers = (env.MEX_LEVERS === "on" || env.MEX_LEVERS !== "off" && reader?.setting("global", "levers.output") === "on") ? "on" : "off";
     const rows = attempt(() => installationChanges(options));
@@ -175,7 +179,7 @@ export function readStatus(options: StatusOptions = {}): StatusView {
   } finally { reader?.close(); }
 }
 
-export function statusProblems(view: StatusView): string[] {
+export function statusProblems(view: StatusView, now = Date.now()): string[] {
   const problems: string[] = [];
   for (const agent of view.agents) {
     if (agent.installed === false) problems.push(`${NAMES[agent.agent]} hooks missing or incomplete: run mex install`);
@@ -186,7 +190,23 @@ export function statusProblems(view: StatusView): string[] {
   if (view.repository && !view.knowledge) problems.push("Knowledge unknown: run mex check for details");
   if (view.knowledge && !view.knowledge.checks) problems.push("Cached checks unknown: run mex check for details");
   if (!view.background || !view.modelUse) problems.push("Background records unknown: run mex jobs --json for details");
+  const late = lateHookErrors(view.hookErrors, now);
+  if (late.length > 0) {
+    problems.push(`${late.length} hook error${late.length === 1 ? "" : "s"} in the last 7 days, since ${hookErrorDate(late[0]!.at)}: see the list above; if they repeat, run mex install and report the details`);
+  }
   return problems;
+}
+
+/** A week of hook errors makes a problem; older ones are only listed. */
+const HOOK_ERROR_WINDOW_MS = 7 * 86_400_000;
+
+/** The non-busy errors the file still holds from the last week, oldest first. */
+function lateHookErrors(errors: HookErrors | null, now: number): HookErrors["recent"] {
+  return errors ? errors.recent.filter(error => error.kind !== "busy" && now - Date.parse(error.at) <= HOOK_ERROR_WINDOW_MS) : [];
+}
+
+function hookErrorDate(at: string): string {
+  return new Date(at).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
 function ago(at: string, now: number): string {
@@ -202,6 +222,25 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   lines.push("Agents");
   for (const agent of view.agents) lines.push(`  ${agent.installed ? "✓" : "!"} ${NAMES[agent.agent]}: ${agent.installed === null ? "unknown" : agent.installed ? `hooks installed (${agent.events} events)` : `hooks not installed or incomplete (${agent.events} events)`}${agent.lastCall ? ` · last call ${ago(agent.lastCall, now)}` : ""}${agent.agent === "codex" && agent.installed ? " · trust them once in Codex (/hooks, or Review hooks in the app)" : ""}`);
   lines.push(`  ${view.binary.state === "native" ? "✓" : "!"} Hook binary ${view.binary.state === "native" ? `${view.binary.version || "unknown version"} (native)` : view.binary.state}`);
+  const errors = view.hookErrors;
+  const late = lateHookErrors(errors, now);
+  if (errors && (options.doctor ? errors.total > 0 : late.length > 0)) {
+    const since = hookErrorDate(errors.first);
+    if (options.doctor) {
+      const counts = Object.entries(errors.counts)
+        .filter(([, count]) => count > 0)
+        .map(([kind, count]) => `${count} ${kind}${kind === "busy" ? " (a locked database; expected under load)" : ""}`);
+      lines.push("", `Hook errors: ${errors.total} since ${since} (${counts.join(", ")}) · your agents kept working`);
+      for (const error of errors.recent.slice(-5).reverse()) {
+        const time = new Date(error.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+        const text = stripVTControlCharacters(`${error.agent} ${error.event}  ${error.kind}  ${error.detail}`)
+          .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, " ").trimEnd();
+        lines.push(`  ${hookErrorDate(error.at)} ${time}  ${text}`);
+      }
+    } else {
+      lines.push("", `Hook errors: ${late.length} in the last 7 days · see mex doctor for details`);
+    }
+  }
   if (view.repository) {
     lines.push("", "Knowledge here");
     const k = view.knowledge;
@@ -213,7 +252,7 @@ export function formatStatus(view: StatusView, options: { doctor?: boolean; now?
   lines.push(b ? `  ${b.waiting ? `${b.waiting} jobs waiting` : "No jobs waiting"}${b.running ? ` · ${b.running} running` : ""} · last run: ${b.lastRun ? `${b.lastRun.name}, ${ago(b.lastRun.at, now)}` : "none recorded"}` : "  Jobs: unknown");
   lines.push(u ? `  Model use for MEX this week: ${u.runs} runs, ${u.percent === null ? "share of your usage unknown" : `${u.percent.toFixed(1)}% of your usage (estimate)`} (cap ${u.capPercent}%)` : "  Model use: unknown");
   if (options.doctor) {
-    const problems = statusProblems(view);
+    const problems = statusProblems(view, now);
     lines.push("", "Problems", ...(problems.length ? problems.map(problem => `  ✗ ${problem}`) : ["  No recorded problems."]));
     if (view.agents.some(agent => agent.agent === "codex" && agent.installed && !agent.lastCall)) lines.push("  Codex hook trust is unknown: open Codex, run /hooks.");
   }

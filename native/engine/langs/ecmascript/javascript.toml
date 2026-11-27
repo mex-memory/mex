@@ -1,5 +1,5 @@
 grammar = "javascript"
-adapter_version = 1
+adapter_version = 2
 extensions = [".js", ".mjs", ".cjs"]
 
 [functions]

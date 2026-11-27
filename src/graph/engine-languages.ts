@@ -13,6 +13,7 @@ const ENGINE_LANGUAGES = ["csharp", "javascript", "python", "rust", "typescript"
 export const TREE_SITTER_EXTRACTOR_VERSION = "tree-sitter-v5";
 /** Bumped when the engine's rows for a language change. */
 const ENGINE_EXTRACTOR_VERSION = "v1";
+const ENGINE_ECMASCRIPT_EXTRACTOR_VERSION = "v2";
 
 export function graphEngineLanguages(env: NodeJS.ProcessEnv = process.env): string[] {
   const override = env[GRAPH_ENGINE_LANGUAGES_ENV];
@@ -44,7 +45,9 @@ export function isEcmaScriptLanguage(language: Language): boolean {
 
 /** The suffix an extractor version gains while the engine builds `languages`; empty without any. */
 export function engineExtractorSuffix(languages: readonly string[]): string {
-  return languages.length > 0 ? `+engine-${languages.join("-")}-${ENGINE_EXTRACTOR_VERSION}` : "";
+  if (languages.length === 0) return "";
+  const version = graphEngineHandlesEcmaScript(languages) ? ENGINE_ECMASCRIPT_EXTRACTOR_VERSION : ENGINE_EXTRACTOR_VERSION;
+  return `+engine-${languages.join("-")}-${version}`;
 }
 
 export function engineFileExtractorVersion(language: Language): string {

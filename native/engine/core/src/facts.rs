@@ -293,6 +293,8 @@ pub enum ImportForm {
     Python,
     RustUse,
     CSharpUsing,
+    TypeWithImportMode,
+    TypeWithRequireMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Encode, Decode)]

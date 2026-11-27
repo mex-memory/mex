@@ -602,6 +602,10 @@ fn distinguishes_node_esm_extension_requirements_from_node10_and_bundler() {
             "app/main.ts",
             "app/local.ts",
             "app/sub/index.ts",
+            "app/common/main.ts",
+            "app/common/local.ts",
+            "app/common/card-render.utils.ts",
+            "app/common/sub/index.ts",
             "bundle/main.ts",
             "bundle/local.ts",
             "bundle/sub/index.ts",
@@ -613,6 +617,8 @@ fn distinguishes_node_esm_extension_requirements_from_node10_and_bundler() {
                 "app/tsconfig.json",
                 r#"{"compilerOptions":{"module":"node16"}}"#,
             ),
+            ("app/package.json", r#"{"type":"module"}"#),
+            ("app/common/package.json", "{}"),
             (
                 "bundle/tsconfig.json",
                 r#"{"compilerOptions":{"moduleResolution":"Bundler"}}"#,
@@ -639,6 +645,16 @@ fn distinguishes_node_esm_extension_requirements_from_node10_and_bundler() {
         view.resolve("app/main.ts", "./sub", Syntax::Require),
         file("app/sub/index.ts", "relative")
     );
+    for (specifier, path) in [
+        ("./local", "app/common/local.ts"),
+        ("./card-render.utils", "app/common/card-render.utils.ts"),
+        ("./sub", "app/common/sub/index.ts"),
+    ] {
+        assert_eq!(
+            view.resolve("app/common/main.ts", specifier, Syntax::Import),
+            file(path, "relative")
+        );
+    }
     assert_eq!(
         view.resolve("bundle/main.ts", "./local", Syntax::Import),
         file("bundle/local.ts", "relative")
@@ -650,6 +666,80 @@ fn distinguishes_node_esm_extension_requirements_from_node10_and_bundler() {
     assert_eq!(
         view.resolve("legacy/main.ts", "./sub", Syntax::Import),
         file("legacy/sub/index.ts", "relative")
+    );
+}
+
+#[test]
+fn uses_the_importer_format_for_node_package_conditions() {
+    let view = resolver(
+        &[
+            "unscoped.ts",
+            "common/main.ts",
+            "common/forced.mts",
+            "common/forced-js.mjs",
+            "module/src/main.ts",
+            "module/src/view.tsx",
+            "module/src/script.js",
+            "module/src/widget.jsx",
+            "module/src/forced.cts",
+            "module/src/forced-js.cjs",
+            "dual/require.cts",
+            "dual/import.mts",
+        ],
+        &[
+            (
+                "tsconfig.json",
+                r#"{"compilerOptions":{"moduleResolution":"nodenext","allowJs":true}}"#,
+            ),
+            (
+                "common/package.json",
+                r##"{"imports":{"#entry":{"import":"dual/import","require":"dual/require"}}}"##,
+            ),
+            (
+                "module/package.json",
+                r##"{"type":"module","imports":{"#entry":{"import":"dual/import","require":"dual/require"}}}"##,
+            ),
+            (
+                "dual/package.json",
+                r#"{"name":"dual","exports":{
+                    ".":{"import":"./import.mjs","require":"./require.cjs"},
+                    "./import":"./import.mjs",
+                    "./require":"./require.cjs"
+                }}"#,
+            ),
+        ],
+    );
+    for (from, path) in [
+        ("unscoped.ts", "dual/require.cts"),
+        ("common/main.ts", "dual/require.cts"),
+        ("common/forced.mts", "dual/import.mts"),
+        ("common/forced-js.mjs", "dual/import.mts"),
+        ("module/src/main.ts", "dual/import.mts"),
+        ("module/src/view.tsx", "dual/import.mts"),
+        ("module/src/script.js", "dual/import.mts"),
+        ("module/src/widget.jsx", "dual/import.mts"),
+        ("module/src/forced.cts", "dual/require.cts"),
+        ("module/src/forced-js.cjs", "dual/require.cts"),
+    ] {
+        assert_eq!(
+            view.resolve(from, "dual", Syntax::Import),
+            file(path, "workspace_package"),
+            "{from}"
+        );
+    }
+    for (from, path) in [
+        ("common/main.ts", "dual/require.cts"),
+        ("module/src/main.ts", "dual/import.mts"),
+    ] {
+        assert_eq!(
+            view.resolve(from, "#entry", Syntax::Import),
+            file(path, "workspace_package"),
+            "{from}"
+        );
+    }
+    assert_eq!(
+        view.resolve("module/src/main.ts", "dual", Syntax::Require),
+        file("dual/require.cts", "workspace_package")
     );
 }
 

@@ -91,23 +91,26 @@ function buildExample() {
 
 function collectSites(source) {
   const sites = [];
-  function add(node, syntax) {
+  function add(node, syntax, attributes) {
     if (node && ts.isStringLiteralLike(node)) {
+      const override = ts.getResolutionModeOverride(attributes);
+      if (override === ts.ModuleKind.ESNext) syntax = "force_import";
+      if (override === ts.ModuleKind.CommonJS) syntax = "force_require";
       const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
-      sites.push({ specifier: node.text, syntax, line: line + 1, column: character });
+      sites.push({ specifier: node.text, syntax, line: line + 1, column: character, usage: node });
     }
   }
   function visit(node) {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      add(node.moduleSpecifier, "import");
+      const attributes = ts.isExclusivelyTypeOnlyImportOrExport(node) ? node.attributes : undefined;
+      add(node.moduleSpecifier, "import", attributes);
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       add(node.moduleReference.expression, "require");
     } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
-      add(node.argument.literal, "import");
+      add(node.argument.literal, "import", node.attributes);
     } else if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        add(node.arguments[0], "import");
-      } else if (ts.isIdentifier(node.expression) && node.expression.text === "require") {
+      // The engine doesn't record dynamic import() calls, so they aren't compared.
+      if (ts.isIdentifier(node.expression) && node.expression.text === "require") {
         add(node.arguments[0], "require");
       }
     }
@@ -186,8 +189,15 @@ function matchesPathAlias(options, specifier) {
 }
 
 function compilerAnswer(projects, workspace, project, from, site) {
-  const mode = site.syntax === "require" ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext;
   const { options } = project.parsed;
+  const resolution = ts.getEmitModuleResolutionKind(options);
+  let mode = site.syntax === "require" ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext;
+  if (resolution === ts.ModuleResolutionKind.Node16 || resolution === ts.ModuleResolutionKind.NodeNext) {
+    const impliedNodeFormat = ts.getImpliedNodeFormatForFile(
+      from, project.cache.getPackageJsonInfoCache(), projects.host, options,
+    );
+    mode = ts.getModeForUsageLocation({ fileName: from, impliedNodeFormat }, site.usage, options);
+  }
   const { resolvedModule } = ts.resolveModuleName(
     site.specifier, from, options, projects.host, project.cache, undefined, mode,
   );
@@ -300,7 +310,8 @@ function differenceReason(query, answer, projects, workspace, emitted) {
 
 function measureRecord(summary, query, answer, projects, workspace, emitted) {
   const comparison = agreement(query.typescript, answer.target, emitted);
-  const sample = { ...query, rustProject: answer.project, rust: answer.target };
+  const { usage, ...site } = query;
+  const sample = { ...site, rustProject: answer.project, rust: answer.target };
   if (comparison) {
     summary.agreements++;
     summary.agreementKinds[comparison] = (summary.agreementKinds[comparison] ?? 0) + 1;

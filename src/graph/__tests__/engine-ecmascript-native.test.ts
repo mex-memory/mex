@@ -132,11 +132,11 @@ describe.skipIf(!binary)("TypeScript and JavaScript from the Rust engine into sc
     }));
     expect(after.cache).toEqual([]);
     expect(after.files).toEqual([
-      { path: "src/client.ts", language: "typescript", extractor_version: "tree-sitter-v5+engine-typescript-v1" },
-      { path: "src/other.jsx", language: "jsx", extractor_version: "tree-sitter-v5+engine-javascript-v1" },
-      { path: "src/script.mjs", language: "javascript", extractor_version: "tree-sitter-v5+engine-javascript-v1" },
-      { path: "src/service.ts", language: "typescript", extractor_version: "tree-sitter-v5+engine-typescript-v1" },
-      { path: "src/view.tsx", language: "tsx", extractor_version: "tree-sitter-v5+engine-typescript-v1" },
+      { path: "src/client.ts", language: "typescript", extractor_version: "tree-sitter-v5+engine-typescript-v2" },
+      { path: "src/other.jsx", language: "jsx", extractor_version: "tree-sitter-v5+engine-javascript-v2" },
+      { path: "src/script.mjs", language: "javascript", extractor_version: "tree-sitter-v5+engine-javascript-v2" },
+      { path: "src/service.ts", language: "typescript", extractor_version: "tree-sitter-v5+engine-typescript-v2" },
+      { path: "src/view.tsx", language: "tsx", extractor_version: "tree-sitter-v5+engine-typescript-v2" },
     ]);
     expect(after.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -434,9 +434,9 @@ it("refuses to bind a compiler-era manifest even when source drift is bounded", 
 
 it("versions all default engine languages and records the exact override", () => {
   expect(corpusExtractorVersion({}))
-    .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-csharp-javascript-python-rust-typescript-v1`);
+    .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-csharp-javascript-python-rust-typescript-v2`);
   expect(corpusExtractorVersion({ [GRAPH_ENGINE_LANGUAGES_ENV]: "tsx, Javascript, Python, TypeScript" }))
-    .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-python-typescript-v1`);
+    .toBe(`${CORPUS_EXTRACTOR_VERSION}+engine-javascript-python-typescript-v2`);
 });
 
 it("uses tracked package manifests even when generated package manifests are ignored", () => {

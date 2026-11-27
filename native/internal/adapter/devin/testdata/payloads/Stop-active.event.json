@@ -1,0 +1,13 @@
+{
+  "agent": "devin",
+  "agent_version": "",
+  "kind": "stop",
+  "session_id": "dv-01",
+  "agent_id": "",
+  "cwd": "/home/dev/shop",
+  "project_id": "",
+  "checkout": "",
+  "transcript": "/home/dev/.devin/sessions/dv-01.jsonl",
+  "stop_active": true,
+  "background": false
+}
