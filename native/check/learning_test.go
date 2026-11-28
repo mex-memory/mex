@@ -149,27 +149,42 @@ func TestQuoteRelocation(t *testing.T) {
 	const exact = "Use the checked loader for every request with input."
 	root := t.TempDir()
 	file := "CONTRIBUTING.md"
-	write(t, root, file, "# Loader\n\n"+exact)
+	const original = "# Loader\n\n" + exact + "\n\nValidate inputs first.\n\n# Notes\n\nOriginal examples."
+	const originalOther = "# Notes\n\nOriginal notes."
+	write(t, root, file, original)
+	write(t, root, "OTHER.md", originalOther)
 	c := record(t, root, "quote", Complete, map[string]any{"file": file, "exact": exact, "heading": "Loader", "prefix": "", "suffix": ""})
 	if got := c.Saw["hash"]; got != textHash(exact) {
 		t.Fatalf("quote hash: %v", got)
 	}
 	// The eight original pairs retain six across one edit and four across
 	// separated edits. The 60% threshold distinguishes those cases.
-	for _, tc := range []struct{ name, doc, want string }{
-		{"unrelated changes", "# Loader\n\nUse the checked loader\nfor every request with input.\n# Notes\nExtra", Held},
-		{"edited", "# Loader\n\nUse the safe loader for every request with input.", Changed},
-		{"too little overlap", "# Loader\n\nUse the safe loader for every operation with input.", Broken},
-		{"outside recorded heading", "# Loader\n\nDifferent instructions\n# Backup\n\nUse the safe loader for every request with input.", Broken},
-		{"exact in obsolete sibling", "# Loader\n\nDifferent instructions\n# Obsolete\n\n" + exact, Broken},
-		{"exact in obsolete child", "# Loader\n\nDifferent instructions\n## Obsolete\n\n" + exact, Broken},
-		{"removed", "# Loader\n\nOnly send validated input.", Broken},
+	for _, tc := range []struct {
+		name, doc, other, want string
+		status                 Status
+	}{
+		{"unrelated change in the same doc", strings.Replace(original, "Original examples.", "Updated examples.", 1), "", Held, Pass},
+		{"unrelated doc edited", original, "# Notes\n\nUpdated notes.", Held, Pass},
+		{"moved within the heading", "# Loader\n\nValidate inputs first.\n\nUse the checked loader\nfor every request with input.", "", Held, Pass},
+		{"renamed heading", "# Request handling\n\nValidate inputs first.\n\n" + exact, "", Held, Pass},
+		{"ambiguous after heading rename", "# Request handling\n\n" + exact + "\n# Backup\n\n" + exact, "", Broken, Gone},
+		{"edited", "# Loader\n\nUse the safe loader for every request with input.", "", Changed, Fail},
+		{"too little overlap", "# Loader\n\nUse the safe loader for every operation with input.", "", Broken, Gone},
+		{"outside recorded heading", "# Loader\n\nDifferent instructions\n# Backup\n\nUse the safe loader for every request with input.", "", Broken, Gone},
+		{"exact in obsolete sibling", "# Loader\n\nDifferent instructions\n# Obsolete\n\n" + exact, "", Broken, Gone},
+		{"exact in obsolete child", "# Loader\n\nDifferent instructions\n## Obsolete\n\n" + exact, "", Broken, Gone},
+		{"removed", "# Loader\n\nOnly send validated input.", "", Broken, Gone},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			write(t, root, file, tc.doc)
+			other := tc.other
+			if other == "" {
+				other = originalOther
+			}
+			write(t, root, "OTHER.md", other)
 			r := verdict(t, root, c)
-			if r.Verdict != tc.want {
-				t.Fatalf("want %s: %+v", tc.want, r)
+			if r.Verdict != tc.want || r.Checks[0].Status != tc.status {
+				t.Fatalf("want %s/%s: %+v", tc.want, tc.status, r)
 			}
 			if tc.want == Changed && r.Checks[0].Reason != "the quoted passage was edited" {
 				t.Fatalf("edited: %+v", r)

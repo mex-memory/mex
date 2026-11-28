@@ -9,17 +9,17 @@ import { serializeEntry } from "../../knowledge/entry.js";
 import { entry } from "../../knowledge/__tests__/fixtures.js";
 import { createJudgeKind, readJudgement } from "../job.js";
 import { evaluate, nativeRequest, recordChecks, recordChecksDetailed } from "../native.js";
-import { hash } from "../evidence.js";
+import { hash, position, type Evidence } from "../evidence.js";
 import { pendingJudgeRequest, queuePendingJudgements } from "../pending.js";
-import { ModelWaitError } from "../../model-runner/index.js";
+import { ModelWaitError, type ModelRequest } from "../../model-runner/index.js";
 import { refreshRuleChanges } from "../rule-change.js";
-import { position } from "../evidence.js";
 import { buildIndex } from "../../file-index/build.js";
 import { literalPattern } from "../../file-index/classify.js";
 import { indexDirectory, writePatterns } from "../../file-index/store.js";
 import { runJudgeSync } from "../sync.js";
 import { shortHash } from "../../record/project.js";
 import { resultKey } from "../result.js";
+import type { NativeReport } from "../../knowledge/check.js";
 
 let base: string, binary: string;
 beforeAll(() => {
@@ -142,6 +142,107 @@ it("runs sync through the real evaluator and routes a fake model's checked team 
     expect(git("diff", "--cached", "--name-only")).toBe("");
   } finally { writer.close(); }
 });
+
+const quote = "Use the checked loader for every request with input.";
+const controlQuote = "Record the request identifier in the verification report.";
+const surrounding = "Validate request input before dispatch.";
+const originalPassage = quote + "\n\n" + surrounding;
+const guide = (loader = originalPassage, heading = "Loader") =>
+  `# ${heading}\n\n${loader}\n\n# Verification\n\n${controlQuote}\n\n# Notes\n\nOriginal examples.\n`;
+
+it.each([
+  { name: "another section edited", doc: guide().replace("Original examples.", "Updated examples."), verdict: "held", check: "pass", form: "full" },
+  { name: "another document edited", doc: guide(), other: "New examples.\n", verdict: "held", check: "pass", form: "full" },
+  { name: "passage moved", doc: guide(surrounding + "\n\n" + quote), verdict: "held", check: "pass", form: "full" },
+  { name: "heading renamed", doc: guide(surrounding + "\n\n" + quote, "Request handling"), verdict: "held", check: "pass", form: "full" },
+  { name: "passage changed", doc: guide(originalPassage.replace("checked", "safe")), verdict: "changed", check: "fail", form: "pointer", answer: "still-true" },
+  { name: "passage removed", doc: guide(surrounding), verdict: "broken", check: "gone", form: "withheld", answer: "cannot-tell" },
+])("sync checks a learned quote with $name", async ({ name, doc, other, verdict, check, form, answer }) => {
+  const root = join(base, name.replaceAll(" ", "-")), home = join(root, "record");
+  mkdirSync(root);
+  vi.stubEnv("MEX_HOME", home);
+  vi.stubEnv("MEX_HOOK_BINARY", binary);
+  vi.stubEnv("MEX_BACKGROUND", "0");
+  vi.stubEnv("CODEX_THREAD_ID", "");
+  vi.stubEnv("CLAUDECODE", "");
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" });
+  git("init", "-qb", "main");
+  const path = "CONTRIBUTING.md", notes = "NOTES.md";
+  writeFileSync(join(root, path), guide());
+  writeFileSync(join(root, notes), "Original notes.\n");
+  git("add", path, notes);
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Baseline");
+  const writer = openRecord({ home, projectPath: root, isNetwork: () => false });
+  try {
+    const projectId = writer.checkout(root)!.project_id;
+    const request = { checkout: root, project_id: projectId, mex_home: home, record_directory: writer.location.directory };
+    const learned = "mx_docquote0", control = "mx_docquote1";
+    const directory = join(writer.location.home, "projects", projectId, "notes");
+    const claim = "Route requests through the checked loader.";
+    mkdirSync(directory, { recursive: true });
+    for (const [id, exact, heading, text] of [[learned, quote, "Loader", claim], [control, controlQuote, "Verification", controlQuote]] as const) {
+      const checks = await recordChecks(request, [{ kind: "quote", role: "complete", target: { file: path, exact, heading, prefix: "", suffix: "" } }]);
+      expect(checks).toHaveLength(1);
+      writeFileSync(join(directory, id + ".md"), serializeEntry(entry(id, {
+        checks, source: { type: "docs", producer: "learn-deeper", ref: path }, evidence: "docs",
+      }, text)));
+    }
+    const observe = () => nativeRequest({ ...request, action: "evaluate", store: true }) as Promise<NativeReport>;
+    const delivery = () => {
+      const probe = spawnSync(binary, ["--delivery-probe"], { encoding: "utf8", input: JSON.stringify({ ...request, entries: [learned, control] }) });
+      expect(probe.status, probe.stderr).toBe(0);
+      const report = JSON.parse(probe.stdout);
+      expect(report.results[1]).toMatchObject({ id: control, verdict: "held", form: "full" });
+      return report.results[0];
+    };
+    const before = await observe();
+    expect(before.items?.find(item => item.id === learned)?.verdict).toBe("held");
+    expect(delivery()).toMatchObject({ id: learned, form: "full", text: expect.stringContaining(claim) });
+
+    writeFileSync(join(root, path), doc);
+    if (other) writeFileSync(join(root, notes), other);
+    const current = await observe();
+    expect(current.items?.find(item => item.id === learned)?.verdict).toBe(verdict);
+    expect(current.results?.find(item => item.entry_id === learned)?.checks).toMatchObject([{ kind: "quote", status: check }]);
+    expect(current.items?.find(item => item.id === control)?.verdict).toBe("held");
+    const currentDelivery = delivery();
+    expect(currentDelivery).toMatchObject({ id: learned, verdict, form });
+    if (form === "full") expect(currentDelivery.text).toContain(claim);
+    else expect(currentDelivery.text ?? "").not.toContain(claim);
+    if (form === "pointer") expect(currentDelivery.text).toContain(`mex recall ${learned}`);
+
+    const model = vi.fn(async (request: ModelRequest) => {
+      expect(request.purpose).toBe("judge");
+      const evidence = JSON.parse(request.prompt.split("Evidence follows as JSON:\n")[1]!) as Evidence;
+      expect(evidence.entries.map(item => item.id)).toEqual([learned]);
+      expect(evidence.files.map(file => file.path)).toEqual([path]);
+      return { selectedModel: "fixture", usage: { input: 30, output: 10, cache_write: 0, cache_read: 0, model: "fixture", estimated: false },
+        text: JSON.stringify({ results: [{ id: learned, result: answer }] }) };
+    });
+    registerJobKind(createJudgeKind({ evaluate, recordChecks, model }));
+    const sync = () => runJudgeSync({ home, projectPath: root }, { available: () => true, write: () => {} });
+    const job = await sync();
+    const sweeps = () => writer.db.prepare("SELECT id, results FROM jobs WHERE kind='judge' AND project_id=?").all(projectId);
+    expect(job).toMatchObject({ state: answer === "cannot-tell" ? "done with gaps" : "done", results: answer ? 1 : 0 });
+    expect(sweeps()).toEqual([{ id: job!.id, results: answer ? 1 : 0 }]);
+    expect(model).toHaveBeenCalledTimes(answer ? 1 : 0);
+    expect(readJudgement(writer, projectId, root, learned)?.result).toBe(answer);
+    expect(readJudgement(writer, projectId, root, control)).toBeUndefined();
+
+    const after = await observe();
+    const restored = answer === "still-true";
+    expect(after.items?.find(item => item.id === learned)?.verdict).toBe(restored ? "held" : verdict);
+    const afterDelivery = delivery();
+    expect(afterDelivery).toMatchObject({ id: learned, form: restored ? "full" : form });
+    if (restored || form === "full") expect(afterDelivery.text).toContain(claim);
+    else expect(afterDelivery.text ?? "").not.toContain(claim);
+    if (answer) {
+      expect(await sync()).toMatchObject({ state: "done", results: 0 });
+      expect(model).toHaveBeenCalledTimes(1);
+      expect(sweeps().filter(row => row.results !== 0)).toEqual([{ id: job!.id, results: 1 }]);
+    }
+  } finally { writer.close(); }
+}, 60_000);
 
 it("ships distinct judge/deep CLI paths and a noninitializing dry run with no launcher or telemetry writes", () => {
   const root = join(base, "cli-sync-repo"), user = join(base, "cli-sync-user"), home = join(user, ".mex"), bin = join(base, "cli-sync-bin");
