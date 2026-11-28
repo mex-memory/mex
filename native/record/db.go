@@ -268,6 +268,14 @@ func PrepareHooks(location Location) error {
 	return h.Close()
 }
 
+// OpenHooksUnhurried opens hooks.db for MEX's own runs, which nothing waits
+// on, with the generous budget PrepareHooks uses. The first open of a record
+// creates the schema, and on a busy machine that alone can outlast a hook's
+// 250 ms.
+func OpenHooksUnhurried(location Location) (*Hooks, error) {
+	return openHooks(location, prepareBudget)
+}
+
 func openHooks(location Location, limits budget) (*Hooks, error) {
 	return openHookDatabase(location, limits, false)
 }

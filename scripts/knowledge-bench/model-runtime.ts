@@ -426,7 +426,9 @@ export async function runEvaluation(options: RunOptions) {
         if (fatal || !["done", "done with gaps", "failed"].includes(job.state)) throw new Error("The judge did not finish within the approved run");
       }
       // The probe reads the real controller cache. Only Go publishes verdicts.
-      await nativeRequest({ ...request, action: "evaluate", store: true });
+      const stored = await nativeRequest({ ...request, action: "evaluate", store: true }) as { stored?: boolean };
+      // Without stored verdicts the probe would withhold every claim and score it as not kept.
+      if (stored.stored !== true) throw new Error("The evaluator did not store this checkpoint's verdicts");
       const probe = spawnSync(options.binary, ["--delivery-probe"], { input: JSON.stringify({ ...request, entries: corpus.claims.map(c => id(c.id)) }), encoding: "utf8", timeout: 60_000, maxBuffer: 2 << 20, env: { ...process.env, MEX_BACKGROUND: "1" } });
       if (probe.status !== 0) throw new Error("The delivery probe failed");
       const delivered = JSON.parse(probe.stdout) as { ok: boolean; results: Array<{ id: string; form: string; text?: string }> };

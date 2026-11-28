@@ -57,3 +57,28 @@ func TestCheckRunRecordBatchBound(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, out.String())
 	}
 }
+
+// A stored evaluation creates hooks.db on first use and fails loudly when the
+// store can't be opened, never answering with an unstored report.
+func TestCheckRunStoredEvaluate(t *testing.T) {
+	root, records := t.TempDir(), t.TempDir()
+	evaluate := func() (int, string) {
+		body, _ := json.Marshal(map[string]any{"action": "evaluate", "checkout": root, "project_id": "p", "mex_home": t.TempDir(), "record_directory": records, "store": true})
+		var out bytes.Buffer
+		code := checkRun(bytes.NewReader(body), &out)
+		return code, out.String()
+	}
+	if code, out := evaluate(); code != 0 || !strings.Contains(out, `"stored":true`) {
+		t.Fatalf("first stored evaluate: exit %d: %s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(records, "hooks.db")); err != nil {
+		t.Fatal(err)
+	}
+	records = t.TempDir()
+	if err := os.Mkdir(filepath.Join(records, "hooks.db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := evaluate(); code != 1 || !strings.Contains(out, "verdict store") {
+		t.Fatalf("unopenable store: exit %d: %s", code, out)
+	}
+}

@@ -85,10 +85,15 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 			RecordDirectory: req.RecordDirectory, Force: true, TeamOnly: req.TeamOnly, Explicit: true,
 		}
 		if req.Store && req.RecordDirectory != "" && req.ProjectID != "" {
-			if hooks, err := localrecord.OpenHooks(hooksLocation(home{mex: req.MexHome}, req.RecordDirectory)); err == nil {
-				defer hooks.Close()
-				opts.Store = hooks
+			// A store that was asked for and can't be opened is an error, never
+			// a silent unstored report: readers would find no verdicts at all.
+			hooks, err := localrecord.OpenHooksUnhurried(hooksLocation(home{mex: req.MexHome}, req.RecordDirectory))
+			if err != nil {
+				_ = enc.Encode(checkFailure{Error: "the verdict store can't be opened: " + err.Error()})
+				return 1
 			}
+			defer hooks.Close()
+			opts.Store = hooks
 		}
 		report, err := check.RunStage(opts)
 		if err != nil {
