@@ -1,39 +1,58 @@
 # Release resource measurements
 
-`run.mjs` retains the frozen small/medium/large fixture profiles and budgets.
-Hub idle and maintenance RSS now sum the Hub and its observed descendants in
-each sample. Maintenance also records observed process CPU deltas. The report's
-`configuration.processMeasurement` describes scope and sampling limitations;
-older reports remain schema-valid but measured only the Hub PID.
+Run `node scripts/release-benchmark/run.mjs` after the production build. Use
+`--assets-only` for deterministic bytes without starting Chromium or the Hub.
+The runner enforces asset budgets on every invocation. Runtime enforcement
+still requires `MEX_ENFORCE_RELEASE_BUDGETS=1` on Ubuntu 24.04 x64 with Node
+22.22.0.
 
-Linux uses `/proc` with a 10 ms interval. macOS samples `ps`; Windows keeps one
-local PowerShell/CIM sampler running, avoiding a shell startup per sample. Those
-platforms use a 100 ms interval. CPU already observed from an exited child stays
-in the total, and process start identities distinguish reused PIDs. Sampling
-can miss short-lived children and CPU between the last sample and exit. Summed
-RSS can double-count shared pages; it is not unique physical memory. Sampling
-errors fail the run instead of becoming zero usage. Windows/macOS measurement
-support does not establish a second calibration platform.
+## Machine Hub
 
-HTTP deadlines cover headers and bounded streamed bodies, including job
-creation. Ordinary requests and stream headers are limited to five seconds or
-the remaining job deadline, whichever is smaller. Maintenance then waits for a
-terminal snapshot on the same SSE route as the production UI, retaining the
-absolute job deadline through stream consumption. Events, event count, and
-total stream bytes are bounded. This avoids adding repeated SQLite status reads
-while the candidate works; no retry hides stream failures. Elapsed time still
-covers job creation through terminal delivery, and child resource sampling
-continues throughout. New reports identify this method with
-`configuration.maintenanceObservation: "job-event-stream"`; earlier reports
-without that field used repeated job-status polling.
+The Vite manifest accounts for the initial JS and CSS closure and every built
+font. Route measurements count only bytes added by `/` and `/repos/:projectId`.
+Both pages are currently eager, so their bytes are part of the initial
+closure. The production build measured 464,914 bytes for the initial and
+largest JS chunk, 76,818 CSS bytes, and 84,724 font bytes. Asset limits use
+`ceil(built bytes * 1.05)`.
+
+Cold readiness runs `mex hub --foreground --no-open` against a new temporary
+MEX home for every sample and times through the first completed, validated
+`GET /api/v1/hello`. The warm API reads use the session cookie and time complete
+responses from `/api/v1/session` and `/api/v1/projects`. Each frozen fixture
+profile registers one Git checkout in its own temporary MEX home. Browser heap
+uses a fresh Chromium context for each sample after real fixture content appears
+on the route, and fails if the page requests any other origin. The benchmark
+checks that Hub reads preserve repository state.
+
+There are ten timing samples and five idle and browser samples per profile.
+Idle RSS and CPU use the process-tree sampler over two seconds after warming
+the authenticated API. HTTP measurements bound response bodies and apply
+deadlines to headers and bodies. Linux samples through `/proc` every 10 ms.
+macOS uses `ps` and Windows uses one local PowerShell/CIM sampler, both at
+100 ms. Sampling may miss short-lived processes. Summed RSS can count shared
+pages more than once. Sampling errors fail the run.
+
+The machine Hub has no Graph or Wiki maintenance job endpoints. Current
+reports use `maintenance: null` for each profile. The previous job latency and
+RSS limits remain provisional, and historical job-stream reports still
+validate. Graph and Wiki database ratios continue to use the frozen fixtures
+and their existing limits.
+
+Only the asset limits are recalibrated here. Until measurements are available
+from the pinned runner, cold readiness, idle and Home heap retain their
+previous limits. Each new API uses the smallest previous API limit for its
+profile, and Repo uses the smallest previous route heap limit. Those
+provisional limits still enforce on the pinned runner. Pinned runtime
+calibration uses `ceil(measured p95 * 1.15)`. Local macOS or Windows timing and
+heap samples are for characterization.
 
 ## Startup diagnostics
 
 When small-fixture Hub startup crosses its budget, CI can run ten separate
 startup diagnostics after every release measurement has finished. These record
-wall time, process CPU, import time and aggregate synchronous filesystem/child
-process time. They contain fixed numeric fields and checkout identity, never
-paths, arguments or bootstrap tokens. Diagnostic runs do not contribute samples
+wall time through hello and process CPU, import time, and aggregate
+synchronous filesystem/child process time through the printed sign-in link.
+Diagnostic reports contain fixed numeric fields and checkout identity. Diagnostic runs do not contribute samples
 to a release report or change its verdict, budgets or confirmation policy.
 
 ## Separate graph characterization
@@ -62,18 +81,3 @@ These are experiment guardrails, not product budgets or exact OS memory caps.
 Temporary corpora and source bundles are parent-owned and removed after success
 or failure. Run representative characterization serially with other resource
 measurements, and never calibrate release limits from laptop results.
-
-## State diagrams
-
-The `diagrams` and `diagramDetail` routes are measured separately. Detail includes
-the lazy statechart canvas, contract, strict Mermaid state renderer and its
-static dependency closure; none may enter Home or the initial shell closure.
-The fixture adds one saved, explicitly incomplete snapshot through the real
-repository service. It does not change the frozen Graph/Wiki input corpus.
-
-The two owned asset leaves and six heap leaves are calibrated from pinned Linux
-CI run 40311997168; `docs/design/state-diagrams-calibration.json` retains samples,
-formulas, limits, source commit and report hash. Every unrelated budget and the
-runner identity remain unchanged. Missing budgets still fail closed with
-`budget_missing`; an unknown budget is never confirmable noise or an implicit
-pass. Do not copy local timing/heap numbers into the frozen file.

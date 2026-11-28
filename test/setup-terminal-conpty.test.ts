@@ -7,7 +7,7 @@
  * pty/termios modules, which Windows does not have. This suite covers the
  * same terminal surface there: the tool picker, cancelling, handing the real
  * console to a native agent and getting it back, recovery after a failed
- * agent, and finishing a populated setup through the Hub link.
+ * agent, and finishing a populated setup in the terminal.
  *
  * node-pty is not a project dependency, so ordinary installs stay free of a
  * native module; the Windows CI job installs it for this run. Without it the
@@ -17,7 +17,6 @@ import { currentGraphPath } from "../src/graph/storage.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { createConnection } from "node:net";
 import { release, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,8 +40,8 @@ const requireCoverage = process.platform === "win32" && Boolean(process.env.CI);
 const fixtures: Fixture[] = [];
 
 interface Fixture { root: string; project: string; record: string; env: NodeJS.ProcessEnv }
-interface Action { expect: string; regex?: boolean; missing?: string[]; input?: string; probe?: boolean; timeout?: number }
-interface Result { exitCode: number; output: string; events: Array<{ match: string; connected?: boolean }> }
+interface Action { expect: string; missing?: string[]; input?: string; timeout?: number }
+interface Result { exitCode: number; output: string }
 interface AgentRecord { pid: number; agent: string; argv: string[]; stdinTTY: boolean; stdoutTTY: boolean; promptExists: boolean; input?: string }
 
 beforeAll(() => {
@@ -160,7 +159,7 @@ describe.skipIf(Boolean(skipReason) && !requireCoverage)(`built terminal setup i
     expectPromptCleaned(f);
   });
 
-  it.each(["agent-memory", "code-repo"])("finishes a populated %s setup and serves the Hub link until q", async (mode) => {
+  it.each(["agent-memory", "code-repo"])("finishes a populated %s setup and prints the Hub command", async (mode) => {
     const f = fixture("complete");
     if (mode === "code-repo") {
       execFileSync("git", ["-c", "init.templateDir=", "init", "--quiet"], { cwd: f.project, env: f.env });
@@ -171,14 +170,11 @@ describe.skipIf(Boolean(skipReason) && !requireCoverage)(`built terminal setup i
     const result = await terminal(f, args, [
       { expect: "Choose your AI tools", input: "\r" },
       { expect: "MEX_PTY_CHILD_READY", input: "populate\r" },
-      { expect: "http://127\\.0\\.0\\.1:[0-9]+/#token=[A-Za-z0-9_-]+", regex: true, probe: true, input: "q" },
     ]);
     expect(result.exitCode, result.output).toBe(0);
-    expect(result.output).toContain("Continue in your browser");
-    expect(result.events[2]!.connected).toBe(true);
-    expect(result.output).toContain("Hub stopped");
-    const address = new URL(result.events[2]!.match);
-    expect(await canConnect(Number(address.port))).toBe(false);
+    expect(result.output).toContain(mode === "agent-memory" ? "Setup complete." : "Review and commit the canonical MEX setup.");
+    expect(result.output).toContain("Run `mex hub` to open the Hub.");
+    expect(result.output).not.toContain("#token=");
     expect(readFileSync(join(f.project, ".mex", "AGENTS.md"), "utf8")).not.toContain("[YYYY-MM-DD]");
     expect(existsSync(currentGraphPath(f.project, { home: join(f.env.MEX_HOME!, ".mex") }))).toBe(mode === "code-repo");
     expect(existsSync(join(f.project, ".mex", "wiki.db"))).toBe(mode === "code-repo");
@@ -241,7 +237,6 @@ async function terminal(f: Fixture, args: string[], actions: Action[], options: 
       let busy = false;
       let settled = false;
       let exitCode: number | null = null;
-      const events: Result["events"] = [];
       const timedOut = (): void => {
         fail(new Error(`ConPTY step ${step} timed out waiting for ${JSON.stringify(actions[step]?.expect ?? "exit")}\n${plain(raw).slice(-4000)}`));
       };
@@ -254,24 +249,21 @@ async function terminal(f: Fixture, args: string[], actions: Action[], options: 
       const finish = (): void => {
         settled = true;
         clearTimeout(deadline);
-        resolve({ exitCode: exitCode!, output: plain(raw), events });
+        resolve({ exitCode: exitCode!, output: plain(raw) });
       };
-      const advance = async (): Promise<void> => {
+      const advance = (): void => {
         if (busy || settled) return;
         busy = true;
         try {
           while (step < actions.length) {
             const action = actions[step]!;
             const text = plain(raw).slice(searchFrom);
-            const match = action.regex ? new RegExp(action.expect, "u").exec(text)?.[0] : text.includes(action.expect) ? action.expect : undefined;
+            const match = text.includes(action.expect) ? action.expect : undefined;
             if (match === undefined) return;
             searchFrom += text.indexOf(match) + match.length;
             for (const path of action.missing ?? []) {
               if (existsSync(join(f.project, path))) throw new Error(`${path} exists before the screen that should precede any write`);
             }
-            const event: Result["events"][number] = { match };
-            if (action.probe) event.connected = await canConnect(Number(new URL(match).port));
-            events.push(event);
             step += 1;
             if (actions[step]?.timeout !== undefined) {
               clearTimeout(deadline);
@@ -296,12 +288,11 @@ async function terminal(f: Fixture, args: string[], actions: Action[], options: 
           fail(new Error("ConPTY output exceeded the 2 MiB acceptance limit"));
           return;
         }
-        void advance();
+        advance();
       });
       child.onExit(({ exitCode: code }) => {
         exitCode = code;
-        // A pending async Hub probe finishes before the final exit decision.
-        void advance();
+        advance();
       });
     });
   } finally {
@@ -376,17 +367,6 @@ function expectPromptCleaned(f: Fixture): void {
   const local = join(f.project, ".mex", "local");
   expect(existsSync(local) ? readdirSync(local).filter((name) => name.startsWith("setup-population-")) : []).toEqual([]);
 }
-
-function canConnect(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = createConnection({ host: "127.0.0.1", port });
-    const done = (connected: boolean): void => { socket.destroy(); resolve(connected); };
-    socket.once("connect", () => done(true));
-    socket.once("error", () => done(false));
-    socket.setTimeout(1000, () => done(false));
-  });
-}
-
 
 /** The fake native agent: plain Node, so it runs wherever the CLI does. */
 const FAKE_AGENT = String.raw`

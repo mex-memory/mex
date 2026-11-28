@@ -11,6 +11,7 @@ const expectedServeEntries = new Map([
   ["@mex/hub-contracts", resolve(packageRoot, "../hub-contracts/src/index.ts")],
   ["@mex/hub-contracts/ids", resolve(packageRoot, "../hub-contracts/src/ids.ts")],
   ["@mex/hub-contracts/overview", resolve(packageRoot, "../hub-contracts/src/overview.ts")],
+  ["@mex/hub-contracts/machine", resolve(packageRoot, "../hub-contracts/src/machine.ts")],
   ["@mex/hub-contracts/contact", resolve(packageRoot, "../hub-contracts/src/contact.ts")],
   ["@mex/hub-contracts/setup", resolve(packageRoot, "../hub-contracts/src/setup.ts")],
   ["@mex/hub-contracts/relay", resolve(packageRoot, "../hub-contracts/src/relay.ts")],

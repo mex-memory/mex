@@ -7,7 +7,7 @@ const FIXED_GIT_EMAIL = "release-benchmark@example.invalid";
 /** Build a hermetic child environment from a potentially hostile shell. */
 export function createBenchmarkEnvironment(root, inherited = process.env) {
   const environment = { ...inherited };
-  const exactGitOverrides = new Set([
+  const exactOverrides = new Set([
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_ATTR_NOSYSTEM",
     "GIT_AUTHOR_DATE",
@@ -31,14 +31,20 @@ export function createBenchmarkEnvironment(root, inherited = process.env) {
     "GIT_OBJECT_DIRECTORY",
     "GIT_TEMPLATE_DIR",
     "GIT_WORK_TREE",
+    "MEX_BACKGROUND",
+    "MEX_HOME",
+    "MEX_OFF",
+    "MEX_RECORD_HOME",
+    "MEX_TELEMETRY",
     "NODE_OPTIONS",
     "NODE_PATH",
   ]);
   for (const name of Object.keys(environment)) {
-    if (exactGitOverrides.has(name)
-      || name.startsWith("GIT_CONFIG_KEY_")
-      || name.startsWith("GIT_CONFIG_VALUE_")
-      || name.startsWith("GIT_TRACE")) {
+    const key = process.platform === "win32" ? name.toUpperCase() : name;
+    if (exactOverrides.has(key)
+      || key.startsWith("GIT_CONFIG_KEY_")
+      || key.startsWith("GIT_CONFIG_VALUE_")
+      || key.startsWith("GIT_TRACE")) {
       delete environment[name];
     }
   }
@@ -58,6 +64,8 @@ export function createBenchmarkEnvironment(root, inherited = process.env) {
   environment.LC_ALL = "C.UTF-8";
   environment.MEX_HOME = join(root, "mex-home");
   environment.MEX_TELEMETRY = "0";
+  environment.MEX_BACKGROUND = "0";
+  environment.MEX_OFF = "0";
   environment.NO_COLOR = "1";
   environment.TZ = "UTC";
   mkdirSync(environment.MEX_HOME, { recursive: true });

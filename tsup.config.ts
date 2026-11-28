@@ -9,7 +9,7 @@ export default defineConfig([
   { entry: { "hook-fallback": "src/install/fallback-entry.ts" }, format: ["cjs"], target: "node22", outDir: "dist", outExtension: () => ({ js: ".cjs" }), clean: false, splitting: false, dts: false },
   { entry: { runtime: "src/statechart/helper.ts" }, format: ["esm"], target: "node22", outDir: "skills/mex-statechart/scripts", minify: true, outExtension: () => ({ js: ".mjs" }), clean: false, splitting: false, dts: false, noExternal: ["@mex/hub-contracts", "zod"] },
   {
-    entry: { cli: "src/cli-bootstrap.ts", "graph-candidate": "src/graph/candidate-entry.ts", "graph-storage": "src/graph/storage.ts", "setup-graph": "src/setup/next-graph-entry.ts", hook: "src/hooks/shim/hook-entry.ts", "file-index-worker": "src/file-index/worker-entry.ts" },
+    entry: { cli: "src/cli-bootstrap.ts", "graph-candidate": "src/graph/candidate-entry.ts", "graph-storage": "src/graph/storage.ts", "setup-graph": "src/setup/next-graph-entry.ts", hook: "src/hooks/shim/hook-entry.ts", "file-index-worker": "src/file-index/worker-entry.ts", "hub-worker": "src/hub/machine/worker-entry.ts" },
     format: ["esm"],
     target: "node20",
     outDir: "dist",

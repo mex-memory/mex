@@ -14,7 +14,7 @@
 @source not "../pages/DiagramsPage.tsx";
 @source not "../components/StatechartCanvas.tsx";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 @theme inline {
   --font-sans: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -57,80 +57,166 @@
 }
 
 :root {
-  color-scheme: dark;
+  /* Shared roles, the same in both themes. */
   font-family: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: oklch(0.94 0 0);
-  background: oklch(0.14 0 0);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-
-  /* Neutral shadcn roles. Orange is reserved for selection, focus, and primary actions. */
-  --background: oklch(0.14 0 0);
-  --foreground: oklch(0.94 0 0);
-  --card: oklch(0.175 0 0);
-  --card-foreground: oklch(0.94 0 0);
-  --popover: oklch(0.19 0 0);
-  --popover-foreground: oklch(0.94 0 0);
-  --primary: oklch(0.73 0.17 55);
-  --primary-foreground: oklch(0.15 0.02 55);
-  --secondary: oklch(0.22 0 0);
-  --secondary-foreground: oklch(0.91 0 0);
-  --muted: oklch(0.215 0 0);
-  --muted-foreground: oklch(0.68 0 0);
-  --accent: oklch(0.235 0 0);
-  --accent-foreground: oklch(0.94 0 0);
-  --destructive: oklch(0.66 0.2 25);
-  --border: oklch(0.285 0 0);
-  --input: oklch(0.285 0 0);
-  --ring: oklch(0.73 0.17 55);
-  --link: oklch(0.88 0 0);
   --radius: 7px;
-  --sidebar-token: oklch(0.12 0 0);
-  --sidebar-foreground: oklch(0.82 0 0);
-  --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.205 0 0);
-  --sidebar-accent-foreground: oklch(0.94 0 0);
-  --sidebar-border: oklch(0.245 0 0);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
   --sidebar-ring: var(--ring);
-
-  /* Existing Hub aliases keep the remaining routes coherent during the rollout. */
   --canvas: var(--background);
-  --canvas-raised: oklch(0.16 0 0);
   --surface: var(--card);
-  --surface-subtle: oklch(0.19 0 0);
   --surface-strong: var(--secondary);
   --text: var(--foreground);
-  --text-secondary: oklch(0.78 0 0);
   --text-tertiary: var(--muted-foreground);
-  --border-strong: oklch(0.36 0 0);
-  --primary-hover: oklch(0.79 0.16 60);
-  --primary-soft: color-mix(in oklch, var(--primary) 11%, transparent);
-  --primary-border: color-mix(in oklch, var(--primary) 32%, transparent);
-  --success: oklch(0.72 0.1 145);
-  --success-soft: color-mix(in oklch, var(--success) 9%, transparent);
-  --success-border: color-mix(in oklch, var(--success) 24%, transparent);
-  --warning: oklch(0.78 0.13 75);
-  --warning-soft: color-mix(in oklch, var(--warning) 9%, transparent);
-  --warning-border: color-mix(in oklch, var(--warning) 24%, transparent);
+  --ring: var(--brand);
+  --focus: var(--ring);
+  /* Orange is MEX's mark: the active page, focus, links and highlights. Actions are neutral. */
+  --primary-soft: color-mix(in oklch, var(--brand) 12%, transparent);
+  --primary-border: color-mix(in oklch, var(--brand) 34%, transparent);
+  --success-soft: color-mix(in oklch, var(--success) 10%, transparent);
+  --success-border: color-mix(in oklch, var(--success) 28%, transparent);
+  --warning-soft: color-mix(in oklch, var(--warning) 12%, transparent);
+  --warning-border: color-mix(in oklch, var(--warning) 30%, transparent);
   --danger: var(--destructive);
-  --danger-soft: color-mix(in oklch, var(--danger) 9%, transparent);
-  --danger-border: color-mix(in oklch, var(--danger) 24%, transparent);
-  --info: oklch(0.74 0 0);
+  --danger-soft: color-mix(in oklch, var(--danger) 10%, transparent);
+  --danger-border: color-mix(in oklch, var(--danger) 28%, transparent);
   /*
    * Discord's own blurple, #5865F2, converted rather than approximated. It is a
-   * brand colour and not a semantic one — it means "Discord", never "good" or
-   * "attention" — so it belongs to the one mark that carries it and must not be
-   * reached for as a general accent.
+   * brand colour and not a semantic one: it means "Discord", never "good" or
+   * "attention", so it belongs to the one mark that carries it.
    */
   --discord: oklch(0.577 0.209 274);
   --info-soft: color-mix(in oklch, var(--foreground) 6%, transparent);
   --info-border: color-mix(in oklch, var(--foreground) 16%, transparent);
-  --focus: var(--ring);
-  --overlay-shadow: 0 20px 52px rgb(0 0 0 / 44%);
   --radius-card: var(--radius);
   --radius-control: 6px;
   --transition-fast: 140ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* Light: soft grey chrome around white content, near-black actions. */
+  color-scheme: light;
+  color: oklch(0.2 0 0);
+  background: oklch(0.965 0 0);
+  --brand: oklch(0.6 0.18 50);
+  --brand-foreground: oklch(0.99 0 0);
+  --link: oklch(0.52 0.16 45);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.2 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.2 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.2 0 0);
+  --primary: oklch(0.2 0 0);
+  --primary-foreground: oklch(0.98 0 0);
+  --primary-hover: oklch(0.3 0 0);
+  --secondary: oklch(0.945 0 0);
+  --secondary-foreground: oklch(0.22 0 0);
+  --muted: oklch(0.955 0 0);
+  --muted-foreground: oklch(0.47 0 0);
+  --accent: oklch(0.94 0 0);
+  --accent-foreground: oklch(0.2 0 0);
+  --destructive: oklch(0.55 0.2 25);
+  --border: oklch(0.9 0 0);
+  --border-strong: oklch(0.82 0 0);
+  --input: oklch(0.88 0 0);
+  --sidebar-token: oklch(0.955 0 0);
+  --sidebar-foreground: oklch(0.3 0 0);
+  --sidebar-accent: oklch(0.915 0 0);
+  --sidebar-accent-foreground: oklch(0.16 0 0);
+  --sidebar-border: oklch(0.91 0 0);
+  --canvas-raised: oklch(0.985 0 0);
+  --surface-subtle: oklch(0.975 0 0);
+  --text-secondary: oklch(0.36 0 0);
+  --success: oklch(0.5 0.13 150);
+  --warning: oklch(0.56 0.13 70);
+  --info: oklch(0.45 0 0);
+  --overlay-shadow: 0 16px 40px rgb(0 0 0 / 14%);
+}
+
+/* Dark follows the system unless the toggle chose light; the toggle can also force dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    /* Dark: soft greys, not black; light actions. */
+    color-scheme: dark;
+    color: oklch(0.95 0 0);
+    background: oklch(0.2 0 0);
+    --brand: oklch(0.74 0.16 58);
+    --brand-foreground: oklch(0.18 0.02 55);
+    --link: oklch(0.8 0.12 62);
+    --background: oklch(0.245 0 0);
+    --foreground: oklch(0.95 0 0);
+    --card: oklch(0.265 0 0);
+    --card-foreground: oklch(0.95 0 0);
+    --popover: oklch(0.29 0 0);
+    --popover-foreground: oklch(0.95 0 0);
+    --primary: oklch(0.95 0 0);
+    --primary-foreground: oklch(0.2 0 0);
+    --primary-hover: oklch(0.88 0 0);
+    --secondary: oklch(0.31 0 0);
+    --secondary-foreground: oklch(0.93 0 0);
+    --muted: oklch(0.3 0 0);
+    --muted-foreground: oklch(0.73 0 0);
+    --accent: oklch(0.32 0 0);
+    --accent-foreground: oklch(0.95 0 0);
+    --destructive: oklch(0.7 0.18 25);
+    --border: oklch(0.34 0 0);
+    --border-strong: oklch(0.42 0 0);
+    --input: oklch(0.36 0 0);
+    --sidebar-token: oklch(0.2 0 0);
+    --sidebar-foreground: oklch(0.86 0 0);
+    --sidebar-accent: oklch(0.29 0 0);
+    --sidebar-accent-foreground: oklch(0.96 0 0);
+    --sidebar-border: oklch(0.28 0 0);
+    --canvas-raised: oklch(0.255 0 0);
+    --surface-subtle: oklch(0.28 0 0);
+    --text-secondary: oklch(0.82 0 0);
+    --success: oklch(0.76 0.12 150);
+    --warning: oklch(0.82 0.13 80);
+    --info: oklch(0.78 0 0);
+    --overlay-shadow: 0 20px 52px rgb(0 0 0 / 40%);
+  }
+}
+
+:root[data-theme="dark"] {
+  /* Dark: soft greys, not black; light actions. */
+  color-scheme: dark;
+  color: oklch(0.95 0 0);
+  background: oklch(0.2 0 0);
+  --brand: oklch(0.74 0.16 58);
+  --brand-foreground: oklch(0.18 0.02 55);
+  --link: oklch(0.8 0.12 62);
+  --background: oklch(0.245 0 0);
+  --foreground: oklch(0.95 0 0);
+  --card: oklch(0.265 0 0);
+  --card-foreground: oklch(0.95 0 0);
+  --popover: oklch(0.29 0 0);
+  --popover-foreground: oklch(0.95 0 0);
+  --primary: oklch(0.95 0 0);
+  --primary-foreground: oklch(0.2 0 0);
+  --primary-hover: oklch(0.88 0 0);
+  --secondary: oklch(0.31 0 0);
+  --secondary-foreground: oklch(0.93 0 0);
+  --muted: oklch(0.3 0 0);
+  --muted-foreground: oklch(0.73 0 0);
+  --accent: oklch(0.32 0 0);
+  --accent-foreground: oklch(0.95 0 0);
+  --destructive: oklch(0.7 0.18 25);
+  --border: oklch(0.34 0 0);
+  --border-strong: oklch(0.42 0 0);
+  --input: oklch(0.36 0 0);
+  --sidebar-token: oklch(0.2 0 0);
+  --sidebar-foreground: oklch(0.86 0 0);
+  --sidebar-accent: oklch(0.29 0 0);
+  --sidebar-accent-foreground: oklch(0.96 0 0);
+  --sidebar-border: oklch(0.28 0 0);
+  --canvas-raised: oklch(0.255 0 0);
+  --surface-subtle: oklch(0.28 0 0);
+  --text-secondary: oklch(0.82 0 0);
+  --success: oklch(0.76 0.12 150);
+  --warning: oklch(0.82 0.13 80);
+  --info: oklch(0.78 0 0);
+  --overlay-shadow: 0 20px 52px rgb(0 0 0 / 40%);
 }
 
 * {

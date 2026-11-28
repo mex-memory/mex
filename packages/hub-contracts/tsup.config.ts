@@ -6,6 +6,7 @@ export default defineConfig({
     relay: "src/relay.ts",
     ids: "src/ids.ts",
     overview: "src/overview.ts",
+    machine: "src/machine.ts",
     setup: "src/setup.ts",
     statechart: "src/statechart.ts",
     contact: "src/contact.ts",

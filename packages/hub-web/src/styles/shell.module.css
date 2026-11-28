@@ -234,7 +234,7 @@
   bottom: 7px;
   left: -1px;
   width: 2px;
-  background: var(--primary);
+  background: var(--brand);
   border-radius: 0 2px 2px 0;
   content: "";
 }
@@ -550,7 +550,7 @@
 
 .eyebrow {
   margin: 16px 0 0;
-  color: var(--primary);
+  color: var(--brand);
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.1em;

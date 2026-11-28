@@ -9,7 +9,7 @@ export function evaluateRuntimeBudgets(profiles, budgetsForRuntime) {
     for (const [name, measured] of Object.entries(profile.apiLatencyMs)) {
       compare(violations, `runtime.apiLatencyMs.${profileName}.${name}`, measured.p95, budgetsForRuntime.apiLatencyMs[profileName]?.[name]);
     }
-    for (const [kind, measured] of Object.entries(profile.maintenance)) {
+    for (const [kind, measured] of Object.entries(profile.maintenance ?? {})) {
       compare(violations, `runtime.maintenanceMs.${profileName}.${kind}`, measured.elapsedMs.p95, budgetsForRuntime.maintenanceMs[profileName]?.[kind]);
       compare(violations, `runtime.maintenancePeakRssBytes.${profileName}.${kind}`, measured.peakRssBytes.p95, budgetsForRuntime.maintenancePeakRssBytes[profileName]?.[kind]);
     }
@@ -47,13 +47,13 @@ export function candidateRuntimeBudgets(profiles) {
       ]),
     );
     maintenanceMs[profileName] = Object.fromEntries(
-      Object.entries(profile.maintenance).map(([kind, measured]) => [
+      Object.entries(profile.maintenance ?? {}).map(([kind, measured]) => [
         kind,
         runtimeBudgetCandidate(measured.elapsedMs.p95),
       ]),
     );
     maintenancePeakRssBytes[profileName] = Object.fromEntries(
-      Object.entries(profile.maintenance).map(([kind, measured]) => [
+      Object.entries(profile.maintenance ?? {}).map(([kind, measured]) => [
         kind,
         runtimeBudgetCandidate(measured.peakRssBytes.p95),
       ]),

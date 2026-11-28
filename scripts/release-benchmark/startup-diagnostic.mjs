@@ -50,7 +50,10 @@ try {
         active = await startHub({
           projectRoot, cliPath: fileURLToPath(new URL("./startup-probe.mjs", import.meta.url)),
           startupTimeoutMs: 10_000,
-          environment: { ...environment, MEX_STARTUP_DIAGNOSTIC_CLI: cliPath, MEX_STARTUP_DIAGNOSTIC_SAMPLE: samplePath },
+          environment: {
+            ...environment, MEX_HOME: join(workRoot, "cold-home-" + index),
+            MEX_STARTUP_DIAGNOSTIC_CLI: cliPath, MEX_STARTUP_DIAGNOSTIC_SAMPLE: samplePath,
+          },
         });
         const readyMs = active.readyMs;
         await active.close();

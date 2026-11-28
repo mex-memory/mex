@@ -17,7 +17,7 @@ const SCRIPT = new URL("./ci-orchestrator.mjs", import.meta.url);
 describe("release benchmark fresh-runner CI orchestration", () => {
   it("runs exactly one enforcing raw attempt and prints its bounded retry decision", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-ci-attempt-"));
-    const metric = "runtime.apiLatencyMs.small.code";
+    const metric = "runtime.apiLatencyMs.small.session";
     const pass = runtimePass(metric);
     try {
       const blocked = attempt(root, "first", pass, { enforceReleaseBudgets: "0" });
@@ -86,7 +86,7 @@ describe("release benchmark fresh-runner CI orchestration", () => {
   it("skips a fresh runner for clean and advisory first attempts", () => {
     for (const [name, pass, expectedStatus] of [
       ["clean", benchmarkPass(), "not_required"],
-      ["advisory", runtimePass("runtime.apiLatencyMs.small.code", { measured: 52, support: 0 }), "passed"],
+      ["advisory", runtimePass("runtime.apiLatencyMs.small.session", { measured: runtimeMaterialityPolicy("runtime.apiLatencyMs.small.session").budget + 1, support: 0 }), "passed"],
     ]) {
       const root = mkdtempSync(join(tmpdir(), `mex-release-ci-${name}-`));
       try {
@@ -121,8 +121,8 @@ describe("release benchmark fresh-runner CI orchestration", () => {
   it("passes different material metrics measured by distinct job allocations", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-ci-different-"));
     try {
-      const first = attempt(root, "first", runtimePass("runtime.apiLatencyMs.small.code"));
-      const second = attempt(root, "second", runtimePass("runtime.apiLatencyMs.small.search"));
+      const first = attempt(root, "first", runtimePass("runtime.apiLatencyMs.small.session"));
+      const second = attempt(root, "second", runtimePass("runtime.apiLatencyMs.small.projects"));
       expect(first.manifest.retryRequired).toBe(true);
       expect(second.manifest.retryRequired).toBe(true);
 
@@ -144,8 +144,8 @@ describe("release benchmark fresh-runner CI orchestration", () => {
       });
       expect(finalized.report.budgetEvaluation.runtimeConfirmation.advisoryAssessments)
         .toEqual(expect.arrayContaining([
-          expect.objectContaining({ metric: "runtime.apiLatencyMs.small.code", reason: "not_repeated" }),
-          expect.objectContaining({ metric: "runtime.apiLatencyMs.small.search", reason: "not_repeated" }),
+          expect.objectContaining({ metric: "runtime.apiLatencyMs.small.session", reason: "not_repeated" }),
+          expect.objectContaining({ metric: "runtime.apiLatencyMs.small.projects", reason: "not_repeated" }),
         ]));
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -154,7 +154,7 @@ describe("release benchmark fresh-runner CI orchestration", () => {
 
   it("fails the same supported material metric across distinct jobs", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-ci-same-"));
-    const metric = "runtime.apiLatencyMs.small.code";
+    const metric = "runtime.apiLatencyMs.small.session";
     try {
       const first = attempt(root, "first", runtimePass(metric, { excess: 1 }));
       const second = attempt(root, "second", runtimePass(metric, { excess: 4 }));
@@ -181,9 +181,9 @@ describe("release benchmark fresh-runner CI orchestration", () => {
   });
 
   it("accepts mixed selective-rerun attempts and still applies the exact metric policy", () => {
-    const metric = "runtime.apiLatencyMs.small.code";
+    const metric = "runtime.apiLatencyMs.small.session";
     for (const [name, secondMetric, expectedExit] of [
-      ["different", "runtime.apiLatencyMs.small.search", 0],
+      ["different", "runtime.apiLatencyMs.small.projects", 0],
       ["same", metric, 1],
     ]) {
       const root = mkdtempSync(join(tmpdir(), `mex-release-ci-mixed-${name}-`));
@@ -212,7 +212,7 @@ describe("release benchmark fresh-runner CI orchestration", () => {
       const first = attempt(
         root,
         "first",
-        runtimePass("runtime.apiLatencyMs.small.code"),
+        runtimePass("runtime.apiLatencyMs.small.session"),
         { runAttempt: "9007199254740993" },
       );
       const result = finalize(root, first, undefined, { runAttempt: "9007199254740992" });
@@ -232,8 +232,8 @@ describe("release benchmark fresh-runner CI orchestration", () => {
     for (const [name, firstPass, secondPass] of [
       ["first-immediate", benchmarkPass({ runtimeViolations: [immediate] }), undefined],
       ["first-asset", benchmarkPass({ assetViolations: [asset] }), undefined],
-      ["second-immediate", runtimePass("runtime.apiLatencyMs.small.code"), benchmarkPass({ runtimeViolations: [immediate] })],
-      ["second-asset", runtimePass("runtime.apiLatencyMs.small.code"), benchmarkPass({ assetViolations: [asset] })],
+      ["second-immediate", runtimePass("runtime.apiLatencyMs.small.session"), benchmarkPass({ runtimeViolations: [immediate] })],
+      ["second-asset", runtimePass("runtime.apiLatencyMs.small.session"), benchmarkPass({ assetViolations: [asset] })],
     ]) {
       const root = mkdtempSync(join(tmpdir(), `mex-release-ci-${name}-`));
       try {
@@ -253,7 +253,7 @@ describe("release benchmark fresh-runner CI orchestration", () => {
   });
 
   it("fails operationally for missing, invalid, mismatched, or reused evidence", () => {
-    const metric = "runtime.apiLatencyMs.small.code";
+    const metric = "runtime.apiLatencyMs.small.session";
     const scenarios = [
       ["missing-first-report", ({ root, first }) => {
         rmSync(first.reportPath, { force: true });
@@ -309,8 +309,8 @@ describe("release benchmark fresh-runner CI orchestration", () => {
 
   it("rejects malformed sample evidence before publishing a retry manifest", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-ci-evidence-"));
-    const pass = runtimePass("runtime.apiLatencyMs.small.code");
-    pass.profiles.small.apiLatencyMs.code.samples.pop();
+    const pass = runtimePass("runtime.apiLatencyMs.small.session");
+    pass.profiles.small.apiLatencyMs.session.samples.pop();
     try {
       const result = attempt(root, "first", pass);
       expect(result.exitCode).toBe(2);

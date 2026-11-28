@@ -13,13 +13,12 @@ import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { describe, expect, it, vi } from "vitest";
-import { assertNoForbiddenWorkbench, assertSetupManifestBoundary, evaluateAssetBudgets, evaluateSetupAssetBudget, measureBuiltAssets, measureSetupAssets } from "./assets.mjs";
+import { evaluateAssetBudgets, measureBuiltAssets } from "./assets.mjs";
 import { assertReleaseRouteReady } from "./browser.mjs";
 import {
   releaseWorkbenchPaths,
   RELEASE_ROUTE_KEYS,
   RELEASE_ROUTE_PATTERNS,
-  RELEASE_ROUTE_REDIRECTS,
 } from "./routes.mjs";
 import { createBenchmarkEnvironment } from "./environment.mjs";
 import {
@@ -29,8 +28,7 @@ import {
   snapshotReleaseReadState,
 } from "./fixtures.mjs";
 import {
-  assertRelayFixturePage,
-  releaseCommonReadPaths,
+  RELEASE_COMMON_READ_PATHS,
   startHub,
 } from "./hub.mjs";
 import { enforceWithConfirmation } from "./enforce.mjs";
@@ -47,43 +45,48 @@ const budgets = JSON.parse(readFileSync(new URL("./budgets.json", import.meta.ur
 const budgetsSchema = JSON.parse(readFileSync(new URL("./budgets.schema.json", import.meta.url), "utf8"));
 const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 const reportSchema = JSON.parse(readFileSync(new URL("./report.schema.json", import.meta.url), "utf8"));
+const previousCalibration = JSON.parse(readFileSync(new URL("../../docs/design/release-0.9-calibration.json", import.meta.url), "utf8"));
+
 describe("release benchmark contract", () => {
-  it("binds every budget leaf to the retained 0.9 pinned calibration report", () => {
-    const record = JSON.parse(readFileSync(new URL("../../docs/design/release-0.9-calibration.json", import.meta.url), "utf8"));
-    expect(record.source.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
+  it("retains the pinned runtime limits and uses existing caps for provisional machine Hub metrics", () => {
+    const previous = candidateRuntimeBudgets(previousCalibration.measured.profiles);
+    expect(previousCalibration.source.environment).toEqual({ ...budgets.environment, pinnedBudgetEnvironment: true });
+    expect(budgets.samples).toEqual(previousCalibration.samples);
+    expect(budgets.provisional).toBe(true);
     expect(budgets.calibration).toEqual({
-      status: `pinned-0.9-${record.source.runId}`,
-      runtimeFormula: record.runtimeFormula,
-      assetFormula: record.assetFormula,
+      status: "machine-hub-assets-measured-runtime-provisional",
+      runtimeFormula: previousCalibration.runtimeFormula,
+      assetFormula: previousCalibration.assetFormula,
+      provisionalRuntimeMetrics: [
+        "coldHubReadyMs", "idleRssBytes", "idleCpuMs", "apiLatencyMs",
+        "maintenanceMs", "maintenancePeakRssBytes", "browserHeapBytes",
+      ],
     });
-    expect(record.source.reportSha256).toMatch(/^[a-f0-9]{64}$/u);
-    expect(record.samples).toEqual(budgets.samples);
-    const { assets, profiles } = record.measured;
-    expect(Object.keys(assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
-    const assetGroup = (group) => Object.fromEntries(["jsBytes", "cssBytes", "fontBytes"]
-      .map((field) => [field, assetBudgetCandidate(group[field])]));
-    expect(budgets.assets).toEqual({
-      maxJsChunkBytes: assetBudgetCandidate(assets.largestJsChunk.bytes),
-      initial: assetGroup(assets.initial),
-      routes: Object.fromEntries(Object.entries(assets.routes).map(([route, group]) => [route, assetGroup(group)])),
-    });
-    for (const profile of ["small", "medium", "large"]) {
-      const measured = profiles[profile];
-      expect(measured.browserHeap.outboundRequestCount).toBe(0);
-      expect(Object.keys(measured.browserHeap.routes)).toEqual(RELEASE_ROUTE_KEYS);
-      for (const summary of [measured.coldHubReadyMs, ...Object.values(measured.apiLatencyMs),
-        ...Object.values(measured.maintenance).map(({ elapsedMs }) => elapsedMs)]) {
-        expect(summary).toEqual(summarize(summary.samples, budgets.samples.timing));
-      }
-      for (const summary of [measured.idle.rssBytes, measured.idle.cpuMs,
-        ...Object.values(measured.maintenance).map(({ peakRssBytes }) => peakRssBytes),
-        ...Object.values(measured.browserHeap.routes)]) {
-        expect(summary).toEqual(summarize(summary.samples, budgets.samples.idleMemory));
-      }
+    for (const metric of ["coldHubReadyMs", "idleRssBytes", "idleCpuMs", "maintenanceMs",
+      "maintenancePeakRssBytes", "databaseToInputRatio"]) {
+      expect(budgets.runtime[metric]).toEqual(previous[metric]);
     }
-    expect(budgets.runtime).toEqual(candidateRuntimeBudgets(profiles));
+    for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
+      const cap = Math.min(...Object.values(previous.apiLatencyMs[profile]));
+      expect(budgets.runtime.apiLatencyMs[profile]).toEqual({ session: cap, projects: cap });
+      expect(budgets.runtime.browserHeapBytes[profile]).toEqual({
+        home: previous.browserHeapBytes[profile].home,
+        repo: Math.min(...Object.values(previous.browserHeapBytes[profile])),
+      });
+    }
+    const assetGroup = (group) => Object.fromEntries(
+      Object.entries(group).map(([field, bytes]) => [field, assetBudgetCandidate(bytes)]),
+    );
+    const measuredInitial = { jsBytes: 464914, cssBytes: 76818, fontBytes: 84724 };
+    const incremental = { jsBytes: 0, cssBytes: 0, fontBytes: 0 };
+    expect(budgets.assets).toEqual({
+      maxJsChunkBytes: assetBudgetCandidate(measuredInitial.jsBytes),
+      initial: assetGroup(measuredInitial),
+      routes: { home: assetGroup(incremental), repo: assetGroup(incremental) },
+    });
   });
-  it("locks the sample counts and deterministic route budget surface", () => {
+
+  it("locks sample counts, frozen fixtures, and the machine Hub route budget surface", () => {
     expect(budgets.schemaVersion).toBe(1);
     expect(budgets.samples).toEqual({ timing: 10, idleMemory: 5 });
     expect(RELEASE_FIXTURE_PROFILES).toEqual({
@@ -92,156 +95,71 @@ describe("release benchmark contract", () => {
       large: { sourceFiles: 48, wikiEntities: 48, workstreams: 1, inboxDrafts: 1, inboxProposals: 1, members: 2, relayDrafts: 1, relays: 1, activityEvents: 48 },
     });
     expect(Object.keys(budgets.assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
-    expect(Object.keys(releaseWorkbenchPaths({
-      knowledgeEntityId: "mx_knowledge",
-      codeSymbolId: "symbol/release",
-    }))).toEqual(RELEASE_ROUTE_KEYS);
-    const appRoutes = readFileSync(
-      new URL("../../packages/hub-web/src/app/App.tsx", import.meta.url),
-      "utf8",
-    );
-    const registeredPatterns = [...appRoutes.matchAll(/<Route\s+(index|path="([^"]+)")\s+element=/gu)]
-      .map((match) => match[1] === "index" ? "(index)" : match[2]);
-    expect(registeredPatterns.filter((pattern) => !Object.hasOwn(RELEASE_ROUTE_REDIRECTS, pattern)))
-      .toEqual(Object.values(RELEASE_ROUTE_PATTERNS));
-    const redirects = [...appRoutes.matchAll(/<Route\s+path="([^"]+)"\s+element=\{<Navigate\s+to="([^"]+)"\s+replace\s*\/>\}\s*\/>/gu)]
-      .map((match) => [match[1], match[2]]);
-    expect(redirects).toEqual(Object.entries(RELEASE_ROUTE_REDIRECTS));
-    for (const pattern of Object.keys(RELEASE_ROUTE_REDIRECTS)) {
-      expect(registeredPatterns.filter((registered) => registered === pattern)).toEqual([pattern]);
+    const projectId = "g-0123456789abcdef01234567";
+    expect(releaseWorkbenchPaths({ projectId })).toEqual({ home: "/", repo: "/repos/" + projectId });
+    expect(() => releaseWorkbenchPaths({ projectId: "../outside" })).toThrow(/machine project ID/u);
+    const main = readFileSync(new URL("../../packages/hub-web/src/main.tsx", import.meta.url), "utf8");
+    expect(main).toContain("<MachineHub />");
+    const routes = readFileSync(new URL("../../packages/hub-web/src/machine/HubShell.tsx", import.meta.url), "utf8");
+    const patterns = [...routes.matchAll(/<Route\s+[^\n]*?\bpath="([^"]+)"/gu)].map(([, path]) => path);
+    expect(patterns).toEqual([...Object.values(RELEASE_ROUTE_PATTERNS), "*"]);
+    expect(routes).toContain('<Route element={<Navigate replace to="/" />} path="*" />');
+    expect(RELEASE_COMMON_READ_PATHS).toEqual({ session: "/api/v1/session", projects: "/api/v1/projects" });
+    for (const profile of Object.keys(RELEASE_FIXTURE_PROFILES)) {
+      expect(Object.keys(budgets.runtime.browserHeapBytes[profile])).toEqual(RELEASE_ROUTE_KEYS);
+      expect(Object.keys(budgets.runtime.apiLatencyMs[profile])).toEqual(Object.keys(RELEASE_COMMON_READ_PATHS));
     }
-    for (const profile of ["small", "medium", "large"]) {
-      expect(Object.keys(budgets.runtime.browserHeapBytes[profile]))
-        .toEqual(RELEASE_ROUTE_KEYS);
-    }
-    expect(budgets.assets.routes.code).toEqual(budgets.assets.routes.search);
-    expect(budgets.assets.routes.catchUp).toEqual(budgets.assets.routes.playbooks);
-    expect(budgets.provisional).toBe(false);
-    expect(budgets.calibration).toEqual({
-      status: "pinned-0.9-43151888852",
-      runtimeFormula: "ceil(measured p95 * 1.15)",
-      assetFormula: "ceil(built bytes * 1.05)",
-    });
-    expect(packageJson.scripts["benchmark:release"]).toContain(
-      "scripts/release-benchmark/enforce.mjs",
-    );
+
+    expect(packageJson.scripts["benchmark:release"]).toContain("scripts/release-benchmark/enforce.mjs");
     expect(reportSchema.$defs.runtimeConfirmation.properties.status.enum).toEqual([
-      "not_required",
-      "skipped_immediate_failure",
-      "passed",
-      "failed",
-      "operational_failure",
+      "not_required", "skipped_immediate_failure", "passed", "failed", "operational_failure",
     ]);
-    expect(reportSchema.$defs.runtimeConfirmation.required).not.toContain("advisoryAssessments");
-    expect(reportSchema.$defs.runtimeConfirmation.required).not.toContain("materialAssessments");
-    expect(reportSchema.$defs.runtimeConfirmation.required).not.toContain("runnerAllocations");
-    expect(reportSchema.$defs.runtimeConfirmation.properties).toHaveProperty("advisoryAssessments");
-    expect(reportSchema.$defs.runtimeConfirmation.properties).toHaveProperty("materialAssessments");
-    expect(reportSchema.$defs.runtimeConfirmation.properties).toHaveProperty("runnerAllocations");
-    expect(reportSchema.$defs.profile.properties.fixture.required).toContain("workstreams");
-    expect(reportSchema.$defs.profile.properties.fixture.required).not.toContain("inboxDrafts");
-    expect(reportSchema.$defs.profile.properties.fixture.required).not.toContain("inboxProposals");
-    expect(reportSchema.$defs.profile.properties.fixture.required).not.toContain("members");
-    expect(reportSchema.$defs.profile.properties.fixture.required).not.toContain("relayDrafts");
-    expect(reportSchema.$defs.profile.properties.fixture.required).not.toContain("relays");
-    expect(reportSchema.$defs.profile.properties.fixture.properties.workstreams).toEqual({
-      type: "integer",
-      minimum: 1,
-    });
-    expect(reportSchema.$defs.readSummaries.required).toEqual([
-      "search",
-      "code",
-      "knowledge",
-      "activity",
-    ]);
-    expect(Object.keys(releaseCommonReadPaths("symbol/release"))).toEqual([
-      "search",
-      "code",
-      "knowledge",
-      "activity",
-      "relayDrafts",
-      "relays",
-    ]);
-    expect(releaseCommonReadPaths("symbol/release").knowledge).toBe("/api/v1/wiki/graph");
-    expect(budgetsSchema.$defs.readBudgets.properties).not.toHaveProperty("inboxDrafts");
-    expect(budgetsSchema.$defs.readBudgets.properties).not.toHaveProperty("inboxProposals");
-    expect(budgetsSchema.$defs.readBudgets.properties).toEqual(expect.objectContaining({
-      relayDrafts: { $ref: "#/$defs/nonNegativeNumber" },
-      relays: { $ref: "#/$defs/nonNegativeNumber" },
-    }));
+    for (const field of ["advisoryAssessments", "materialAssessments", "runnerAllocations"]) {
+      expect(reportSchema.$defs.runtimeConfirmation.required).not.toContain(field);
+      expect(reportSchema.$defs.runtimeConfirmation.properties).toHaveProperty(field);
+    }
     const validateBudgets = new Ajv2020({ strict: true }).compile(budgetsSchema);
     expect(validateBudgets(budgets), JSON.stringify(validateBudgets.errors)).toBe(true);
   });
 
-  it.each(["ready", "canvas unavailable", "fixture node missing"])(
-    "accepts only a populated Context graph before heap measurement: %s",
-    async (state) => {
-      const waitForNode = vi.fn(async () => {
-        if (state === "fixture node missing") throw new Error("Fixture node is not visible.");
-      });
-      const graph = {
-        waitFor: vi.fn(async () => {
-          if (state === "canvas unavailable") throw new Error("Context graph is unavailable.");
-        }),
-        getByRole: vi.fn(() => ({ waitFor: waitForNode })),
-      };
-      const page = { getByLabel: vi.fn(() => graph) };
-      const ready = assertReleaseRouteReady(page, "knowledge", {});
+  it.each([
+    ["home", true], ["home", false], ["repo", true], ["repo", false],
+  ])("waits for populated %s content before measuring heap (visible: %s)", async (route, populated) => {
+    const waitFor = vi.fn(async () => {});
+    const waitForContent = vi.fn(async () => {
+      if (!populated) throw new Error("The fixture checkout is not visible.");
+    });
+    const list = { getByText: vi.fn(() => ({ waitFor: waitForContent })) };
+    const page = {
+      getByRole: vi.fn((role) => {
+        if (role === "list") return list;
+        return { waitFor: role === "heading" ? waitFor : waitForContent };
+      }),
+    };
+    const project = { name: "release fixture", checkouts: [{ path: "/test/fixture" }] };
+    const measured = assertReleaseRouteReady(page, route, project);
+    if (populated) await expect(measured).resolves.toBeUndefined();
+    else await expect(measured).rejects.toThrow("The fixture checkout is not visible.");
+    expect(page.getByRole).toHaveBeenCalledWith("heading", {
+      name: route === "home" ? "All repos" : project.name, exact: true,
+    });
+    if (route === "home") expect(page.getByRole).toHaveBeenCalledWith("link", { name: project.name, exact: true });
+    else expect(list.getByText).toHaveBeenCalledWith(project.checkouts[0].path, { exact: true });
+    expect(waitForContent).toHaveBeenCalledWith({ state: "visible", timeout: 30_000 });
+  });
 
-      if (state === "ready") {
-        await expect(ready).resolves.toBeUndefined();
-        expect(waitForNode).toHaveBeenCalledWith({ state: "visible", timeout: 30_000 });
-      } else {
-        await expect(ready).rejects.toThrow(state === "canvas unavailable"
-          ? "Context graph is unavailable." : "Fixture node is not visible.");
-      }
-      expect(page.getByLabel).toHaveBeenCalledWith("Context graph", { exact: true });
-      if (state === "canvas unavailable") expect(graph.getByRole).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(["ready", "preferences unavailable", "selection missing"])(
-    "measures Settings only after its preference form has loaded: %s",
-    async (state) => {
-      const selected = { waitFor: vi.fn(async () => {
-        if (state === "selection missing") throw new Error("No current preference.");
-      }) };
-      const group = { waitFor: vi.fn(async () => {}), locator: vi.fn(() => selected) };
-      const heading = { waitFor: vi.fn(async () => {
-        if (state === "preferences unavailable") throw new Error("Preferences unavailable.");
-      }) };
-      const page = { getByRole: vi.fn((role) => role === "heading" ? heading : group) };
-      const ready = assertReleaseRouteReady(page, "settings", {});
-      if (state === "ready") {
-        await expect(ready).resolves.toBeUndefined();
-        expect(page.getByRole).toHaveBeenCalledWith("heading", { name: "Agent logging", exact: true });
-        expect(page.getByRole).toHaveBeenCalledWith("group", { name: "When to write notes", exact: true });
-        expect(selected.waitFor).toHaveBeenCalledWith({ state: "visible", timeout: 30_000 });
-      } else {
-        await expect(ready).rejects.toThrow(state === "preferences unavailable" ? "Preferences unavailable." : "No current preference.");
-      }
-    },
-  );
-
-  it("still fails closed if a Settings heap budget is missing", () => {
-    const profiles = Object.fromEntries(["small", "medium", "large"].map((profile) => [
+  it("fails closed if a Repo heap budget is missing", () => {
+    const profiles = Object.fromEntries(Object.keys(RELEASE_FIXTURE_PROFILES).map((profile) => [
       profile,
-      { ...runtimeProfile(100), browserHeap: { outboundRequestCount: 0, routes: { settings: { p95: 123 } } } },
+      { ...runtimeProfile(100), browserHeap: { outboundRequestCount: 0, routes: { repo: { p95: 123 } } } },
     ]));
     const missing = structuredClone(budgets.runtime);
-    for (const profile of ["small", "medium", "large"]) delete missing.browserHeapBytes[profile].settings;
-    const violations = evaluateRuntimeBudgets(profiles, missing)
-      .filter(({ metric }) => metric.endsWith(".settings"));
-    expect(violations).toEqual(["small", "medium", "large"].map((profile) => ({
-      metric: `runtime.browserHeapBytes.${profile}.settings`, measured: 123, budget: null, reason: "budget_missing",
+    for (const profile of Object.keys(profiles)) delete missing.browserHeapBytes[profile].repo;
+    const violations = evaluateRuntimeBudgets(profiles, missing).filter(({ metric }) => metric.endsWith(".repo"));
+    expect(violations).toEqual(Object.keys(profiles).map((profile) => ({
+      metric: "runtime.browserHeapBytes." + profile + ".repo", measured: 123, budget: null, reason: "budget_missing",
     })));
     expect(classifyRuntimeViolations(violations)).toEqual({ confirmable: [], immediate: violations });
-    expect(RELEASE_ROUTE_KEYS).toContain("settings");
-    expect(releaseWorkbenchPaths({ knowledgeEntityId: "knowledge", codeSymbolId: "code" }).settings).toBe("/settings");
-    expect(reportSchema.$defs.routeSummaries.properties.settings).toEqual({ $ref: "#/$defs/summary5" });
-    expect(reportSchema.$defs.routeSummaries.required).not.toContain("settings");
-    expect(budgetsSchema.$defs.routeBudgets.properties.settings).toEqual({ $ref: "#/$defs/nonNegativeNumber" });
-    expect(budgetsSchema.$defs.routeBudgets.required).not.toContain("settings");
   });
 
   it("uses nearest-rank p95 and rejects the wrong sample count", () => {
@@ -324,7 +242,7 @@ describe("release benchmark contract", () => {
       knowledge: summary,
       activity: summary,
     }), JSON.stringify(validateReads.errors)).toBe(true);
-    const metric = "runtime.apiLatencyMs.small.code";
+    const metric = "runtime.apiLatencyMs.small.session";
     const legacyReport = representativeReleaseReport({
       runtimeViolations: [],
       passed: true,
@@ -337,16 +255,35 @@ describe("release benchmark contract", () => {
       },
     });
     expect(validate(legacyReport), JSON.stringify(validate.errors)).toBe(true);
+    legacyReport.assets.routes = Object.fromEntries(Object.entries(previousCalibration.measured.assets.routes)
+      .map(([route, group]) => [route, { jsBytes: group.jsBytes, cssBytes: group.cssBytes, fontBytes: group.fontBytes, files: [] }]));
     delete legacyReport.assets.routes.settings;
     expect(validate(legacyReport), JSON.stringify(validate.errors)).toBe(true);
 
-    const firstAdvisory = runtimeViolation(metric, 53);
-    const secondAdvisory = runtimeViolation(metric, 58);
+    const machineReport = representativeReleaseReport({ runtimeViolations: [], passed: true });
+    const memory = summarize([1, 1, 1, 1, 1], 5);
+    const database = { databaseBytes: 1, inputBytes: 1, ratio: 1 };
+    machineReport.profiles.small = {
+      fixture: generatedFixture, coldHubReadyMs: summary,
+      idle: { rssBytes: memory, cpuMs: memory, cpuPercent: memory, windowMs: 2_000 },
+      apiLatencyMs: { session: summary, projects: summary },
+      browserHeap: { routes: { home: memory, repo: memory }, outboundRequestCount: 0, observedLoopbackRequests: [] },
+      maintenance: null, database: { graph: database, wiki: database },
+    };
+    expect(validate(machineReport), JSON.stringify(validate.errors)).toBe(true);
+    delete machineReport.profiles.small.apiLatencyMs.projects;
+    expect(validate(machineReport)).toBe(false);
+
+    const { budget, materialThreshold } = runtimeMaterialityPolicy(metric);
+    const firstAdvisory = runtimeViolation(metric, budget + 2);
+    const secondAdvisory = runtimeViolation(metric, budget + 7);
+    const firstMaterial = runtimeViolation(metric, materialThreshold + 1);
+    const secondMaterial = runtimeViolation(metric, materialThreshold + 4);
     const advisoryAssessment = materialityAssessment({
       classification: "advisory",
       reason: "below_material_threshold",
-      firstMeasured: 53,
-      secondMeasured: 58,
+      firstMeasured: firstAdvisory.measured,
+      secondMeasured: secondAdvisory.measured,
     });
     const advisoryReport = representativeReleaseReport({
       runtimeViolations: [],
@@ -387,13 +324,13 @@ describe("release benchmark contract", () => {
       confirmation: {
         status: "passed",
         repositoryHead: "a".repeat(40),
-        firstPassViolations: [runtimeViolation(metric, 67)],
+        firstPassViolations: [firstMaterial],
         secondPassViolations: [],
         confirmedViolations: [],
         advisoryAssessments: [materialityAssessment({
           classification: "advisory",
           reason: "insufficient_sample_support",
-          firstMeasured: 67,
+          firstMeasured: firstMaterial.measured,
           secondMeasured: null,
           requiredSupportingSamples: 2,
           firstSampleCount: 10,
@@ -407,13 +344,11 @@ describe("release benchmark contract", () => {
       .advisoryAssessments[0].firstSampleCount = 6;
     expect(validate(supportedAdvisory)).toBe(false);
 
-    const firstMaterial = runtimeViolation(metric, 67);
-    const secondMaterial = runtimeViolation(metric, 70);
     const materialAssessment = materialityAssessment({
       classification: "material",
       reason: "repeated_material_threshold",
-      firstMeasured: 67,
-      secondMeasured: 70,
+      firstMeasured: firstMaterial.measured,
+      secondMeasured: secondMaterial.measured,
     });
     const materialReport = representativeReleaseReport({
       runtimeViolations: [secondMaterial],
@@ -455,256 +390,68 @@ describe("release benchmark contract", () => {
     }]);
   });
 
-  it("enforces the additive setup asset limit from retained deterministic build bytes", () => {
-    const calibration = JSON.parse(readFileSync(new URL("./setup-asset-budget.json", import.meta.url), "utf8"));
-    expect(calibration.schemaVersion).toBe(1);
-    expect(calibration.formula).toBe("ceil(built bytes * 1.05)");
-    expect(calibration.limits).toEqual({ jsBytes: 81866, cssBytes: 25146, fontBytes: 0 });
-    const record = JSON.parse(readFileSync(new URL("../../docs/design/setup-progress-asset-calibration.json", import.meta.url), "utf8"));
-    expect(record.previousLimits).toEqual({ jsBytes: 80646, cssBytes: 25146, fontBytes: 0 });
-    expect(record.measured).toEqual(calibration.measured);
-    expect(record.limits).toEqual(calibration.limits);
-    expect(record.files).toEqual(calibration.files);
-    for (const [field, extension] of [["jsBytes", ".js"], ["cssBytes", ".css"], ["fontBytes", ".woff2"]]) {
-      expect(calibration.files.filter(({ file }) => file.endsWith(extension)).reduce((total, { bytes }) => total + bytes, 0))
-        .toBe(calibration.measured[field]);
-      expect(assetBudgetCandidate(calibration.measured[field])).toBe(calibration.limits[field]);
-    }
-    for (const file of calibration.files) expect(file.sha256).toMatch(/^[a-f0-9]{64}$/u);
-    expect(evaluateSetupAssetBudget(calibration.limits)).toEqual([]);
-    for (const field of ["jsBytes", "cssBytes", "fontBytes"]) {
-      expect(evaluateSetupAssetBudget({ ...calibration.limits, [field]: calibration.limits[field] + 1 }))
-        .toEqual([{ metric: `assets.setup.${field}`, measured: calibration.limits[field] + 1,
-          budget: calibration.limits[field], reason: "budget_exceeded" }]);
-    }
-    expect(evaluateSetupAssetBudget(calibration.measured, {})).toHaveLength(3);
-    expect(Object.keys(budgets.assets.routes)).toEqual(RELEASE_ROUTE_KEYS);
-    expect(Object.keys(budgets.assets.routes)).not.toContain("setup");
-  });
-
-  it("measures the default Context graph separately from its lazy knowledge list and detail", () => {
-    const output = mkdtempSync(join(tmpdir(), "mex-context-assets-"));
+  it("counts eager JS, CSS and built fonts once, with no incremental route bytes", () => {
+    const output = mkdtempSync(join(tmpdir(), "mex-release-assets-"));
     try {
-      mkdirSync(join(output, ".vite"));
-      mkdirSync(join(output, "assets"));
-      const pages = ["HomePage", "SearchPage", "ContextPage", "KnowledgePage", "SymbolPage",
-        "CapabilityPage", "WorkstreamsPage", "DiagramsPage", "StatechartCanvas", "SpecsPage", "InboxPage", "RelayPage",
-        "MembersPage", "ActivityPage", "JobsPage", "HealthPage", "SettingsPage", "SetupPage"];
-      const manifest = {
-        "index.html": { file: "assets/index.js", isEntry: true, dynamicImports: pages },
-        "graph-runtime": { file: "assets/graph.js" },
-        "record-runtime": { file: "assets/record.js" },
-        "../hub-contracts/dist/setup.js": {
-          file: "assets/setup.js", src: "../hub-contracts/dist/setup.js", isDynamicEntry: true,
-        },
-        "../hub-contracts/dist/contact.js": {
-          file: "assets/contact.js", src: "../hub-contracts/dist/contact.js", isDynamicEntry: true,
-        },
-      };
-      for (const page of pages) {
-        manifest[page] = {
-          file: `assets/${page}.js`,
-          src: `src/pages/${page}.tsx`,
-          isDynamicEntry: true,
-        };
+      const manifest = writeAssetFixture(output);
+      writeAssetManifest(output, manifest);
+      const measured = measureBuiltAssets(output, budgets.assets);
+      expect(measured.initial).toMatchObject({ jsBytes: 10, cssBytes: 5, fontBytes: 4 });
+      expect(measured.largestJsChunk).toEqual({ file: "assets/index.js", bytes: 10 });
+      for (const route of RELEASE_ROUTE_KEYS) {
+        expect(measured.routes[route]).toEqual({ jsBytes: 0, cssBytes: 0, fontBytes: 0, files: [] });
       }
-      manifest.ContextPage.imports = ["graph-runtime"];
-      manifest.ContextPage.dynamicImports = ["KnowledgePage"];
-      manifest.KnowledgePage.imports = ["record-runtime"];
-      writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
-      for (const record of Object.values(manifest)) {
-        writeFileSync(join(output, record.file), `// ${record.file}\n`);
-      }
-
-      const measurement = measureBuiltAssets(output, budgets.assets);
-
-      expect(measurement.routes.knowledge.files.map(({ file }) => file)).toEqual([
-        "assets/ContextPage.js", "assets/graph.js",
-      ]);
-      expect(measurement.routes.knowledgeDetail.files.map(({ file }) => file)).toEqual([
-        "assets/KnowledgePage.js", "assets/record.js",
-      ]);
-      expect(measurement.initial.files.map(({ file }) => file)).toEqual(["assets/index.js"]);
-      expect(measurement.routes.home.files.map(({ file }) => file)).toEqual(["assets/HomePage.js"]);
-      expect(measurement.routes.settings.files.map(({ file }) => file)).toEqual(["assets/SettingsPage.js"]);
-      expect(measureSetupAssets(output).files.map(({ file }) => file)).toEqual([
-        "assets/SetupPage.js", "assets/contact.js", "assets/setup.js",
-      ]);
-      const setupPage = join(output, "assets/SetupPage.js");
-      const originalSetup = readFileSync(setupPage, "utf8");
-      const setupLimit = JSON.parse(readFileSync(new URL("./setup-asset-budget.json", import.meta.url), "utf8")).limits.jsBytes;
-      writeFileSync(setupPage, "x".repeat(setupLimit + 1));
-      expect(measureBuiltAssets(output, budgets.assets).violations).toEqual([
-        expect.objectContaining({ metric: "assets.setup.jsBytes", reason: "budget_exceeded" }),
-      ]);
-      writeFileSync(setupPage, originalSetup);
-      const contactContract = join(output, "assets/contact.js");
-      const originalContact = readFileSync(contactContract, "utf8");
-      writeFileSync(contactContract, "x".repeat(setupLimit + 1));
-      expect(measureBuiltAssets(output, budgets.assets).violations).toEqual([
-        expect.objectContaining({ metric: "assets.setup.jsBytes", reason: "budget_exceeded" }),
-      ]);
-      writeFileSync(contactContract, originalContact);
-
-      manifest.HomePage.imports = ["SettingsPage"];
-      writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
-      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow("Home workbench still includes SettingsPage.");
-      delete manifest.HomePage.imports;
-      manifest["index.html"].imports = ["SettingsPage"];
-      writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
-      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow("initial application shell still includes SettingsPage.");
-      delete manifest["index.html"].imports;
-      for (const setupKey of ["SetupPage", "../hub-contracts/dist/setup.js"]) {
-        manifest.HomePage.imports = [setupKey];
-        writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
-        expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/Home workbench still includes .*setup/iu);
-        delete manifest.HomePage.imports;
-        manifest["index.html"].imports = [setupKey];
-        writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
-        expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/initial application shell still includes .*setup/iu);
-        delete manifest["index.html"].imports;
-      }
+      expect(measured.budgetCandidates.initial).toEqual({ jsBytes: 11, cssBytes: 6, fontBytes: 5 });
+      expect(measured.violations).toEqual([]);
     } finally {
       rmSync(output, { recursive: true, force: true });
     }
   });
 
-  it("permits only the lazy browser setup page and contract chunks, including opaque manifest keys", () => {
-    const manifest = {
-      "_opaque-page.js": { file: "assets/opaque-page.js", src: "src/pages/SetupPage.tsx", isDynamicEntry: true },
-      "_opaque-contract.js": { file: "assets/opaque-contract.js", src: "../hub-contracts/dist/setup.js", isDynamicEntry: true },
-    };
-    expect(() => assertSetupManifestBoundary(manifest)).not.toThrow();
-    for (const key of Object.keys(manifest)) {
-      const eager = structuredClone(manifest);
-      eager[key].isDynamicEntry = false;
-      expect(() => assertSetupManifestBoundary(eager)).toThrow(/unexpected or non-lazy setup/);
-      const missing = structuredClone(manifest);
-      delete missing[key];
-      expect(() => assertSetupManifestBoundary(missing)).toThrow(/must contain the lazy setup page and setup contract/);
-    }
-    for (const source of ["src/setup/headless.ts", "../hub-contracts/dist/setup-internal.js", "src/pages/setup/HiddenPage.tsx"]) {
-      const contaminated = {
-        ...manifest,
-        "_opaque-backend.js": { file: "assets/opaque.js", src: source, isDynamicEntry: true },
+  it("charges a lazy Repo chunk and its nested imports only to the Repo route", () => {
+    const output = mkdtempSync(join(tmpdir(), "mex-release-assets-"));
+    try {
+      const manifest = writeAssetFixture(output);
+      manifest["index.html"].dynamicImports = ["repo-chunk"];
+      manifest["repo-chunk"] = {
+        src: "src/machine/RepoPage.tsx", file: "assets/repo.js", isDynamicEntry: true, dynamicImports: ["repo-detail"],
       };
-      expect(() => assertSetupManifestBoundary(contaminated)).toThrow(/unexpected or non-lazy setup/);
+      manifest["repo-detail"] = { file: "assets/detail.js", css: ["assets/detail.css"], isDynamicEntry: true };
+      for (const file of ["repo.js", "detail.js", "detail.css"]) writeFileSync(join(output, "assets", file), "123");
+      writeAssetManifest(output, manifest);
+      const measured = measureBuiltAssets(output, budgets.assets);
+      expect(measured.initial.jsBytes).toBe(10);
+      expect(measured.routes.home.jsBytes).toBe(0);
+      expect(measured.routes.repo).toMatchObject({ jsBytes: 6, cssBytes: 3, fontBytes: 0 });
+      expect(measured.violations.map(({ metric }) => metric)).toEqual([
+        "assets.routes.repo.jsBytes", "assets.routes.repo.cssBytes",
+      ]);
+    } finally {
+      rmSync(output, { recursive: true, force: true });
     }
-    const misleadingSource = {
-      ...manifest,
-      "src/setup/headless.ts": { file: "assets/backend.js", src: "src/pages/SetupPage.tsx", isDynamicEntry: true },
-    };
-    expect(() => assertSetupManifestBoundary(misleadingSource)).toThrow(/unexpected or non-lazy setup/);
   });
 
-  it("rejects forbidden workbench modules hidden behind opaque chunk keys", () => {
-    const manifest = {
-      "_opaque.js": {
-        file: "assets/opaque.js",
-        src: "src/pages/ActivityPage.tsx",
-      },
-    };
-    expect(() => assertNoForbiddenWorkbench(
-      manifest,
-      new Set(["_opaque.js"]),
-      "Home workbench",
-      ["ActivityPage"],
-    )).toThrow(/Home workbench still includes ActivityPage/u);
-  });
-
-  it("keeps the Relay workbench out of the initial and Home static closures", () => {
-    const manifest = {
-      "_relay-opaque.js": {
-        file: "assets/relay.js",
-        src: "src/pages/RelayPage.tsx",
-      },
-    };
-    expect(() => assertNoForbiddenWorkbench(
-      manifest,
-      new Set(["_relay-opaque.js"]),
-      "initial application shell",
-      ["RelayPage"],
-    )).toThrow(/initial application shell still includes RelayPage/u);
-    expect(() => assertNoForbiddenWorkbench(
-      manifest,
-      new Set(["_relay-opaque.js"]),
-      "Home workbench",
-      ["RelayPage"],
-    )).toThrow(/Home workbench still includes RelayPage/u);
-  });
-
-  it("requires the exact one-item local draft and published Relay benchmark pages", () => {
-    const page = (item) => ({
-      items: [item],
-      nextCursor: null,
-      truncated: false,
-      sourceTruncated: false,
-      deterministicRevision: "a".repeat(64),
-      diagnostics: [],
-      diagnosticsTruncated: false,
-    });
-    expect(() => assertRelayFixturePage(page({
-      id: "relay-draft-fixed",
-      summary: "Local Relay fixture",
-    }), {
-      kind: "draft",
-      id: "relay-draft-fixed",
-      summary: "Local Relay fixture",
-    })).not.toThrow();
-    expect(() => assertRelayFixturePage(page({
-      ref: { id: "relay_fixed" },
-      summary: "Published Relay fixture",
-      state: "published",
-      schemaVersion: 3,
-      workstream: null,
-      publishedRepoState: {
-        branch: "benchmark",
-        head: null,
-        dirty: false,
-        observedAt: "2026-08-01T00:00:00.000Z",
-      },
-    }), {
-      kind: "relay",
-      id: "relay_fixed",
-      summary: "Published Relay fixture",
-    })).not.toThrow();
-    expect(() => assertRelayFixturePage(page({
-      ref: { id: "relay_fixed" },
-      summary: "Published Relay fixture",
-      state: "acknowledged",
-      schemaVersion: 3,
-      workstream: null,
-      publishedRepoState: {
-        branch: "benchmark",
-        head: null,
-        dirty: false,
-        observedAt: "2026-08-01T00:00:00.000Z",
-      },
-    }), {
-      kind: "relay",
-      id: "relay_fixed",
-      summary: "Published Relay fixture",
-    })).toThrow(/not published/u);
-    expect(() => assertRelayFixturePage(page({
-      ref: { id: "relay_fixed" },
-      summary: "Published Relay fixture",
-      state: "published",
-      schemaVersion: 2,
-      workstream: { id: "ws_legacy", kind: "workstream" },
-      publishedRepoState: null,
-    }), {
-      kind: "relay",
-      id: "relay_fixed",
-      summary: "Published Relay fixture",
-    })).toThrow(/standalone schema-v3 publication/u);
-    expect(() => assertRelayFixturePage({
-      ...page({ id: "relay-draft-fixed", summary: "Local Relay fixture" }),
-      diagnostics: [{ code: "RELAY_PUBLISHED_AT_MISSING" }],
-    }, {
-      kind: "draft",
-      id: "relay-draft-fixed",
-      summary: "Local Relay fixture",
-    })).toThrow(/diagnostic-free one-item page/u);
+  it("rejects obsolete workbenches, unmeasured assets, and manifest paths outside the build", () => {
+    const output = mkdtempSync(join(tmpdir(), "mex-release-assets-"));
+    try {
+      const manifest = writeAssetFixture(output);
+      manifest.opaque = { file: "assets/old.js", src: "src/pages/SetupPage.tsx", isDynamicEntry: true };
+      writeAssetManifest(output, manifest);
+      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/manifest still includes src\/pages\//u);
+      manifest.opaque.src = "src/machine/Other.tsx";
+      writeAssetManifest(output, manifest);
+      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/unmeasured dynamic chunk/u);
+      delete manifest.opaque;
+      manifest["index.html"].css.push("../outside.css");
+      writeAssetManifest(output, manifest);
+      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/Manifest asset is missing/u);
+      manifest["index.html"].css.pop();
+      writeAssetManifest(output, manifest);
+      writeFileSync(join(output, "assets", "unreferenced.css"), "unexpected");
+      expect(() => measureBuiltAssets(output, budgets.assets)).toThrow(/unmeasured asset/u);
+    } finally {
+      rmSync(output, { recursive: true, force: true });
+    }
   });
 
   it("keeps runtime candidates and enforcement scoped to each fixture profile", () => {
@@ -715,9 +462,9 @@ describe("release benchmark contract", () => {
     };
     const candidates = candidateRuntimeBudgets(profiles);
     expect(candidates.apiLatencyMs).toEqual({
-      small: { search: 115 },
-      medium: { search: 230 },
-      large: { search: 345 },
+      small: { projects: 115 },
+      medium: { projects: 230 },
+      large: { projects: 345 },
     });
     expect(candidates.databaseToInputRatio).toEqual({
       small: { graph: 115, wiki: 115 },
@@ -725,122 +472,73 @@ describe("release benchmark contract", () => {
       large: { graph: 345, wiki: 345 },
     });
     expect(evaluateRuntimeBudgets(profiles, candidates)).toEqual([]);
-    candidates.apiLatencyMs.small.search = 99;
+    candidates.apiLatencyMs.small.projects = 99;
     expect(evaluateRuntimeBudgets(profiles, candidates)).toContainEqual({
-      metric: "runtime.apiLatencyMs.small.search",
+      metric: "runtime.apiLatencyMs.small.projects",
       measured: 100,
       budget: 99,
       reason: "budget_exceeded",
     });
   });
 
-  it("keeps missing runtime budgets schema-valid and fail-closed for pinned characterization", () => {
-    const profiles = Object.fromEntries(["small", "medium", "large"].map((profile) => [
+  it("fails closed when either machine API budget is missing", () => {
+    const profiles = Object.fromEntries(Object.keys(RELEASE_FIXTURE_PROFILES).map((profile) => [
       profile,
       {
         ...runtimeProfile(100),
-        apiLatencyMs: {
-          search: { p95: 100 },
-          inboxDrafts: { p95: 2 },
-          inboxProposals: { p95: 3 },
-        },
+        apiLatencyMs: { session: { p95: 2 }, projects: { p95: 3 } },
+        maintenance: null,
       },
     ]));
-    const characterizedBudgets = candidateRuntimeBudgets(profiles);
-    for (const profile of ["small", "medium", "large"]) {
-      delete characterizedBudgets.apiLatencyMs[profile].inboxDrafts;
-      delete characterizedBudgets.apiLatencyMs[profile].inboxProposals;
-    }
-    const violations = evaluateRuntimeBudgets(profiles, characterizedBudgets);
+    const candidate = candidateRuntimeBudgets(profiles);
+    expect(candidate.maintenanceMs).toEqual({ small: {}, medium: {}, large: {} });
+    expect(candidate.maintenancePeakRssBytes).toEqual({ small: {}, medium: {}, large: {} });
+    expect(evaluateRuntimeBudgets(profiles, candidate)).toEqual([]);
+    for (const profile of Object.keys(profiles)) candidate.apiLatencyMs[profile] = {};
+    const violations = evaluateRuntimeBudgets(profiles, candidate);
     expect(violations).toHaveLength(6);
     expect(violations).toEqual(expect.arrayContaining([
-      {
-        metric: "runtime.apiLatencyMs.small.inboxDrafts",
-        measured: 2,
-        budget: null,
-        reason: "budget_missing",
-      },
-      {
-        metric: "runtime.apiLatencyMs.large.inboxProposals",
-        measured: 3,
-        budget: null,
-        reason: "budget_missing",
-      },
+      { metric: "runtime.apiLatencyMs.small.session", measured: 2, budget: null, reason: "budget_missing" },
+      { metric: "runtime.apiLatencyMs.large.projects", measured: 3, budget: null, reason: "budget_missing" },
     ]));
-    expect(JSON.parse(JSON.stringify(violations))).toEqual(violations);
-  });
-
-  it("fails closed when the six calibrated Relay API leaves are absent", () => {
-    const profiles = Object.fromEntries(["small", "medium", "large"].map((profile) => [
-      profile,
-      {
-        ...runtimeProfile(100),
-        apiLatencyMs: {
-          search: { p95: 100 },
-          relayDrafts: { p95: 2 },
-          relays: { p95: 3 },
-        },
-      },
-    ]));
-    const missingRelayBudgets = structuredClone(budgets.runtime);
-    for (const profile of ["small", "medium", "large"]) {
-      delete missingRelayBudgets.apiLatencyMs[profile].relayDrafts;
-      delete missingRelayBudgets.apiLatencyMs[profile].relays;
-    }
-    const violations = evaluateRuntimeBudgets(profiles, missingRelayBudgets)
-      .filter(({ metric }) => metric.includes(".relay"));
-    expect(violations).toHaveLength(6);
-    expect(violations).toEqual(expect.arrayContaining([
-      {
-        metric: "runtime.apiLatencyMs.small.relayDrafts",
-        measured: 2,
-        budget: null,
-        reason: "budget_missing",
-      },
-      {
-        metric: "runtime.apiLatencyMs.large.relays",
-        measured: 3,
-        budget: null,
-        reason: "budget_missing",
-      },
-    ]));
+    expect(classifyRuntimeViolations(violations)).toEqual({ confirmable: [], immediate: violations });
     expect(JSON.parse(JSON.stringify(violations))).toEqual(violations);
   });
 
   it("retries only potentially material crossings and blocks supported repeats", () => {
-    const knowledgePolicy = runtimeMaterialityPolicy("runtime.apiLatencyMs.medium.knowledge");
-    const knowledge = runtimeViolation(
-      "runtime.apiLatencyMs.medium.knowledge",
-      knowledgePolicy.materialThreshold + 1,
+    const projectsPolicy = runtimeMaterialityPolicy("runtime.apiLatencyMs.medium.projects");
+    const projects = runtimeViolation(
+      "runtime.apiLatencyMs.medium.projects",
+      projectsPolicy.materialThreshold + 1,
     );
-    const activity = runtimeViolation("runtime.apiLatencyMs.medium.activity");
+    const session = runtimeViolation("runtime.apiLatencyMs.medium.session");
     const initial = evaluateRuntimeConfirmation(
-      [knowledge],
+      [projects],
       undefined,
-      confirmationSupport([[knowledge.metric, 2]]),
+      confirmationSupport([[projects.metric, 2]]),
     );
     expect(initial).toMatchObject({ retryRequired: true, status: "required" });
 
     expect(evaluateRuntimeConfirmation(
-      [knowledge],
-      [activity],
-      confirmationSupport([[knowledge.metric, 2]], [[activity.metric, 0]]),
+      [projects],
+      [session],
+      confirmationSupport([[projects.metric, 2]], [[session.metric, 0]]),
     )).toMatchObject({
       retryRequired: false,
       status: "passed",
       finalViolations: [],
     });
     expect(evaluateRuntimeConfirmation(
-      [knowledge],
-      [knowledge],
-      confirmationSupport([[knowledge.metric, 2]], [[knowledge.metric, 1]]),
+      [projects],
+      [projects],
+      confirmationSupport([[projects.metric, 2]], [[projects.metric, 1]]),
     )).toMatchObject({
       retryRequired: false,
       status: "passed",
       finalViolations: [],
-      confirmed: [knowledge],
+      confirmed: [projects],
       advisoryAssessments: [{
-        metric: knowledge.metric,
+        metric: projects.metric,
         classification: "advisory",
         reason: "insufficient_sample_support",
       }],
@@ -884,7 +582,7 @@ describe("release benchmark contract", () => {
       ["runtime.coldHubReadyMs.small", "cold_readiness_ms", 100, 10],
       ["runtime.idleRssBytes.small", "rss_bytes", 32 * 1024 * 1024, 5],
       ["runtime.idleCpuMs.large", "idle_cpu_ms", 25, 5],
-      ["runtime.apiLatencyMs.small.code", "api_latency_ms", 15, 10],
+      ["runtime.apiLatencyMs.small.session", "api_latency_ms", 15, 10],
       ["runtime.maintenanceMs.small.wiki_rebuild", "maintenance_ms", 50, 10],
       ["runtime.maintenancePeakRssBytes.small.graph_refresh", "rss_bytes", 32 * 1024 * 1024, 5],
       ["runtime.browserHeapBytes.small.home", "browser_heap_bytes", 2 * 1024 * 1024, 5],
@@ -914,7 +612,7 @@ describe("release benchmark contract", () => {
     }
 
     const exactMetrics = committedConfirmableRuntimeMetrics();
-    expect(exactMetrics).toHaveLength(102);
+    expect(exactMetrics).toHaveLength(45);
     for (const metric of exactMetrics) {
       expect(runtimeMaterialityPolicy(metric)).not.toBeNull();
       const violation = runtimeViolation(metric);
@@ -931,7 +629,7 @@ describe("release benchmark contract", () => {
       ["runtime.coldHubReadyMs.small", 10],
       ["runtime.idleRssBytes.small", 5],
       ["runtime.idleCpuMs.large", 5],
-      ["runtime.apiLatencyMs.small.code", 10],
+      ["runtime.apiLatencyMs.small.session", 10],
       ["runtime.maintenanceMs.small.wiki_rebuild", 10],
       ["runtime.maintenancePeakRssBytes.small.graph_refresh", 5],
       ["runtime.browserHeapBytes.small.home", 5],
@@ -948,7 +646,7 @@ describe("release benchmark contract", () => {
   });
 
   it("keeps small repeated API crossings advisory and blocks material ones", () => {
-    const metric = "runtime.apiLatencyMs.small.code";
+    const metric = "runtime.apiLatencyMs.small.session";
     const budget = committedRuntimeBudget(metric);
     expect(budget).toBeLessThan(100);
     const threshold = budget + 15;
@@ -1010,7 +708,7 @@ describe("release benchmark contract", () => {
       "runtime.coldHubReadyMs.small",
       "runtime.idleRssBytes.small",
       "runtime.idleCpuMs.small",
-      "runtime.apiLatencyMs.small.search",
+      "runtime.apiLatencyMs.small.projects",
       "runtime.maintenanceMs.small.graph_refresh",
       "runtime.maintenancePeakRssBytes.small.graph_refresh",
       "runtime.browserHeapBytes.small.home",
@@ -1018,7 +716,7 @@ describe("release benchmark contract", () => {
     const database = runtimeViolation("runtime.databaseToInputRatio.small.graph");
     const outbound = runtimeViolation("runtime.outboundRequestCount.small");
     const unknown = runtimeViolation("runtime.apiLatencyMs.unknown.future");
-    const mismatchedBudget = runtimeViolation("runtime.apiLatencyMs.small.code", 70, 52);
+    const mismatchedBudget = runtimeViolation("runtime.apiLatencyMs.small.session", 70, 52);
     expect(classifyRuntimeViolations([
       ...noisy,
       database,
@@ -1066,16 +764,16 @@ describe("release benchmark contract", () => {
 
   it("passes different noisy metrics across attempts and retains both raw reports", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-confirm-different-"));
-    const knowledgeMetric = "runtime.apiLatencyMs.medium.knowledge";
-    const knowledge = runtimeViolation(
-      knowledgeMetric,
-      runtimeMaterialityPolicy(knowledgeMetric).materialThreshold + 1,
+    const projectsMetric = "runtime.apiLatencyMs.medium.projects";
+    const projects = runtimeViolation(
+      projectsMetric,
+      runtimeMaterialityPolicy(projectsMetric).materialThreshold + 1,
     );
-    const activity = runtimeViolation("runtime.apiLatencyMs.medium.activity");
+    const session = runtimeViolation("runtime.apiLatencyMs.medium.session");
     try {
       const result = runConfirmationHarness(root, [
-        benchmarkPass({ runtimeViolations: [knowledge] }),
-        benchmarkPass({ runtimeViolations: [activity] }),
+        benchmarkPass({ runtimeViolations: [projects] }),
+        benchmarkPass({ runtimeViolations: [session] }),
       ]);
       expect(result.exitCode).toBe(0);
       expect(result.calls).toBe(2);
@@ -1086,18 +784,18 @@ describe("release benchmark contract", () => {
         runtimeConfirmation: {
           status: "passed",
           repositoryHead: "a".repeat(40),
-          firstPassViolations: [knowledge],
-          secondPassViolations: [activity],
+          firstPassViolations: [projects],
+          secondPassViolations: [session],
           confirmedViolations: [],
           advisoryAssessments: [
-            { metric: knowledge.metric, reason: "not_repeated" },
-            { metric: activity.metric, reason: "not_repeated" },
+            { metric: projects.metric, reason: "not_repeated" },
+            { metric: session.metric, reason: "not_repeated" },
           ],
           materialAssessments: [],
         },
       });
-      expect(readRawAttempt(root, 1).budgetEvaluation.runtimeViolations).toEqual([knowledge]);
-      expect(readRawAttempt(root, 2).budgetEvaluation.runtimeViolations).toEqual([activity]);
+      expect(readRawAttempt(root, 1).budgetEvaluation.runtimeViolations).toEqual([projects]);
+      expect(readRawAttempt(root, 2).budgetEvaluation.runtimeViolations).toEqual([session]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1105,7 +803,7 @@ describe("release benchmark contract", () => {
 
   it("fails when the same noisy metric is material in both attempts", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-confirm-same-"));
-    const metric = "runtime.apiLatencyMs.small.code";
+    const metric = "runtime.apiLatencyMs.small.session";
     const first = runtimeViolation(metric, 67);
     const second = runtimeViolation(metric, 70);
     try {
@@ -1142,9 +840,8 @@ describe("release benchmark contract", () => {
 
   it("passes first-pass nonmaterial crossings without paying for confirmation", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-confirm-advisory-"));
-    const metric = "runtime.apiLatencyMs.small.code";
-    const first = runtimeViolation(metric, 53);
-    const second = runtimeViolation(metric, 58);
+    const metric = "runtime.apiLatencyMs.small.session";
+    const first = runtimeViolation(metric, committedRuntimeBudget(metric) + 2);
     try {
       const result = runConfirmationHarness(root, [
         benchmarkPass({ runtimeViolations: [first] }),
@@ -1163,7 +860,7 @@ describe("release benchmark contract", () => {
             metric,
             classification: "advisory",
             reason: "below_material_threshold",
-            firstMeasured: 53,
+            firstMeasured: first.measured,
             secondMeasured: null,
             requiredSupportingSamples: 2,
             firstSampleCount: 10,
@@ -1221,10 +918,10 @@ describe("release benchmark contract", () => {
 
   it("fails hard violations on either attempt without treating them as noise", () => {
     const graphRatio = runtimeViolation("runtime.databaseToInputRatio.small.graph");
-    const knowledgeMetric = "runtime.apiLatencyMs.medium.knowledge";
-    const knowledge = runtimeViolation(
-      knowledgeMetric,
-      runtimeMaterialityPolicy(knowledgeMetric).materialThreshold + 1,
+    const projectsMetric = "runtime.apiLatencyMs.medium.projects";
+    const projects = runtimeViolation(
+      projectsMetric,
+      runtimeMaterialityPolicy(projectsMetric).materialThreshold + 1,
     );
     const asset = runtimeViolation("assets.routes.home.jsBytes");
     for (const scenario of [
@@ -1243,7 +940,7 @@ describe("release benchmark contract", () => {
       {
         name: "second-runtime",
         passes: [
-          benchmarkPass({ runtimeViolations: [knowledge] }),
+          benchmarkPass({ runtimeViolations: [projects] }),
           benchmarkPass({ runtimeViolations: [graphRatio] }),
         ],
         calls: 2,
@@ -1277,24 +974,24 @@ describe("release benchmark contract", () => {
     }
 
     const root = mkdtempSync(join(tmpdir(), "mex-release-confirm-missing-second-"));
-    const knowledgeMetric = "runtime.apiLatencyMs.medium.knowledge";
-    const knowledge = runtimeViolation(
-      knowledgeMetric,
-      runtimeMaterialityPolicy(knowledgeMetric).materialThreshold + 1,
+    const projectsMetric = "runtime.apiLatencyMs.medium.projects";
+    const projects = runtimeViolation(
+      projectsMetric,
+      runtimeMaterialityPolicy(projectsMetric).materialThreshold + 1,
     );
     try {
       const result = runConfirmationHarness(root, [
-        benchmarkPass({ runtimeViolations: [knowledge] }),
+        benchmarkPass({ runtimeViolations: [projects] }),
         null,
       ]);
       expect(result.exitCode).toBe(2);
       expect(result.calls).toBe(2);
       expect(result.report.budgetEvaluation).toMatchObject({
-        runtimeViolations: [knowledge],
+        runtimeViolations: [projects],
         passed: false,
         runtimeConfirmation: {
           status: "operational_failure",
-          firstPassViolations: [knowledge],
+          firstPassViolations: [projects],
           secondPassViolations: [],
           confirmedViolations: [],
         },
@@ -1394,10 +1091,10 @@ describe("release benchmark contract", () => {
   });
 
   it("uses exit 2 if repository HEAD changes between or during attempts", () => {
-    const knowledgeMetric = "runtime.apiLatencyMs.medium.knowledge";
-    const knowledge = runtimeViolation(
-      knowledgeMetric,
-      runtimeMaterialityPolicy(knowledgeMetric).materialThreshold + 1,
+    const projectsMetric = "runtime.apiLatencyMs.medium.projects";
+    const projects = runtimeViolation(
+      projectsMetric,
+      runtimeMaterialityPolicy(projectsMetric).materialThreshold + 1,
     );
     for (const heads of [
       ["a".repeat(40), "b".repeat(40)],
@@ -1406,7 +1103,7 @@ describe("release benchmark contract", () => {
       const root = mkdtempSync(join(tmpdir(), "mex-release-confirm-head-change-"));
       try {
         const result = runConfirmationHarness(root, [
-          benchmarkPass({ runtimeViolations: [knowledge] }),
+          benchmarkPass({ runtimeViolations: [projects] }),
           benchmarkPass(),
         ], { heads });
         expect(result.exitCode).toBe(2);
@@ -1485,7 +1182,13 @@ describe("release benchmark contract", () => {
         GIT_DEFAULT_HASH: "sha256",
         GIT_TEMPLATE_DIR: templateRoot,
         MEX_HOOK_MARKER: hookMarker,
+        MEX_OFF: "1",
+        MEX_BACKGROUND: "1",
+        MEX_RECORD_HOME: join(root, "outside-record"),
       });
+      expect(contaminatedEnvironment.MEX_OFF).toBe("0");
+      expect(contaminatedEnvironment.MEX_BACKGROUND).toBe("0");
+      expect(contaminatedEnvironment).not.toHaveProperty("MEX_RECORD_HOME");
       writeMinimalReleaseFixture(cleanRoot);
       writeMinimalReleaseFixture(contaminatedRoot);
       const cleanHead = initializeReleaseFixtureGit(cleanRoot, cleanEnvironment);
@@ -1539,6 +1242,27 @@ describe("release benchmark contract", () => {
     }
   });
 
+  it("counts readiness only after an unauthenticated foreground hello answers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-release-startup-hello-"));
+    const script = join(root, "delayed-hub.mjs");
+    try {
+      writeFileSync(script, [
+        'import { createServer } from "node:http";',
+        'const server = createServer((req, res) => {',
+        '  if (req.url !== "/api/v1/hello" || req.headers.cookie) { res.writeHead(400).end("{}"); return; }',
+        '  setTimeout(() => res.end(JSON.stringify({ app: "mex-hub", homeId: "a".repeat(22), version: "test", mode: "terminal" })), 100);',
+        '});',
+        'if (!process.argv.includes("--foreground")) process.exit(1);',
+        'server.listen(0, "127.0.0.1", () => console.log("http://127.0.0.1:" + server.address().port + "/#token=test"));',
+      ].join("\n"));
+      const hub = await startHub({ projectRoot: root, cliPath: script, environment: process.env });
+      try { expect(hub.readyMs).toBeGreaterThanOrEqual(100); }
+      finally { await hub.close(); }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("terminates a Hub child that misses the readiness deadline", async () => {
     const root = mkdtempSync(join(tmpdir(), "mex-release-startup-timeout-"));
     const script = join(root, "hanging-hub.mjs");
@@ -1568,11 +1292,26 @@ describe("release benchmark contract", () => {
   });
 });
 
+function writeAssetFixture(output) {
+  mkdirSync(join(output, ".vite"));
+  mkdirSync(join(output, "assets"));
+  writeFileSync(join(output, "assets", "index.js"), "0123456789");
+  writeFileSync(join(output, "assets", "index.css"), "01234");
+  writeFileSync(join(output, "assets", "text.woff2"), "0123");
+  return {
+    "index.html": { file: "assets/index.js", css: ["assets/index.css"], isEntry: true },
+  };
+}
+
+function writeAssetManifest(output, manifest) {
+  writeFileSync(join(output, ".vite", "manifest.json"), JSON.stringify(manifest));
+}
+
 function runtimeProfile(value) {
   return {
     coldHubReadyMs: { p95: value },
     idle: { rssBytes: { p95: value }, cpuMs: { p95: value } },
-    apiLatencyMs: { search: { p95: value } },
+    apiLatencyMs: { projects: { p95: value } },
     maintenance: {
       graph_refresh: {
         elapsedMs: { p95: value },
@@ -1601,15 +1340,9 @@ function runtimeViolation(metric, measured, budget) {
 }
 
 function materialityAssessment(overrides) {
-  return {
-    metric: "runtime.apiLatencyMs.small.code",
-    category: "api_latency_ms",
-    budget: 51,
-    relativeExcessRatio: 0.15,
-    minimumExcess: 15,
-    materialThreshold: 66,
-    ...overrides,
-  };
+  const metric = "runtime.apiLatencyMs.small.session";
+  const { budget, category, minimumExcess, materialThreshold } = runtimeMaterialityPolicy(metric);
+  return { metric, category, budget, minimumExcess, materialThreshold, relativeExcessRatio: 0.15, ...overrides };
 }
 
 function representativeReleaseReport({ runtimeViolations, passed, confirmation }) {

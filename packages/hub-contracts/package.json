@@ -23,6 +23,10 @@
       "types": "./dist/overview.d.ts",
       "import": "./dist/overview.js"
     },
+    "./machine": {
+      "types": "./dist/machine.d.ts",
+      "import": "./dist/machine.js"
+    },
     "./contact": {
       "types": "./dist/contact.d.ts",
       "import": "./dist/contact.js"

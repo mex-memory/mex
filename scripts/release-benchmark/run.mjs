@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { currentGraphPath } from "../../dist/graph-storage.js";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -11,27 +11,24 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { measureBuiltAssets } from "./assets.mjs";
 import { measureWorkbenchHeap } from "./browser.mjs";
 import { createBenchmarkEnvironment } from "./environment.mjs";
 import {
-  copyReleaseFixture,
   createReleaseFixture,
   prepareReleaseFixtureTools,
   RELEASE_FIXTURE_PROFILES,
   snapshotReleaseReadState,
   sqliteFamilySize,
-  toggleSourceRefreshMarker,
-  toggleWikiRefreshMarker,
 } from "./fixtures.mjs";
 import {
   authenticateHub,
   hubJson,
   measureCommonReads,
   measureIdleProcess,
-  measureMaintenance,
+  RELEASE_COMMON_READ_PATHS,
   startHub,
 } from "./hub.mjs";
 import { candidateRuntimeBudgets, evaluateRuntimeBudgets } from "./runtime-budgets.mjs";
@@ -78,7 +75,7 @@ const report = {
   configuration: {
     fixtureProfiles: RELEASE_FIXTURE_PROFILES,
     processMeasurement: PROCESS_MEASUREMENT,
-    maintenanceObservation: "job-event-stream",
+    maintenanceObservation: "unavailable-in-machine-hub",
     samples: budgets.samples,
     runtimeBudgetsEnforced: enforceRuntime,
     assetBudgetsEnforced: true,
@@ -110,29 +107,27 @@ try {
         fixtureTools,
       });
 
+      const projectRoot = baseFixture.root;
       const coldReadyMs = [];
       for (let sample = 0; sample < budgets.samples.timing; sample += 1) {
-        const sampleRoot = copyReleaseFixture(
-          baseFixture.root,
-          join(workRoot, `${profileName}-cold-${sample}`),
-        );
-        activeServer = await startHub({ projectRoot: sampleRoot, cliPath, environment: benchmarkEnvironment });
+        const environment = { ...benchmarkEnvironment, MEX_HOME: join(workRoot, `${profileName}-cold-${sample}`) };
+        activeServer = await startHub({ projectRoot, cliPath, environment });
         coldReadyMs.push(activeServer.readyMs);
         await activeServer.close();
         activeServer = undefined;
       }
 
+      const hubEnvironment = { ...benchmarkEnvironment, MEX_HOME: join(workRoot, `${profileName}-hub-home`) };
+      execFileSync(process.execPath, [cliPath, "index", "status", "--json"], {
+        cwd: projectRoot, env: hubEnvironment, timeout: 30_000, windowsHide: true,
+      });
+      const beforeOrdinaryReads = snapshotReleaseReadState(projectRoot, benchmarkEnvironment);
       const idleRssBytes = [];
       const idleCpuMs = [];
       for (let sample = 0; sample < budgets.samples.idleMemory; sample += 1) {
-        const sampleRoot = copyReleaseFixture(
-          baseFixture.root,
-          join(workRoot, `${profileName}-idle-${sample}`),
-        );
-        activeServer = await startHub({ projectRoot: sampleRoot, cliPath, environment: benchmarkEnvironment });
+        activeServer = await startHub({ projectRoot, cliPath, environment: hubEnvironment });
         const auth = await authenticateHub(activeServer);
-        await hubJson(activeServer, "/api/v1/capabilities", auth);
-        await hubJson(activeServer, "/api/v1/home", auth);
+        await hubJson(activeServer, RELEASE_COMMON_READ_PATHS.projects, auth);
         const idle = await measureIdleProcess(activeServer);
         idleRssBytes.push(idle.rssBytes);
         idleCpuMs.push(idle.cpuMs);
@@ -140,50 +135,19 @@ try {
         activeServer = undefined;
       }
 
-      const workingRoot = copyReleaseFixture(
-        baseFixture.root,
-        join(workRoot, `${profileName}-working`),
-      );
-      activeServer = await startHub({ projectRoot: workingRoot, cliPath, environment: benchmarkEnvironment });
+      activeServer = await startHub({ projectRoot, cliPath, environment: hubEnvironment });
       const auth = await authenticateHub(activeServer);
-      const beforeOrdinaryReads = snapshotReleaseReadState(workingRoot, benchmarkEnvironment);
-      const commonReads = await measureCommonReads(
-        activeServer,
-        auth,
-        budgets.samples.timing,
-        {
-          relayDraftId: baseFixture.firstRelayDraftId,
-          relayDraftSummary: baseFixture.relayDraftSummary,
-          relayId: baseFixture.firstRelayId,
-          relaySummary: baseFixture.relaySummary,
-        },
-      );
-      const apiLatency = commonReads.timings;
+      const { timings: apiLatency, project } = await measureCommonReads(activeServer, auth, budgets.samples.timing);
+      if (project.name !== basename(projectRoot)) throw new Error("The machine Hub returned the wrong release fixture.");
       const browser = await measureWorkbenchHeap({
-        server: activeServer,
-        auth,
-        samples: budgets.samples.idleMemory,
-        knowledgeEntityId: baseFixture.firstWikiEntityId,
-        codeSymbolId: commonReads.codeSymbolId,
-        relayDraftId: baseFixture.firstRelayDraftId,
-        relayDraftSummary: baseFixture.relayDraftSummary,
-        relayId: baseFixture.firstRelayId,
-        relaySummary: baseFixture.relaySummary,
+        server: activeServer, auth, project, samples: budgets.samples.idleMemory,
       });
-      const afterOrdinaryReads = snapshotReleaseReadState(workingRoot, benchmarkEnvironment);
+      const afterOrdinaryReads = snapshotReleaseReadState(projectRoot, benchmarkEnvironment);
       if (JSON.stringify(afterOrdinaryReads) !== JSON.stringify(beforeOrdinaryReads)) {
-        throw new Error(`${profileName} ordinary Hub/Relay reads mutated protected repository state.`);
+        throw new Error(`${profileName} ordinary Hub reads mutated protected repository state.`);
       }
-      const maintenance = await measureMaintenance({
-        server: activeServer,
-        auth,
-        timingSamples: budgets.samples.timing,
-        memorySamples: budgets.samples.idleMemory,
-        beforeGraphRefresh: () => toggleSourceRefreshMarker(workingRoot),
-        beforeWikiRefresh: () => toggleWikiRefreshMarker(workingRoot, baseFixture.mutableWikiPath),
-      });
-      const graphDatabaseBytes = sqliteFamilySize(currentGraphPath(workingRoot, { home: join(benchmarkEnvironment.MEX_HOME, ".mex") }));
-      const wikiDatabaseBytes = sqliteFamilySize(join(workingRoot, ".mex", "wiki.db"));
+      const graphDatabaseBytes = sqliteFamilySize(currentGraphPath(projectRoot, { home: join(benchmarkEnvironment.MEX_HOME, ".mex") }));
+      const wikiDatabaseBytes = sqliteFamilySize(join(projectRoot, ".mex", "wiki.db"));
       await activeServer.close();
       activeServer = undefined;
 
@@ -194,7 +158,6 @@ try {
         idleRssBytes,
         idleCpuMs,
         apiLatency,
-        maintenance,
         browser,
         graphDatabaseBytes,
         wikiDatabaseBytes,
@@ -218,11 +181,6 @@ process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 if (!report.budgetEvaluation.passed) process.exitCode = 1;
 
 function summarizeProfile(input) {
-  const maintenance = Object.fromEntries(Object.entries(input.maintenance).map(([kind, samples]) => [kind, {
-    elapsedMs: summarize(samples.elapsedMs, input.timingSamples),
-    peakRssBytes: summarize(samples.peakRssBytes, input.memorySamples),
-    cpuMs: summarize(samples.cpuMs, input.timingSamples),
-  }]));
   const browserHeap = input.browser === null ? null : {
     routes: Object.fromEntries(Object.entries(input.browser.measurements).map(([route, values]) => [
       route,
@@ -255,7 +213,7 @@ function summarizeProfile(input) {
       name,
       summarize(values, input.timingSamples),
     ])),
-    maintenance,
+    maintenance: null,
     browserHeap,
     database,
   };

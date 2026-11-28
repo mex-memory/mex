@@ -153,7 +153,7 @@ describe("status-first setup rerun (#284)", () => {
     expect(await runHeadlessSetup({ projectRoot: root, tools: [], populate: populate(root) })).toMatchObject({ populated: true });
 
     const uncommitted = await rerun(root);
-    expect(uncommitted.output).toContain("MEX is prepared here but the setup is not committed yet. Run `mex setup --browser`");
+    expect(uncommitted.output).toContain("MEX is prepared here but the setup is not committed yet. Review the .mex changes with git and commit them.");
     expect(uncommitted.result).toMatchObject({ outcome: "complete", exitCode: 0 });
 
     execFileSync("git", ["add", "-A"], { cwd: root, stdio: "ignore" });

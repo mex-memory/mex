@@ -123,11 +123,6 @@ export function isFirstRunNoticeExemptCommand(commandName?: string): boolean {
     || commandName === "status" || commandName === "doctor";
 }
 
-async function runBrowserCommand(options: { port?: number; open: boolean; mode?: string; setup?: boolean }): Promise<void> {
-  const { launchHub } = await import("./hub/command.js");
-  await launchHub({ port: options.port, openBrowser: options.open, mode: options.mode, setup: options.setup });
-}
-
 async function reportSetupCommandError(error: unknown): Promise<void> {
   const { SetupError } = await import("./setup/errors.js");
   console.error(error instanceof SetupError ? error.userMessage : error instanceof Error ? error.message : String(error));
@@ -139,12 +134,13 @@ async function runSetupCommand(options: {
   browser?: boolean; dryRun?: boolean; mode?: string; port?: number; open: boolean; tool?: string[]; yes?: boolean;
   force?: boolean;
 }): Promise<void> {
+  if (options.browser) {
+    console.error("The browser setup was removed in 0.9. Run mex in the repo to set it up, then mex hub to open the Hub.");
+    process.exitCode = 1;
+    return;
+  }
   try {
     if (!options.dryRun) showFirstRunNotice();
-    if (options.browser) {
-      await runBrowserCommand({ ...options, setup: true });
-      return;
-    }
     const setup = await import("./setup/index.js");
     const result = await setup.runSetup({
       dryRun: options.dryRun,
@@ -178,9 +174,10 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
   await cliTelemetry.finish(process.exitCode);
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
-  // Uninstall must not recreate the launcher or restart pending jobs.
+  // A retired browser command and uninstall must not recreate the launcher or restart pending jobs.
   if (family.name() === "uninstall" || family.name() === "off" || family.name() === "capture" || family.name() === "compact"
     || family.name() === "status" || family.name() === "doctor"
+    || (family.name() === "setup" && family.opts().browser)
     || (family.name() === "report" && (family.opts().ledger || family.opts().holdout))
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
     || (["install", "sync", "learn"].includes(family.name()) && family.opts().dryRun)) return;
@@ -301,15 +298,16 @@ program.command("capture <state>")
 
 program
   .command("hub")
-  .description("Show the 0.9 Hub notice; open the Hub in a 0.8 repo")
-  .option("--port <n>", "Bind a specific loopback port", parsePortArg)
+  .description("Open the MEX Hub for every repo on this machine")
+  .option("--port <n>", "Serve from this terminal on a specific loopback port", parsePortArg)
   .option("--no-open", "Do not open the browser automatically")
-  .action(async (_opts: { port?: number; open: boolean }, command: Command) => {
+  .option("--foreground", "Serve from this terminal instead of the background process")
+  .action(async (_opts: { port?: number; open: boolean; foreground?: boolean }, command: Command) => {
     const opts = command.optsWithGlobals();
     try {
       showFirstRunNotice();
-      const { launchHub } = await import("./hub/command.js");
-      await launchHub({ port: opts.port, openBrowser: opts.open });
+      const { runMachineHub } = await import("./hub/machine/command.js");
+      await runMachineHub({ port: opts.port, openBrowser: opts.open, foreground: opts.foreground });
     } catch (err) {
       console.error((err as Error).message);
       process.exitCode = 1;
@@ -361,11 +359,11 @@ const setupCommand = program
   .description("Turn MEX on for this repo (the same as `mex`)")
   .addOption(new Option("--legacy", "Run the 0.8 terminal setup").hideHelp())
   .addOption(new Option("--cli", "0.8 terminal setup").hideHelp())
-  .addOption(new Option("--browser", "Run the 0.8 setup in the local browser Hub").conflicts(["cli", "dryRun", "tool", "yes", "force", "legacy"]).hideHelp())
+  .addOption(new Option("--browser", "Compatibility flag for the removed browser setup").conflicts(["cli", "dryRun", "tool", "yes", "force", "legacy"]).hideHelp())
   .addOption(new Option("--mode <mode>", "0.8 setup: template mode, code-repo or agent-memory").hideHelp())
   .addOption(new Option("--dry-run", "0.8 setup: show what would happen without making changes").hideHelp())
-  .addOption(new Option("--port <n>", "With --browser: bind a specific loopback port").argParser(parsePortArg).hideHelp())
-  .addOption(new Option("--no-open", "With --browser: show the Hub link without opening a browser").hideHelp())
+  .addOption(new Option("--port <n>", "Legacy setup port flag").argParser(parsePortArg).hideHelp())
+  .addOption(new Option("--no-open", "Legacy setup browser flag").hideHelp())
   .addOption(new Option("--tool <tool>", "0.8 setup: preselect an AI tool").argParser((value: string, previous: string[] = []) => [...previous, value]).hideHelp())
   .addOption(new Option("--yes", "0.8 setup: never wait on a question").hideHelp())
   .addOption(new Option("--force", "0.8 setup: run the full flow").hideHelp())

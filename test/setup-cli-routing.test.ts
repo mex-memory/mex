@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ hub: vi.fn(), setup: vi.fn(), entry: vi.fn(), parseTools: vi.fn(), capture: vi.fn(), next: vi.fn(), repoStart: vi.fn() }));
+const mocks = vi.hoisted(() => ({ hub: vi.fn(), setup: vi.fn(), entry: vi.fn(), parseTools: vi.fn(), capture: vi.fn(), next: vi.fn(), repoStart: vi.fn(), writeLauncher: vi.fn() }));
+vi.mock("../src/hooks/shim/launcher.js", () => ({ writeLauncher: mocks.writeLauncher }));
 vi.mock("../src/repo-start/command.js", () => ({ runRepoStart: mocks.repoStart }));
-vi.mock("../src/hub/command.js", () => ({ launchHub: mocks.hub }));
+vi.mock("../src/hub/machine/command.js", () => ({ runMachineHub: mocks.hub }));
 vi.mock("../src/setup/index.js", () => ({ runSetup: mocks.setup, parseSetupTools: mocks.parseTools }));
 vi.mock("../src/setup/entry.js", () => ({ resolveDefaultEntry: mocks.entry, findSetupProjectRoot: () => "/project" }));
 vi.mock("../src/setup/next.js", () => ({ runSetupNext: mocks.next }));
@@ -54,16 +55,29 @@ describe("setup entry points", () => {
   });
 
   it.each([
-    [["setup", "--browser"], { openBrowser: true, setup: true }],
-    [["setup", "--browser", "--mode", "agent-memory", "--no-open", "--port", "48124"], { openBrowser: false, setup: true, mode: "agent-memory", port: 48124 }],
-    [["hub", "--no-open"], { openBrowser: false }],
-  ] as const)("launches the browser flow for %j", async (args, options) => {
+    [["--browser"]],
+    [["--browser", "--mode", "agent-memory", "--no-open", "--port", "48124"]],
+  ])("reports browser setup removal for %j", async (args) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const { program } = await import("../src/cli.js");
-    await program.parseAsync([...args], { from: "user" });
-    expect(mocks.hub).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(options));
+    await program.parseAsync(["setup", ...args], { from: "user" });
+    expect(error).toHaveBeenCalledExactlyOnceWith(
+      "The browser setup was removed in 0.9. Run mex in the repo to set it up, then mex hub to open the Hub.",
+    );
+    expect(process.exitCode).toBe(1);
+    expect(mocks.hub).not.toHaveBeenCalled();
+    expect(mocks.setup).not.toHaveBeenCalled();
+    expect(mocks.repoStart).not.toHaveBeenCalled();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.writeLauncher).not.toHaveBeenCalled();
+  });
+
+  it("launches the machine Hub with explicit foreground options", async () => {
+    const { program } = await import("../src/cli.js");
+    await program.parseAsync(["hub", "--no-open", "--foreground", "--port", "48124"], { from: "user" });
+    expect(mocks.hub).toHaveBeenCalledExactlyOnceWith({ openBrowser: false, foreground: true, port: 48124 });
     expect(mocks.setup).not.toHaveBeenCalled();
     expect(mocks.capture).not.toHaveBeenCalled();
-    expect(mocks.entry).not.toHaveBeenCalled();
   });
 
   it.each([[[]], [["setup"]], [["--no-open", "--port", "48123"]]] as const)("turns the repo on for %j without the 0.8 setup or the Hub", async (args) => {
@@ -118,7 +132,7 @@ describe("setup entry points", () => {
     expect(mocks.hub).not.toHaveBeenCalled();
   });
 
-  it.each(["--cli", "--dry-run", "--yes"])("passes finishing Hub options to terminal setup with %s", async (flag) => {
+  it.each(["--cli", "--dry-run", "--yes"])("accepts legacy browser flags with terminal setup option %s", async (flag) => {
     const { program } = await import("../src/cli.js");
     await program.parseAsync(["setup", flag, "--no-open", "--port", "48125"], { from: "user" });
     expect(mocks.setup).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ port: 48125, openBrowser: false }));
