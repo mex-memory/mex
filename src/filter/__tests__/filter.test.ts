@@ -4,8 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, utimesSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { openRecord, type RecordWriter } from "../../record/index.js";
-import { enqueueJob, registerJobKind, runOneBatch, requeueReadyJobs, type JobRow } from "../../record/jobs.js";
+import { openRecord, openRecordReadOnly, type RecordWriter } from "../../record/index.js";
+import { enqueueJob, listJobs, registerJobKind, runOneBatch, requeueReadyJobs, type JobRow } from "../../record/jobs.js";
 import { shortHash } from "../../record/project.js";
 import { ModelWaitError, runModel, type ModelRequest, type ModelResult } from "../../model-runner/index.js";
 import { recordChecks } from "../../judge/native.js";
@@ -36,13 +36,13 @@ function answer(request: ModelRequest): ModelResult {
     ...input.messages.map(m => item(m.id, m.text)), ...input.notes.map(n => item(n.id, n.entry.mex.source.quote!)),
   ] }) };
 }
-function add(session: string, text: string, options: { seen?: string; at?: string; marks?: string; finished?: boolean } = {}) {
+function add(session: string, text: string, options: { seen?: string; at?: string; marks?: string; finished?: boolean; transcript?: string } = {}) {
   const seen = options.seen ?? old;
   hooks.prepare("INSERT OR REPLACE INTO sessions VALUES(?,?,?,?,?,?,0)").run(session, "codex", project, root, old, seen);
   const id = Number(hooks.prepare("INSERT INTO journal(session_id,ts,kind,text,marks) VALUES(?,?,'typed',?,?)").run(session, options.at ?? old, text, options.marks ?? "").lastInsertRowid);
   if (options.finished !== undefined) {
     const dir = join(writer.location.directory, "filter-sessions"); mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${shortHash(project + "\0" + session)}.json`), JSON.stringify({ version: 1, project_id: project, checkout: root, agent: "codex", session_id: session, seen_at: seen, finished: options.finished, transcript: "" }));
+    writeFileSync(join(dir, `${shortHash(project + "\0" + session)}.json`), JSON.stringify({ version: 1, project_id: project, checkout: root, agent: "codex", session_id: session, seen_at: seen, finished: options.finished, transcript: options.transcript ?? "" }));
   }
   return id;
 }
@@ -411,4 +411,54 @@ it("reads a previous host's reply when the next session uses another agent", () 
   const path = join(writer.location.directory, "filter-sessions", `${shortHash(project + "\0s")}.json`);
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), agent: "claude-code", transcript }));
   expect(filterInput(writer, project, params(), true, now)?.messages[0]?.previous_reply).toBe("The old implementation?");
+});
+
+function codexTranscript(session: string, content: string): string {
+  const codex = join(base, "codex"), sessions = join(codex, "sessions");
+  mkdirSync(sessions, { recursive: true });
+  vi.stubEnv("CODEX_HOME", codex);
+  const path = join(sessions, `${session}.jsonl`);
+  writeFileSync(path, content);
+  return path;
+}
+
+const codexRow = (role: "user" | "assistant", content: string) => JSON.stringify({ type: "response_item", payload: { type: "message", role, content } });
+
+it("keeps typed input and shows when transcript context is paused", async () => {
+  const broken = codexTranscript("broken", "{broken transcript");
+  const valid = codexTranscript("valid", [codexRow("assistant", "Do you prefer the newer parser?"), codexRow("user", "Use the newer parser")].join("\n"));
+  add("broken", "Run tests before a release", { finished: true, transcript: broken });
+  add("valid", "Use the newer parser", { finished: true, transcript: valid });
+  deps.contextMode = "design";
+  const id = queue();
+  await run(id);
+  expect(inputOf(calls[0]!).messages.map(({ text, previous_reply }) => [text, previous_reply])).toEqual([
+    ["Run tests before a release", null], ["Use the newer parser", "Do you prefer the newer parser?"],
+  ]);
+  const reader = openRecordReadOnly({ home })!;
+  try {
+    expect(listJobs(reader).find(job => job.id === id)?.summary).toContain("Reply context paused for 1 session (invalid or unsupported transcript format)");
+  } finally { reader.close(); }
+  expect(JSON.stringify(batches())).not.toContain("Do you prefer the newer parser?");
+});
+
+it("leaves inputs over the prompt budget queued with the expanded reply mode", async () => {
+  const prompts = Array.from({ length: 24 }, (_, i) => `Use option ${i + 1}`);
+  const reply = "An option for this project. ".repeat(500);
+  const path = codexTranscript("long", prompts.flatMap(prompt => [codexRow("assistant", reply), codexRow("user", prompt)]).join("\n"));
+  for (const prompt of prompts) add("long", prompt, { finished: true, transcript: path });
+  expect(filterInput(writer, project, params(), true, now)?.messages).toHaveLength(prompts.length);
+  deps.contextMode = "design";
+  deps.model = vi.fn(async request => {
+    calls.push(request);
+    return { selectedModel: "fake-cheap", usage, text: '{"items":[]}' };
+  });
+
+  await run(queue());
+  const request = calls[0]!, kept = inputOf(request).messages.map(message => message.text);
+  expect(kept.length).toBeGreaterThan(0);
+  expect(kept.length).toBeLessThan(prompts.length);
+  expect(kept).toEqual(prompts.slice(0, kept.length));
+  expect(Buffer.byteLength(request.prompt)).toBeLessThanOrEqual(256 << 10);
+  expect(filterInput(writer, project, params(), true, now, undefined, "design")?.messages.map(message => message.text)).toEqual(prompts.slice(kept.length));
 });

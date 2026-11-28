@@ -19,6 +19,7 @@ import type { KnowledgeEntry } from "../knowledge/entry.js";
 import { consolidateNext } from "./consolidation.js";
 import { statementDate } from "../knowledge/labels.js";
 import { publishNext, publicationReady, PUBLICATION_WAIT, type PublicationDependencies } from "./publication.js";
+import type { ReplyContextMode, TranscriptIssue } from "./transcript.js";
 
 const CheckRequest = z.object({ kind: z.enum(["key", "command", "section", "source", "value", "symbol", "pattern", "relation"]),
   role: z.enum(["complete", "supporting"]), target: z.record(z.unknown()) }).strict();
@@ -37,9 +38,23 @@ export interface FilterCandidate extends Omit<Answer, "checks"> {
 interface CachedBatch { version: 1; phase: "draft" | "complete"; input_hash: string; position: Position;
   answers: Answer[]; repair_attempted?: boolean; repair?: Answer[]; candidates?: FilterCandidate[]; model: string; tokens: number; }
 interface Checkpoint { position: Position; scanAfter?: number; carry?: number[]; }
-export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; aids?: AidRanker; }
+export interface FilterDependencies { model: typeof runModel; recordChecks: typeof recordChecks; clock: () => number; cheap?: boolean; publication?: Partial<PublicationDependencies>; aids?: AidRanker;
+  contextMode?: ReplyContextMode; }
 const dependencies: FilterDependencies = { model: runModel, recordChecks, clock: Date.now };
 const BATCH_BYTES = 512 << 10, STORE_BYTES = 8 << 20;
+const CONTEXT_PAUSED = "Reply context paused";
+const contextIssueText: Record<TranscriptIssue, string> = {
+  unavailable: "transcript unavailable",
+  "too-large": "transcript exceeds 32 MiB",
+  changed: "transcript changed during the read",
+  "invalid-format": "invalid or unsupported transcript format",
+};
+
+function contextSummary(summary: string, issues?: readonly TranscriptIssue[]): string {
+  if (!issues?.length) return summary;
+  const reasons = [...new Set(issues)].map(issue => contextIssueText[issue]).join(", ");
+  return `${summary}. ${CONTEXT_PAUSED} for ${issues.length} session${issues.length === 1 ? "" : "s"} (${reasons}). Used typed text only for those sessions.`;
+}
 
 export const candidateSchema = Item.omit({ checks: true }).extend({ checks: z.array(CheckSchema).max(32), needs_checks: z.boolean(), source: sourceSchema }).strict();
 const batchSchema = z.object({ version: z.literal(1), phase: z.enum(["draft", "complete"]), input_hash: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -160,7 +175,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
         if (consolidated) return { checkpoint: state, ...consolidated };
         const cheap = deps.cheap ?? (!!DEFAULT_MODELS[params.agent].cheap && selectModel(params.agent, { role: "cheap" }) !== selectModel(params.agent, { role: "best" }));
         const scan: ScanWindow = { after: state.scanAfter ?? 0, carry: state.carry };
-        const input = filterInput(writer, project, params, cheap, deps.clock(), scan);
+        const input = filterInput(writer, project, params, cheap, deps.clock(), scan, deps.contextMode);
         if (!input) {
           advanceConsumed(writer, project);
           if (scan.more) return { checkpoint: { ...state, scanAfter: scan.through, carry: scan.deferred }, summary: "Scanning later captured messages; earlier active sessions remain unread" };
@@ -186,7 +201,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
             tokens: result.usage.input + result.usage.output + result.usage.cache_write + result.usage.cache_read };
           save(writer, project, cached, job);
         }
-        if (cached.phase === "complete") return { checkpoint: state, done: true, summary: "Filter batch already saved" };
+        if (cached.phase === "complete") return { checkpoint: state, done: true, summary: contextSummary("Filter batch already saved", scan.contextIssues) };
         const request = { checkout: params.checkout, project_id: project, mex_home: writer.location.home, record_directory: writer.location.directory };
         async function checked(answers: Answer[]) {
           const out = new Map<Answer, EntryCheck[] | undefined>();
@@ -237,7 +252,7 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
           const current = readSource(params.checkout, path);
           if (current === null || hash(current) !== baseline) return { checkpoint: state, summary: "Filter check inputs changed; checking again" };
         }
-        const fresh = filterInput(writer, project, params, cheap, deps.clock(), { after: state.scanAfter ?? 0, carry: state.carry });
+        const fresh = filterInput(writer, project, params, cheap, deps.clock(), { after: state.scanAfter ?? 0, carry: state.carry }, deps.contextMode);
         if (!fresh || hash(JSON.stringify(stableInput(fresh))) !== hash(JSON.stringify(stableInput(input))) || !await unchanged(writer, project, params, input, at))
           return { checkpoint: state, summary: "Filter response discarded: session activity or source changed" };
         cached = { ...cached, phase: "complete", candidates };
@@ -247,13 +262,19 @@ export function createFilterKind(deps: FilterDependencies = dependencies): JobKi
           for (const n of input.notes) writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(project, `filter.note.${n.id}`, n.hash);
           advanceConsumed(writer, project);
         });
-        return { checkpoint: state, results: candidates.length, tokens: cached.tokens, summary: `${candidates.length} local filter candidates saved` };
+        return { checkpoint: state, results: candidates.length, tokens: cached.tokens,
+          summary: contextSummary(`${candidates.length} local filter candidates saved`, scan.contextIssues) };
       } catch (error) {
         // Preserve the original checkout position even when the very first call waits.
         if (error instanceof ModelWaitError || (error instanceof ModelRunError && ["authentication", "usage_limit"].includes(error.category)))
           return { checkpoint: state, wait: error.message };
         throw error;
       }
+    },
+    display(job, reader) {
+      const batch = reader.all<{ summary: string }>("SELECT summary FROM job_results WHERE job_id=? AND summary LIKE ? ORDER BY batch DESC LIMIT 1",
+        job.id, `%${CONTEXT_PAUSED}%`)[0];
+      return batch ? { summary: batch.summary } : {};
     },
     ready(job, writer) {
       const params = JSON.parse(job.params) as FilterParams;

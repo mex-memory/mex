@@ -9,7 +9,7 @@ import { parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { repoFile } from "../knowledge/references.js";
 import { assertNoSecrets } from "../knowledge/gates.js";
 import { hash } from "../judge/evidence.js";
-import { replyContexts } from "./transcript.js";
+import { replyContexts, type ReplyContextMode, type TranscriptIssue } from "./transcript.js";
 import { sessionWorkEnabled } from "../judge/session.js";
 
 export const FILTER_LIMITS = { rows: 4096, messages: 64, notes: 8, characters: 1200, promptBytes: 256 << 10,
@@ -20,7 +20,7 @@ export interface Message { id: string; row: number; session: string; at: string;
 export interface NoteInput { id: string; path: string; hash: string; entry: KnowledgeEntry; }
 export interface FilterInput { messages: Message[]; notes: NoteInput[]; files: Array<{ path: string; text: string; hash: string }>;
   delivered_notes: Array<{ id: string; text: string | null }>; }
-export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean; }
+export interface ScanWindow { after: number; carry?: number[]; deferred?: number[]; through?: number; more?: boolean; contextIssues?: TranscriptIssue[]; }
 interface Journal { id: number; session_id: string; ts: string; text: string; marks: string; last_seen_at: string; paused: number; agent: string; }
 const Metadata = z.object({ version: z.literal(1), project_id: z.string(), checkout: z.string(), agent: z.string(),
   session_id: z.string(), seen_at: z.string().datetime({ offset: true }), finished: z.boolean(), transcript: z.string().max(4096),
@@ -111,7 +111,9 @@ function contextFiles(checkout: string, messages: Message[], notes: NoteInput[])
   }
   return files;
 }
-export function filterInput(writer: RecordWriter, project: string, params: FilterParams, cheap: boolean, now = Date.now(), scan?: ScanWindow): FilterInput | undefined {
+// Use the live tail until the expanded mode has outside-content withholding and note masking.
+export function filterInput(writer: RecordWriter, project: string, params: FilterParams, cheap: boolean, now = Date.now(), scan?: ScanWindow,
+  contextMode: ReplyContextMode = "tail600"): FilterInput | undefined {
   const hooks = openHooksReadOnly({ home: writer.location.home });
   const messages: Message[] = [];
   const transcripts = new Map<string, { path: string; agent: "claude" | "codex" }>();
@@ -154,8 +156,20 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
         text: Array.from(row.text).slice(0, FILTER_LIMITS.characters).join(""), marks: row.marks,
         previous_reply: null, delivered: given });
     }
-    // Replies are transient context only and can never satisfy quote validation.
-    for (const [session, transcript] of transcripts) replyContexts(transcript.path, transcript.agent, messages.filter(m => m.session === session));
+    // Read each selected session once. Reply context is transient and never supplies a saved quote.
+    const bySession = new Map<string, Message[]>();
+    for (const message of messages) {
+      const group = bySession.get(message.session) ?? [];
+      group.push(message);
+      bySession.set(message.session, group);
+    }
+    const contextIssues = new Map<string, TranscriptIssue>();
+    for (const [session, group] of bySession) {
+      const transcript = transcripts.get(session);
+      const issue = transcript ? replyContexts(transcript.path, transcript.agent, group, contextMode)
+        : contextMode === "design" ? "unavailable" : undefined;
+      if (issue) contextIssues.set(session, issue);
+    }
     const known = new Map<string, string>();
     const personal = containedDirectory(writer.location.home, ["projects", project, "notes"]);
     // A delivered id is retained even when its original text is no longer available.
@@ -181,6 +195,10 @@ export function filterInput(writer: RecordWriter, project: string, params: Filte
       else if (input.notes.length > 1) input.notes.pop();
       else if (input.messages.length) input.messages.pop();
       else throw new Error("One filter input exceeds the batch limit.");
+    }
+    if (scan && contextIssues.size) {
+      const retained = new Set(input.messages.map(message => message.session));
+      scan.contextIssues = [...contextIssues].filter(([session]) => retained.has(session)).map(([, issue]) => issue);
     }
     assertNoSecrets(input);
     return input;
