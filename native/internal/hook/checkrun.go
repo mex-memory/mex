@@ -85,15 +85,14 @@ func checkRun(stdin io.Reader, stdout io.Writer) int {
 			RecordDirectory: req.RecordDirectory, Force: true, TeamOnly: req.TeamOnly, Explicit: true,
 		}
 		if req.Store && req.RecordDirectory != "" && req.ProjectID != "" {
-			// A store that was asked for and can't be opened is an error, never
-			// a silent unstored report: readers would find no verdicts at all.
-			hooks, err := localrecord.OpenHooksUnhurried(hooksLocation(home{mex: req.MexHome}, req.RecordDirectory))
-			if err != nil {
-				_ = enc.Encode(checkFailure{Error: "the verdict store can't be opened: " + err.Error()})
-				return 1
+			// Storing is best effort: a store that can't be opened answers
+			// "stored": false and the checks still run. The generous budget keeps
+			// a first open, which also creates the schema, from timing out on a
+			// busy machine. Callers that need the verdicts check "stored".
+			if hooks, err := localrecord.OpenHooksUnhurried(hooksLocation(home{mex: req.MexHome}, req.RecordDirectory)); err == nil {
+				defer hooks.Close()
+				opts.Store = hooks
 			}
-			defer hooks.Close()
-			opts.Store = hooks
 		}
 		report, err := check.RunStage(opts)
 		if err != nil {

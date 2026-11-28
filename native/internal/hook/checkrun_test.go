@@ -58,8 +58,8 @@ func TestCheckRunRecordBatchBound(t *testing.T) {
 	}
 }
 
-// A stored evaluation creates hooks.db on first use and fails loudly when the
-// store can't be opened, never answering with an unstored report.
+// A stored evaluation creates hooks.db on first use. A store that can't be
+// opened still runs the checks and says plainly that nothing was stored.
 func TestCheckRunStoredEvaluate(t *testing.T) {
 	root, records := t.TempDir(), t.TempDir()
 	evaluate := func() (int, string) {
@@ -78,7 +78,7 @@ func TestCheckRunStoredEvaluate(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(records, "hooks.db"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := evaluate(); code != 1 || !strings.Contains(out, "verdict store") {
+	if code, out := evaluate(); code != 0 || !strings.Contains(out, `"stored":false`) {
 		t.Fatalf("unopenable store: exit %d: %s", code, out)
 	}
 }
