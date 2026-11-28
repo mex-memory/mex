@@ -101,7 +101,8 @@ A note said the dev server runs on port 3000, and Claude answered 3000. Then a c
 | `mex what` | What MEX gave or held back in this session. |
 | `mex check` | Check which notes still hold. Read-only, no AI. |
 | `mex check --diff <base>` | The same for a branch, for pre-push or CI. Stores nothing. |
-| `mex edit` · `mex wrong` · `mex forget` | Correct a note, retire a wrong one (keeping the reason), or drop it. |
+| `mex edit` · `mex wrong` · `mex forget` | Correct a note, retire a wrong one (keeping the reason), or drop it. From an agent, `mex wrong` only asks MEX to re-check it. |
+| `mex learn` | Learn rules from past reviews, fixes and contributor docs, after you approve an estimate. `--dry-run` shows it and starts nothing. |
 | `mex share` | Preview sharing your notes and rule files on a new git branch. |
 | `mex handoff "<line>"` | Leave a handoff for the next person on this branch. |
 | `mex doctor` | What MEX is doing here, and a fix for each problem it recorded. |

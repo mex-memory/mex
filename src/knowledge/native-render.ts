@@ -3,8 +3,9 @@
  * the generated marker, so MEX never reads it back as a source, and each item
  * carries its entry id as an HTML comment.
  */
-import type { Candidate } from "./native-select.js";
+import { nativeItem, type Candidate } from "./native-select.js";
 import { GENERATED_MARK } from "./rule-files.js";
+import { DEFAULTS_HEADING, type AgentDefaults } from "./agent-defaults.js";
 
 export const GENERATED_LINE = `${GENERATED_MARK} by MEX from its entries; edit the entries, not this file -->`;
 /** Under every title: these are notes about the code, and the code wins when they disagree. */
@@ -17,6 +18,8 @@ export const PRECEDENCE_LINE = "Existing code takes precedence over these notes.
 export const CAPS = { "claude-rules": 6 * 1024, "codex-agents": 8 * 1024, "copilot-instructions": 6 * 1024 } as const;
 export type NativeFormat = keyof typeof CAPS;
 
+export const PR_DECISIONS_LINE = "- When you chose between options, add a short Decisions section to the PR description. Say what you chose, what you ruled out, and why.";
+
 const EVIDENCE_ORDER = ["person", "ci", "docs", "review", "mined", "observed"];
 
 /** Strongest first, so a cap drops the weakest. */
@@ -25,12 +28,8 @@ export function byStrength(a: Candidate, b: Candidate): number {
     || a.entry.mex.id.localeCompare(b.entry.mex.id);
 }
 
-function item(c: Candidate): string {
-  return `- ${c.entry.text.replace(/\s+/gu, " ").trim()} <!-- mex:${c.entry.mex.id} -->`;
-}
-
 function frame(format: NativeFormat, area: string): { head: string; tail: string } {
-  const title = `${area ? `# MEX rules for ${area}` : "# MEX rules"}\n\n${PRECEDENCE_LINE}`;
+  const title = `${area ? `# MEX rules for ${area}` : "# MEX rules"}\n\n${PRECEDENCE_LINE}\nReport a wrong rule with \`mex wrong <id> "<reason>"\`.`;
   if (format === "claude-rules" && area) {
     return { head: `---\npaths:\n  - "${area}/**"\n---\n${GENERATED_LINE}\n${title}\n\n`, tail: "" };
   }
@@ -41,21 +40,34 @@ function frame(format: NativeFormat, area: string): { head: string; tail: string
   return { head: `${GENERATED_LINE}\n${title}\n\n`, tail: "" };
 }
 
-export interface Rendered { text: string; ids: string[]; dropped: string[]; }
+export const CODEX_FRAME_BYTES = Buffer.byteLength(frame("codex-agents", "").head);
+
+export interface Rendered { text: string; ids: string[]; dropped: string[]; defaultCount: number; }
 
 /** Render one file, dropping the weakest items that don't fit the format's cap. */
-export function renderNative(format: NativeFormat, area: string, candidates: Candidate[]): Rendered {
-  const { head, tail } = frame(format, area);
+export function renderNative(format: NativeFormat, area: string, candidates: Candidate[], prDecisions = false,
+  defaults: AgentDefaults["rules"] = []): Rendered {
+  const framed = frame(format, area);
+  const { tail } = framed;
+  const head = prDecisions ? framed.head + PR_DECISIONS_LINE + "\n" : framed.head;
   const ordered = [...candidates].sort(byStrength);
   const lines: string[] = [], ids: string[] = [], dropped: string[] = [];
   let bytes = Buffer.byteLength(head + tail);
   for (const c of ordered) {
-    const line = `${item(c)}\n`;
+    const line = `${nativeItem(c.entry, c.repoWide)}\n`;
     const size = Buffer.byteLength(line);
     if (bytes + size > CAPS[format]) { dropped.push(c.entry.mex.id); continue; }
     bytes += size;
     lines.push(line);
     ids.push(c.entry.mex.id);
   }
-  return { text: head + lines.join("") + tail, ids, dropped };
+  let defaultCount = 0;
+  for (const { text } of defaults) {
+    const line = (defaultCount === 0 ? DEFAULTS_HEADING : "") + `- ${text}\n`;
+    if (bytes + Buffer.byteLength(line) > CAPS[format]) continue;
+    bytes += Buffer.byteLength(line);
+    lines.push(line);
+    defaultCount++;
+  }
+  return { text: head + lines.join("") + tail, ids, dropped, defaultCount };
 }

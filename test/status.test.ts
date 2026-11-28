@@ -47,6 +47,7 @@ it("reads installed agents, cached verdicts and last hook call without writing",
   expect(view.binary).toEqual({ state: "native", version: "0.9.0-beta.1.1" });
   expect(readFileSync(f.location.record)).toEqual(before);
   expect(formatStatus(view, { now })).toContain("last call 3 min ago");
+  expect(formatStatus(view, { now: now - 2 * 60_000 - 1000 })).toContain("last call just now");
   expect(formatStatus(view, { doctor: true, now })).toContain("Codex hook trust is unknown: open Codex, run /hooks.");
   expect(statusProblems(view)).toEqual([]);
   expect(JSON.parse(JSON.stringify(view))).toEqual(view);

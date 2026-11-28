@@ -14,22 +14,33 @@ export async function readKey(input: NodeJS.ReadStream = process.stdin, signal?:
   if (!input.isTTY || typeof input.setRawMode !== "function") return readLine(input, signal);
   emitKeypressEvents(input);
   const wasRaw = input.isRaw;
-  input.setRawMode(true);
-  input.resume();
   try {
-    return await new Promise<Key>(resolve => {
-      const done = (key: Key) => { input.removeListener("keypress", onKey); input.removeListener("end", onEnd); signal?.removeEventListener("abort", onAbort); resolve(key); };
+    input.setRawMode(true);
+    return await new Promise<Key>((resolve, reject) => {
+      const cleanup = () => {
+        input.removeListener("keypress", onKey);
+        input.removeListener("end", onEnd);
+        input.removeListener("error", onError);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const done = (key: Key) => { cleanup(); resolve(key); };
       const onAbort = () => done("quit");
-      signal?.addEventListener("abort", onAbort, { once: true });
       const onEnd = () => done("quit");
+      const onError = (error: Error) => { cleanup(); reject(error); };
       const onKey = (text: string | undefined, key: { name?: string; ctrl?: boolean } | undefined) => {
         if (key?.ctrl && (key.name === "c" || key.name === "d")) return done("quit");
         if (key?.name === "return" || key?.name === "enter") return done("enter");
         if (key?.name === "escape") return done("quit");
+        if (key?.name === "up" || key?.name === "down" || key?.name === "tab") return done(key.name);
+        if (key?.name === "space" || text === " ") return done("space");
         if (text && text.length === 1 && text >= " ") return done(text);
       };
       input.on("keypress", onKey);
       input.once("end", onEnd);
+      input.once("error", onError);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (input.readableEnded || signal?.aborted) done("quit");
+      else input.resume();
     });
   } finally {
     input.setRawMode(wasRaw ?? false);
@@ -37,7 +48,12 @@ export async function readKey(input: NodeJS.ReadStream = process.stdin, signal?:
   }
 }
 
-async function readLine(input: NodeJS.ReadStream, signal?: AbortSignal): Promise<Key> {
+/** A numbered menu with ten or more rows needs the complete reply. */
+export function readChoiceLine(input: NodeJS.ReadStream = process.stdin): Promise<Key> {
+  return readLine(input, undefined, true);
+}
+
+async function readLine(input: NodeJS.ReadStream, signal?: AbortSignal, full = false): Promise<Key> {
   const reader = createInterface({ input, terminal: false });
   try {
     const answer = await new Promise<string | undefined>(resolve => {
@@ -47,6 +63,6 @@ async function readLine(input: NodeJS.ReadStream, signal?: AbortSignal): Promise
     });
     if (answer === undefined) return "quit";
     const trimmed = answer.trim();
-    return trimmed === "" ? "enter" : trimmed.slice(0, 1);
+    return trimmed === "" ? "enter" : full ? trimmed : trimmed.slice(0, 1);
   } finally { reader.close(); }
 }

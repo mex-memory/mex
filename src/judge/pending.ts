@@ -18,7 +18,7 @@ export const JudgeRequestSchema = z.object({
   near: z.array(z.string().max(512)).max(128), not_before: z.number().nonnegative(),
 }).strict();
 export type JudgeRequest = z.infer<typeof JudgeRequestSchema>;
-export interface JudgeParams { checkout: string; agent: "claude" | "codex"; near: string[]; generation?: string; sessionId?: string; }
+export interface JudgeParams { checkout: string; agent: "claude" | "codex"; near: string[]; generation?: string; sessionId?: string; report?: true; }
 
 export function pendingJudgeRequest(directory: string, checkout: string): JudgeRequest | undefined {
   const root = containedDirectory(directory, [REQUEST_DIRECTORY]);
@@ -35,7 +35,7 @@ function restoreClaim(claim: string, target: string): boolean {
 }
 
 /** Queue first. Claim afterwards so a crash can never remove the only intent. */
-function consume(directory: string, name: string, expected: string): void {
+export function consume(directory: string, name: string, expected: string): void {
   const original = join(directory, name), claim = `${original}.${randomUUID()}.claim`;
   renameSync(original, claim);
   // An atomic Go replacement between our read and rename may be a newer edit.

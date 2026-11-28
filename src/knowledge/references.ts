@@ -16,6 +16,8 @@ export interface References {
   packageScripts: Map<string, Set<string>>;
   /** A discovery bound was reached; anything not collected stays unverified. */
   truncated: boolean;
+  /** Repo files MEX only reads and could not parse. They do not abort the caller. */
+  gaps: string[];
   /**
    * Exact commands the capture journal saw pass here. Only the producer gate
    * sets this, for fail-pass proposals, from their own journal evidence.
@@ -53,10 +55,22 @@ class Full extends Error {}
  * stops discovery (in priority order: package scripts, CI, docs, root files)
  * and marks the result `truncated` instead of failing. An unfound command or
  * link is treated as unverified and removed, so truncation can only make the
- * gates stricter. Redirected or linked sources still fail.
+ * gates stricter. A committed link is skipped with a gap; a redirected
+ * folder that is not a link still fails.
  */
+/** Anchors in a workflow or repo config are ordinary YAML. An alias bomb stops at this count. */
+const REPO_YAML_ALIASES = 100;
+
+function repoYaml(text: string): { value: unknown; unreadable: boolean } {
+  try {
+    const doc = parseDocument(text, { uniqueKeys: true });
+    if (doc.errors.length || doc.warnings.length) return { value: undefined, unreadable: false };
+    return { value: doc.toJS({ maxAliasCount: REPO_YAML_ALIASES }), unreadable: false };
+  } catch { return { value: undefined, unreadable: true }; }
+}
+
 export function references(root: string): References {
-  const result: References = { root, commands: new Set(), links: new Set(), scripts: new Set(), packageScripts: new Map(), truncated: false };
+  const result: References = { root, commands: new Set(), links: new Set(), scripts: new Set(), packageScripts: new Map(), truncated: false, gaps: [] };
   let entries = 0, visited = 0, bytes = 0;
   const full = (): never => { result.truncated = true; throw new Full(); };
   const childrenOf = (path: string) => {
@@ -71,8 +85,23 @@ export function references(root: string): References {
     } finally { handle.closeSync(); }
     return children;
   };
+  // A link committed in the repository is skipped, never followed or read, so
+  // nothing outside it is reached through one. One gap says so.
+  let linked = false;
+  const skipLink = (): void => { if (!linked) { linked = true; result.gaps.push("Some linked files were skipped."); } };
+  /** True, after recording the gap, when the path or a folder on the way to it is a link. */
+  const isLinked = (path: string): boolean => {
+    let current = root;
+    for (const part of path.replace(/^\.\//u, "").split("/")) {
+      if (!part || part === "." || part === "..") return false;
+      current = join(current, part);
+      try { if (lstatSync(current).isSymbolicLink()) { skipLink(); return true; } } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT" || (e as NodeJS.ErrnoException).code === "ENOTDIR") return false; throw e; }
+    }
+    return false;
+  };
   const read = (path: string): string | undefined => {
     if (entries >= REFERENCE_LIMITS.files) full();
+    if (isLinked(path)) return undefined;
     const file = repoFile(root, path);
     if (!file) return undefined;
     entries++;
@@ -118,8 +147,9 @@ export function references(root: string): References {
   };
   const safeDirectory = (path: string) => {
     const directory = join(root, path);
+    if (isLinked(path)) return undefined;
     try {
-      if (lstatSync(directory).isSymbolicLink() || realPath(directory) !== absolutePath(directory)) throw new KnowledgeError("UNSAFE_SOURCE", "A knowledge reference directory is redirected.");
+      if (realPath(directory) !== absolutePath(directory)) throw new KnowledgeError("UNSAFE_SOURCE", "A knowledge reference directory is redirected.");
       return childrenOf(directory);
     } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT" || (e as NodeJS.ErrnoException).code === "ENOTDIR") return undefined; throw e; }
   };
@@ -130,8 +160,9 @@ export function references(root: string): References {
     const patterns = listed.filter((p): p is string => typeof p === "string");
     const pnpm = read("pnpm-workspace.yaml");
     if (pnpm !== undefined) {
-      const doc = parseDocument(pnpm, { uniqueKeys: true });
-      const packages = doc.errors.length ? undefined : (doc.toJS({ maxAliasCount: 0 }) as { packages?: unknown } | null)?.packages;
+      const parsed = repoYaml(pnpm);
+      if (parsed.unreadable) result.gaps.push("pnpm-workspace.yaml could not be read.");
+      const packages = (parsed.value as { packages?: unknown } | null)?.packages;
       if (Array.isArray(packages)) patterns.push(...packages.filter((p): p is string => typeof p === "string"));
     }
     return [...new Set(patterns)];
@@ -149,7 +180,7 @@ export function references(root: string): References {
     const children = safeDirectory(path);
     for (const child of children ?? []) {
       const name = path ? `${path}/${child.name}` : child.name;
-      if (child.isSymbolicLink()) throw new KnowledgeError("UNSAFE_SOURCE", "Knowledge references may not follow links.");
+      if (child.isSymbolicLink()) { skipLink(); continue; }
       if (child.isDirectory()) { if (depth < REFERENCE_LIMITS.depth) walk(name, kind, depth + 1); continue; }
       if (!(kind === "ci" ? /\.ya?ml$/iu : /\.md$/iu).test(child.name)) continue;
       const text = read(name);
@@ -158,10 +189,10 @@ export function references(root: string): References {
         for (const match of text.matchAll(/`([^`\n]+)`/gu)) addRuns(match[1]);
         for (const match of text.matchAll(/```[^\n]*\n([\s\S]*?)```/gu)) addRuns(match[1]);
       } else {
-        const doc = parseDocument(text, { uniqueKeys: true });
-        if (doc.errors.length || doc.warnings.length) continue;
-        const data = doc.toJS({ maxAliasCount: 0 });
-        for (const job of Object.values(data?.jobs ?? {}) as Array<{ steps?: Array<{ run?: unknown }> }>) {
+        const parsed = repoYaml(text);
+        if (parsed.unreadable) { result.gaps.push(`${name} could not be read.`); continue; }
+        const data = parsed.value as { jobs?: Record<string, { steps?: Array<{ run?: unknown }> }> } | null;
+        for (const job of Object.values(data?.jobs ?? {})) {
           for (const step of job?.steps ?? []) addRuns(step?.run);
         }
       }
@@ -182,7 +213,7 @@ export function references(root: string): References {
     // commands. These are local reads; no evaluator or repository command runs.
     const config = new RepoFiles(root);
     for (const found of [...readNode(config).found, ...readPython(config).found, ...readCargo(config).found, ...readGradle(config).found]) {
-      if (repoFile(root, found.origin.file)) addRuns(found.command);
+      if (!isLinked(found.origin.file) && repoFile(root, found.origin.file)) addRuns(found.command);
     }
     const makefile = ["Makefile", "makefile", "GNUmakefile"].find(file => config.isFile(file));
     if (makefile) for (const target of makeTargets(read(makefile) ?? "")) {

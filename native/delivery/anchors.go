@@ -216,7 +216,7 @@ func armAnchors(anchors []Anchor, snap *entries.Snapshot) []candidate {
 	var out []candidate
 	for i := range snap.Items {
 		it := &snap.Items[i]
-		if it.NeedsHintGate {
+		if it.NeedsHintGate || it.Entry.Learned() {
 			continue
 		}
 		var paths []string

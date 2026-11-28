@@ -112,6 +112,7 @@ func momentKind(ev contract.Event) bool {
 type group struct {
 	project, checkout string
 	snap              *entries.Snapshot
+	broadLearned      func(*entries.Entry) bool
 	cands             []candidate
 	firstRel          string
 	ranked            []rank.Result
@@ -193,6 +194,8 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 	}
 	var groups []*group
 	var anchors []Anchor
+	retirements := entries.Retirements{Directory: env.RecordDirectory}
+	defer retirements.Close()
 	cards := searchCards(ev, env)
 	if isMoment {
 		cards = append(cards, graphCards(ev, env)...)
@@ -210,13 +213,16 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		if ev.Kind == contract.Prompt && surfaceSetting(env, ev.ProjectID, "prompt-vocabulary") != "off" {
 			vocabularyOut = &vocabulary
 		}
-		groups = collect(ev, env, anchors, vocabularyOut)
+		groups = collect(ev, env, anchors, vocabularyOut, &retirements)
 		if ev.Kind == contract.Prompt {
 			var kept []*group
 			for _, g := range groups {
 				var prose []candidate
 				for _, c := range g.cands {
 					if c.moment == "prompt-arm" {
+						if !retirements.Allows(g.project, c.item) {
+							continue
+						}
 						arm := c
 						cards = append(cards, answerCard{surface: "prompt-anchor", id: c.item.Entry.ID, arm: &arm})
 					} else {
@@ -414,7 +420,7 @@ func Handle(ev contract.Event, env Environment) (contract.Reply, error) {
 		if len(g.cands) == 0 {
 			continue
 		}
-		text, err := deliver(h, ev, env, g)
+		text, err := deliver(h, ev, env, g, &retirements)
 		if g.cardsConsumed {
 			cards = withoutCards(cards, g.cards)
 		}
@@ -484,7 +490,7 @@ func baseRequest(ev contract.Event, env Environment, project, checkout string) r
 
 // collect finds candidates per checkout without touching SQLite. Snapshots
 // load once per checkout per call.
-func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[]answerCard) []*group {
+func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[]answerCard, retirements *entries.Retirements) []*group {
 	byCheckout := map[string]*group{}
 	var order []*group
 	get := func(project, checkout string) *group {
@@ -499,6 +505,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 		finish := phase(env.Trace, "snapshot-load")
 		if snap, err := entries.LoadLight(env.RecordDirectory, env.Home, project, checkout); err == nil && len(snap.Items) > 0 {
 			g.snap = &snap
+			g.broadLearned = entries.CheckoutBroadLearned(env.RecordDirectory, project, checkout)
 		}
 		finish()
 		byCheckout[key] = g
@@ -534,7 +541,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				}
 				if possible {
 					for _, r := range g.ranked {
-						if it := byID[r.ID]; it != nil {
+						if it := byID[r.ID]; it != nil && !it.Entry.Learned() {
 							g.cands = append(g.cands, candidate{item: it, moment: momentPrompt, tier: tierPrompt, pointer: true})
 						}
 					}
@@ -543,11 +550,24 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 			g.text = boundedText(ev.Prompt.Text, 64*1024)
 			g.cands = append(g.cands, armAnchors(anchors, g.snap)...)
 			if vocabulary != nil {
-				*vocabulary = vocabularyCards(ev, env, g.snap, hintGate(env.RecordDirectory, g.project, ev.Agent, env.Now))
+				// Vocabulary pointers bypass the delivery packer, so check their
+				// source entries before handing the cards to the renderer.
+				pointers := vocabularyPointers(ev, env, g.snap, hintGate(env.RecordDirectory, g.project, ev.Agent, env.Now))
+				for _, p := range pointers {
+					for i := range g.snap.Items {
+						it := &g.snap.Items[i]
+						if it.Entry.ID == p.entry && retirements.Allows(g.project, it) {
+							*vocabulary = append(*vocabulary, p.card)
+							break
+						}
+					}
+				}
 			}
 		}
 	} else {
 		hintGates := map[string]func(*entries.Item) bool{}
+		noise := noiseReader{directory: env.RecordDirectory}
+		defer noise.close()
 		for _, v := range views(ev, env.Resolve) {
 			g := get(v.project, v.checkout)
 			if g == nil {
@@ -566,7 +586,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 				hintGates[g.project] = gate
 			}
 			g.views = append(g.views, v)
-			found := moments(v, g.snap, gate)
+			found := moments(v, g.snap, gate, noise.suppressed, g.broadLearned)
 			if len(found) > 0 && g.firstRel == "" {
 				g.firstRel = v.rel
 			}
@@ -577,7 +597,7 @@ func collect(ev contract.Event, env Environment, anchors []Anchor, vocabulary *[
 					g.shellEdits = append(g.shellEdits, c.rel)
 				}
 			}
-			if procs := shellProcedures(v, env, g.snap); len(procs) > 0 {
+			if procs := shellProcedures(v, env, g.snap, g.broadLearned); len(procs) > 0 {
 				g.cands = append(g.cands, procs...)
 				for _, c := range procs {
 					g.shellEdits = append(g.shellEdits, c.rel)
@@ -633,7 +653,7 @@ func covered(snap *entries.Snapshot, rel string) bool {
 
 // deliver runs the hard gates that need storage, the verdict table, packing
 // and the ledger for one checkout, and renders what the ledger gave.
-func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (string, error) {
+func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group, retirements *entries.Retirements) (string, error) {
 	verdicts := map[string]string{}
 	verdictOf := func(id string) string {
 		if v, ok := verdicts[id]; ok {
@@ -670,6 +690,9 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	fresh := g.cands[:0:0]
 	var onBranch blockState
 	for _, c := range g.cands {
+		if c.tier != tierPrompt && !retirements.Allows(g.project, c.item) {
+			continue
+		}
 		id := c.item.Entry.ID
 		carried := present[id]
 		if len(carried) == 0 || verdictOf(id) == broken {
@@ -701,7 +724,11 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	if len(g.cands) == 0 {
 		return "", nil
 	}
-	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel, brief.Options{Checkout: g.checkout, MexHome: env.Home, ProjectID: g.project, Agent: ev.Agent, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd})
+	opts := brief.Options{Checkout: g.checkout, MexHome: env.Home, ProjectID: g.project, Agent: ev.Agent, RecordDirectory: env.RecordDirectory, SessionID: ev.SessionID, AgentID: ev.AgentID, NativeCwd: ev.Cwd}
+	cov := loadCoverage(ev.Agent, g.checkout, g.firstRel, opts)
+	pathCoverage := map[string]coverage{g.firstRel: cov}
+	var ruleFiles []record.DeliveryCandidate
+	coveredIDs := map[string]bool{}
 	senv := &shapeEnv{recordDirectory: env.RecordDirectory, project: g.project, checkout: g.checkout, hooks: h}
 	defer senv.close()
 	// Strongest moment per entry, then the verdict decides the form.
@@ -709,7 +736,20 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	var ids []string
 	for _, c := range g.cands {
 		id := c.item.Entry.ID
-		if cov.covers(c.item) {
+		if c.moment == momentAnchor && c.item.Entry.Learned() {
+			byPath, ok := pathCoverage[c.rel]
+			if !ok {
+				byPath = loadCoverage(ev.Agent, g.checkout, c.rel, opts)
+				pathCoverage[c.rel] = byPath
+			}
+			if byPath.covers(c.item) {
+				if !coveredIDs[id] {
+					ruleFiles = append(ruleFiles, ruleFileReceipt(id, c.item.Entry.Kind, c.item.Level))
+					coveredIDs[id] = true
+				}
+				continue
+			}
+		} else if cov.covers(c.item) {
 			continue
 		}
 		old, ok := best[id]
@@ -719,6 +759,11 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		if !ok || c.tier < old.tier || (c.reserve && !old.reserve) {
 			best[id] = c
 		}
+	}
+	if len(ruleFiles) > 0 {
+		req := baseRequest(ev, env, g.project, g.checkout)
+		req.Candidates = ruleFiles
+		_, _ = h.CheckAndMark(req)
 	}
 	if len(ids) == 0 {
 		return "", nil
@@ -741,7 +786,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 		for _, id := range ids {
 			c := best[id]
 			// Word overlap filters; only an exact anchor sends.
-			if c.tier != tierPrompt || (allowed[id] && promptAnchored(c.item, g.text)) {
+			if c.tier != tierPrompt || (allowed[id] && promptAnchored(c.item, g.text) && retirements.Allows(g.project, c.item)) {
 				kept = append(kept, id)
 			}
 		}
@@ -838,7 +883,7 @@ func deliver(h *record.Hooks, ev contract.Event, env Environment, g *group) (str
 	}
 	companion := func(id string) *shaped {
 		it := byID[id]
-		if it == nil || cov.covers(it) {
+		if it == nil || it.Entry.Learned() || cov.covers(it) || !retirements.Allows(g.project, it) {
 			return nil
 		}
 		s := shape(candidate{item: it, moment: "companion", tier: tierFolder}, verdictOf(id), senv)

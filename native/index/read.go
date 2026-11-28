@@ -10,6 +10,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -148,6 +150,24 @@ func (r *Reader) AsOf() string { return r.pointer.AsOf }
 
 // Head is the commit HEAD named when the snapshot's files were listed; "" when unknown.
 func (r *Reader) Head() string { return r.pointer.Head }
+
+// IndexedPaths returns paths with a usable record in this immutable snapshot.
+func (r *Reader) IndexedPaths() ([]string, error) {
+	rows, err := r.db.Query("SELECT path FROM paths WHERE reason IS NULL AND hash IS NOT NULL AND lang IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, rows.Err()
+}
 
 // relative turns a path into the index's form: relative to the checkout, '/'.
 func (r *Reader) relative(path string) (string, bool) {
@@ -318,7 +338,19 @@ func (r *Reader) scoped(glob string) ([]pathRow, error) {
 		return nil, err
 	}
 	prefix := globPrefix(glob)
-	var rows *sql.Rows
+	out, err := r.scopedQuery(pattern, prefix)
+	if err != nil || len(out) > 0 || prefix == "" || runtime.GOOS != "windows" {
+		return out, err
+	}
+	// The prefix range is case-sensitive, so Src/ is missing when the scope says src/.
+	return r.scopedQuery(pattern, "")
+}
+
+func (r *Reader) scopedQuery(pattern *regexp.Regexp, prefix string) ([]pathRow, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
 	if prefix != "" {
 		rows, err = r.db.Query("SELECT path,hash,lang,is_test,mtime_ns,reason FROM paths WHERE path>=? AND path<? ORDER BY path", prefix, prefix+"\U0010FFFF")
 	} else {
@@ -334,7 +366,7 @@ func (r *Reader) scoped(glob string) ([]pathRow, error) {
 		if err := rows.Scan(&row.path, &row.hash, &row.lang, &row.isTest, &row.mtime, &row.why); err != nil {
 			return nil, err
 		}
-		if pattern.MatchString(row.path) {
+		if pattern.MatchString(strings.ReplaceAll(row.path, `\`, "/")) {
 			out = append(out, row)
 		}
 	}
@@ -445,12 +477,9 @@ func (r *Reader) Coverage(pathOrGlob string) (*CoverageAnswer, error) {
 	return answer, nil
 }
 
-// PathsMatching lists indexed paths a glob matches, in path order, at most
-// limit of them, and whether more matched. Brace expansion is not supported.
+// PathsMatching lists indexed paths a scope glob matches, in path order, at
+// most limit of them, and whether more matched.
 func (r *Reader) PathsMatching(glob string, limit int) ([]string, bool, error) {
-	if strings.ContainsAny(glob, "{}") {
-		return nil, false, errors.New("brace expansion is not supported")
-	}
 	rows, err := r.scoped(glob)
 	if err != nil {
 		return nil, false, err

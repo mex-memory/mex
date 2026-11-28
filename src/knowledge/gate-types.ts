@@ -7,6 +7,7 @@ import type { Verdict } from "./check.js";
 type Entry = KnowledgeEntry["mex"];
 type CheckInput<T extends EntryCheck> = T extends EntryCheck ? Pick<T, "kind" | "role" | "target"> & { saw?: T["saw"] } : never;
 export type ProposedCheck = CheckInput<Exclude<EntryCheck, { kind: "legacy-grounding" }>>;
+export type DecisionPairingRole = "decision" | "ruled-out";
 
 export interface Proposal {
   producer: ProducerId;
@@ -17,6 +18,7 @@ export interface Proposal {
   oneLine?: string;
   aliases?: Entry["aliases"];
   asks?: Entry["asks"];
+  fix?: Entry["fix"];
   source: Pick<Entry["source"], "type" | "ref" | "quote"> & { text?: string };
   evidence?: Array<string | number>;
   evidenceClass?: Entry["evidence"];
@@ -25,11 +27,18 @@ export interface Proposal {
   model: NonNullable<Entry["source"]["model"]> | "none";
   label?: string;
   replaces?: string;
+  /**
+   * Learn deeper only: "proposed" writes a lesson that waits for a person's tick (one PR, one strong signal).
+   * A later proposal can promote it to active; nothing demotes an active entry.
+   */
+  status?: "active" | "proposed";
+  /** Learn deeper's proven route. Only rejected triggers retained by the gate can pair. */
+  decisionPairing?: DecisionPairingRole;
   lasts?: unknown;
 }
 
 export type DropReason = "invalid" | "inactive-producer" | "secret" | "undefined-command" | "no-anchor"
-  | "quote-not-found" | "forgotten" | "duplicate-entry" | "duplicate-rule-line" | "check-fails" | "checks-unavailable";
+  | "quote-not-found" | "forgotten" | "duplicate-entry" | "duplicate-rule-line" | "check-fails" | "checks-unavailable" | "quota";
 export type Dropped = { status: "dropped"; reason: DropReason; detail?: string };
 export type Accepted = { status: "accepted"; entryId: string; change: "new" | "updated" | "unchanged";
   sanitized?: Array<"text" | "oneLine" | "checks" | "quote"> };
@@ -52,6 +61,8 @@ export interface GateContext extends KnowledgeOptions {
   checkTree?: string;
   /** Temporary file index for a pinned check tree, separate from the live project's index. */
   checkIndex?: { projectId: string; recordDirectory: string };
+  /** Maximum entries accepted by this batch. A rejected proposal leaves the slot available. */
+  maxAccepted?: number;
   sweep?: Sweep;
   validate?: (writer: RecordWriter) => void;
   onAccepted?: (writer: RecordWriter, accepted: AcceptedEntry[], results: readonly GateResult[]) => void;

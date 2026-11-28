@@ -15,6 +15,7 @@
     "longAbove": 272000,
     "models": {
       "gpt-6.1-sol": { "short": { "input": 2, "write": 5, "read": 0.1, "output": 10 }, "long": { "input": 4, "write": 10, "read": 0.2, "output": 15 } },
+      "gpt-6.2-sol": { "short": { "input": 2, "write": 5, "read": 0.1, "output": 10 }, "long": { "input": 4, "write": 10, "read": 0.2, "output": 15 } },
       "gpt-6-luna": { "short": { "input": 0.1, "write": 0.25, "read": 0.01, "output": 0.5 }, "long": { "input": 0.2, "write": 0.5, "read": 0.02, "output": 0.75 } }
     }
   }

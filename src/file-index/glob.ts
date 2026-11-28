@@ -7,8 +7,13 @@
  * means everything below. Every other character matches itself.
  */
 
+/** Checkout-relative spelling: forward slashes, the form scopes, fixtures and delivery share. */
+export function slashPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
 export function normalizeGlob(glob: string): string {
-  let value = glob.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+  let value = slashPath(glob).replace(/^(\.\/)+/, "").replace(/^\/+/, "");
   if (value === "") value = "**";
   if (value.endsWith("/")) value += "**";
   return value;
@@ -21,22 +26,26 @@ export function globToRegExp(glob: string): RegExp {
   segments.forEach((segment, index) => {
     const last = index === segments.length - 1;
     if (segment === "**") {
-      if (last) out += index === 0 ? ".*" : "(?:/.*)?";
-      else { out += index === 0 ? "(?:.*/)?" : "/(?:.*/)?"; needSlash = false; }
+      if (last) out += index === 0 ? "[^\\n]*" : "(?:/[^\\n]*)?";
+      else { out += index === 0 ? "(?:[^\\n]*/)?" : "/(?:[^\\n]*/)?"; needSlash = false; }
       return;
     }
     if (needSlash) out += "/";
     out += segmentSource(segment);
     needSlash = true;
   });
-  return new RegExp(`^${out}$`);
+  // Windows checkouts compare paths without case. The same glob is case-sensitive on other systems.
+  return new RegExp(`^${out}$`, process.platform === "win32" ? "iu" : "u");
 }
 
 function segmentSource(segment: string): string {
   let out = "";
   for (let i = 0; i < segment.length; i++) {
     const char = segment[i]!;
-    if (char === "*") { out += "[^/]*"; continue; }
+    if (char === "*") {
+      if (segment[i - 1] !== "*") out += "[^/]*";
+      continue;
+    }
     if (char === "?") { out += "[^/]"; continue; }
     if (char === "{") {
       const close = segment.indexOf("}", i);

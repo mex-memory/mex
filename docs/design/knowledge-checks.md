@@ -25,7 +25,16 @@ The worst outcome wins: broken, then changed, then unknown, then held.
 | source | A repository file. URL sources need the network and fall back to the file hashes | Its hash equals `saw.hash` |
 | value | A literal at a dotted path (`defaults.allowMethods`): the first name is a top-level `const`/`let`/`var` (or `NAME =` in Python), the rest are object keys. JSON and YAML files use the path as a pointer | The literal, compared as data, equals `saw.value` |
 | symbol | The definition's lines, from the file index's outline (`Router.match` follows the parent chain), as tokens | Its fingerprint equals `saw.fingerprint` |
-| pattern | The file index's count of a literal pattern in `scope` | The count equals `saw.count` |
+| pattern | The file index's count of a literal pattern in `scope` | `expect` decides: `exact` (default) when the count equals `saw.count`; `at-most` while it is no higher; `present` while it is at least 1 |
+| fixture | The before and after code a learned rule was proven on, stored in the check; reads no files | Each `when` item it proves still holds on every stored pair: an anti or rejected pattern matches before and not after, a required one matches after |
+| scope | The file index's count of files matching `glob` | At least one file matches; none is gone |
+| quote | A doc passage (`exact`, with `prefix` and `suffix` to tell repeats apart) in `file` | The passage is still there, whitespace aside. A reworded passage fails and makes the entry changed whatever the role; a removed one is gone |
+| until | The version at a JSON Pointer in a JSON or YAML file | It is below `version` (numeric by dot parts, a leading `v` ignored, pre-releases below the release) |
+| source (URL) | The weekly network pass's record for the URL and captured hash | The evidence is unchanged; edited fails, deleted is gone, no record falls back to the floor |
+
+The network pass stores a project setting at `learning.deep.url.<sha256(url + "\n" + capturedHash)>`.
+The key uses lowercase hex and the captured hash includes its `sha256:` prefix. Each value holds `{state, at}`.
+The state is `same`, `edited` or `deleted`, and `at` is an ISO timestamp.
 
 Section and source hashes are `sha256:` of the text with every whitespace run
 collapsed to one space and trimmed, so re-wrapping isn't a change. The
@@ -112,6 +121,10 @@ YAML config. Aliases, anchors and custom tags in entries are refused, as in
 the Node codec.
 
 ## `mex check`
+
+A check someone asks for waits up to two seconds for the record, where a live hook waits 100 ms. If it still can't read
+the rule-change evidence, the linked-source observations or the judge's confirmations, the check fails: a verdict on
+evidence it couldn't read would look like a result.
 
 `mex check` evaluates every team entry, personal note and hint through the
 native evaluator (`mex-hook --check-run`) and stores the verdicts when MEX is

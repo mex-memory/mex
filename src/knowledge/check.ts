@@ -305,7 +305,9 @@ export function runCheck(options: CheckOptions): CheckReport {
       report.findings.push({ kind: diff ? "diff" : "store", id: e.id, path: e.path, message: `no longer true${why ? `: ${why}` : ""}`, proven: true });
     }
   }
-  report.findings.push(...storeGates(files, references(root)));
+  const source = references(root);
+  report.findings.push(...storeGates(files, source));
+  for (const gap of source.gaps) report.findings.push({ kind: "store", path: root, message: gap, proven: false });
   const withEntries = [...parsed.entries()].map(([path, entry]) => ({ path, entry }));
   if (!diff && homeExists) report.findings.push(...conformance(project.location.directory, project.projectId, root, withEntries, files.filter(f => f.level === "team").map(f => f.path)));
   if (diff) report.findings.push(...diffConformance(root, diff, withEntries));

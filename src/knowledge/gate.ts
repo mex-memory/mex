@@ -2,18 +2,19 @@ import { createHash } from "node:crypto";
 import { existsSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { noteKey } from "../learn-deeper/coverage.js";
 import { openHooksReadOnly, openRecord, openRecordReadOnly, type RecordWriter } from "../record/index.js";
 import { realPath } from "../record/project.js";
 import { codexExitCodes } from "./codex-exits.js";
 import { neutral, passedRuns, rolloutExitHidden } from "./fail-pass.js";
 import { readConflict, stageConflict, type StoredConflict } from "../review/conflicts.js";
 import { REVIEW_DAYS } from "../review/state.js";
-import { nativeBinary, runNative, type Verdict } from "./check.js";
+import { nativeBinary, registerLiterals, registerPatterns, runNative, type CheckResult, type Verdict } from "./check.js";
 import { knowledgeProject, type KnowledgeProject } from "./context.js";
-import { CheckSchema, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, validateEntry, type EntryCheck, type KnowledgeEntry } from "./entry.js";
+import { CheckSchema, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, isLearnedEntry, parseEntry, serializeEntry, sourceQuoteWordCount, validateEntry, type EntryCheck, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readBoundedTextFile, readEntryFile } from "./files.js";
 import { scopesOverlap } from "./gate-scopes.js";
-import type { AcceptedEntry, Dropped, GateContext, GateResult, Observation, Proposal, ProposedCheck } from "./gate-types.js";
+import type { AcceptedEntry, DecisionPairingRole, Dropped, GateContext, GateResult, Observation, Proposal, ProposedCheck } from "./gate-types.js";
 import { assertNoSecrets, gateEntry } from "./gates.js";
 import { publishNotes, readNotes, recoverNotes } from "./personal-store.js";
 import { anchorRequired, entryProducer, ownsEntryId, producer, producerEntryId, PRODUCER_IDS } from "./producers.js";
@@ -28,6 +29,7 @@ const FINGERPRINT = "sha256:" + "0".repeat(64);
 const defaults = {
   key: { value: true }, value: { value: null }, command: { exists: true }, pattern: { count: 0 }, relation: { count: 0 },
   source: { hash: FINGERPRINT }, section: { hash: FINGERPRINT }, symbol: { fingerprint: FINGERPRINT },
+  fixture: { ok: true }, scope: { count: 0 }, quote: { hash: FINGERPRINT }, until: { value: "0" },
 };
 const normalize = (text: string) => text.trim().replace(/\s+/gu, " ");
 const digest = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
@@ -35,20 +37,35 @@ const drop = (reason: Dropped["reason"], detail?: string): Dropped => ({ status:
 const invalid = (message: string): never => { throw new KnowledgeError("INVALID_ENTRY", message); };
 const message = (error: unknown) => error instanceof Error ? error.message : undefined;
 const publicationKey = (id: string) => `knowledge.gate.${id}`;
+const verifiedKey = (id: string) => `knowledge.verified.${id}`;
 const sweepBy = (id: Proposal["producer"]) => id === "setup-recipe" ? "mex setup" : `mex ${id} refresh`;
 const isActive = (e: KnowledgeEntry) => e.mex.status === "active";
+
+export function recordVerified(writer: RecordWriter, project: string, id: string,
+  how: "check" | "judge" | "person" | "followed", at = new Date()): void {
+  const key = verifiedKey(EntryIdSchema.parse(id)), verified = at.toISOString();
+  writer.db.prepare(`INSERT INTO settings(scope,key,value) VALUES(?,?,?)
+    ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value
+    WHERE COALESCE(CASE WHEN json_valid(settings.value) THEN json_extract(settings.value,'$.at') END, '') <= ?`)
+    .run(project, key, JSON.stringify({ at: verified, how }), verified);
+}
 
 interface Candidate {
   entry: KnowledgeEntry;
   checks: ProposedCheck[];
   evidence: NonNullable<Proposal["evidence"]>;
   replaces?: string;
+  decisionPairing?: DecisionPairingRole;
   sanitized: NonNullable<AcceptedEntry["sanitized"]>;
 }
 interface Active { entry: KnowledgeEntry; level: "personal" | "team" | "hint"; }
 interface Existing extends Active { claim: string; }
 type ConflictProof = StoredConflict["conflicts"][number];
-interface Publication { hash: string; evidence: Candidate["evidence"]; replaces?: string; approved?: ConflictProof[]; }
+interface Publication {
+  hash: string; evidence: Candidate["evidence"]; replaces?: string; approved?: ConflictProof[];
+  decisionPairing?: DecisionPairingRole;
+  paired?: string[];
+}
 const conflictProof = ({ entry, level }: Existing): ConflictProof =>
   ({ id: entry.mex.id, level, revision: digest(serializeEntry(entry)) });
 
@@ -109,6 +126,13 @@ function observedRuns(p: Proposal, passes: ReadonlyMap<number, string>): Readonl
 }
 const backticked = (text: string) => [...text.matchAll(/`([^`\n]+)`/gu)].map(match => match[1]!.trim());
 
+/** Producers other than learn deeper always write active entries; learn deeper may wait for a tick, never demote. */
+function proposedStatus(p: Proposal, old: KnowledgeEntry["mex"]["status"] | undefined): KnowledgeEntry["mex"]["status"] {
+  if (p.status !== undefined && p.producer !== "learn-deeper") invalid("Only deep analysis proposes entries that wait for a tick.");
+  if (old === "active" || old === "retired") return old;
+  return p.producer === "learn-deeper" && p.status ? p.status : old ?? "active";
+}
+
 function preflight(p: Proposal, tree: string, date: string, source: () => ReturnType<typeof references>,
   special?: { entry: KnowledgeEntry; mode: "note" | "judge" | "review" }, observed?: ReadonlySet<string>): Candidate | Dropped {
   let entry: KnowledgeEntry, checks: ProposedCheck[], evidence: Candidate["evidence"];
@@ -119,6 +143,8 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
     if (p.id !== undefined && (!EntryIdSchema.safeParse(p.id).success || (special?.mode !== "judge" && !ownsEntryId(p.id, owner)))) invalid("Entry id is outside the producer's namespace.");
     if (p.replaces !== undefined && (!EntryIdSchema.safeParse(p.replaces).success || !ownsEntryId(p.replaces, owner) || p.replaces === p.id)) invalid("Replacement id is outside the producer's namespace or is the same entry.");
     if (p.kind as string === "hint") invalid("Hints are not producer entries.");
+    if (p.decisionPairing !== undefined && (p.producer !== "learn-deeper" || p.kind !== "decision"
+      || (p.decisionPairing !== "decision" && p.decisionPairing !== "ruled-out"))) invalid("Invalid learned decision route.");
     if (p.model === undefined || p.model === null) invalid("Specify a model or none.");
     if (p.evidenceClass !== undefined && !owner.variesEvidence) invalid("This producer has a fixed evidence class.");
     evidence = p.evidence ?? [];
@@ -139,11 +165,14 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
       source: { type, ref, ...(quote === undefined ? {} : { quote }), producer: p.producer,
         ...(p.model === "none" ? {} : { model: p.model }), ...(p.label === undefined ? {} : { label: p.label }) },
       evidence: p.evidenceClass ?? owner.evidence, one_line: p.oneLine ?? normalize(p.text),
-      aliases: p.aliases, asks: p.asks, when: p.anchors?.when, checks: storedChecks,
-      status: old?.status ?? "active", created: old?.created ?? date,
+      aliases: p.aliases, asks: p.asks, when: p.anchors?.when, checks: storedChecks, fix: p.fix,
+      status: proposedStatus(p, old?.status), created: old?.created ?? date,
       ...(old?.commit ? { commit: old.commit } : {}), ...(old?.supersedes ? { supersedes: old.supersedes } : {}),
       ...(old?.companions ? { companions: old.companions } : {}),
     } });
+    if (p.producer === "learn-deeper" && quote !== undefined && sourceQuoteWordCount(quote) > KNOWLEDGE_LIMITS.sourceQuoteWords) {
+      invalid("A learned source quote can contain at most 25 words.");
+    }
     serializeEntry(entry);
     if (p.replaces === entry.mex.id) invalid("An entry cannot replace itself.");
   } catch (error) { return drop("invalid", message(error)); }
@@ -154,14 +183,32 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
   catch (error) { return drop("secret", message(error)); }
   let gated: KnowledgeEntry;
   const kept: number[] = [];
-  try { gated = gateEntry(entry, observed ? { ...source(), exact: observed } : source(), index => kept.push(index)); }
+  try {
+    const refs = source();
+    const origin = /^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/pull\/\d+(?=[/?#]|$)/u.exec(entry.mex.source.ref);
+    if (origin && isLearnedEntry(entry.mex) && entry.mex.evidence === "review") {
+      // Only captured PR links in the same repository can become checks.
+      const repository = origin[0].slice(0, origin[0].lastIndexOf("/pull/"));
+      const links = new Set(refs.links);
+      for (const check of checks) {
+        if (check.kind !== "source" || !("url" in check.target) || !check.saw) continue;
+        const url = /^https:\/\/github\.com\/[^/?#]+\/[^/?#]+\/pull\/\d+(?=[/?#]|$)/u.exec(check.target.url);
+        if (url && url[0].slice(0, url[0].lastIndexOf("/pull/")) === repository) links.add(check.target.url);
+      }
+      gated = gateEntry(entry, { ...refs, links }, index => kept.push(index));
+    } else {
+      gated = gateEntry(entry, observed ? { ...refs, exact: observed } : refs, index => kept.push(index));
+    }
+  }
   catch (error) { return drop(error instanceof KnowledgeError && error.code === "SECRET_FOUND" ? "secret" : "undefined-command", message(error)); }
   const sanitized: Candidate["sanitized"] = [];
   if (gated.text !== entry.text) sanitized.push("text");
   if (gated.mex.one_line !== entry.mex.one_line) sanitized.push("oneLine");
   if (!isDeepStrictEqual(gated.mex.checks, entry.mex.checks)) sanitized.push("checks");
   if (gated.mex.source.quote !== entry.mex.source.quote) sanitized.push("quote");
+  if (!isDeepStrictEqual(gated.mex.fix, entry.mex.fix)) return drop("invalid", "The fix contains hidden characters.");
   if (!owner.personAuthored && sanitized.some(field => field !== "quote")) return drop("undefined-command", "The entry contains an unverified command, link or check.");
+  if (isLearnedEntry(gated.mex) && gated.mex.checks.length === 0) return drop("no-anchor", "A learned entry needs a check.");
   // A judge rewrite repairs an existing entry; it keeps whatever anchors the original had.
   if (anchorRequired(owner.id, gated.mex.kind, gated.mex.evidence) && special?.mode !== "judge" && !gated.mex.scope.some(glob => !/^(?:\*\*\/)*\*\*$/u.test(glob)) && !gated.mex.when?.length
     && !p.anchors?.symbols?.length && !gated.mex.checks.some(check => check.kind === "symbol"
@@ -175,19 +222,16 @@ function preflight(p: Proposal, tree: string, date: string, source: () => Return
       // proposing. A prepared quote may contain redactions absent on disk.
       const file = p.producer === "learn-deeper" && p.source.text !== undefined ? undefined : repoFile(tree, p.source.ref);
       const body = file ? readBoundedTextFile(file, 1024 * 1024) : p.source.text;
-      if (!normalize(quote) || !body || !normalize(body).includes(normalize(quote))) return drop("quote-not-found");
-      if (p.producer === "learn-deeper" && entry.mex.source.type === "person"
-        && (gated.mex.source.quote !== quote || !body.includes(quote))) return drop("quote-not-found");
+      if (!normalize(quote) || !body) return drop("quote-not-found");
+      if (isLearnedEntry(entry.mex)) {
+        if (!body.includes(quote)) return drop("quote-not-found");
+        // The claim was proven without it: a quote that can't be kept as it was said is left out.
+        if (gated.mex.source.quote !== quote) delete gated.mex.source.quote;
+      } else if (!normalize(body).includes(normalize(quote))) return drop("quote-not-found");
     } catch { return drop("quote-not-found"); }
   }
-  // Learn Deeper retains forge ids, hashes and links. The exact typed quote
-  // remains required for person evidence while past-session import exists.
-  if (p.producer === "learn-deeper" && gated.mex.source.type !== "person") {
-    delete gated.mex.source.quote;
-  }
-
   const cleanChecks = gated.mex.checks.map((check, i) => toProposedCheck(check, checks[kept[i]!]!.saw !== undefined));
-  return { entry: gated, checks: cleanChecks, evidence, replaces: p.replaces, sanitized };
+  return { entry: gated, checks: cleanChecks, evidence, replaces: p.replaces, decisionPairing: p.decisionPairing, sanitized };
 }
 
 export function toProposedCheck(check: Exclude<EntryCheck, { kind: "legacy-grounding" }>, withSaw?: boolean): ProposedCheck;
@@ -208,47 +252,92 @@ function ruleClaims(tree: string): Set<string> {
 const ruleKey = (text: string) => normalize(text.normalize("NFKC").toLowerCase().replace(/[`*_>]/gu, "").replace(/^\s*(?:#+|[-+]|\d+[.)])\s+/u, ""));
 const scopeKey = (entry: KnowledgeEntry) => JSON.stringify([...new Set(entry.mex.scope)].sort());
 function sameTarget(a: EntryCheck, b: EntryCheck): boolean {
+  // These observations establish the presence of an area or the behavior of
+  // this entry's own triggers. Other entries can use the same evidence.
+  if (a.kind === "scope" || a.kind === "fixture" || b.kind === "scope" || b.kind === "fixture") return false;
   if (a.kind === "command" && b.kind === "command") return isDeepStrictEqual(
     { ...a.target, run: withoutEnvironment(a.target.run.trim()) }, { ...b.target, run: withoutEnvironment(b.target.run.trim()) });
   if (a.kind === "pattern" && b.kind === "pattern") return isDeepStrictEqual(
-    { ...a.target, match: a.target.match ?? "literal" }, { ...b.target, match: b.target.match ?? "literal" });
+    { ...a.target, match: a.target.match ?? "literal", expect: a.target.expect ?? "exact" },
+    { ...b.target, match: b.target.match ?? "literal", expect: b.target.expect ?? "exact" });
   return a.kind === b.kind && isDeepStrictEqual(a.target, b.target);
 }
-function duplicate(a: KnowledgeEntry, b: Existing, hash: string): boolean {
+function duplicate(a: KnowledgeEntry, b: Existing, hash: string, mayPair: () => boolean): boolean {
   if (hash === b.claim) return true;
-  if (a.mex.kind === b.entry.mex.kind && a.mex.checks.some(check => check.role === "complete"
+  if (!isLearnedEntry(a.mex) && a.mex.kind === b.entry.mex.kind && a.mex.checks.some(check => check.role === "complete"
     && b.entry.mex.checks.some(old => old.role === "complete" && sameTarget(check, old)))) return true;
-  return !!a.mex.when?.some(trigger => b.entry.mex.when?.some(old => trigger.type === old.type && trigger.pattern === old.pattern))
-    && scopeKey(a) === scopeKey(b.entry);
+  return !!a.mex.when?.some(trigger => b.entry.mex.when?.some(old => trigger.type === old.type && trigger.pattern === old.pattern
+    && !(trigger.type === "rejected" && trigger.match === old.match && mayPair()))) && scopeKey(a) === scopeKey(b.entry);
 }
 function checkRequest(project: KnowledgeProject, tree: string) {
   return { checkout: tree, project_id: project.projectId, mex_home: project.location.home, record_directory: project.location.directory };
 }
-function observations(checks: ProposedCheck[], context: GateContext, project: KnowledgeProject, tree: string): Observation[] | undefined {
+function observations(checks: ProposedCheck[], context: GateContext, project: KnowledgeProject, tree: string,
+  owners: ReadonlyMap<ProposedCheck, KnowledgeEntry>): Observation[] | undefined {
   if (!checks.length) return [];
   if (context.observeChecks) {
     try { return context.observeChecks(checks, tree); } catch { return undefined; }
   }
   return observeProposalChecks(checks, { ...checkRequest(project, tree), ...(context.checkIndex ? {
     project_id: context.checkIndex.projectId, record_directory: context.checkIndex.recordDirectory,
-  } : {}) }, context.env);
+  } : {}) }, context.env, owners);
 }
 
 /** Record actual observations without executing proposed commands. */
 export function observeProposalChecks(checks: readonly ProposedCheck[], request: ReturnType<typeof checkRequest>,
-  env?: NodeJS.ProcessEnv): Observation[] | undefined {
+  env?: NodeJS.ProcessEnv, owners?: ReadonlyMap<ProposedCheck, KnowledgeEntry>): Observation[] | undefined {
   if (!checks.length) return [];
   try {
     const binary = nativeBinary(env);
     if (!binary) return undefined;
+    const ordinary: ProposedCheck[] = [];
+    const fixtures = new Map<KnowledgeEntry, Array<Extract<ProposedCheck, { kind: "fixture" }>>>();
+    const special = new Map<ProposedCheck, Observation>();
+    for (const check of checks) {
+      const entry = owners?.get(check);
+      if (entry && check.kind === "fixture") {
+        const group = fixtures.get(entry) ?? [];
+        group.push(check);
+        fixtures.set(entry, group);
+      } else if (entry && isLearnedEntry(entry.mex) && check.kind === "source" && "url" in check.target) {
+        // The forge harvest supplies the capture hash. The free evaluator
+        // checks later network observations against that stored evidence.
+        const recorded = CheckSchema.safeParse({ ...check, files: {} });
+        special.set(check, recorded.success ? { check: recorded.data } : { reason: "The source has no captured hash." });
+      } else ordinary.push(check);
+    }
+    if (owners) {
+      const literals = ordinary.flatMap(c => c.kind === "pattern" && (c.target.match ?? "literal") === "literal"
+        && owners.has(c) && isLearnedEntry(owners.get(c)!.mex) ? [c.target.pattern] : []);
+      if (literals.length) registerLiterals(request.record_directory, request.project_id, literals);
+    }
+    for (const [entry, inputs] of fixtures) {
+      const recorded = inputs.map(check => ({ ...check, saw: { ok: true as const }, files: {} }));
+      let result: { result?: { checks: CheckResult[] } } = {};
+      try {
+        result = runNative(binary, { ...request, action: "evaluate-snapshot", files: {},
+          entry: serializeEntry({ ...entry, mex: { ...entry.mex, status: "active", checks: recorded } }) }) as unknown as typeof result;
+      } catch (error) {
+        // One entry the evaluator can't read is that entry's problem. An evaluator that gave no answer is everyone's.
+        if (!(error instanceof KnowledgeError) || error.code === "CHECKS_UNAVAILABLE") throw error;
+      }
+      inputs.forEach((check, i) => {
+        const outcome = result.result?.checks[i];
+        special.set(check, outcome?.status === "pass" ? { check: recorded[i]! } : { reason: outcome?.reason ?? "The fixture could not be checked." });
+      });
+    }
+    if (!ordinary.length) return checks.map(c => special.get(c)!);
     const result = runNative(binary, { ...request, action: "record-batch",
-      items: checks.map(({ kind, role, target }) => ({ kind, role, target })) }) as unknown as {
+      items: ordinary.map(({ kind, role, target }) => ({ kind, role, target })) }) as unknown as {
         results?: Array<{ ok?: boolean; check?: unknown; error?: string }>;
       };
-    return result.results?.map(item => {
+    if (result.results?.length !== ordinary.length) return undefined;
+    const observed = result.results.map(item => {
       const check = CheckSchema.safeParse(item.check);
       return item.ok && check.success ? { check: check.data } : { reason: (item.error ?? "Invalid recorded check.").slice(0, 512) };
     });
+    let i = 0;
+    return checks.map(check => special.get(check) ?? observed[i++]!);
   } catch { return undefined; }
 }
 function currentVerdicts(context: GateContext, project: KnowledgeProject): ReadonlyMap<string, Verdict> {
@@ -300,10 +389,15 @@ function hintClaims(project: KnowledgeProject): { entries: KnowledgeEntry[]; inv
 }
 
 const activeEntry = (entry: KnowledgeEntry, level: Active["level"]): Existing => ({ entry, level, claim: claimHash(entry.text) });
-function compare(p: Candidate, others: Existing[], forgotten: Set<string>, retired: (id: string) => boolean, rules: () => Set<string>): Dropped | undefined {
+function compare(p: Candidate, others: Existing[], forgotten: Set<string>, retired: (id: string) => boolean, rules: () => Set<string>,
+  pairingRole?: (entry: KnowledgeEntry) => DecisionPairingRole | undefined): Dropped | undefined {
   const { entry } = p, { id, kind } = entry.mex, hash = claimHash(entry.text);
   if (retired(id) || forgotten.has(hash)) return drop("forgotten");
-  const duplicateId = others.find(other => (other.entry.mex.id === id || duplicate(entry, other, hash)));
+  const duplicateId = others.find(other => other.entry.mex.id === id || duplicate(entry, other, hash, () => {
+    if (!p.decisionPairing || other.level !== "personal") return false;
+    const role = pairingRole?.(other.entry);
+    return role !== undefined && role !== p.decisionPairing;
+  }));
   if (duplicateId) return drop("duplicate-entry", duplicateId.entry.mex.id);
   const commandRecipe = kind === "recipe" && entry.mex.checks.some(check => check.kind === "command");
   const commandOnly = (text: string) => commandRecipe && entry.mex.checks.some(check =>
@@ -341,9 +435,59 @@ function owns(writer: RecordWriter, project: string, entry: KnowledgeEntry, raw:
   if (source.producer || source.type === "person" && /^mex edit(?: |$)/u.test(source.ref)) return false;
   if (owner === "setup-recipe") return kind === "recipe" && source.type === "config";
   if (owner !== "learn-deeper") return false;
-  const legacy = writer.setting(project, `learning.deep.note.${id}`);
+  const legacy = writer.setting(project, noteKey(id));
   if (!legacy || Buffer.byteLength(legacy) > 20_000) return false;
   try { return JSON.parse(legacy).hash === digest(raw); } catch { return false; }
+}
+
+type PairingEntry = { entry: KnowledgeEntry; receipt: Publication; base: string[]; links: string[] };
+type PairingUpdate = { entry: KnowledgeEntry; companions: string[] | undefined; raw: string; beforeHash: string; receipt: Publication };
+const rejectedKeys = (entry: KnowledgeEntry) => (entry.mex.when ?? []).flatMap(trigger =>
+  trigger.type === "rejected" ? [JSON.stringify([trigger.match, trigger.pattern])] : []);
+
+function pairDecisions(entries: readonly PairingEntry[], eligible: (entry: KnowledgeEntry) => boolean): void {
+  const decisions = new Map<string, PairingEntry[]>();
+  for (const item of entries) {
+    if (item.receipt.decisionPairing !== "decision" || !eligible(item.entry)) continue;
+    for (const key of new Set(rejectedKeys(item.entry))) {
+      const matching = decisions.get(key);
+      if (matching) matching.push(item);
+      else decisions.set(key, [item]);
+    }
+  }
+  for (const item of entries) {
+    if (item.receipt.decisionPairing !== "ruled-out" || !eligible(item.entry)) continue;
+    const candidates = new Set(rejectedKeys(item.entry).flatMap(key => decisions.get(key) ?? []));
+    const winners = [...candidates].filter(other => item.entry.mex.scope.some(a => other.entry.mex.scope.some(b => scopesOverlap(a, b))));
+    if (winners.length !== 1) continue;
+    const winner = winners[0]!;
+    const [ruled, decision] = [item.entry.mex.id, winner.entry.mex.id];
+    // Reserve both places before adding either half of the link.
+    if ((!item.base.includes(decision) && item.base.length + item.links.length >= 32)
+      || (!winner.base.includes(ruled) && winner.base.length + winner.links.length >= 32)) continue;
+    if (!item.base.includes(decision)) item.links.push(decision);
+    if (!winner.base.includes(ruled)) winner.links.push(ruled);
+  }
+}
+
+function preparePairedUpdates(entries: readonly PairingEntry[], files: ReadonlyMap<string, string>, storedBytes: number): PairingUpdate[] {
+  const updates: PairingUpdate[] = [];
+  try {
+    for (const { entry, receipt, base, links } of entries) {
+      const ids = [...base, ...links];
+      if (isDeepStrictEqual(ids, entry.mex.companions ?? [])) continue;
+      const companions = ids.length ? ids : undefined;
+      const raw = serializeEntry({ ...entry, mex: { ...entry.mex, companions } });
+      storedBytes += Buffer.byteLength(raw) - Buffer.byteLength(files.get(entry.mex.id)!);
+      updates.push({ entry, companions, raw, beforeHash: receipt.hash,
+        receipt: { ...receipt, hash: digest(raw), paired: links.length ? links : undefined } });
+    }
+  } catch (error) {
+    if (!(error instanceof KnowledgeError) || error.code !== "ENTRY_TOO_LARGE") throw error;
+    return [];
+  }
+  // The two halves are optional but must fit together.
+  return storedBytes <= KNOWLEDGE_LIMITS.scanBytes ? updates : [];
 }
 
 function activeClaims(project: KnowledgeProject, notes: Map<string, KnowledgeEntry>, context: GateContext): Existing[] {
@@ -389,24 +533,34 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
     const forgotten = retiredClaimHashes(writer, projectId);
     const retired = (id: string) => project.retired.has(id);
     const accepted: AcceptedEntry[] = [];
+    const retiring = new Set<string>();
+    let pairingChanged = proposals.some(p => p?.decisionPairing !== undefined);
     let storedBytes = [...files.values()].reduce((n, raw) => n + Buffer.byteLength(raw), 0);
     const put = writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value WHERE settings.value<>excluded.value");
-    const save = (id: string, hash: string, evidence?: Candidate["evidence"], replaces?: string, approved?: ConflictProof[]) => {
-      const previous = publication(writer, projectId, id);
-      const record = JSON.stringify({ hash, evidence: evidence ?? previous?.evidence ?? [], replaces, approved });
+    const save = (id: string, receipt: Publication) => {
+      const record = JSON.stringify(receipt);
       if (Buffer.byteLength(record) > 256 << 10) throw new KnowledgeError("STORE_LIMIT", "Producer metadata exceeds its size limit.");
-      if (JSON.stringify(previous) !== record) put.run(projectId, publicationKey(id), record);
+      put.run(projectId, publicationKey(id), record);
+    };
+    const pairingReceipt = (entry: KnowledgeEntry) => {
+      const id = entry.mex.id;
+      if (entry.mex.kind !== "decision" || entry.mex.source.producer !== "learn-deeper" || retiring.has(id)) return undefined;
+      const receipt = publication(writer, projectId, id);
+      if ((!receipt?.decisionPairing && !receipt?.paired?.length) || receipt.hash !== digest(files.get(id)!)) return undefined;
+      return receipt;
     };
     const retire = (entry: KnowledgeEntry, reason: string, by: string, permanent: boolean) => {
       const info = { reason, by, at: date };
       const raw = serializeEntry({ ...entry, mex: { ...entry.mex, status: "retired", retired: info } });
       storedBytes += Buffer.byteLength(raw) - Buffer.byteLength(files.get(entry.mex.id) ?? "");
       files.set(entry.mex.id, raw);
+      retiring.add(entry.mex.id);
+      if (entry.mex.companions?.length) pairingChanged = true;
       if (permanent) {
         saveTombstone(writer, projectId, entry, info);
         project.retired.add(entry.mex.id);
         forgotten.add(claimHash(entry.text));
-      } else save(entry.mex.id, digest(raw));
+      } else save(entry.mex.id, { hash: digest(raw), evidence: publication(writer, projectId, entry.mex.id)?.evidence ?? [] });
       active = active.filter(other => other.level !== "personal" || other.entry.mex.id !== entry.mex.id);
     };
 
@@ -424,9 +578,10 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
         }
       }
       // The producer's own entry and the entry it replaces are not duplicates of it.
-      return compare(p, active.filter(other => other.level !== "personal" || (other.entry.mex.id !== id && other.entry.mex.id !== p.replaces)), forgotten, retired, rules);
+      return compare(p, active.filter(other => other.level !== "personal" || (other.entry.mex.id !== id && other.entry.mex.id !== p.replaces)),
+        forgotten, retired, rules, other => pairingReceipt(other)?.decisionPairing);
     };
-    const checks: ProposedCheck[] = [], offsets = new Map<Candidate, number>();
+    const checks: ProposedCheck[] = [], offsets = new Map<Candidate, number>(), owners = new Map<ProposedCheck, KnowledgeEntry>();
     const firstPass = pending.map(p => {
       if ("status" in p) return p;
       const failure = beforeChecks(p);
@@ -434,10 +589,11 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       if (checks.length + p.checks.length <= 4096) {
         offsets.set(p, checks.length);
         checks.push(...p.checks);
+        for (const check of p.checks) owners.set(check, p.entry);
       }
       return p;
     });
-    const observed = observations(checks, context, project, tree);
+    const observed = observations(checks, context, project, tree, owners);
     let verdicts: ReadonlyMap<string, Verdict> | undefined;
     const getVerdicts = () => verdicts ??= currentVerdicts(context, project);
 
@@ -454,6 +610,7 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
 
     const results = firstPass.map((p): GateResult => {
       if ("status" in p) return p;
+      if (context.maxAccepted !== undefined && accepted.length >= context.maxAccepted) return drop("quota");
       const failure = beforeChecks(p);
       if (failure) return failure;
       const offset = offsets.get(p);
@@ -462,6 +619,11 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       const { entry } = p, { id, source } = entry.mex;
       const old = notes.get(id);
       if (old) entry.mex.created = old.mex.created;
+      const pairing = old && pairingReceipt(old);
+      if (pairing) {
+        pairingChanged = true;
+        entry.mex.companions = old.mex.companions;
+      }
       const raw = serializeEntry(entry);
       const hash = digest(raw), previous = publication(writer, projectId, id);
       const reviewed = previous?.hash === hash && Array.isArray(previous.approved) ? previous.approved : [];
@@ -488,7 +650,8 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       active = active.filter(other => other.level !== "personal" || other.entry.mex.id !== id);
       if (isActive(entry)) active.push(activeEntry(entry, "personal"));
       const approved = approval?.item.conflicts.filter(other => other.level !== "personal") ?? reviewed;
-      save(id, hash, p.evidence, p.replaces, approved.length ? approved : undefined);
+      save(id, { hash, evidence: p.evidence, replaces: p.replaces, approved: approved.length ? approved : undefined,
+        decisionPairing: p.decisionPairing, paired: pairing?.paired });
       const replaced = p.replaces && notes.get(p.replaces);
       // A replacement is not a forget: no tombstone, so the claim stays available. Retired by
       // the producer rather than its sweep, the old id is never revived.
@@ -529,12 +692,63 @@ function saveBatch(proposals: Proposal[], context: GateContext, special?: { entr
       }
     }
 
+    let pairedUpdates: PairingUpdate[] = [];
+    if (pairingChanged) {
+      const rejected = new Set(proposals.flatMap((p, i) => {
+        const id = results[i]?.status !== "accepted" && p && proposedId(p);
+        return id ? [id] : [];
+      }));
+      const candidates = [...notes.keys()].sort().flatMap(id => {
+        const entry = notes.get(id)!;
+        const receipt = pairingReceipt(entry);
+        if (!receipt) return [];
+        const managed = new Set(Array.isArray(receipt.paired) ? receipt.paired : []);
+        return [{ entry, receipt, base: (entry.mex.companions ?? []).filter(other => !managed.has(other)), links: [] as string[] }];
+      });
+      pairDecisions(candidates, entry => isActive(entry) && !retired(entry.mex.id) && !rejected.has(entry.mex.id)
+        && !forgotten.has(claimHash(entry.text)) && !writer.setting(projectId, `learning.deep.refused.${entry.mex.id}`));
+      pairedUpdates = preparePairedUpdates(candidates, files, storedBytes);
+      const revised = new Set(pairedUpdates.map(update => update.entry));
+      for (const { entry, companions, raw, receipt } of pairedUpdates) {
+        entry.mex.companions = companions;
+        files.set(entry.mex.id, raw);
+        save(entry.mex.id, receipt);
+      }
+      let acceptedIndex = 0;
+      for (const result of results) {
+        if (result.status !== "accepted") continue;
+        const item = accepted[acceptedIndex++]!;
+        if (!revised.has(item.entry)) continue;
+        const before = snapshot.files.get(item.entryId);
+        item.change = result.change = before === undefined ? "new" : before === files.get(item.entryId) ? "unchanged" : "updated";
+      }
+    }
+
     if (storedBytes > KNOWLEDGE_LIMITS.scanBytes) {
       throw new KnowledgeError("STORE_LIMIT", "Personal notes exceed the byte or entry limit.");
     }
+    for (const item of accepted) {
+      if (item.change !== "unchanged" && isLearnedEntry(item.entry.mex) && isActive(item.entry)) {
+        recordVerified(writer, projectId, item.entryId, "check", now);
+      }
+    }
     const changed = files.size !== snapshot.files.size || [...files].some(([id, raw]) => snapshot.files.get(id) !== raw);
-    if (changed) publishNotes(writer, projectId, snapshot, files, () => context.onAccepted?.(writer, accepted, results), { locked: true });
+    if (changed) publishNotes(writer, projectId, snapshot, files, () => {
+      context.onAccepted?.(writer, accepted, results);
+      // A companion changes the file revision without changing the evidence.
+      for (const { entry, beforeHash, receipt } of pairedUpdates) {
+        writer.db.prepare(`UPDATE settings SET value=json_set(value,'$.hash',?)
+          WHERE scope=? AND key=? AND CASE WHEN json_valid(value) THEN json_extract(value,'$.hash')=? ELSE 0 END`)
+          .run(receipt.hash, projectId, noteKey(entry.mex.id), beforeHash);
+      }
+    }, { locked: true });
     else { context.onAccepted?.(writer, accepted, results); writer.db.exec("COMMIT"); }
+    const learned = accepted.filter(item => isLearnedEntry(item.entry.mex)).map(item => item.entry);
+    if (learned.length) {
+      // A pinned proposal index is disposable. Remember the literals in the
+      // live index too so its next refresh can evaluate the published checks.
+      try { registerPatterns(project.location.directory, projectId, learned); } catch { /* A missing index leaves its checks unresolved. */ }
+    }
     return results;
   } finally {
     try { writer.db.exec("ROLLBACK"); } catch { /* The transaction already ended. */ }
@@ -571,7 +785,7 @@ export function proposalFromEntry(entry: KnowledgeEntry, producer: Proposal["pro
 } = {}): Proposal {
   const m = entry.mex;
   if (m.kind === "hint") throw new KnowledgeError("INVALID_ENTRY", "Hints are not producer entries.");
-  return { producer, id: m.id, kind: m.kind, text: entry.text, oneLine: m.one_line, aliases: m.aliases, asks: m.asks,
+  return { producer, id: m.id, kind: m.kind, text: entry.text, oneLine: m.one_line, aliases: m.aliases, asks: m.asks, fix: m.fix,
     source: { type: m.source.type, ref: m.source.ref, quote: m.source.quote, text: options.sourceText },
     anchors: { scope: m.scope, when: m.when }, checks: m.checks.map(check => toProposedCheck(check)),
     model: options.model ?? m.source.model ?? "none", label: m.source.label, replaces: options.replaces,
@@ -588,8 +802,8 @@ export function useConflict(id: string, item: StoredConflict, context: GateConte
 }
 
 /** Vet an in-place judge rewrite without writing it or changing its stable id. */
-export function vetRewrite(entry: KnowledgeEntry, original: KnowledgeEntry, model: NonNullable<KnowledgeEntry["mex"]["source"]["model"]>,
-  context: GateContext, writer?: RecordWriter): { entry: KnowledgeEntry } | Dropped | { status: "review"; reason: "contradiction" } {
+export function vetRewrite(entry: KnowledgeEntry, original: KnowledgeEntry, model: Proposal["model"],
+  context: GateContext, writer?: RecordWriter, renew?: ReadonlySet<number>): { entry: KnowledgeEntry } | Dropped | { status: "review"; reason: "contradiction" } {
   if (entry.mex.id !== original.mex.id || !isDeepStrictEqual(entry.mex.source, original.mex.source)) {
     return drop("invalid", "A rewrite must preserve the original id and source.");
   }
@@ -606,9 +820,25 @@ export function vetRewrite(entry: KnowledgeEntry, original: KnowledgeEntry, mode
   finally { if (!writer) reader?.close(); }
   const notes = new Map([...readNotes(project.location.home, project.projectId).files].map(([id, raw]) => [id, parseEntry(raw)]));
   const others = activeClaims(project, notes, context).filter(other => other.entry.mex.id !== entry.mex.id);
-  const failure = compare(candidate, others, forgotten, id => project.retired.has(id), () => ruleClaims(tree))
-    ?? recheck(candidate, observations(candidate.checks, context, project, tree));
+  const duplicate = compare(candidate, others, forgotten, id => project.retired.has(id), () => ruleClaims(tree));
+  if (duplicate) return duplicate;
+  const preserved = entry.mex.checks;
+  const requests = candidate.checks.flatMap((c, i) => {
+    if (!renew) return [c];
+    if (!renew.has(i)) return [];
+    if (c.kind === "source" && "url" in c.target || c.kind === "symbol" && !isDeepStrictEqual(c.target, original.mex.checks[i]?.target)
+      || c.kind === "pattern" && isDeepStrictEqual(c.target, original.mex.checks[i]?.target)) return [c];
+    return [{ ...c, saw: undefined }];
+  });
+  const owners = new Map(requests.map(c => [c, candidate.entry]));
+  const failure = recheck({ ...candidate, checks: requests }, observations(requests, context, project, tree, owners));
   if (failure) return failure;
+  if (renew) {
+    const observed = candidate.entry.mex.checks;
+    let i = 0;
+    candidate.entry.mex.checks = preserved.map((check, index) => renew.has(index) ? observed[i++]! : check);
+    try { serializeEntry(candidate.entry); } catch (error) { return drop("invalid", message(error)); }
+  }
   let verdicts: ReadonlyMap<string, Verdict> | undefined;
   if (others.some(other => conflictWith(candidate.entry, other, () => verdicts ??= currentVerdicts(context, project)))) return { status: "review", reason: "contradiction" };
   return { entry: candidate.entry };

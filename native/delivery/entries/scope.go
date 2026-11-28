@@ -2,14 +2,15 @@ package entries
 
 import (
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/mex-memory/mex/native/index"
 )
 
 // Scope matches a scope glob (the file index's dialect) against a path
-// relative to the checkout. The common shapes, a plain file, "dir/**" and
-// "**", match without a regular expression; only other globs are compiled.
+// relative to the checkout. Exact files and "dir/**" use fast paths where
+// matching is case-sensitive.
 type Scope struct {
 	Glob   string
 	all    bool
@@ -38,9 +39,9 @@ func newScope(glob string) (*Scope, error) {
 	switch {
 	case n == "**":
 		s.all = true
-	case !strings.ContainsAny(n, special):
+	case runtime.GOOS != "windows" && !strings.ContainsAny(n, special):
 		s.exact = n
-	case strings.HasSuffix(n, "/**") && !strings.ContainsAny(n[:len(n)-3], special):
+	case runtime.GOOS != "windows" && strings.HasSuffix(n, "/**") && !strings.ContainsAny(n[:len(n)-3], special):
 		s.prefix = n[:len(n)-3]
 	default:
 		re, err := index.CompileGlob(glob)

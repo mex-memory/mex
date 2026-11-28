@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mex-memory/mex/native/check"
 	"github.com/mex-memory/mex/native/delivery/entries"
@@ -52,6 +53,7 @@ type shapeEnv struct {
 	hooks           *record.Hooks
 	judged          *judgement.Reader
 	judgedTried     bool
+	learnedDeadline time.Time
 }
 
 func (s *shapeEnv) reader() *index.Reader {
@@ -77,21 +79,28 @@ func (s *shapeEnv) close() {
 func shape(c candidate, verdict string, env *shapeEnv) shaped {
 	it := c.item
 	s := shaped{candidate: c, verdict: verdict, action: "given", full: it.Full, oneLine: it.OneLine, fullTok: it.FullTokens, lineTok: it.OneLineTokens}
+	kind := it.Entry.Kind
+	learned := it.Entry.Learned()
+	learnedHold := learned && verdict == held
+	modelConfirmed := false
+	unverified := false
 	if c.lineOnly && s.oneLine != "" {
 		s.full, s.fullTok = s.oneLine, s.lineTok
 	}
-	if verdict == held && it.Entry.Kind == "fact" && env != nil && env.hooks != nil {
+	if learnedHold {
+		verdict, modelConfirmed = env.learnedVerdict(c)
+		unverified = verdict == unknown
+		if unverified {
+			verdict = changed
+		}
+	} else if verdict == held && kind == "fact" && env != nil && env.hooks != nil {
 		v, ok, err := env.hooks.VerdictOf(env.project, env.checkout, it.Entry.ID)
 		if err != nil || !ok {
 			verdict = unknown
 		} else if v.Verdict != held {
 			verdict = v.Verdict
 		} else if judgement.ModelKey(v.InputsHash) {
-			if !env.judgedTried {
-				env.judgedTried = true
-				env.judged = judgement.Open(env.recordDirectory, env.project, env.checkout)
-			}
-			want, valid := env.judged.HeldInputs(it.Entry.ID, it.Hash, v.InputsHash)
+			want, valid := env.judgedInputs(it, v.InputsHash)
 			current, fresh := "", false
 			if valid {
 				current, fresh = check.CurrentInputsHash(env.checkout, env.recordDirectory, env.project, it)
@@ -105,10 +114,55 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 				verdict = changed
 			}
 		}
-		s.verdict = verdict
 	}
+	s.verdict = verdict
 	withhold := func() shaped { s.action, s.full, s.oneLine, s.fullTok, s.lineTok = "withheld", "", "", 0, 0; return s }
-	kind := it.Entry.Kind
+	if learned && (learnedHold || kind == "rule" || kind == "decision" || kind == "pitfall" || kind == "procedure") {
+		scopePass := false
+		if verdict == unknown && env != nil && len(it.Entry.Checks) > 0 {
+			var ix check.Index
+			if reader := env.reader(); reader != nil {
+				ix = reader
+			}
+			verdict, scopePass = check.CandidateVerdict(env.checkout, env.recordDirectory, env.project, ix, it.Entry)
+		}
+		if verdict != broken && !modelConfirmed && env != nil {
+			if !env.rulesTried {
+				env.rulesTried = true
+				env.rules = rulechange.Read(env.recordDirectory, env.project, env.checkout)
+			}
+			if env.rules.For(it.Entry.ID, it.Hash) != nil {
+				verdict = changed
+			}
+		}
+		s.verdict = verdict
+		switch verdict {
+		case held:
+			return s
+		case changed:
+			text := learnedPointer(it.Entry.ID)
+			if env != nil && !unverified {
+				code := entries.Entry{}
+				for _, c := range it.Entry.Checks {
+					if symbol, _ := c.Target["symbol"].(string); symbol != "" {
+						code.Checks = append(code.Checks, c)
+					}
+				}
+				if current, ok := pointer(&code, env); ok {
+					text = current
+				}
+			}
+			s.action, s.full, s.oneLine = "replaced", text, text
+			s.fullTok = entries.EstimateTokens(text)
+			s.lineTok = s.fullTok
+			return s
+		case unknown:
+			if scopePass {
+				return s
+			}
+		}
+		return withhold()
+	}
 	if it.Level == "team" && verdict != broken && env != nil && (kind == "rule" || kind == "decision" || kind == "pitfall") {
 		if !env.rulesTried {
 			env.rulesTried = true
@@ -212,6 +266,44 @@ func shape(c candidate, verdict string, env *shapeEnv) shaped {
 		}
 		return s
 	}
+}
+
+func learnedPointer(id string) string {
+	return fmt.Sprintf("MEX is re-checking a learned rule: `mex recall %s`", id)
+}
+
+func (s *shapeEnv) judgedInputs(it *entries.Item, cached string) (string, bool) {
+	if !s.judgedTried {
+		s.judgedTried = true
+		s.judged = judgement.Open(s.recordDirectory, s.project, s.checkout)
+	}
+	return s.judged.HeldInputs(it.Entry.ID, it.Hash, cached)
+}
+
+func (s *shapeEnv) learnedVerdict(c candidate) (string, bool) {
+	if s == nil || s.hooks == nil {
+		return unknown, false
+	}
+	if s.learnedDeadline.IsZero() {
+		s.learnedDeadline = time.Now().Add(50 * time.Millisecond)
+	}
+	if time.Now().After(s.learnedDeadline) {
+		return unknown, false
+	}
+	it := c.item
+	v, ok, err := s.hooks.VerdictOf(s.project, s.checkout, it.Entry.ID)
+	if err != nil || !ok || v.Verdict != held {
+		return unknown, false
+	}
+	inputs, model := v.InputsHash, judgement.ModelKey(v.InputsHash)
+	if model {
+		inputs, ok = s.judgedInputs(it, inputs)
+		if !ok {
+			return unknown, false
+		}
+	}
+	verdict := check.CurrentLearnedVerdict(s.checkout, s.recordDirectory, s.project, it, c.rel, inputs, model, s.learnedDeadline)
+	return verdict, model && verdict == held
 }
 
 // pointer names where today's code is, from the entry's own checks. It never

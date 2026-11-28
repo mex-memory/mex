@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { planNative } from "../native-plan.js";
-import type { Candidate } from "../native-select.js";
+import { selectNative, type Candidate } from "../native-select.js";
 import { entry } from "./fixtures.js";
 
 const dirs: string[] = [];
@@ -100,5 +100,68 @@ describe("Copilot's path-scoped instructions", () => {
     const plan = planNative(root, ["copilot"], [team("mx_root01")]);
     expect(plan.files).toEqual([]);
     expect(plan.notes[0]).toContain("is yours");
+  });
+});
+
+describe("learned routing", () => {
+  it("uses the complete claim in native files and the fallback plan", () => {
+    const claim = "Open release fixes against the stable branch.";
+    const body = `${claim} ${"The release branch is maintained independently. ".repeat(16).trim()}`;
+    const learned = team("mx_deeprelease");
+    learned.entry.text = body;
+    learned.entry.mex.one_line = claim;
+    const { selected } = selectNative([learned], new Map([["team/mx_deeprelease", "held"]]), { learnedAlwaysOn: true });
+    const root = repo({ "AGENTS.md": "Repository instructions." });
+    const plan = planNative(root, ["claude-code", "codex"], selected, false, [], true);
+    const line = `- ${claim} <!-- mex:mx_deeprelease -->`;
+    expect(plan.files.map(file => file.ids)).toEqual([["mx_deeprelease"]]);
+    expect(plan.files[0]?.text).toContain(line + "\n");
+    expect(plan.files[0]?.text).not.toContain("maintained independently");
+    expect(plan.fallback?.entries).toEqual([{ id: "mx_deeprelease", level: "team", areas: [""], text: body, line }]);
+    expect(learned.entry.text).toBe(body);
+  });
+
+  it("adds exactly one Decisions instruction when the trial is on", () => {
+    const root = repo({ "CLAUDE.md": "Existing instructions.\n" });
+    const agents = ["codex", "claude-code", "copilot"] as const;
+    const selected = [team("mx_root01"), mine("mx_local1", "src/**")];
+    const off = planNative(root, agents, selected);
+    expect(planNative(root, agents, selected, false)).toEqual(off);
+    const line = "- When you chose between options, add a short Decisions section to the PR description. Say what you chose, what you ruled out, and why.\n";
+    const on = planNative(root, agents, selected, true);
+    expect(on.files).toHaveLength(off.files.length);
+    for (const [index, file] of on.files.entries()) {
+      expect(file.text.split(line)).toHaveLength(file.sharing === "local" ? 2 : 1);
+      expect({ ...file, text: file.text.replace(line, "") }).toEqual(off.files[index]);
+    }
+  });
+
+  it("keeps process rules at the root and folder notes in file-matched instructions", () => {
+    const process = team("mx_deeproot");
+    const folder = mine("mx_deepfolder", "src/**");
+    const ordinary = mine("mx_plain01", "src/**");
+    const pattern = team("mx_deepcode", "src/**");
+    pattern.entry.mex.when = [{ type: "anti", match: "literal", pattern: "oldAccessor()" }];
+    const { selected } = selectNative([process, folder, ordinary, pattern, team("mx_deepunchecked")],
+      new Map([["team/mx_deeproot", "held"], ["personal/mx_deepfolder", "held"], ["team/mx_deepcode", "held"]]), { learnedAlwaysOn: true });
+    expect(selected.map(candidate => candidate.entry.mex.id)).not.toContain("mx_deepunchecked");
+    const root = repo();
+    const agents = ["codex", "claude-code", "copilot"] as const;
+    for (const agent of agents) {
+      const files = planNative(root, [agent], selected).files;
+      expect(files.find(file => file.ids.includes("mx_deeproot"))?.area).toBe("");
+      const scoped = files.filter(file => file.ids.includes("mx_deepfolder"));
+      if (agent === "codex") expect(scoped).toHaveLength(0);
+      else {
+        expect(scoped).toHaveLength(1);
+        expect(scoped[0]?.text).toContain(agent === "claude-code" ? 'paths:\n  - "src/**"' : 'applyTo: "src/**"');
+      }
+      expect(files.some(file => file.ids.includes("mx_plain01"))).toBe(true);
+      expect(files.some(file => file.ids.includes("mx_deepcode"))).toBe(false);
+    }
+
+    const combined = planNative(root, agents, selected).files;
+    expect(combined.find(file => file.path === "src/AGENTS.md")?.ids).toEqual(["mx_plain01"]);
+    expect(combined.filter(file => file.ids.includes("mx_deepfolder")).flatMap(file => file.agents).sort()).toEqual(["claude-code", "copilot"]);
   });
 });

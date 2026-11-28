@@ -45,24 +45,39 @@ func TestSelfCheck(t *testing.T) {
 			t.Errorf("%s: no reason", c.name)
 		}
 	}
-	// One other use in a three-file package is not the area's normal code.
-	v := SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"}, Area{"console.log(1)", "a", "b"})
-	if !v.Keep || v.Files != 3 || v.Matched != 1 {
-		t.Fatalf("share, small package: %+v", v)
-	}
-	big := Area{"console.log(1)", "console.log(2)", "console.log(3)"}
-	for len(big) < 10 {
-		big = append(big, "x")
-	}
-	v = SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"}, big)
-	if v.Keep || v.Matched != 3 || !strings.Contains(v.Reason, "3 of the area's 10 files") {
-		t.Fatalf("share, common in the area: %+v", v)
-	}
-	for len(big) < 20 {
-		big = append(big, "y")
-	}
-	if v = SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"}, big); !v.Keep {
-		t.Fatalf("share, 3 of 20 files is rare: %+v", v)
+}
+
+func TestSelfCheckAreaFrequency(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		files, occurrences int
+		matched            int
+		common             bool
+		counts             string
+	}{
+		{"three occurrences", 20, 3, 1, false, "3 occurrences in 1 of 20 scoped files"},
+		{"four in one file", 20, 4, 1, true, "4 occurrences in 1 of 20 scoped files"},
+		{"above one percent", 150, 2, 2, true, "2 occurrences in 2 of 150 scoped files"},
+		{"exactly one percent", 200, 2, 2, false, "2 occurrences in 2 of 200 scoped files"},
+		{"one leftover file", 20, 1, 1, false, "1 occurrence in 1 of 20 scoped files"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			area := make(Area, tc.files)
+			for i := 0; i < tc.matched; i++ {
+				area[i] = "console.log(1)\n"
+			}
+			area[0] += strings.Repeat("console.log(2)\n", tc.occurrences-tc.matched)
+			for _, c := range []Candidate{
+				{Type: "anti", Match: "literal", Pattern: "console.log(", Objected: "console.log(x)", Fixed: "log(x)"},
+				{Type: "rejected", Match: "structural", Pattern: "console.log($X)", Objected: "console.log(x)", Fixed: "log(x)"},
+			} {
+				v := SelfCheck(c, area)
+				if v.Keep == tc.common || v.Common != tc.common || v.Files != tc.files || v.Matched != tc.matched ||
+					v.Occurrences != tc.occurrences || !strings.Contains(v.Reason, tc.counts) {
+					t.Errorf("%s: %+v", c.Match, v)
+				}
+			}
+		})
 	}
 }
 
@@ -152,5 +167,60 @@ func TestStructuralSpans(t *testing.T) {
 	}
 	if lit := Spans("literal", "f(", code); len(lit) != 3 {
 		t.Errorf("literal spans %v", lit)
+	}
+}
+
+// One plain word is not evidence unless the reviewed code declares it.
+// A field, a dotted name or a call still is.
+func TestSelfCheckPlainWord(t *testing.T) {
+	objected := "provider._constraints = load()\nthis.getLayoutUsecase.execute(\nkinds.USER\ninvalid\nprojects\nrejected\nmiddle\nimport moment from 'moment'\n"
+	fixed := "provider.constraints = load()\nthis.getLayoutUsecase.run(\nkinds.ADMIN\nmsg = \"packages\"\nimport { format } from 'date-fns'\n"
+	verdict := func(pattern string) Verdict {
+		return SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: pattern, Objected: objected, Fixed: fixed}, Area{})
+	}
+	for _, pattern := range []string{"invalid", "projects", "rejected", "middle"} {
+		if v := verdict(pattern); v.Keep || !strings.Contains(v.Reason, "not a symbol declared") {
+			t.Errorf("%q kept (%s)", pattern, v.Reason)
+		}
+	}
+	for _, pattern := range []string{"provider._constraints", "kinds.USER", "this.getLayoutUsecase.execute(", "moment", "from 'moment'"} {
+		if v := verdict(pattern); !v.Keep {
+			t.Errorf("%q dropped: %s", pattern, v.Reason)
+		}
+	}
+	declared := "func middle() {}\n" + objected
+	if v := SelfCheck(Candidate{Type: "anti", Match: "literal", Pattern: "middle", Objected: declared, Fixed: fixed}, Area{}); !v.Keep {
+		t.Errorf("declared middle dropped: %s", v.Reason)
+	}
+}
+
+// A reviewed window can start inside a doc comment whose opening `/**` is above
+// it. Backticks in that comment must not turn the code below into a string.
+// From Hono's c.json() review (OSS-92): the writer's pattern was dropped.
+func TestSelfCheckWindowOpensInsideComment(t *testing.T) {
+	objected := "   *   return c.json({ message: 'Hello!' })\n   * })\n   * ```\n   */\n" +
+		"  json: JSONRespond = (object: T): JSONRespondReturn<T, U> => {\n" +
+		"    const jsonString = JSON.stringify(object)\n" +
+		"    return !this.finalized\n      ? new Response(jsonString, {\n          headers: { 'Content-Type': 'application/json' },\n        })\n" +
+		"      : this.#newResponse(jsonString)\n  }\n"
+	fixed := "  json: JSONRespond = (object: T): JSONRespondReturn<T, U> => {\n" +
+		"    return this.#useFastPath()\n      ? Response.json(object)\n      : this.#newResponse(JSON.stringify(object))\n  }\n"
+	keep := func(pattern, match, anchor string) Verdict {
+		return SelfCheck(Candidate{Type: "anti", Match: match, Pattern: pattern, Objected: objected, Fixed: fixed, Anchor: anchor}, Area{})
+	}
+	if v := keep("new Response(jsonString, {", "literal", "      ? new Response(jsonString, {"); !v.Keep {
+		t.Errorf("literal on the commented line: %s", v.Reason)
+	}
+	if v := keep("new Response($A, $B)", "structural", "      ? new Response(jsonString, {"); !v.Keep {
+		t.Errorf("structural on the commented line: %s", v.Reason)
+	}
+	// Text that is only in the comment's tail is still not evidence.
+	if v := keep("c.json({ message", "literal", ""); v.Keep {
+		t.Error("a match inside the leading comment counted as reviewed code")
+	}
+	// A code line that holds `*/` inside a string is not a comment's end.
+	glob := "const files = glob('src/**/*.ts')\nconst s = `x`\nnew Response(files)\n"
+	if n := len(codeLiteralSpans("new Response(files)", glob)); n != 1 {
+		t.Errorf("a glob string before the code changed what is code: %d matches", n)
 	}
 }

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { automaticWorkEnabled } from "../controls/index.js";
-import { EntryIdSchema, KnowledgeError, serializeEntry, parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
+import { EntryIdSchema, KnowledgeError, isLearnedEntry, serializeEntry, parseEntry, type KnowledgeEntry } from "../knowledge/entry.js";
 import { stageReview, reviewQuiet } from "../review/state.js";
 import { learningMetadata } from "../filter/metadata.js";
 import { containedDirectory, replaceEntryFile } from "../knowledge/files.js";
@@ -26,6 +26,8 @@ const FixSchema = z.object({
   judgement: JudgementSchema,
   item: z.object({ id: EntryIdSchema, path: z.string().max(4096), level: z.enum(["team", "personal"]) }).strict(),
   before: z.string().max(64 << 10), agent: z.enum(["claude", "codex"]), sessionId: z.string().max(512).optional(),
+  renew: z.array(z.number().int().min(0).max(31)).max(32).optional(),
+  relink: z.literal(true).optional(),
   state: z.enum(["pending", "preview", "applied", "review", "discarded"]),
   previewAt: z.string().datetime().optional(), previewRevision: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
 }).strict().refine(fix => fix.item.id === fix.judgement.id && hash(fix.before) === fix.judgement.entry_hash, "Fix identity changed");
@@ -37,18 +39,22 @@ const set = (writer: RecordWriter, scope: string, key: string, value: unknown) =
   "INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value").run(scope, key, JSON.stringify(value));
 
 export function needsRouting(writer: RecordWriter, projectId: string, result: Judgement): boolean {
-  return result.result !== "still-true" && writer.setting(projectId, keyFor(result)) === undefined;
+  return (result.result !== "still-true" || !!result.rewrite) && writer.setting(projectId, keyFor(result)) === undefined;
 }
 
 /** Queue drafts in the judgement transaction. Routing vets them before offering a preview or Review. */
-export function stageFixes(writer: RecordWriter, job: JobRow, results: Judgement[], candidates: Candidate[], params: JudgeParams, sessionId?: string): void {
+export function stageFixes(writer: RecordWriter, job: JobRow, results: Judgement[], candidates: Candidate[], params: JudgeParams,
+  sessionId?: string, relinks?: ReadonlyMap<string, number[]>): void {
   const keys: string[] = [];
   for (const result of results) {
-    if (result.result === "still-true") continue;
+    if (result.result === "still-true" && !result.rewrite) continue;
     const candidate = candidates.find(candidate => candidate.item.id === result.id)!;
+    const relink = relinks?.get(result.id);
+    const renew = relink ?? (result.result === "still-true" ? candidate.checks.filter(c => c.status === "fail").map(c => c.index) : undefined);
     const key = keyFor(result);
     const fix = FixSchema.parse({ judgement: result, item: { id: result.id, path: candidate.item.path, level: candidate.item.level },
-      before: candidate.content, agent: params.agent, ...(sessionId ? { sessionId } : {}), state: "pending" });
+      before: candidate.content, agent: params.agent, ...(sessionId ? { sessionId } : {}),
+      ...(renew ? { renew } : {}), ...(relink ? { relink: true } : {}), state: "pending" });
     const raw = JSON.stringify(fix);
     if (Buffer.byteLength(raw) > 256 << 10) throw new Error("The judge fix exceeds its storage bound.");
     writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO NOTHING").run(job.project_id!, key, raw);
@@ -112,7 +118,9 @@ function freshChecks(fix: Fix, report: NativeReport): boolean {
   const item = report.items?.find(item => item.id === fix.item.id && item.path === fix.item.path && item.level === fix.item.level);
   if(item?.rule_evidence_pending) return false;
   const observed = report.results?.find(result => result.entry_id === fix.item.id);
-  return item?.entry_hash === fix.judgement.entry_hash && !!observed && hash(JSON.stringify({ verdict: item.verdict, checks: observed.checks, inputs: observed.inputs,
+  const verdict = fix.judgement.result === "still-true" && item?.label === "checked by model" ? "changed" : item?.verdict;
+  return item?.entry_hash === fix.judgement.entry_hash && !!observed && observed.evaluation_hash === fix.judgement.evaluation_hash
+    && hash(JSON.stringify({ verdict, checks: observed.checks, inputs: observed.inputs,
     ...(item.rule_evidence?.length ? { rule_evidence: item.rule_evidence } : {}) })) === fix.judgement.checks_hash;
 }
 function notice(writer: RecordWriter, key: string, fix: Fix, type: "preview" | "updated", text: string): void {
@@ -126,7 +134,7 @@ function notice(writer: RecordWriter, key: string, fix: Fix, type: "preview" | "
 function review(writer: RecordWriter, job: JobRow, key: string, fix: Fix, reason: string, rewrite?: KnowledgeEntry): void {
   stageReview(writer, job.project_id!, key, rewrite ?? parseEntry(fix.before),
     { producer: "judge", key, checkout: fix.judgement.checkout, level: fix.item.level, path: fix.item.path, original_hash: fix.judgement.entry_hash },
-    `${reason} (checked by model)`, fix.item.level === "team" || !!learningMetadata(writer, job.project_id!, fix.item.id).sources?.length, Date.parse(fix.judgement.at));
+    fix.relink ? reason : `${reason} (checked by model)`, fix.item.level === "team" || !!learningMetadata(writer, job.project_id!, fix.item.id).sources?.length, Date.parse(fix.judgement.at));
   fix.state = "review"; set(writer, job.project_id!, key, fix);
   writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key));
 }
@@ -151,9 +159,13 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
         // A retirement is final; no rewrite or Review resurrection.
         fix.state = "discarded"; set(writer, job.project_id!, key, fix); writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key)); continue;
       }
-      if (result.result !== "rewritten" || !result.rewrite) { review(writer, job, key, fix, "The judge could not resolve the entry"); gaps = true; continue; }
-      const vetted = vetRewrite(result.rewrite, parseEntry(fix.before), { id: result.model, version: result.model_version ?? result.model },
-        { projectPath: checkout, home: writer.location.home, observeChecks }, writer);
+      if (result.result === "cannot-tell" || !result.rewrite) {
+        review(writer, job, key, fix, "The judge could not resolve the entry");
+        gaps = true; continue;
+      }
+      const method = fix.relink ? "symbol moved" : "checked by model";
+      const vetted = vetRewrite(result.rewrite, parseEntry(fix.before), fix.relink ? "none" : { id: result.model, version: result.model_version ?? result.model },
+        { projectPath: checkout, home: writer.location.home, observeChecks }, writer, fix.renew ? new Set(fix.renew) : undefined);
       if (!("entry" in vetted)) {
         review(writer, job, key, fix, `The rewrite did not pass the producer gate (${vetted.reason})`);
         gaps = true; continue;
@@ -166,12 +178,14 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
       }
       const found = original(fix, writer, job.project_id!);
       // Team files are written without local provenance fields.
-      const after = serializeEntry(fix.item.level === "team" ? teamEntry(rewrite) : rewrite);
+      const team = fix.item.level === "team" ? teamEntry(rewrite) : undefined;
+      if (team && isLearnedEntry(rewrite.mex) && team.mex.source.type !== "person") delete team.mex.source.quote;
+      const after = serializeEntry(team ?? rewrite);
       // Recover a crash after atomic file publication but before the DB commit.
       if (found?.content === after) {
         notice(writer, key, fix, "updated", fix.item.level === "team"
-          ? `MEX fix for ${fix.item.id} is present in this working tree (checked by model); include it in the same PR.`
-          : `MEX fix for personal entry ${fix.item.id} is present locally (checked by model).`);
+          ? `MEX fix for ${fix.item.id} is present in this working tree (${method}); include it in the same PR.`
+          : `MEX fix for personal entry ${fix.item.id} is present locally (${method}).`);
         fix.state = "applied"; set(writer, job.project_id!, key, fix); writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key)); continue;
       }
       if (!found || found.content !== fix.before || hash(found.content) !== result.entry_hash || !freshChecks(fix, report)) {
@@ -183,7 +197,7 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
         if (!owns()) {
           reviewRewrite("The code change was not proved to belong to this session; keep the team fix in Review"); gaps = true; continue;
         }
-        const preview = prepareTeamWrite(rewrite, { projectPath: checkout, home: writer.location.home });
+        const preview = prepareTeamWrite(team!, { projectPath: checkout, home: writer.location.home });
         if (join(checkout, preview.path) !== fix.item.path || preview.before !== fix.before) throw new Error("The fix no longer names the same entry.");
         if (preview.after !== after || (fix.previewRevision && fix.previewRevision !== preview.revision)) {
           reviewRewrite("The proposed diff changed at the entry's write gates"); gaps = true; continue;
@@ -192,7 +206,7 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
           if (fix.previewAt && Date.now() - Date.parse(fix.previewAt) >= PREVIEW_TIMEOUT_MS) {
             reviewRewrite("The editing session did not receive its preview; keep the fix in Review"); gaps = true; continue;
           }
-          notice(writer, key, fix, "preview", `MEX proposes updating ${fix.item.id} in this working tree (checked by model). The exact diff follows; it will apply only while this session's branch and inputs still match.\n${preview.diff}`);
+          notice(writer, key, fix, "preview", `MEX proposes updating ${fix.item.id} in this working tree (${method}). The exact diff follows; it will apply only while this session's branch and inputs still match.\n${preview.diff}`);
           fix.state = "preview"; fix.previewAt ??= new Date().toISOString(); fix.previewRevision = preview.revision;
           set(writer, job.project_id!, key, fix); waiting = true; continue;
         }
@@ -205,7 +219,7 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
           }
           applyTeamWrite(preview, preview.revision, { projectPath: checkout, home: writer.location.home });
         });
-        notice(writer, key, fix, "updated", `MEX updated ${preview.path} in this working tree (checked by model); include it in the same PR.`);
+        notice(writer, key, fix, "updated", `MEX updated ${preview.path} in this working tree (${method}); include it in the same PR.`);
       } else {
         const directory = containedDirectory(writer.location.home, ["projects", job.project_id!, "notes"]);
         if (!directory || dirname(fix.item.path) !== directory) throw new Error("Personal fix storage changed.");
@@ -221,7 +235,7 @@ export async function routeFixes(writer: RecordWriter, job: JobRow, report: Nati
           continue;
         }
         replaceEntryFile(directory, fix.item.id, fix.before, after);
-        notice(writer, key, fix, "updated", `MEX updated personal entry ${fix.item.id} locally (checked by model).`);
+        notice(writer, key, fix, "updated", `MEX updated personal entry ${fix.item.id} locally (${method}).`);
       }
       fix.state = "applied"; set(writer, job.project_id!, key, fix);
       writer.db.prepare("DELETE FROM notices WHERE id=?").run(previewId(key));

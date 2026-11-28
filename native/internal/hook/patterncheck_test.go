@@ -30,7 +30,7 @@ func TestPatternCheckReadsTheAreaFromTheIndex(t *testing.T) {
 	files := map[string]string{
 		"apps/api/a.ts": "import { format } from 'date-fns'\n",
 		"apps/api/b.ts": "export const b = 1\n",
-		"apps/api/c.ts": "console.log('debug')\n",
+		"apps/api/c.ts": "console.log('debug')\nconsole.log('twice')\n",
 		"apps/api/d.ts": "console.log('more')\n",
 		"apps/api/f.ts": "console.log('again')\n",
 		"apps/web/e.ts": "import moment from 'moment'\n",
@@ -55,17 +55,17 @@ func TestPatternCheckReadsTheAreaFromTheIndex(t *testing.T) {
 	req := patternCheckRequest{Checkout: root, ProjectID: "p1", RecordDirectory: mex, Scope: []string{"apps/api/**"}, Candidates: []pattern.Candidate{
 		// Not in apps/api (only apps/web has it): kept.
 		{Type: "anti", Match: "literal", Pattern: "from 'moment'", Objected: "import m from 'moment'", Fixed: "import { format } from 'date-fns'"},
-		// In 3 of apps/api's 5 files: the area's normal code, dropped.
+		// Four occurrences across three files in apps/api.
 		{Type: "anti", Match: "structural", Pattern: "console.log($$$)", Objected: "console.log(x)", Fixed: "logger.info(x)"},
 	}}
 	code, got := runPatternCheck(t, req)
 	if code != 0 || len(got) != 2 {
 		t.Fatalf("code %d, %+v", code, got)
 	}
-	if !got[0].Keep || got[0].Files != 5 || got[0].Matched != 0 {
+	if !got[0].Keep || got[0].Common || got[0].Files != 5 || got[0].Matched != 0 || got[0].Occurrences != 0 {
 		t.Fatalf("moment: %+v", got[0])
 	}
-	if got[1].Keep || got[1].Matched != 3 || !strings.Contains(got[1].Reason, "3 of the area's 5 files") {
+	if got[1].Keep || !got[1].Common || got[1].Matched != 3 || got[1].Occurrences != 4 || !strings.Contains(got[1].Reason, "4 occurrences in 3 of 5 scoped files") {
 		t.Fatalf("console.log: %+v", got[1])
 	}
 
@@ -73,6 +73,12 @@ func TestPatternCheckReadsTheAreaFromTheIndex(t *testing.T) {
 	req.ProjectID = "p2"
 	if _, got := runPatternCheck(t, req); got[0].Keep || !strings.Contains(got[0].Reason, "unknown") {
 		t.Fatalf("no index: %+v", got[0])
+	}
+
+	req.ProjectID = "p1"
+	write(t, filepath.Join(root, "apps", "api", "b.ts"), strings.Repeat("x", patternCheckFileBytes+1))
+	if _, got := runPatternCheck(t, req); got[0].Keep || got[0].Common || !strings.Contains(got[0].Reason, "unknown") {
+		t.Fatalf("partial scope: %+v", got[0])
 	}
 }
 

@@ -19,7 +19,9 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mex-memory/mex/native/delivery/entries"
 	"github.com/mex-memory/mex/native/internal/contract"
@@ -36,6 +38,7 @@ const (
 	// bumpMaxReasons bounds the rules one stop names in full; any more are
 	// named by their one line.
 	bumpMaxReasons = 3
+	bumpReplyBytes = 10000
 )
 
 // strongEvidence: rules a person stated, or that come from docs, reviews or
@@ -70,35 +73,88 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		return contract.Reply{}
 	}
 	defer h.Close()
+	noise := noiseReader{directory: env.RecordDirectory}
+	defer noise.close()
+	retirements := entries.Retirements{Directory: env.RecordDirectory}
+	defer retirements.Close()
 	epoch, _, err := h.CurrentEpoch(ev.SessionID, ev.AgentID)
 	if err != nil {
 		return contract.Reply{}
 	}
 	file := bumpStatePath(env.RecordDirectory, ev)
 	state := loadBumpState(file, epoch.Number)
-	var full map[string]*entries.Item // loaded once, only when needed
-	fullItem := func(b bump) *entries.Item {
-		if full == nil {
-			full = map[string]*entries.Item{}
+	full := map[string]map[[2]string]*entries.Item{}
+	fullSnapshot := func(b bump) map[[2]string]*entries.Item {
+		key := b.project + "\x00" + b.check
+		if full[key] == nil {
+			full[key] = map[[2]string]*entries.Item{}
 			if snap, err := entries.Load(env.RecordDirectory, env.Home, b.project, b.check); err == nil {
 				for i := range snap.Items {
-					full[snap.Items[i].Entry.ID] = &snap.Items[i]
+					item := &snap.Items[i]
+					full[key][[2]string{item.Level, item.Entry.ID}] = item
 				}
 			}
 		}
-		return full[b.item.Entry.ID]
+		return full[key]
+	}
+	fullItem := func(b bump) *entries.Item {
+		it := fullSnapshot(b)[[2]string{b.item.Level, b.item.Entry.ID}]
+		if it == nil || it.Hash != b.item.Hash {
+			return nil
+		}
+		return it
+	}
+	shapers := map[[2]string]*shapeEnv{}
+	defer func() {
+		for _, senv := range shapers {
+			senv.close()
+		}
+	}()
+	shapeBump := func(b bump, it *entries.Item, verdict string) shaped {
+		key := [2]string{b.project, b.check}
+		senv := shapers[key]
+		if senv == nil {
+			senv = &shapeEnv{recordDirectory: env.RecordDirectory, project: b.project, checkout: b.check, hooks: h}
+			shapers[key] = senv
+		}
+		return shape(candidate{item: it, rel: b.rel}, verdict, senv)
 	}
 	var stop []bump
-	passed, seen := false, map[string]bool{}
+	var overrides []bump
+	var rechecking string
+	seen := map[string]bool{}
 	for _, b := range found {
 		id := b.item.Entry.ID
 		if seen[id] {
 			continue
 		}
 		seen[id] = true
+		if b.item.Entry.Learned() && noise.suppressed(b.project, id) {
+			continue
+		}
+		if !retirements.Allows(b.project, b.item) {
+			continue // dropped by the person: the note file stays, the record says so
+		}
 		v, ok, err := h.VerdictOf(b.project, b.check, id)
 		if err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) {
 			continue // a rule the code no longer supports never stops an edit
+		}
+		if b.item.Entry.Learned() {
+			it := fullItem(b)
+			if it == nil {
+				continue
+			}
+			verdict := unknown
+			if ok {
+				verdict = v.Verdict
+			}
+			shaped := shapeBump(b, it, verdict)
+			if shaped.action != "given" {
+				if shaped.action == "replaced" && rechecking == "" {
+					rechecking = learnedPointer(id)
+				}
+				continue
+			}
 		}
 		if b.item.Entry.Evidence == "mined" && !(ok && v.Verdict == held && completeCheck(fullItem(b))) {
 			continue
@@ -106,17 +162,18 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 		if state.Stopped[id] {
 			// The agent went ahead: this rule is being changed on purpose.
 			if !state.Passed[id] {
-				state.Passed[id], passed = true, true
+				state.Passed[id] = true
+				overrides = append(overrides, b)
 			}
 			continue
 		}
 		stop = append(stop, b)
 	}
 	if len(stop) == 0 {
-		if passed {
-			_ = state.save(file)
+		if len(overrides) > 0 && state.save(file) == nil {
+			bumpReceipts(h, ev, env, epoch.Number, overrides, "control", "override")
 		}
-		return contract.Reply{}
+		return contract.Reply{Context: rechecking}
 	}
 	// One stop names every rule this edit breaks, so making the edit again
 	// never meets a second stop.
@@ -126,18 +183,70 @@ func SpeedBump(ev contract.Event, env Environment) contract.Reply {
 	if state.save(file) != nil {
 		return contract.Reply{} // without a record it could stop twice
 	}
-	reasons := make([]string, 0, len(stop))
-	for i, b := range stop {
-		noteViolation(env.RecordDirectory, b.project, b.item.Entry.ID, env.Now)
-		text := ""
-		if i < bumpMaxReasons {
-			if it := fullItem(b); it != nil {
-				text = it.Full
+	bumpReceipts(h, ev, env, epoch.Number, overrides, "control", "override")
+	fullStops := map[[4]string]bool{}
+	for _, b := range stop[:min(len(stop), bumpMaxReasons)] {
+		fullStops[[4]string{b.project, b.check, b.item.Level, b.item.Entry.ID}] = true
+	}
+	companion := func(b bump, it *entries.Item) string {
+		if b.trigger.Type != "rejected" || it == nil || !it.Entry.Learned() || it.Entry.Kind != "decision" {
+			return ""
+		}
+		for _, id := range it.Entry.Companions {
+			if id == it.Entry.ID || fullStops[[4]string{b.project, b.check, it.Level, id}] {
+				continue
+			}
+			other := fullSnapshot(b)[[2]string{it.Level, id}]
+			// A retired, missing or rewritten note cannot supply the other reason.
+			if other == nil || other.Entry.Status != "active" || !other.Entry.Learned() || other.Entry.Kind != "decision" ||
+				!slices.Contains(other.Entry.Companions, it.Entry.ID) || !slices.Contains(other.Entry.When, b.trigger) ||
+				!retirements.Allows(b.project, other) {
+				continue
+			}
+			v, ok, err := h.VerdictOf(b.project, b.check, id)
+			if err != nil || (ok && (v.Verdict == broken || v.Verdict == changed)) {
+				continue
+			}
+			verdict := unknown
+			if ok {
+				verdict = v.Verdict
+			}
+			if shapeBump(b, other, verdict).action == "given" {
+				return strings.TrimSpace(other.Full)
 			}
 		}
-		reasons = append(reasons, bumpReason(b, text))
+		return ""
 	}
-	return contract.Reply{Decision: contract.Deny, Reason: bumpMessage(reasons)}
+	reply, shown := renderBump(stop, fullItem, companion)
+	bumpReceipts(h, ev, env, epoch.Number, stop[:shown], "given", "")
+	for _, b := range stop {
+		noteViolation(env.RecordDirectory, b.project, b.item.Entry.ID, env.Now)
+	}
+	return contract.Reply{Decision: contract.Deny, Reason: reply, Context: rechecking}
+}
+
+func bumpReceipts(h *record.Hooks, ev contract.Event, env Environment, epoch int, rules []bump, action, detail string) {
+	requests := map[[2]string]*record.DeliveryRequest{}
+	for _, b := range rules {
+		e := b.item.Entry
+		if !e.Learned() {
+			continue
+		}
+		key := [2]string{b.project, b.check}
+		req := requests[key]
+		if req == nil {
+			req = &record.DeliveryRequest{
+				Session: record.Session{SessionID: ev.SessionID, Agent: ev.Agent, ProjectID: b.project, Checkout: b.check},
+				AgentID: ev.AgentID, Now: env.Now, ExpectedEpoch: &epoch,
+			}
+			requests[key] = req
+		}
+		req.Candidates = append(req.Candidates, record.DeliveryCandidate{EntryID: e.ID, Moment: "bump",
+			Form: "one-line", Action: action, Detail: detail, Kind: e.Kind, Level: b.item.Level, Mode: "on", Exempt: true, Resend: action == "given"})
+	}
+	for _, req := range requests {
+		_, _ = h.CheckAndMark(*req)
+	}
 }
 
 // completeCheck: the entry carries a check that pins its whole claim.
@@ -158,6 +267,7 @@ func completeCheck(it *entries.Item) bool {
 func bumpCandidates(ev contract.Event, env Environment) []bump {
 	var out []bump
 	snaps := map[string]*entries.Snapshot{}
+	broad := map[string]func(*entries.Entry) bool{}
 	for _, v := range views(ev, env.Resolve) {
 		if !isEdit(v) || v.checkout == "" || v.project == "" || v.rel == "" || v.added == "" {
 			continue
@@ -172,47 +282,73 @@ func bumpCandidates(ev contract.Event, env Environment) []bump {
 				snap = &loaded
 			}
 			snaps[key] = snap
+			broad[key] = entries.CheckoutBroadLearned(env.RecordDirectory, v.project, v.checkout)
 		}
 		if snap == nil {
 			continue
 		}
-		added := boundedText(v.added, 32768)
+		// A Write sends the whole file. The prefix a hunk is bounded to would
+		// hide a pattern added further down, while the file compared against
+		// is read much further.
+		limit := 32768
 		old := v.removed
 		if v.name == contract.ToolWrite {
+			limit = bumpOldBytes
 			old = currentText(v.path)
 		}
-		p := snap.Patterns()
-		for i := range snap.Items {
-			it := &snap.Items[i]
-			typ := bumpType(it)
-			if typ == "anti" && len(it.Entry.When) == 0 {
-				// A layer rule held by an import relation has no literal to
-				// match: the edit's imports are resolved instead.
-				if inScope(it, v.rel) {
-					if t, ok := relationBump(it, v.rel, added, old); ok {
-						out = append(out, bump{item: it, trigger: t, rel: v.rel, project: v.project, check: v.checkout})
-					}
+		added := boundedText(v.added, limit)
+		for _, m := range matchEdit(snap, v.rel, added, old, broad[key]) {
+			m.project, m.check = v.project, v.checkout
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// matchEdit finds the rules in snap whose anti-pattern (or rejected option)
+// one edit adds at rel: added is the new text, old what it replaces. It is the
+// speed bump's whole matching rule, shared with the "would have fired" replay
+// so the two can never disagree.
+func matchEdit(snap *entries.Snapshot, rel, added, old string, broadLearned func(*entries.Entry) bool) []bump {
+	var out []bump
+	p := snap.Patterns()
+	for i := range snap.Items {
+		it := &snap.Items[i]
+		typ := bumpType(it)
+		if typ == "anti" && len(it.Entry.When) == 0 {
+			// A layer rule held by an import relation has no literal to
+			// match: the edit's imports are resolved instead.
+			if inScope(it, rel) {
+				if t, ok := relationBump(it, rel, added, old); ok && !broadLearned(it.Entry) {
+					out = append(out, bump{item: it, trigger: t, rel: rel})
 				}
+			}
+			continue
+		}
+		if typ == "" || !p.InEdit(added, it, typ) {
+			continue
+		}
+		// A rule within its scope; a rejected option within the decision's
+		// scope or in a manifest, where a dependency comes back.
+		if !inScope(it, rel) && !(typ == "rejected" && isManifest(rel)) {
+			continue
+		}
+		for _, t := range it.Entry.When {
+			if t.Type != typ {
 				continue
 			}
-			if typ == "" || !p.InEdit(added, it, typ) {
-				continue
+			var adds bool
+			if it.Entry.Learned() {
+				adds = pattern.PreciseCodePattern(t.Type, t.Match, t.Pattern) &&
+					pattern.CodeCount(t.Match, t.Pattern, added) > pattern.CodeCount(t.Match, t.Pattern, old)
+			} else {
+				adds = precise(t) && occurrences(t, added) > occurrences(t, old)
 			}
-			// A rule within its scope; a rejected option within the decision's
-			// scope or in a manifest, where a dependency comes back.
-			if !inScope(it, v.rel) && !(typ == "rejected" && isManifest(v.rel)) {
-				continue
+			if !adds {
+				continue // only an edit that adds the pattern
 			}
-			for _, t := range it.Entry.When {
-				if t.Type != typ || !precise(t) {
-					continue
-				}
-				if occurrences(t, added) <= occurrences(t, old) {
-					continue // only an edit that adds the pattern
-				}
-				out = append(out, bump{item: it, trigger: t, rel: v.rel, project: v.project, check: v.checkout})
-				break
-			}
+			out = append(out, bump{item: it, trigger: t, rel: rel})
+			break
 		}
 	}
 	return out
@@ -331,30 +467,136 @@ func currentText(path string) string {
 	return string(data)
 }
 
-// bumpReason is one stopped rule: its full form (label and reason) when
-// given, else its one line, and what the edit adds where.
-func bumpReason(b bump, full string) string {
-	why := strings.TrimSpace(full)
-	if why == "" {
-		why = strings.TrimSpace(b.item.Entry.OneLine)
+const bumpIntro = "MEX stopped this edit once. "
+const bumpTail = ", unless the person asked for exactly this. If they did, make the edit again and it will go through, and tell them it goes against what the team recorded."
+
+func renderBump(stop []bump, fullItem func(bump) *entries.Item, companion func(bump, *entries.Item) string) (string, int) {
+	terms := "it"
+	if len(stop) > 1 {
+		terms = "them"
 	}
+	tail := "\nChange the edit to follow " + terms + bumpTail
+	// Reserve room to name omitted rules when an unusually large batch hits.
+	room := bumpReplyBytes - len(bumpIntro) - len(tail) - 64
+	fullCount := min(len(stop), bumpMaxReasons)
+	perReason := (room-min(1024, 128*(len(stop)-fullCount)))/fullCount - 2
+	var reasons []string
+	for i, b := range stop {
+		var full *entries.Item
+		limit := room
+		related := ""
+		if i < fullCount {
+			full, limit = fullItem(b), perReason
+			if why := companion(b, full); why != "" {
+				const prefix = "\nRelated reason: "
+				related = prefix + shorten(why, limit/2-len(prefix))
+			}
+		}
+		reason := bumpReason(b, full, limit-len(related))
+		if reason == "" || len(reason)+len(related)+2 > room {
+			break
+		}
+		reasons = append(reasons, reason+related)
+		room -= len(reason) + len(related) + 2
+	}
+	shown := len(reasons)
+	if shown < len(stop) {
+		reasons = append(reasons, fmt.Sprintf("%d more rules matched.", len(stop)-shown))
+	}
+	return bumpIntro + strings.Join(reasons, "\n\n") + tail, shown
+}
+
+func bumpReason(b bump, full *entries.Item, limit int) string {
+	e := b.item.Entry
+	why := strings.TrimSpace(e.OneLine)
 	what := "is added"
 	if b.trigger.Type == "rejected" {
 		what = "brings back a rejected option"
 	}
-	return fmt.Sprintf("%s\n`%s` %s in %s.", why, b.trigger.Pattern, what, b.rel)
+	where := fmt.Sprintf("\n`%s` %s in %s.", b.trigger.Pattern, what, b.rel)
+	if len(where) > limit/2 {
+		where = shorten(where, limit/2)
+	}
+	source := ""
+	if e.Learned() {
+		label := strings.TrimPrefix(e.Source.Label, "Learned, trial. ")
+		trial := ""
+		if label != e.Source.Label {
+			trial = " (learned, trial)"
+		}
+		source = "\nLearned from " + learnedEvidence(label) + trial + " \u00b7 `mex recall " + e.ID + "`"
+	}
+	if len(where)+len(source) >= limit {
+		return ""
+	}
+	limit -= len(where) + len(source)
+	fix := ""
+	if full != nil {
+		if strings.TrimSpace(full.Full) != "" {
+			why = strings.TrimSpace(full.Full)
+		}
+		if f := full.Entry.Fix; f != nil {
+			fix = bumpFix(f, min(limit/2, max(limit-len(why), 600)))
+		}
+	}
+	return shorten(why, limit-len(fix)) + where + fix + source
 }
 
-// The last line makes following the rule the default. Asked only "if
-// deliberate", models in the live test repeated a pasted snippet at once and
-// told nobody; the person's explicit request still wins.
-func bumpMessage(reasons []string) string {
-	it := "it"
-	if len(reasons) > 1 {
-		it = "them"
+var reviewCount = lazy(`(?i)\bfrom ([1-9][0-9]*) (?:PRs?|reviews?)\b`)
+
+func learnedEvidence(label string) string {
+	if m := reviewCount().FindStringSubmatch(label); m != nil {
+		if m[1] == "1" {
+			return "1 PR review"
+		}
+		return m[1] + " PR reviews"
 	}
-	return "MEX stopped this edit once. " + strings.Join(reasons, "\n\n") +
-		"\nChange the edit to follow " + it + ", unless the person asked for exactly this. If they did, make the edit again and it will go through, and tell them it goes against what the team recorded."
+	if label != "" {
+		return strings.TrimSpace(strings.TrimPrefix(label, "Learned from "))
+	}
+	return "recorded evidence"
+}
+
+func shorten(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	if limit < 3 {
+		return ""
+	}
+	end := limit - 3
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return strings.TrimSpace(text[:end]) + "..."
+}
+
+var backtickRuns = lazy("`+")
+
+func bumpFix(f *entries.Fix, limit int) string {
+	head := "\nDo this instead (from `" + f.Path + "`):"
+	trimmed := " (trimmed)"
+	lines := strings.Split(strings.TrimSuffix(f.Snippet, "\n"), "\n")
+	for n := len(lines); n > 0; n-- {
+		code := strings.Join(lines[:n], "\n")
+		fenceLen := 3
+		for _, run := range backtickRuns().FindAllString(code, -1) {
+			fenceLen = max(fenceLen, len(run)+1)
+		}
+		fence := strings.Repeat("`", fenceLen)
+		header := head
+		if n < len(lines) {
+			header += trimmed
+		}
+		text := header + "\n" + fence + "\n" + code + "\n" + fence
+		if len(text) <= limit {
+			return text
+		}
+	}
+	if len(head)+len(trimmed) <= limit {
+		return head + trimmed
+	}
+	return ""
 }
 
 // bumpState is kept per session and agent, and reset when the epoch moves.

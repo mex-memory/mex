@@ -1,3 +1,4 @@
+import { isLearningTrial, learningTrials, setLearningTrial } from "./learn-deeper/trial-settings.js";
 import chalk from "chalk";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { existsSync, realpathSync } from "node:fs";
@@ -169,7 +170,7 @@ const cliTelemetry = createCliTelemetry(captureEvent, flush, undefined, (command
 program.hook("preAction", (_thisCommand, actionCommand) => {
   let family = actionCommand;
   while (family.parent && family.parent !== program) family = family.parent;
-  if (family.name() === "sync" && family.opts().dryRun) return;
+  if (["sync", "learn"].includes(family.name()) && family.opts().dryRun) return;
   if (cliStarted && !isFirstRunNoticeExemptCommand(family === program ? undefined : family.name())) showFirstRunNotice();
   cliTelemetry.start(actionCommand);
 });
@@ -182,7 +183,7 @@ program.hook("postAction", async (_thisCommand, actionCommand) => {
     || family.name() === "status" || family.name() === "doctor"
     || (family.name() === "report" && (family.opts().ledger || family.opts().holdout))
     || (family.name() === "upgrade" && (Number(process.exitCode ?? 0) !== 0 || (!family.opts().apply && !family.opts().finish)))
-    || (["install", "sync"].includes(family.name()) && family.opts().dryRun)) return;
+    || (["install", "sync", "learn"].includes(family.name()) && family.opts().dryRun)) return;
   // Keep the hook shim's launcher pointing at this CLI.
   try {
     const { writeLauncher } = await import("./hooks/shim/launcher.js");
@@ -1023,7 +1024,31 @@ program
   });
 
 // ── Knowledge entries ──
-for (const command of buildKnowledgeCommands()) program.addCommand(command);
+for (const command of buildKnowledgeCommands()) {
+  if (command.name() !== "rules") {
+    program.addCommand(command);
+    continue;
+  }
+  // The original command still owns rule-file scanning and its write and JSON options.
+  const learning = new Command(command.name()).description(command.description())
+    .option("--learned", "List learned rules with their ids and status");
+  for (const option of command.options) learning.addOption(option);
+  learning.action(async (options: { learned?: boolean; json?: boolean; now?: boolean; write?: boolean }) => {
+    if (!options.learned) {
+      await command.parseAsync([...(options.json ? ["--json"] : []), ...(options.now ? ["--now"] : []), ...(options.write ? ["--write"] : [])], { from: "user" });
+      return;
+    }
+    try {
+      if (options.write || options.now) throw new Error("Use --learned separately from --write and --now.");
+      const { listLearnedRules } = await import("./repo-start/review-list.js");
+      await listLearnedRules(process.cwd(), options.json);
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exitCode = 1;
+    }
+  });
+  program.addCommand(learning);
+}
 program.addCommand(buildUpgradeCommand({ afterUpgrade: showFirstRunNotice }));
 
 // ── File index ──
@@ -1099,13 +1124,32 @@ program
 
 program
   .command("learn")
-  .description("Review a quote for learning from past reviews and docs")
+  .description("Learn rules from past reviews, fixes and contributor docs after you approve an estimate")
+  .option("--agent <id>", "Choose claude-code, codex, copilot, gemini, cursor, antigravity, opencode, kiro or devin")
   .option("--model-setup <setup>", "Choose mixed or best-only")
   .option("--raise-ceiling", "Review a higher token ceiling for a waiting learning job")
-  .option("--dry-run", "Preview without queuing learning")
-  .option("--sessions", "Also import eligible past sessions (off by default)")
-  .option("--no-weekly", "Approve a one-time run without enrolling in weekly refresh")
-  .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean }) => {
+  .option("--dry-run", "Read the source inventory and show the estimate without starting a job")
+  .addOption(new Option("--sessions").hideHelp())
+  .option("--no-weekly", "Run once without enrolling in weekly refresh")
+  .addHelpText("after", [
+    "",
+    "After a run finishes, run mex in a terminal to see the review list.",
+    "Passing rules start as trials. Tick a rule to keep it permanently.",
+    "",
+    "Weekly refresh checks for new reviews and docs every 7–14 days when idle,",
+    "signed in, and within the 3% automatic allowance. Use --no-weekly for a",
+    "one-time run. To pause an existing refresh, mex off turns MEX off here.",
+    "",
+    "Project trials",
+    "  learning.stopCheck     Check scoped prose rules after an agent session.",
+    "  learning.procedures    Learn procedures from files that change together.",
+    "  learning.prDecisions   Ask for a Decisions section in PR descriptions.",
+    "  learning.alwaysOn      Load repo-wide learned rules. Off by default to save tokens.",
+    "  learning.deep.issues   Include qualifying closed issues as sources.",
+    "",
+    "Set a trial with mex config set <setting> <on|off> --project.",
+  ].join("\n"))
+  .action(async (options: { raiseCeiling?: boolean; modelSetup?: string; dryRun?: boolean; sessions?: boolean; weekly?: boolean; agent?: string }) => {
     try {
       const { runLearnCommand } = await import("./learn-deeper/offer.js");
       await runLearnCommand(options);
@@ -1121,12 +1165,27 @@ const jobsCommand = program
   .description("List MEX's background jobs on this machine; pause, resume or cancel one")
   .option("--json", "Print the jobs as JSON")
   .option("--all", "Include older jobs")
-  .action(async (options: { json?: boolean; all?: boolean }) => {
+  .option("--details", "Show job notes and token counts")
+  .action(async (options: { json?: boolean; all?: boolean; details?: boolean }) => {
     try {
       const { runJobsList } = await import("./record/jobs-command.js");
-      runJobsList(options);
+      await runJobsList(options);
     } catch (err) {
       console.error((err as Error).message);
+      process.exitCode = 1;
+    }
+  });
+program
+  .command("cancel")
+  .description("Stop live jobs in this repository")
+  .option("--all", "Stop live jobs on this computer")
+  .option("--yes", "Confirm without a prompt")
+  .action(async (options: { all?: boolean; yes?: boolean }) => {
+    try {
+      const { runCancel } = await import("./record/jobs-command.js");
+      process.exitCode = await runCancel(options);
+    } catch (error) {
+      console.error((error as Error).message);
       process.exitCode = 1;
     }
   });
@@ -1358,12 +1417,33 @@ const configCmd = program
 
 configCmd
   .command("set <key> <value>")
-  .description("Set a config value (e.g. learning.statements on|off, telemetry on|off)")
-  .option("--project", "Set delivery.scorer, delivery.surface.<id> or learning.sharing for the registered project")
+  .description("Set a config value (e.g. agent.defaults on|off, telemetry on|off)")
+  .option("--project", `Set agent.defaults, delivery.scorer, delivery.surface.<id>, learning.agent, learning.sharing or ${learningTrials.join(", ")} for the registered project`)
   .action(async (key: string, value: string, options: { project?: boolean }) => {
     try {
-      if (options.project && !["delivery.scorer", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) throw new Error("--project is supported for delivery.scorer, delivery.surface.<id> and learning.sharing.");
-      if (key.startsWith("delivery.surface.")) {
+      if (options.project && !isLearningTrial(key) && !["agent.defaults", "delivery.scorer", "learning.agent", "learning.sharing"].includes(key) && !key.startsWith("delivery.surface.")) {
+        throw new Error(`--project is supported for agent.defaults, delivery.scorer, delivery.surface.<id>, learning.agent, learning.sharing and ${learningTrials.join(", ")}.`);
+      }
+      if (isLearningTrial(key)) {
+        if (!options.project) throw new Error(`Use --project to set ${key} for this repository.`);
+        const { openRecord } = await import("./record/index.js");
+        const writer = openRecord();
+        try {
+          const { confirmation, project } = setLearningTrial(writer, key, value, process.cwd());
+          if (key === "learning.prDecisions" || key === "learning.alwaysOn") {
+            const { queueJob, ensureBackground } = await import("./record/background.js");
+            for (const checkout of writer.db.prepare("SELECT path FROM checkouts WHERE project_id=?").all(project)) {
+              queueJob(writer, { kind: "native-files", projectId: project, params: { checkout: String(checkout.path), local: true } });
+            }
+            ensureBackground({ home: writer.location.home });
+          }
+          console.log(confirmation);
+        } finally { writer.close(); }
+      } else if (key === "agent.defaults") {
+        const { configureAgentDefaults } = await import("./knowledge/native.js");
+        configureAgentDefaults(process.cwd(), value);
+        console.log(`Agent defaults ${value} for this project.`);
+      } else if (key.startsWith("delivery.surface.")) {
         const { openRecord } = await import("./record/index.js");
         const { setDeliverySurface } = await import("./controls/index.js");
         const writer = openRecord();
@@ -1377,6 +1457,10 @@ configCmd
         const writer = openRecord();
         try { setLearningSharing(writer, value, process.cwd()); } finally { writer.close(); }
         console.log(value === "manual" ? "Learned notes stay personal until mex share." : "Eligible learned notes can reach this shared repository after their diff is shown.");
+      } else if (key === "learning.agent") {
+        const { setAnalysisAgent } = await import("./learn-deeper/offer.js");
+        const name = setAnalysisAgent(value, options.project ? process.cwd() : undefined);
+        console.log(`Deep analysis agent set to ${name} ${options.project ? "for this repo" : "for this computer"}.`);
       } else if (key === "learning.statements") {
         if (value !== "on" && value !== "off") throw new Error("Use on or off for learning.statements.");
         const { openRecord } = await import("./record/index.js");
@@ -1436,7 +1520,7 @@ configCmd
         else enableInvite();
         console.log(`Feedback invite ${value === "off" ? "hidden" : "re-enabled"}.`);
       } else {
-        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output`);
+        console.error(`Unknown config key "${key}". Supported keys: telemetry, feedback, learning.agent, learning.statements, learning.sessions, delivery.scorer, delivery.surface.<id>, learning.sharing, delivery.aliases, levers.output, agent.defaults, ${learningTrials.join(", ")}`);
         process.exitCode = 1;
         return;
       }
@@ -1474,7 +1558,6 @@ const publicDescriptions: Record<string, string> = {
   recall: "Find a note by words, without a model call",
   expand: "Read a note, its source and its checks",
   edit: "Correct a note; preview changes to team entries",
-  wrong: "Retire an incorrect note and keep the reason",
   forget: "Remove a note from future sessions",
   check: "Check which notes still hold against the code",
   review: "Review learned notes before sharing them",

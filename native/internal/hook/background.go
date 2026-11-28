@@ -55,6 +55,7 @@ func (h home) launcher() (launcher, bool) {
 func workWaiting(h home, recordDirectory string) bool {
 	return exists(filepath.Join(h.mex, "jobs-pending")) || weeklyLearningDue(h.mex) || (recordDirectory != "" &&
 		(exists(filepath.Join(recordDirectory, "index-pending")) || exists(filepath.Join(recordDirectory, "judge-pending")) ||
+			exists(filepath.Join(recordDirectory, stopCheckPending)) ||
 			exists(filepath.Join(recordDirectory, "filter-pending")) || exists(filepath.Join(recordDirectory, "working-set-pending")) ||
 			exists(filepath.Join(recordDirectory, "native-pending")) || exists(filepath.Join(recordDirectory, "refresh-pending")) ||
 			exists(filepath.Join(recordDirectory, "ledger-pending")) ||

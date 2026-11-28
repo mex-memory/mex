@@ -89,7 +89,9 @@ export async function runSetupQuestions(input: QuestionsInput): Promise<Question
         const { saved, why } = line(results);
         if (saved.length) {
           saveAnswer(input.location, input.projectId, gap.id, { type: gap.type, choice: reply, subject: resolution.subject, at, entries: saved });
-          outcome = { gap, status: "saved", entries: saved, line: `Saved: your agents get it as "you said"` };
+          const detail = resolution.summary ? `${resolution.summary} · ` : "";
+          const result = gap.type === "rule-conflict" ? "Settled" : "Saved";
+          outcome = { gap, status: "saved", entries: saved, line: `${result}: ${detail}your agents get it as "you said"` };
         } else outcome = { gap, status: "not saved", line: `Not saved: ${why ?? "the gate kept it out"}` };
       }
     }

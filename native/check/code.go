@@ -1,6 +1,7 @@
 package check
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/gitstate"
+	"github.com/mex-memory/mex/native/pattern"
 )
 
 // builtAt is an index that knows the commit its files were listed at.
@@ -94,25 +96,26 @@ func (ev *Evaluator) symbolCheck(c Check) CheckResult {
 	if ev.index == nil {
 		return CheckResult{Status: Floor, Reason: "no file index for symbol checks"}
 	}
-	fp, res, ok := ev.fingerprint(file, symbol)
+	fp, res, ok := ev.fingerprint(file, symbol, want)
 	if ok {
 		if fp == want {
 			return CheckResult{Status: Pass, Now: fp}
 		}
 		return CheckResult{Status: Fail, Reason: fmt.Sprintf("%s in %s changed", symbol, file), Now: fp}
 	}
-	if res.Status != Gone {
+	if res.Status != Gone || ev.deliveryScopes != nil {
 		return res
 	}
 	if where, found := ev.relink(file, symbol, want); found {
-		return CheckResult{Status: Pass, Reason: fmt.Sprintf("%s moved to %s", symbol, where), Now: want}
+		return CheckResult{Status: Pass, Reason: fmt.Sprintf("%s moved to %s:%s", symbol, where.File, where.Symbol), Now: want, Relink: &where}
 	}
 	return res
 }
 
 // fingerprint finds a symbol in a file through the index and fingerprints
-// its current text.
-func (ev *Evaluator) fingerprint(file, symbol string) (string, CheckResult, bool) {
+// its current text. A fingerprint recorded in a checkout with CRLF line endings
+// before they were left out still matches there.
+func (ev *Evaluator) fingerprint(file, symbol, want string) (string, CheckResult, bool) {
 	data, res, ok := ev.readTarget(file)
 	if !ok {
 		return "", res, false
@@ -134,6 +137,9 @@ func (ev *Evaluator) fingerprint(file, symbol string) (string, CheckResult, bool
 		return "", CheckResult{Status: Floor, Reason: file + " changed since the last parse"}, false
 	}
 	start, end := overloadSpan(outline.Symbols, at)
+	if matchesFingerprint(data, languageOf(file), start, end, s.Kind, s.Name, want) {
+		return want, CheckResult{}, true
+	}
 	return fingerprintSpan(data, languageOf(file), start, end, s.Kind, s.Name), CheckResult{}, true
 }
 
@@ -160,6 +166,9 @@ func (ev *Evaluator) spanTrusted(file string, data []byte, start int, name strin
 	info, miss := ev.index.FileInfo(file)
 	if miss == nil && strings.HasPrefix(strings.TrimPrefix(hashBytes(data), "sha256:"), info.Hash) && info.Hash != "" {
 		return true
+	}
+	if ev.deliveryScopes != nil {
+		return false
 	}
 	lines := strings.Split(string(data), "\n")
 	if start < 1 || start > len(lines) {
@@ -205,7 +214,7 @@ func findSymbol(symbols []index.Symbol, path []string) int {
 // relink looks for the same code elsewhere: the same name in other files
 // (moved), then other symbols of the same kind in the same file (renamed).
 // Only these candidates are fingerprinted.
-func (ev *Evaluator) relink(file, symbol, want string) (string, bool) {
+func (ev *Evaluator) relink(file, symbol, want string) (SymbolRelink, bool) {
 	kind := fingerprintKind(want)
 	name := symbol[strings.LastIndex(symbol, ".")+1:]
 	tried := 0
@@ -215,29 +224,58 @@ func (ev *Evaluator) relink(file, symbol, want string) (string, bool) {
 		}
 		tried++
 		r := ev.files.read(path)
-		return r.err == nil && fingerprintSpan(r.data, languageOf(path), start, end, symKind, symName) == want
+		return r.err == nil && matchesFingerprint(r.data, languageOf(path), start, end, symKind, symName, want)
 	}
 	if hits, err := ev.index.SymbolsNamed(name); err == nil {
 		for _, h := range hits {
 			if h.Path != file && try(h.Path, h.Start, h.End, h.Kind, name) {
-				return h.Path + ":" + name, true
+				if outline, miss := ev.index.Outline(h.Path); miss == nil {
+					for i, s := range outline.Symbols {
+						if s.Start == h.Start && s.Name == name {
+							return SymbolRelink{File: h.Path, Symbol: qualifiedSymbol(outline.Symbols, i)}, true
+						}
+					}
+				}
+				return SymbolRelink{File: h.Path, Symbol: name}, true
 			}
 		}
 	}
 	if outline, miss := ev.index.Outline(file); miss == nil {
-		for _, s := range outline.Symbols {
+		for i, s := range outline.Symbols {
 			if s.Name != name && try(file, s.Start, s.End, s.Kind, s.Name) {
-				return file + ":" + s.Name, true
+				return SymbolRelink{File: file, Symbol: qualifiedSymbol(outline.Symbols, i)}, true
 			}
 		}
 	}
-	return "", false
+	return SymbolRelink{}, false
+}
+
+func qualifiedSymbol(symbols []index.Symbol, i int) string {
+	name := symbols[i].Name
+	for depth, parent := 0, symbols[i].Parent; parent != nil && depth < len(symbols); depth++ {
+		if *parent < 0 || *parent >= len(symbols) {
+			break
+		}
+		name = symbols[*parent].Name + "." + name
+		parent = symbols[*parent].Parent
+	}
+	return name
 }
 
 // fingerprintSpan hashes lines start..end as tokens. The symbol's own name
 // is left out so a rename keeps the fingerprint; the kind is kept in the
 // clear so re-linking compares like with like.
 func fingerprintSpan(data []byte, lang language, start, end int, kind, name string) string {
+	// A string or comment over several lines must read the same however git checked the file out.
+	return fingerprintText(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), lang, start, end, kind, name)
+}
+
+func matchesFingerprint(data []byte, lang language, start, end int, kind, name, want string) bool {
+	return fingerprintSpan(data, lang, start, end, kind, name) == want ||
+		bytes.Contains(data, []byte("\r\n")) && fingerprintText(data, lang, start, end, kind, name) == want
+}
+
+func fingerprintText(data []byte, lang language, start, end int, kind, name string) string {
 	h := sha256.New()
 	toks := tokenize(data, lang)
 	var kept []token
@@ -296,15 +334,45 @@ func (ev *Evaluator) patternCheck(c Check) CheckResult {
 		return res
 	}
 	want, _ := normalize(c.Saw["count"])
-	if want != float64(count) {
+	baseline, valid := want.(float64)
+	var fails bool
+	switch str(c.Target, "expect") {
+	case "", "exact":
+		fails = !valid || baseline != float64(count)
+	case "at-most":
+		fails = !valid || baseline < float64(count)
+	case "present":
+		fails = count == 0
+	default:
+		return CheckResult{Status: Floor, Reason: "unknown pattern expectation"}
+	}
+	if fails {
 		return CheckResult{Status: Fail, Reason: fmt.Sprintf("%q now occurs %d times in %s", str(c.Target, "pattern"), count, str(c.Target, "scope")), Now: count}
 	}
 	return CheckResult{Status: Pass, Now: count}
 }
 
 func (ev *Evaluator) patternCount(target map[string]any) (int, CheckResult, bool) {
-	if m := str(target, "match"); m != "" && m != "literal" {
-		return 0, CheckResult{Status: Floor, Reason: "structural patterns are counted on edits, not here"}, false
+	match, expect := str(target, "match"), str(target, "expect")
+	file := exactPatternFile(target)
+	if file != "" && (expect == "present" || expect == "at-most") {
+		data, res, ok := ev.readTarget(file)
+		if !ok {
+			return 0, res, false
+		}
+		if match == "" {
+			match = "literal"
+		}
+		if _, err := pattern.Matcher(match, str(target, "pattern")); err != nil {
+			return 0, CheckResult{Status: Floor, Reason: "the code pattern doesn't compile"}, false
+		}
+		return pattern.CodeCount(match, str(target, "pattern"), string(data)), CheckResult{}, true
+	}
+	if match != "" && match != "literal" {
+		return 0, CheckResult{Status: Floor, Reason: "structural counts need an exact file"}, false
+	}
+	if ev.deliveryScopes != nil && file != "" {
+		return ev.liveLiteralCount(file, str(target, "pattern"))
 	}
 	if ev.index == nil {
 		return 0, CheckResult{Status: Floor, Reason: "no file index for pattern checks"}, false
@@ -318,7 +386,6 @@ func (ev *Evaluator) patternCount(target map[string]any) (int, CheckResult, bool
 	if !counted {
 		return 0, CheckResult{Status: Floor, Reason: "the file index doesn't count this pattern yet"}, false
 	}
-	file := exactPatternFile(target)
 	// A folder or glob count can't be re-read here without walking the scope. After a commit
 	// made outside a session it may be stale until the background refresh lands (queued when
 	// HEAD moves), so it is being checked, never held: a rule must not deny an edit on it.

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "rules": [
+    {"id":"scope","text":"Change only what the task needs. Keep unrelated renames, reformatting, file moves and refactors out of the diff."},
+    {"id":"additions","text":"Don't add options, flags, settings, dependencies or features the task didn't ask for."},
+    {"id":"reuse","text":"Before adding a helper or an abstraction, look for an existing one in the repository and reuse it."},
+    {"id":"unused","text":"Remove unused imports, variables, parameters and branches left by your change."},
+    {"id":"conventions","text":"Follow the naming, error handling, imports and structure of the neighbouring code, and the repository's formatter and linter settings."},
+    {"id":"comments","text":"Add a comment only to explain a decision, a constraint or behaviour that isn't obvious. Keep docstrings in the length and style of those around them. Don't add comments that restate the code."},
+    {"id":"logging","text":"Add logging only for a concrete need, in the repository's existing style, and never log secrets."},
+    {"id":"behaviour","text":"Before changing existing behaviour, check its tests and history for signs that it is intended. Keep it unless the task requires the change."},
+    {"id":"assertions","text":"Never delete or weaken assertions, broaden expected results, or skip tests to make the suite pass."},
+    {"id":"coverage","text":"Add tests for changed behaviour where the neighbouring tests live, in their framework and style, reusing their fixtures. For a bug fix, add a test that fails before the fix."},
+    {"id":"compatibility","text":"Keep public signatures, defaults, return values, errors and formats compatible unless the task asks for a breaking change."},
+    {"id":"changelog","text":"Add a changelog or release-note entry only when the repository requires one, in its location and format."},
+    {"id":"submission","text":"Write commit messages and pull-request descriptions to the repository's templates and rules. Describe what changed and what you ran, and claim nothing you didn't run."},
+    {"id":"checks","text":"Run the checks the contribution guide and CI require, and report the exact commands and results, including any you couldn't run."},
+    {"id":"artifacts","text":"Before finishing, check the changed files for generated files, lockfiles and temporary files that don't belong."}
+  ]
+}

@@ -25,6 +25,7 @@ export function renderReport(report, manifest) {
     "",
     "Tokens counted from native sessions and the MEX local record. Time measured in milliseconds.",
     "USD at list prices (" + manifest.prices.profile + ", " + manifest.prices.date + ").",
+    ...(manifest.contrast === "learned-rules" ? ["Both arms run MEX. Only mex holds the " + manifest.learned.length + " learned entries listed in the manifest."] : []),
     "",
     "| Task | Arm | Usage | Accepted | Uncached input | Cache write | Cache read | Output | List-price USD | Turns | Wall ms |",
     "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|",

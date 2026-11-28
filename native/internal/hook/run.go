@@ -106,6 +106,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv Env) (
 			return recallRank(stdin, stdout)
 		case "--pattern-check":
 			return patternCheck(stdin, stdout)
+		case "--would-fire":
+			return wouldFire(stdin, stdout)
 		case "run":
 			// The Codex wrapper: the command always runs, whatever MEX's state.
 			return runWrapped(args, stdin, stdout, stderr, getenv)
@@ -336,6 +338,7 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 	judgeReady := false
 	if ev.Kind == contract.Stop {
 		judgeReady = requestJudge(ev, recordDirectory, nil)
+		judgeReady = requestStopCheck(ev, h, recordDirectory, now) || judgeReady
 	}
 	canNotice := false
 	switch ev.Kind {
@@ -444,6 +447,16 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 			reply.PersonLine += text
 		}
 	}
+	var completeStopPointer func(bool)
+	if ev.Kind == contract.Prompt && !failed && known && toModel.Context != adapter.ChannelNone && h.afterOutput != nil {
+		if pointer, complete := stopCheckPrompt(ev, h, recordDirectory, now); pointer != "" {
+			if reply.Context != "" {
+				reply.Context += "\n\n"
+			}
+			reply.Context += pointer
+			completeStopPointer = complete
+		}
+	}
 	// Calm errors: one line at a session start names hook errors since the
 	// line last ran, and points to mex doctor.
 	errorsMark := ""
@@ -459,6 +472,13 @@ func handle(agent, nativeEvent string, payload []byte, ok bool, h home, now time
 		}
 	}
 	out, dropped := profile.Render(ev, reply)
+	if completeStopPointer != nil {
+		if slices.Contains(dropped, "all") || slices.Contains(dropped, "context") {
+			completeStopPointer(false)
+		} else {
+			h.afterOutput(func() { completeStopPointer(true) })
+		}
+	}
 	if errorsMark != "" && !slices.Contains(dropped, "person_line") && !slices.Contains(dropped, "all") {
 		markErrorsShown(recordDirectory, errorsMark)
 	}

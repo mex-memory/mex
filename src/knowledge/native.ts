@@ -11,19 +11,22 @@ import { knowledgeProject, type KnowledgeOptions } from "./context.js";
 import { parseEntry } from "./entry.js";
 import { containedDirectory, readEntryFile, personalReadGuard } from "./files.js";
 import { gateEntry } from "./gates.js";
-import { planNative } from "./native-plan.js";
-import { selectNative, type Candidate } from "./native-select.js";
+import { CODEX_FALLBACK, ownedByPerson, planNative } from "./native-plan.js";
+import { learnedScopeClassifier } from "./learned-scope.js";
+import { LEARNED_ALWAYS_ON_SETTING, nativeRuleText, selectNative, type Candidate } from "./native-select.js";
 import { writeNative, type NativeWrite } from "./native-write.js";
 import { references } from "./references.js";
 import { teamEntries } from "./team.js";
-import { openRecordReadOnly } from "../record/index.js";
-import { automaticWorkEnabled } from "../controls/index.js";
+import { openRecord, openRecordReadOnly } from "../record/index.js";
+import { checkoutOn } from "../controls/index.js";
+import { DEFAULTS_REPORT, DEFAULTS_SETTING, defaultsScope, parseDefaultsReport, selectAgentDefaults, type DefaultsReport } from "./agent-defaults.js";
 
 export interface NativeRebuild extends Partial<NativeWrite> {
   /** Set when a session is running: nothing was written. */
   deferred?: { agents: string[] };
   agents: NativeAgent[];
   selected: number;
+  defaults?: DefaultsReport;
 }
 
 export interface RebuildOptions {
@@ -36,6 +39,8 @@ export interface RebuildOptions {
   /** Only the person's hidden local files: their own notes changed. */
   localOnly?: boolean;
   now?: number;
+  /** Setup enables the default pack for this checkout. Later rebuilds keep it in sync. */
+  setupDefaults?: { agents?: readonly string[]; listed?: readonly string[] };
 }
 
 /** Active personal notes for a project, gated, without retired ones. */
@@ -56,36 +61,109 @@ export function personalNotes(home: string, projectId: string, retired: Set<stri
   check(); return out;
 }
 
-/** MEX is on for this project on this machine: not off globally, and some checkout is on. */
-function mexOnHere(home: string, projectId: string): boolean {
-  try {
-    const reader = openRecordReadOnly({ home });
-    if (!reader) return true;
-    try { return automaticWorkEnabled(reader as never, projectId); } finally { reader.close(); }
-  } catch { return true; }
-}
-
 export function rebuildNative(options: KnowledgeOptions, rebuild: RebuildOptions = {}): NativeRebuild {
   const project = knowledgeProject(options);
   const home = existsSync(project.location.home) ? project.location.home : undefined;
   const agents = [...new Set([...agentsInUse(project.root, home), ...(rebuild.agents ?? [])])];
+  const scope = defaultsScope(project.root);
+  const reader = home ? openRecordReadOnly({ ...options, home }) : undefined;
+  let settings;
+  try {
+    const checkout = reader?.checkout(project.root);
+    settings = {
+      registered: checkout?.path === project.root,
+      on: (checkout ? checkoutOn(checkout, rebuild.now) : !reader)
+        && reader?.setting("global", "enabled") !== "false" && (options.env ?? process.env).MEX_OFF !== "1",
+      prDecisions: reader?.setting(project.projectId, "learning.prDecisions") === "true",
+      learnedAlwaysOn: reader?.setting(project.projectId, LEARNED_ALWAYS_ON_SETTING) === "true",
+      defaultsOn: reader?.setting(project.projectId, DEFAULTS_SETTING) !== "off",
+      previous: parseDefaultsReport(reader?.setting(scope, DEFAULTS_REPORT)),
+    };
+  } finally { reader?.close(); }
   if (home && !rebuild.force) {
     const live = liveSessions(project.root, home, rebuild.now);
-    if (live.length) return { deferred: { agents: live }, agents, selected: 0 };
+    if (live.length && !rebuild.setupDefaults) return { deferred: { agents: live }, agents, selected: 0, defaults: settings.previous };
+    // Keep the setup decision durable so its deferred rebuild knows to install defaults.
+    if (live.length) {
+      const defaults = selectAgentDefaults(project.root, { ...rebuild.setupDefaults, enabled: settings.defaultsOn }).report;
+      const writer = openRecord({ ...options, home, projectPath: undefined });
+      try { saveNativeSetting(writer, scope, DEFAULTS_REPORT, defaults); } finally { writer.close(); }
+      return { deferred: { agents: live }, agents, selected: 0, defaults };
+    }
   }
   const candidates: Candidate[] = teamEntries(options).entries.map(e => ({ level: "team" as const, entry: e.entry }));
   // While MEX is off here, its personal rule files are removed: off means the
   // agent stops hearing from MEX. Shared files live in git and stay.
-  if (home && !rebuild.sharedOnly && mexOnHere(home, project.projectId)) candidates.push(...personalNotes(home, project.projectId, project.retired, project.root));
+  if (home && !rebuild.sharedOnly && settings.on) candidates.push(...personalNotes(home, project.projectId, project.retired, project.root));
   const verdicts = candidates.some(c => c.entry.mex.checks.length) ? currentVerdicts(options, project) ?? new Map() : new Map();
-  const { selected } = selectNative(candidates, verdicts);
-  const plan = planNative(project.root, agents, selected);
+  // A person's choice, so it never reaches shared files, and nothing while MEX is off here.
+  const broadScope = learnedScopeClassifier({ checkout: project.root, recordDirectory: project.location.directory, projectId: project.projectId });
+  const { selected } = selectNative(candidates, verdicts, { broadScope, learnedAlwaysOn: settings.learnedAlwaysOn && settings.on && !rebuild.sharedOnly });
+  const defaults = settings.registered && (rebuild.setupDefaults || settings.previous)
+    ? selectAgentDefaults(project.root, { ...rebuild.setupDefaults, enabled: settings.defaultsOn && settings.on,
+      generated: selected.filter(c => c.repoWide || c.entry.mex.scope.includes("**"))
+        .map(({ entry, repoWide }) => repoWide ? nativeRuleText(entry, true) : entry.text) })
+    : undefined;
+  // Team rules turned on by that choice go into this person's local files.
+  const planned = selected.map(c => c.level === "team" && c.repoWide ? { ...c, level: "personal" as const } : c);
+  const plan = planNative(project.root, agents, planned, settings.prDecisions, defaults?.rules, settings.on && !rebuild.sharedOnly);
+  if (defaults?.rules.length && !agents.length && !defaults.report.unavailable.length) defaults.report.unavailable.push("agents without a native rule file");
+  if (defaults?.rules.length && agents.includes("claude-code") && !plan.files.some(file => file.agents.includes("claude-code") && file.defaultCount)
+    && ownedByPerson(project.root, ".claude/rules/mex-local.md")) defaults.report.unavailable.push("Claude Code");
+  if (defaults?.rules.length && agents.includes("copilot") && !plan.files.some(file => file.agents.includes("copilot") && file.defaultCount)
+    && ownedByPerson(project.root, ".github/instructions/mex-local.instructions.md")) defaults.report.unavailable.push("Copilot CLI");
   const unchecked = candidates.filter(c => c.entry.mex.checks.length && verdicts.get(`${c.level}/${c.entry.mex.id}`) !== "held").length;
   if (unchecked) plan.notes.push(`${unchecked} checked entries withheld until their current checks hold.`);
   if (rebuild.sharedOnly) plan.files = plan.files.filter(f => f.sharing === "shared");
   if (rebuild.localOnly) plan.files = plan.files.filter(f => f.sharing === "local");
   const projectDirectory = home && !rebuild.sharedOnly ? containedDirectory(home, ["projects", project.projectId], true) : undefined;
-  return { ...writeNative(plan, { root: project.root, projectDirectory, ...(rebuild.localOnly ? { only: "local" as const } : {}) }), agents, selected: selected.length };
+  if (!plan.files.length && !projectDirectory && !existsSync(join(project.root, ".mex/native.json"))) {
+    return { agents, selected: selected.length, notes: plan.notes, defaults: defaults?.report };
+  }
+  const writer = openRecord({ ...options, home: project.location.home, projectPath: undefined });
+  try {
+    const siblings = !projectDirectory ? [] : writer.db.prepare("SELECT path FROM checkouts WHERE project_id=? AND path<>? ORDER BY path LIMIT 256")
+      .all(project.projectId, project.root).map(row => String(row.path));
+    const result = writeNative(plan, { root: project.root, projectDirectory, writer,
+      siblingCheckouts: siblings, ...(rebuild.localOnly ? { only: "local" as const } : {}) });
+    if (settings.registered && !rebuild.sharedOnly) {
+      saveNativeSetting(writer, scope, CODEX_FALLBACK, plan.fallback);
+      if (defaults) saveNativeSetting(writer, scope, DEFAULTS_REPORT, defaults.report);
+    }
+    return { ...result, agents, selected: selected.length, defaults: defaults?.report };
+  } finally { writer.close(); }
+}
+
+function saveNativeSetting(writer: ReturnType<typeof openRecord>, scope: string, key: string, value: unknown): void {
+  const data = value === undefined ? undefined : JSON.stringify(value);
+  if (data === undefined || Buffer.byteLength(data) > 256 * 1024) {
+    writer.db.prepare("DELETE FROM settings WHERE scope=? AND key=?").run(scope, key);
+  } else {
+    saveNativeSettingValue(writer, scope, key, data);
+  }
+}
+
+function saveNativeSettingValue(writer: ReturnType<typeof openRecord>, scope: string, key: string, value: string): void {
+  writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value WHERE value<>excluded.value")
+    .run(scope, key, value);
+}
+export function configureAgentDefaults(directory: string, value: string): void {
+  if (value !== "on" && value !== "off") throw new Error("Use on or off for agent.defaults.");
+  const writer = openRecord();
+  let paths: string[];
+  try {
+    const checkout = writer.checkout(directory);
+    if (!checkout) throw new Error("MEX is not registered here. Run mex first.");
+    saveNativeSettingValue(writer, checkout.project_id, DEFAULTS_SETTING, value);
+    paths = (writer.db.prepare("SELECT path FROM checkouts WHERE project_id=? ORDER BY path").all(checkout.project_id) as { path: string }[])
+      .map(row => row.path).filter(path => existsSync(path));
+  } finally { writer.close(); }
+  const errors: string[] = [];
+  for (const projectPath of paths) {
+    try { rebuildNative({ projectPath }, { force: true, setupDefaults: {} }); }
+    catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  }
+  if (errors.length) throw new Error("The setting was saved. Some rule files could not be updated. " + errors.join(" "));
 }
 
 export function formatRebuild(result: NativeRebuild): string {

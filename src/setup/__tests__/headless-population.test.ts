@@ -17,7 +17,7 @@ import {
 const roots: string[] = [];
 const children: number[] = [];
 const watchers: FSWatcher[] = [];
-const codexFlags = ["exec", "--json", "--ephemeral", "--disable", "hooks", "-c", "project_doc_max_bytes=0", "-c", "memories.generate_memories=false", "-c", "memories.use_memories=false", "--sandbox", "workspace-write", "--model", "gpt-6.1-sol"];
+const codexFlags = ["exec", "--json", "--ephemeral", "--disable", "hooks", "-c", "project_doc_max_bytes=0", "-c", "memories.generate_memories=false", "-c", "memories.use_memories=false", "--sandbox", "workspace-write", "--model", "gpt-6.2-sol"];
 
 afterEach(() => {
   for (const watcher of watchers.splice(0)) watcher.close();

@@ -1,0 +1,568 @@
+{
+  "merged": {
+    "id": "PR_fixture31",
+    "number": 31,
+    "state": "MERGED",
+    "mergedAt": "2026-11-13T10:00:00Z",
+    "closedAt": "2026-11-13T10:00:00Z",
+    "title": "Wire the adapters",
+    "body": "Unify the adapter names.",
+    "author": {
+      "__typename": "User",
+      "login": "iris-dev",
+      "name": "Iris Example"
+    },
+    "mergeCommit": {
+      "oid": "OID_MERGE"
+    },
+    "headRefOid": "OID_ORIGINAL",
+    "changedFiles": 5,
+    "files": {
+      "nodes": [
+        {
+          "path": "src/changed.ts"
+        },
+        {
+          "path": "src/unchanged.ts"
+        },
+        {
+          "path": "src/outdated.ts"
+        },
+        {
+          "path": "src/new-name.ts"
+        },
+        {
+          "path": "src/secret.ts"
+        }
+      ],
+      "pageInfo": {
+        "hasNextPage": false,
+        "hasPreviousPage": false
+      }
+    },
+    "comments": {
+      "nodes": [],
+      "pageInfo": {
+        "hasNextPage": false,
+        "hasPreviousPage": false
+      }
+    },
+    "reviews": {
+      "nodes": [],
+      "pageInfo": {
+        "hasNextPage": false,
+        "hasPreviousPage": false
+      }
+    },
+    "reviewThreads": {
+      "nodes": [
+        {
+          "id": "PRRT_fixture1",
+          "path": "src/changed.ts",
+          "isResolved": true,
+          "isOutdated": false,
+          "line": 3,
+          "originalLine": 3,
+          "startLine": null,
+          "originalStartLine": null,
+          "diffSide": "RIGHT",
+          "startDiffSide": null,
+          "comments": {
+            "totalCount": 1,
+            "pageInfo": {
+              "hasNextPage": false
+            },
+            "nodes": [
+              {
+                "id": "PRRC_fixture1",
+                "fullDatabaseId": "2001",
+                "body": "Prefer the stable adapter over the fallback. See [Contributor guide](../CONTRIBUTING.md). Thanks, Fern Example.",
+                "createdAt": "2026-11-12T10:00:00Z",
+                "isMinimized": false,
+                "isCopilotCodeReview": false,
+                "author": {
+                  "__typename": "User",
+                  "login": "fern-owner",
+                  "name": "Fern Example"
+                },
+                "originalCommit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "commit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "diffHunk": "@@ -1,6 +1,6 @@\n export function changedEntry() {\n   const label = configuredName();\n-  return oldValue();\n+  return fallback(label);\n   auditComplete(label);\n   clearExpired();\n }",
+                "pullRequestReview": {
+                  "authorCanPushToRepository": true,
+                  "author": {
+                    "login": "fern-owner"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_fixture2",
+          "path": "src/unchanged.ts",
+          "isResolved": false,
+          "isOutdated": false,
+          "line": 3,
+          "originalLine": 3,
+          "startLine": null,
+          "originalStartLine": null,
+          "diffSide": "RIGHT",
+          "startDiffSide": null,
+          "comments": {
+            "totalCount": 1,
+            "pageInfo": {
+              "hasNextPage": false
+            },
+            "nodes": [
+              {
+                "id": "PRRC_fixture2",
+                "fullDatabaseId": "2002",
+                "body": "Could the separate adapter be easier to test in isolation?",
+                "createdAt": "2026-11-12T10:00:00Z",
+                "isMinimized": false,
+                "isCopilotCodeReview": false,
+                "author": {
+                  "__typename": "User",
+                  "login": "fern-owner",
+                  "name": "Fern Example"
+                },
+                "originalCommit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "commit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "diffHunk": "@@ -1,6 +1,6 @@\n export function unchangedEntry() {\n   const label = unchangedName();\n-  return oldValue();\n+  return stable(label);\n   unchangedAudit(label);\n   unchangedCleanup();\n }",
+                "pullRequestReview": {
+                  "authorCanPushToRepository": true,
+                  "author": {
+                    "login": "fern-owner"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_fixture3",
+          "path": "src/outdated.ts",
+          "isResolved": false,
+          "isOutdated": true,
+          "line": null,
+          "originalLine": 3,
+          "startLine": null,
+          "originalStartLine": null,
+          "diffSide": "RIGHT",
+          "startDiffSide": null,
+          "comments": {
+            "totalCount": 1,
+            "pageInfo": {
+              "hasNextPage": false
+            },
+            "nodes": [
+              {
+                "id": "PRRC_fixture3",
+                "fullDatabaseId": "2003",
+                "body": "The stable adapter handles the common case.",
+                "createdAt": "2026-11-12T10:00:00Z",
+                "isMinimized": false,
+                "isCopilotCodeReview": false,
+                "author": {
+                  "__typename": "User",
+                  "login": "fern-owner",
+                  "name": "Fern Example"
+                },
+                "originalCommit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "commit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "diffHunk": "@@ -1,6 +1,6 @@\n export function outdatedEntry() {\n   const label = outdatedName();\n-  return oldValue();\n+  return stable(label);\n   outdatedAudit(label);\n   outdatedCleanup();\n }",
+                "pullRequestReview": {
+                  "authorCanPushToRepository": true,
+                  "author": {
+                    "login": "fern-owner"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_fixture4",
+          "path": "src/old-name.ts",
+          "isResolved": false,
+          "isOutdated": false,
+          "line": 3,
+          "originalLine": 3,
+          "startLine": null,
+          "originalStartLine": null,
+          "diffSide": "RIGHT",
+          "startDiffSide": null,
+          "comments": {
+            "totalCount": 1,
+            "pageInfo": {
+              "hasNextPage": false
+            },
+            "nodes": [
+              {
+                "id": "PRRC_fixture4",
+                "fullDatabaseId": "2004",
+                "body": "Use the adapter for the renamed module.",
+                "createdAt": "2026-11-12T10:00:00Z",
+                "isMinimized": false,
+                "isCopilotCodeReview": false,
+                "author": {
+                  "__typename": "User",
+                  "login": "fern-owner",
+                  "name": "Fern Example"
+                },
+                "originalCommit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "commit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "diffHunk": "@@ -1,6 +1,6 @@\n export function renamedEntry() {\n   const label = renamedName();\n-  return oldValue();\n+  return fallback(label);\n   renamedAudit(label);\n   renamedCleanup();\n }",
+                "pullRequestReview": {
+                  "authorCanPushToRepository": true,
+                  "author": {
+                    "login": "fern-owner"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_fixture5",
+          "path": "src/secret.ts",
+          "isResolved": false,
+          "isOutdated": false,
+          "line": 3,
+          "originalLine": 3,
+          "startLine": null,
+          "originalStartLine": null,
+          "diffSide": "RIGHT",
+          "startDiffSide": null,
+          "comments": {
+            "totalCount": 1,
+            "pageInfo": {
+              "hasNextPage": false
+            },
+            "nodes": [
+              {
+                "id": "PRRC_fixture5",
+                "fullDatabaseId": "2005",
+                "body": "Use the adapter here too.",
+                "createdAt": "2026-11-12T10:00:00Z",
+                "isMinimized": false,
+                "isCopilotCodeReview": false,
+                "author": {
+                  "__typename": "User",
+                  "login": "fern-owner",
+                  "name": "Fern Example"
+                },
+                "originalCommit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "commit": {
+                  "oid": "OID_ORIGINAL"
+                },
+                "diffHunk": "@@ -1,6 +1,6 @@\n export function secretEntry() {\n   const label = secretName();\n-  return oldValue();\n+  return fallback(label);\n   secretAudit(label);\n   secretCleanup();\n }\n+const api_key = 'invented-credential-value';",
+                "pullRequestReview": {
+                  "authorCanPushToRepository": true,
+                  "author": {
+                    "login": "fern-owner"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "pageInfo": {
+        "hasNextPage": false,
+        "hasPreviousPage": false
+      },
+      "totalCount": 5
+    }
+  },
+  "closed": [
+    {
+      "id": "PR_fixture41",
+      "number": 41,
+      "state": "CLOSED",
+      "closedAt": "2026-11-16T10:00:00Z",
+      "title": "Try a different transport",
+      "body": "This proposal uses a different transport.",
+      "author": {
+        "__typename": "User",
+        "login": "iris-dev",
+        "name": "Iris Example"
+      },
+      "changedFiles": 3,
+      "files": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "comments": {
+        "nodes": [
+          {
+            "id": "IC_fixture41",
+            "fullDatabaseId": "2041",
+            "body": "We don't want two transport versions carrying the same messages.",
+            "createdAt": "2026-11-16T10:00:00Z",
+            "isMinimized": false,
+            "isCopilotCodeReview": false,
+            "author": {
+              "__typename": "User",
+              "login": "fern-owner",
+              "name": "Fern Example"
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "reviews": {
+        "nodes": [
+          {
+            "id": "PRR_fixture41",
+            "fullDatabaseId": "2082",
+            "body": "The old transport is an intentional deployment boundary.",
+            "createdAt": "2026-11-10T10:00:00Z",
+            "isMinimized": false,
+            "isCopilotCodeReview": false,
+            "author": {
+              "__typename": "User",
+              "login": "fern-owner",
+              "name": "Fern Example"
+            },
+            "authorCanPushToRepository": true
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "timelineItems": {
+        "nodes": [
+          {
+            "createdAt": "2026-11-16T10:00:00Z",
+            "actor": {
+              "__typename": "User",
+              "login": "fern-owner",
+              "name": "Fern Example"
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "labels": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      }
+    },
+    {
+      "id": "PR_fixture42",
+      "number": 42,
+      "state": "CLOSED",
+      "closedAt": "2026-11-17T10:00:00Z",
+      "title": "Try a different transport",
+      "body": "This proposal uses a different transport.",
+      "author": {
+        "__typename": "User",
+        "login": "fern-owner",
+        "name": "Fern Example"
+      },
+      "changedFiles": 3,
+      "files": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "comments": {
+        "nodes": [
+          {
+            "id": "IC_fixture42",
+            "fullDatabaseId": "2042",
+            "body": "Closing for no activity.",
+            "createdAt": "2026-11-17T10:00:00Z",
+            "isMinimized": false,
+            "isCopilotCodeReview": false,
+            "author": {
+              "__typename": "Bot",
+              "login": "prune-helper[bot]"
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "reviews": {
+        "nodes": [
+          {
+            "id": "PRR_fixture42",
+            "fullDatabaseId": "2084",
+            "body": "The old transport is an intentional deployment boundary.",
+            "createdAt": "2026-11-10T10:00:00Z",
+            "isMinimized": false,
+            "isCopilotCodeReview": false,
+            "author": {
+              "__typename": "User",
+              "login": "fern-owner",
+              "name": "Fern Example"
+            },
+            "authorCanPushToRepository": true
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "timelineItems": {
+        "nodes": [
+          {
+            "createdAt": "2026-11-17T10:00:00Z",
+            "actor": {
+              "__typename": "Bot",
+              "login": "prune-helper[bot]"
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "labels": {
+        "nodes": [
+          {
+            "name": "stale"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      }
+    },
+    {
+      "id": "PR_fixture43",
+      "number": 43,
+      "state": "CLOSED",
+      "closedAt": "2026-11-18T10:00:00Z",
+      "title": "Try a different transport",
+      "body": "This proposal uses a different transport.",
+      "author": {
+        "__typename": "User",
+        "login": "fern-owner",
+        "name": "Fern Example"
+      },
+      "changedFiles": 3,
+      "files": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "comments": {
+        "nodes": [
+          {
+            "id": "IC_fixture43",
+            "fullDatabaseId": "2043",
+            "body": "Automated close.",
+            "createdAt": "2026-11-18T10:00:00Z",
+            "isMinimized": false,
+            "isCopilotCodeReview": false,
+            "author": {
+              "__typename": "Bot",
+              "login": "prune-helper[bot]"
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "reviews": {
+        "nodes": [
+          {
+            "id": "PRR_fixture43",
+            "fullDatabaseId": "2086",
+            "body": "The old transport is an intentional deployment boundary.",
+            "createdAt": "2026-11-10T10:00:00Z",
+            "isMinimized": false,
+            "isCopilotCodeReview": false,
+            "author": {
+              "__typename": "User",
+              "login": "fern-owner",
+              "name": "Fern Example"
+            },
+            "authorCanPushToRepository": true
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "timelineItems": {
+        "nodes": [
+          {
+            "createdAt": "2026-11-18T10:00:00Z",
+            "actor": {
+              "__typename": "Bot",
+              "login": "prune-helper[bot]"
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      },
+      "labels": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "hasPreviousPage": false
+        }
+      }
+    }
+  ],
+  "originalLines": [
+    "export function changedEntry() {",
+    "  const label = configuredName();",
+    "  return fallback(label);",
+    "  auditComplete(label);",
+    "  clearExpired();",
+    "}"
+  ]
+}

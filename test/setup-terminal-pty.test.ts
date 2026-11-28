@@ -81,11 +81,12 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     const result = await terminal(f, [], [], { columns: 80, rows: 24, command });
     expect(result.exitCode, result.output).toBe(0);
     // The rich screen: steps settle into an aligned list, and the mascot sums up the run at the end.
-    expect(result.output).toMatch(/MEX\s+project\s+· \$0 · nothing added to git/u);
+    // The header names only the repository; git status below proves nothing was added to git.
+    expect(result.output).toMatch(/MEX\s+project\n/u);
     expect(result.output).toMatch(/✓ Your code\s+\d+ files? indexed/u);
     expect(result.output).toMatch(/✓ Git history\s+no commits yet/u);
-    expect(result.output).toMatch(/Read project in \d+\.\d s, for \$0\./u);
-    expect(result.output).toContain("undo mex off this repo · mex uninstall everything");
+    expect(result.output).toMatch(/Read project in \d+\.\d s\./u);
+    expect(result.output).toMatch(/To undo: mex off turns MEX off in this repo · mex uninstall removes MEX from\s+this computer\./u);
     expect(result.raw).toMatch(/\x1b\[/u);
     expect(result.output).not.toContain("Choose your AI tools");
     expect(spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: f.project, encoding: "utf8" }).stdout).toBe("");
@@ -103,7 +104,7 @@ describe.skipIf(Boolean(skipReason))(`built terminal setup acceptance${skipReaso
     expect(result.output).toContain("Not a git repo. MEX can remember notes, rules and recipes for agents here,");
     expect(result.output.split("Turn on here? [y/n]").length).toBe(2);
     if (on) {
-      expect(result.output).toMatch(/MEX\s+project\s+· \$0/u);
+      expect(result.output).toMatch(/MEX\s+project\n/u);
       expect(existsSync(join(f.project, ".mex", "project.json"))).toBe(true);
     } else {
       expect(result.output).toContain("MEX stays off here.");

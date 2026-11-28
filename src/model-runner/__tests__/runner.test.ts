@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runModel, selectModel, DEFAULT_MODELS, MAX_MODEL_RESULT_BYTES, MAX_MODEL_PROMPT_BYTES, MAX_MODEL_STREAM_BYTES } from "../index.js";
-import { buildModelCommand } from "../command.js";
+import { buildModelCommand, MODEL_SYSTEM_PROMPT } from "../command.js";
 import { openRecordReadOnly } from "../../record/index.js";
 
 const temps: string[] = [], pids: number[] = [];
@@ -46,9 +46,88 @@ describe("model selection", () => {
     expect(codex.args).not.toContain("mcp_servers={}");
     expect(codex.env).toEqual({MEX_BACKGROUND:"1"});
   });
+  it("gives a read-only call exactly the look-only tools and a turn cap, and nothing that edits", () => {
+    const claude = buildModelCommand("claude","",{role:"cheap",access:"read",maxTurns:4});
+    const tools = claude.args[claude.args.indexOf("--tools")+1];
+    expect(tools).toBe("Read,Grep,Glob");
+    expect(claude.args[claude.args.indexOf("--allowedTools")+1]).toBe("Read,Grep,Glob");
+    expect(claude.args[claude.args.indexOf("--max-turns")+1]).toBe("4");
+    expect(claude.args).not.toContain("acceptEdits");
+    expect(buildModelCommand("claude","",{role:"cheap",access:"read",maxTurns:500}).args).toContain("20");
+    const codex = buildModelCommand("codex","-",{role:"cheap",access:"read"});
+    expect(codex.args[codex.args.indexOf("--sandbox")+1]).toBe("read-only");
+    expect(codex.args).toEqual(expect.arrayContaining(["--ignore-user-config", 'approval_policy="never"', 'web_search="disabled"', "mcp_servers={}"]));
+    expect(codex.args).not.toContain("--max-turns");
+    // The default stays tool-less.
+    expect(buildModelCommand("claude","",{role:"cheap"}).args[buildModelCommand("claude","",{role:"cheap"}).args.indexOf("--tools")+1]).toBe("");
+  });
+  it("isolates Codex evidence judgments from user context and tools", () => {
+    const { args } = buildModelCommand("codex", "-", { role: "cheap", isolatedText: true, allowNonGit: true });
+    expect(args).toEqual(expect.arrayContaining(["--ignore-user-config", "--ignore-rules", "mcp_servers={}",
+      'web_search="disabled"', 'approval_policy="never"', "--skip-git-repo-check"]));
+    expect(args.filter((_, i) => args[i - 1] === "--disable")).toEqual(expect.arrayContaining(["shell_tool", "apps", "plugins", "multi_agent_v2"]));
+    // Codex's own agent instructions and context notes are replaced by MEX's one line.
+    expect(args).toEqual(expect.arrayContaining(["include_permissions_instructions=false", "include_environment_context=false"]));
+    expect(args).not.toContain("agents.enabled=false");
+    // With the installed Codex's feature list, the extra tools go too, but only the features it knows.
+    const lean = buildModelCommand("codex", "-", { role: "cheap", isolatedText: true, codexFeatures: new Set(["view_image", "goals"]) }).args;
+    expect(lean).toEqual(expect.arrayContaining(["agents.enabled=false", "skills.include_instructions=false"]));
+    expect(lean.filter((_, i) => lean[i - 1] === "--disable")).toEqual(expect.arrayContaining(["view_image", "goals"]));
+    expect(lean).not.toContain("browser_use");
+    const instructions = args.find(arg => arg.startsWith("model_instructions_file="))!;
+    expect(readFileSync(JSON.parse(instructions.slice("model_instructions_file=".length)), "utf8")).toBe(MODEL_SYSTEM_PROMPT);
+    expect(args[args.indexOf("--sandbox") + 1]).toBe("read-only");
+    expect(args[args.indexOf("--model") + 1]).toBe(DEFAULT_MODELS.codex.cheap);
+  });
 });
 
 describe("one-shot model runner with fake agents", () => {
+  it.each([
+    { agent: "gemini", output: JSON.stringify({ response: "answer", stats: { models: {
+      "gemini-pro": { tokens: { prompt: 18, cached: 4, candidates: 3, total: 23 } },
+      "gemini-flash": { tokens: { prompt: 10, candidates: 2, total: 12 } },
+    } } }, null, 2), usage: { input: 24, cache_read: 4, output: 7, estimated: false } },
+    { agent: "copilot", output: [
+      { type: "assistant.message", data: { content: "answer" } },
+      { type: "assistant.usage", id: "turn", data: { inputTokens: 18, cacheReadTokens: 4, outputTokens: 3 } },
+    ].map(row => JSON.stringify(row)).join("\n"), usage: { input: 14, cache_read: 4, output: 3, estimated: false } },
+    { agent: "copilot", output: JSON.stringify({ type: "assistant.message", data: { content: "answer" } }),
+      usage: { estimated: true } },
+  ] as const)("records a bounded $agent reply and its usage", async ({ agent, output, usage }) => {
+    const root = fixture();
+    const prompt = "private evidence ".repeat(4000);
+    const spawn = transport(`const fs = require("node:fs");
+      const agent = ${JSON.stringify(agent)}, args = process.argv.slice(1);
+      const verify = (task) => {
+        if (task.length !== ${prompt.length} || args.join(" ").includes("private evidence")) process.exit(10);
+        process.stdout.write(${JSON.stringify(output)});
+      };
+      if (agent === "gemini") {
+        const c = JSON.parse(fs.readFileSync(process.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, "utf8"));
+        if (c.hooksConfig.enabled || c.admin.mcp.enabled || c.tools.core.join() !== "read_file" ||
+          args[args.indexOf("--approval-mode") + 1] !== "plan") process.exit(11);
+        let input = "";
+        process.stdin.on("data", chunk => input += chunk);
+        process.stdin.on("end", () => verify(input));
+      } else {
+        const c = JSON.parse(fs.readFileSync(process.env.COPILOT_HOME + "/config.json", "utf8"));
+        if (!c.disableAllHooks || !args.includes("--available-tools=view")) process.exit(12);
+        verify(fs.readFileSync("task.txt", "utf8"));
+      }`);
+    const result = await runModel({ agent, prompt, projectRoot: root, purpose: "deep.test", __internal: { spawn } });
+    expect(result.text).toBe("answer");
+    expect(result.usage).toMatchObject(usage);
+    expect(saved()).toEqual([expect.objectContaining({ agent, estimated: +usage.estimated })]);
+  });
+
+  it.each(["gemini", "copilot"] as const)("rejects malformed %s output", async agent => {
+    const root = fixture();
+    const spawn = transport('process.stdin.resume(); process.stdout.write("{bad-json");');
+    await expect(runModel({ agent, prompt: "task", projectRoot: root, purpose: "deep.test", __internal: { spawn } }))
+      .rejects.toMatchObject({ category: "protocol" });
+    expect(saved()).toEqual([expect.objectContaining({ agent, estimated: 1 })]);
+  });
+
   it.each(["claude","codex"] as const)("pipes the complete %s prompt, drains the terminal record and accounts once", async agent => {
     const root=fixture(), events=done(agent);
     const spawn=transport(`const fs=require('node:fs');let input='';process.stdin.on('data',b=>input+=b);process.stdin.on('end',()=>{fs.writeFileSync('observed.json',JSON.stringify({input,args:process.argv.slice(1),background:process.env.MEX_BACKGROUND}));for(const e of ${JSON.stringify(events)}){process.stdout.write(JSON.stringify(e));process.stdout.write(String.fromCharCode(10));}});`);
@@ -93,6 +172,36 @@ describe("one-shot model runner with fake agents", () => {
     const absent=transport(`process.stdin.resume();process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));`);
     await expect(runModel({agent:"codex",prompt:"task",projectRoot:root,purpose:"test",__internal:{spawn:absent}})).rejects.toMatchObject({category:"protocol"});
   });
+  it("counts distinct Codex tool items and keeps the completed answer below the cap", async () => {
+    const root = fixture();
+    const item = { id: "item_1", type: "command_execution" };
+    const events = ["started", "updated", "completed"].map(phase => ({ type: `item.${phase}`, item }));
+    const spawn = transport(`process.stdin.resume(); process.stdout.write(${JSON.stringify([...events, ...done("codex")].map(e => JSON.stringify(e)).join("\n"))});`);
+    const result = await runModel({ agent: "codex", prompt: "task", projectRoot: root, purpose: "verify.test",
+      readOnlyTools: { maxTurns: 2 }, __internal: { spawn } });
+    expect(result.text).toBe("answer");
+    expect(saved()).toHaveLength(1);
+  });
+
+  it("terminates Codex at the tool cap, discards its answer and records reported usage", async () => {
+    const root = fixture();
+    const [partial, usage] = done("codex", '{"verdict":"keep"}');
+    const events = [
+      { type: "thread.started", thread_id: "verify-fixture" },
+      { type: "turn.started" },
+      { type: "item.started", item: { id: "item_1", type: "command_execution" } },
+      { type: "item.completed", item: { id: "item_1", type: "command_execution" } },
+      partial, usage,
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_2", type: "mcp_tool_call" } },
+    ];
+    const spawn = transport(`process.stdin.resume(); process.stdout.write(${JSON.stringify(events.map(e => JSON.stringify(e)).join("\n") + "\n")}); setInterval(() => {}, 1000);`);
+    await expect(runModel({ agent: "codex", prompt: "task", projectRoot: root, purpose: "verify.test", timeoutMs: 10_000,
+      readOnlyTools: { maxTurns: 2 }, __internal: { spawn, onSpawn: pid => pids.push(pid) } })).rejects.toMatchObject({ category: "tool_limit" });
+    expect(saved()).toEqual([expect.objectContaining({ purpose: "verify.test", input: 10, cache_read: 4, output: 3,
+      estimated: 0, session_id: "verify-fixture" })]);
+  });
+
   it("bounds total wall time even when stdout keeps refreshing inactivity", async () => {
     const root=fixture();
     const spawn=transport(`process.stdin.resume();setInterval(()=>{process.stdout.write('{"type":"tick"}');process.stdout.write(String.fromCharCode(10));},5);`);

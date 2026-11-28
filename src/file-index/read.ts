@@ -51,6 +51,12 @@ export class IndexReader {
   get asOf(): string { return this.pointer.as_of; }
   close(): void { if (this.db.isOpen) this.db.close(); }
 
+  /** Paths with a usable record in this immutable snapshot. */
+  indexedPaths(): string[] {
+    return (this.db.prepare("SELECT path FROM paths WHERE reason IS NULL AND hash IS NOT NULL AND lang IS NOT NULL")
+      .all() as Array<{ path: string }>).map(row => row.path);
+  }
+
   /** A path relative to the checkout with `/`, or undefined when it is outside it. */
   relativePath(path: string): string | undefined {
     if (isAbsolute(path)) {

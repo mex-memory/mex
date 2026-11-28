@@ -66,7 +66,11 @@ describe("finding gaps", () => {
   it("asks about rule files that name different commands, not one that only says more", () => {
     const gaps = findGaps({ root, scan: conflictScan("Run `pnpm test` before a push.", "Run `npm test` before a push.") });
     expect(gaps.map(gap => gap.type)).toEqual(["rule-conflict"]);
-    expect(gaps[0]!.question).toBe('`AGENTS.md` says `npm test`, `CLAUDE.md` says `pnpm test` (under "Testing"). Which is right?');
+    expect(gaps[0]).toMatchObject({
+      title: "Your rule files disagree on the test command",
+      question: "Which is right?",
+      details: ["AGENTS.md says `npm test`.", 'CLAUDE.md says `pnpm test` (under "Testing").'],
+    });
     expect(findGaps({ root, scan: conflictScan("Run `pnpm test`. Also `pnpm lint`.", "Run `pnpm test`.") })).toEqual([]);
     expect(findGaps({ root, scan: conflictScan("Run the tests first.", "Always run tests.") })).toEqual([]);
   });
@@ -81,7 +85,7 @@ describe("finding gaps", () => {
   it("asks about a layer rule broken in a few places and a generated file edited by hand", () => {
     const gaps = findGaps({ root, recipes: layerRecipes, facts: { ...layerFacts, generated: [{ path: "src/gen.ts", signal: "marker" }], hand_edited: [{ path: "src/gen.ts", commits: 3 }] } });
     expect(gaps.map(gap => gap.type)).toEqual(["layer-exception", "hand-edited"]);
-    expect(gaps[0]!.question).toContain("`packages/ui` imports `@acme/db` in 2 places");
+    expect(gaps[0]!.details.join(" ")).toContain("`packages/ui` imports `@acme/db` in 2 places");
     // History alone isn't a header: no question.
     expect(findGaps({ root, facts: facts({ generated: [{ path: "x.ts", signal: "history" }], hand_edited: [{ path: "x.ts", commits: 3 }] }) })).toEqual([]);
   });
@@ -142,6 +146,7 @@ describe("answers", () => {
 
   it("saves a rule-file answer as a decision that fires on the out-of-date command", async () => {
     const result = await runSetupQuestions(input({ scan: conflictScan("Run `pnpm test` before a push.", "Run `npm test` before a push."), ask: always("1") }));
+    expect(result.outcomes[0]).toMatchObject({ line: 'Settled: the test command is `npm test` · your agents get it as "you said"' });
     // Sorted paths: AGENTS.md is choice 1 and names `npm test`; CLAUDE.md's `pnpm test` is out of date.
     const entry = saved(result.outcomes);
     expect(entry.mex.kind).toBe("decision");

@@ -35,6 +35,8 @@ var hashRE = lazy(`^sha256:[a-f0-9]{64}$`)
 var driveRE = lazy(`^[A-Za-z]:`)
 var dateRE = lazy(`^\d{4}-\d{2}-\d{2}$`)
 var shaRE = lazy(`^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
+var fixLinesRE = lazy(`^[1-9]\d{0,15}-[1-9]\d{0,15}$`)
+var versionRE = lazy(`^v?\d+(?:\.\d+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
 var legacyNodeRE = lazy(`^[A-Za-z_]+:[0-9a-fA-F]{8,}$`)
 var legacyFingerprintRE = lazy(`^(?:[mM][hH]:\d+:(?:[0-9a-fA-F]{2})+|mh2:\d+:[A-Za-z0-9_-]+)$`)
 
@@ -46,6 +48,20 @@ type Source struct {
 	Model    *Model `json:"model,omitempty"`
 	Label    string `json:"label,omitempty"`
 }
+
+// Learned includes shared entries whose producer was stripped on publication,
+// and judge rewrites that keep the entry's learned id.
+func (s Source) Learned(id string) bool {
+	return s.Producer == "learn-deeper" || (s.Type != "person" &&
+		(s.Producer == "judge" || s.Producer == "") && learnedID().MatchString(id))
+}
+
+type Fix struct {
+	Snippet string `yaml:"snippet" json:"snippet"`
+	Path    string `yaml:"path" json:"path"`
+	Commit  string `yaml:"commit" json:"commit"`
+	Lines   string `yaml:"lines" json:"lines"`
+}
 type Model struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
@@ -55,6 +71,7 @@ type Trigger struct {
 	Match   string `json:"match"`
 	Pattern string `json:"pattern"`
 }
+
 type Check struct {
 	Kind   string            `json:"kind"`
 	Role   string            `json:"role"`
@@ -91,6 +108,7 @@ type Entry struct {
 	Aliases    []string      `json:"aliases,omitempty"`
 	Asks       []string      `json:"asks,omitempty"`
 	Commit     *CommitAnchor `json:"commit,omitempty"`
+	Fix        *Fix          `json:"fix,omitempty"`
 	Supersedes []string      `json:"supersedes,omitempty"`
 	Status     string        `json:"status"`
 	Retired    *Retirement   `json:"retired,omitempty"`
@@ -350,6 +368,67 @@ func count(v any) bool {
 	n, ok := v.(float64)
 	return ok && n >= 0 && n <= 9007199254740991 && math.Trunc(n) == n
 }
+func sha(v any) bool { s, ok := v.(string); return ok && shaRE().MatchString(s) }
+func maxLines(s string, max int) bool {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if strings.HasSuffix(s, "\n") || strings.HasSuffix(s, "\r") {
+		s = s[:len(s)-1]
+	}
+	return strings.Count(s, "\n")+strings.Count(s, "\r") < max
+}
+func code(v any, lines int) bool {
+	s, ok := v.(string)
+	return ok && s != "" && !strings.ContainsRune(s, 0) && maxLines(s, lines)
+}
+func validFix(v any) bool {
+	return object(v, map[string]rule{
+		"snippet": func(v any) bool { return str(v, 800) && code(v, 10) },
+		"path":    file, "commit": sha,
+		"lines": func(v any) bool {
+			s, ok := v.(string)
+			if !ok || !fixLinesRE().MatchString(s) {
+				return false
+			}
+			lo, hi, _ := strings.Cut(s, "-")
+			start, _ := strconv.ParseInt(lo, 10, 64)
+			end, _ := strconv.ParseInt(hi, 10, 64)
+			return end >= start && end-start < 10 && end <= 9007199254740991
+		},
+	}, nil)
+}
+func region(v any) bool {
+	if !object(v, map[string]rule{
+		"start": count, "end": count, "text": func(v any) bool { return code(v, 40) }, "hash": hash,
+	}, nil) {
+		return false
+	}
+	m := v.(map[string]any)
+	start, end := m["start"].(float64), m["end"].(float64)
+	return start >= 1 && end >= start && end-start < 40
+}
+func fixtureBytes(pairs []any) int {
+	n := 0
+	for _, pair := range pairs {
+		p := pair.(map[string]any)
+		n += len(p["before"].(map[string]any)["text"].(string)) + len(p["after"].(map[string]any)["text"].(string))
+	}
+	return n
+}
+func proves(v any) bool {
+	var seen [32]bool
+	return list(v, 1, 32, func(v any) bool {
+		if !count(v) || v.(float64) >= 32 {
+			return false
+		}
+		i := int(v.(float64))
+		if seen[i] {
+			return false
+		}
+		seen[i] = true
+		return true
+	})
+}
+func version(v any) bool { return str(v, 128) && versionRE().MatchString(v.(string)) }
 func bounded(v any) bool {
 	remaining := 1024
 	var visit func(any, int) bool
@@ -480,9 +559,9 @@ func metadata(v any) bool {
 		"asks":       func(v any) bool { return phrases(v, 5, 120) },
 		"supersedes": func(v any) bool { return list(v, 0, 8, ident) },
 		"commit": func(v any) bool {
-			sha := func(v any) bool { s, ok := v.(string); return ok && shaRE().MatchString(s) }
 			return object(v, map[string]rule{"sha": sha}, map[string]rule{"patch_id": sha, "subject": func(v any) bool { return trimmedLine(v, 512) }, "quote": func(v any) bool { return trimmedLine(v, 512) }, "files": func(v any) bool { return list(v, 0, 64, file) }})
 		},
+		"fix":     validFix,
 		"retired": func(v any) bool { return object(v, map[string]rule{"reason": line, "by": line, "at": date}, nil) },
 	}
 	if !object(v, required, optional) {
@@ -490,10 +569,33 @@ func metadata(v any) bool {
 	}
 	m := v.(map[string]any)
 	source := m["source"].(map[string]any)
+	producer, _ := source["producer"].(string)
+	if q, ok := source["quote"].(string); ok && source["type"] != "person" &&
+		(Source{Producer: producer, Type: source["type"].(string)}).Learned(m["id"].(string)) {
+		words := strings.FieldsFunc(q, func(r rune) bool {
+			return r == '\uFEFF' || r != '\u0085' && unicode.IsSpace(r)
+		})
+		if len(words) == 0 || len(words) > 25 {
+			return false
+		}
+	}
 	if source["type"] == "person" {
 		if _, ok := source["quote"]; !ok {
 			return false
 		}
+	}
+	if _, ok := m["fix"]; ok && !choice("rule", "decision", "pitfall")(m["kind"]) {
+		return false
+	}
+	n := 0
+	for _, c := range m["checks"].([]any) {
+		check := c.(map[string]any)
+		if check["kind"] == "fixture" {
+			n += fixtureBytes(check["target"].(map[string]any)["pairs"].([]any))
+		}
+	}
+	if n > 12*1024 {
+		return false
 	}
 	_, retired := m["retired"]
 	return retired == (m["status"] == "retired")
@@ -577,8 +679,27 @@ func validCheck(v any) bool {
 		saw = map[string]rule{"fingerprint": line}
 	case "pattern":
 		target = map[string]rule{"scope": relative, "pattern": line}
-		optional = map[string]rule{"match": choice("literal", "structural")}
+		optional = map[string]rule{"match": choice("literal", "structural"), "expect": choice("exact", "at-most", "present")}
 		saw = map[string]rule{"count": count}
+	case "fixture":
+		target = map[string]rule{"pairs": func(v any) bool {
+			return list(v, 1, 3, func(v any) bool {
+				return object(v, map[string]rule{"path": file, "commit": sha, "before": region, "after": region}, nil)
+			}) && fixtureBytes(v.([]any)) <= 12*1024
+		}, "proves": proves}
+		saw = map[string]rule{"ok": func(v any) bool { return v == true }}
+	case "scope":
+		target = map[string]rule{"glob": relative}
+		saw = map[string]rule{"count": count}
+	case "quote":
+		target = map[string]rule{"file": file, "exact": func(v any) bool {
+			return str(v, 4096) && strings.TrimSpace(v.(string)) != "" && !strings.ContainsRune(v.(string), 0)
+		}, "prefix": func(v any) bool { return str(v, 128) }, "suffix": func(v any) bool { return str(v, 128) }}
+		optional = map[string]rule{"heading": line}
+		saw = map[string]rule{"hash": hash}
+	case "until":
+		target = map[string]rule{"file": file, "pointer": pointer, "version": version}
+		saw = map[string]rule{"value": version}
 	case "relation":
 		target = map[string]rule{"query": line, "from": relative, "to": relative}
 		saw = map[string]rule{"count": count}

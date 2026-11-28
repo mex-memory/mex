@@ -106,6 +106,8 @@ type Options struct {
 	// NativeCwd is the host's actual working directory. Codex loads its
 	// ancestor instruction chain at startup, not arbitrary nested files on read.
 	NativeCwd string `json:"native_cwd,omitempty"`
+	// Only the live Codex SessionStart may replace an unavailable native file.
+	IncludeCodexFallback bool `json:"-"`
 	// Path is relative to Checkout, not the shell's folder in another repo.
 	Path     string    `json:"path"`
 	Deadline time.Time `json:"-"`
@@ -143,6 +145,10 @@ type Result struct {
 	// NativeStale says MEX's rule files carry a note the code has changed or
 	// broken, so they should be rebuilt before the next session.
 	NativeStale bool `json:"native_stale,omitempty"`
+	// NativeLoaded records learned native rules and the entries in Codex's
+	// replacement section so the normal delivery path can skip their receipts.
+	NativeLoaded  []Item `json:"-"`
+	CodexFallback string `json:"-"`
 }
 
 // maxCorrections bounds the retractions in one brief; the rule files are
@@ -418,7 +424,7 @@ func Build(opts Options) (Result, error) {
 	// starting folder (when asked), personal state and the deadline.
 	usable := func(c candidate, area bool) bool {
 		e := c.entry
-		if retired[e.ID] {
+		if retired[e.ID] || e.Learned() {
 			return false
 		}
 		// The person's own notes reach every new session, whatever their
@@ -443,6 +449,40 @@ func Build(opts Options) (Result, error) {
 		}
 		return inTime(c)
 	}
+	fallbackIDs := map[string]bool{}
+	var fallbackEntries []fallbackEntry
+	result.CodexFallback, fallbackEntries = codexFallback(root, opts, personalState, func(item fallbackEntry, area string) bool {
+		c, found := byID[item.ID]
+		if !found || c.level != item.Level || (c.level != "team" && c.level != "personal") ||
+			retired[item.ID] || result.Coverage.Covers(item.ID, opts.Agent, opts.Path) {
+			return false
+		}
+		e := c.entry
+		scope := "**"
+		if area != "" {
+			scope = area + "/**"
+		}
+		if e.Status != "active" || !matchesFallbackEntry(item, e) ||
+			!contains(e.Scope, scope) || e.Source.Type == "rule-file" || strength(e) == 4 ||
+			(e.Kind != "rule" && e.Kind != "decision" && e.Kind != "pitfall" && e.Kind != "procedure" && e.Kind != "recipe") ||
+			e.Learned() && (area != "" || len(e.When) != 0) {
+			return false
+		}
+		if c.level == "personal" {
+			gone, err := personalState.HasSetting(opts.ProjectID, "knowledge.retired."+item.ID)
+			if err != nil || gone {
+				return false
+			}
+		}
+		if c.level == "team" && ruleChanges.For(e.ID, c.hash) != nil {
+			return false
+		}
+		return (len(e.Checks) == 0 && !e.Learned()) || verdictOf(c) == check.Held
+	})
+	for _, item := range fallbackEntries {
+		fallbackIDs[item.ID] = true
+		result.NativeLoaded = append(result.NativeLoaded, Item{ID: item.ID, Level: item.Level})
+	}
 	itemFor := func(c candidate, verdict string) Item {
 		e := c.entry
 		label := entries.Label(e, c.level)
@@ -458,7 +498,7 @@ func Build(opts Options) (Result, error) {
 		if len(visiting) >= 32 {
 			return nil, false
 		}
-		if seen[e.ID] || visiting[e.ID] || result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
+		if seen[e.ID] || visiting[e.ID] || fallbackIDs[e.ID] || result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
 			return nil, true
 		}
 		if !usable(c, area) {
@@ -491,12 +531,19 @@ func Build(opts Options) (Result, error) {
 	// the code moved since (a pull, an edit in another session), a note the
 	// agent just loaded from them may no longer hold: retract it here and ask
 	// for a rebuild. Imported rule files are the person's own and untouched.
+	broadLearned := entries.CheckoutBroadLearned(directory, opts.ProjectID, opts.Checkout)
 	for _, c := range all {
 		if len(result.Corrections) >= maxCorrections {
 			break
 		}
 		e := c.entry
-		if (c.level != "personal" && c.level != "team") || len(e.Checks) == 0 || retired[e.ID] || !result.Coverage.Covers(e.ID, opts.Agent, opts.Path) || !inTime(c) {
+		if (c.level != "personal" && c.level != "team") || retired[e.ID] || !result.Coverage.Covers(e.ID, opts.Agent, opts.Path) || !inTime(c) {
+			continue
+		}
+		if e.Status == "active" && len(e.When) == 0 && broadLearned(e) {
+			result.NativeLoaded = append(result.NativeLoaded, Item{ID: e.ID, Level: c.level})
+		}
+		if len(e.Checks) == 0 {
 			continue
 		}
 		verdict := verdictOf(c)
@@ -508,7 +555,7 @@ func Build(opts Options) (Result, error) {
 			// Still request the rebuild, without spending the person's brief room.
 			continue
 		}
-		if verdict == check.Broken || e.Kind == "fact" {
+		if verdict == check.Broken || e.Kind == "fact" || e.Learned() {
 			line := correctionLine(e.ID)
 			if tokens+TokenBound("\n"+line) > MaxTokens {
 				break
@@ -579,7 +626,7 @@ func Build(opts Options) (Result, error) {
 		}
 		for _, c := range all {
 			e := c.entry
-			if !setupRecipe(e) || retired[e.ID] || e.Status != "active" || !validLine(e.OneLine) || result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
+			if !setupRecipe(e) || retired[e.ID] || fallbackIDs[e.ID] || e.Status != "active" || !validLine(e.OneLine) || result.Coverage.Covers(e.ID, opts.Agent, opts.Path) {
 				continue
 			}
 			root := len(e.Scope) > 0

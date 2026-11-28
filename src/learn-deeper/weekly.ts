@@ -1,14 +1,27 @@
 import { isDeepStrictEqual } from "node:util";
-import type { RecordWriter } from "../record/index.js";
+import { join } from "node:path";
+import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
+import { isLearnedEntry, parseEntry } from "../knowledge/entry.js";
+import { stageAgeReview, unanchored, UNANCHORED_MAX_MS } from "../knowledge/upkeep.js";
+import { LEARNED_ALWAYS_ON_SETTING, learnedScopeClassifier } from "../knowledge/learned-scope.js";
+import { tombstone } from "../knowledge/state.js";
 import { enqueueJob } from "../record/jobs.js";
-import { readTeamCoverage, type TeamCoverage } from "./coverage.js";
+import { readTeamCoverage, teamRetired, type TeamCoverage } from "./coverage.js";
 import { ForgeClient, object, SourceError } from "./forge.js";
-import { command, PinnedTree } from "./git.js";
+import { PinnedTree } from "./git.js";
 import { hosts } from "./hosts.js";
-import { MAX_DOCS, Plan, quoteCeiling, quoteTokens, reviewWindow, type LearningPlan } from "./plan.js";
+import { Plan, reviewWindow, type LearningPlan } from "./plan.js";
 import type { WeeklySchedule } from "./weekly-schedule.js";
 
-const MAX_WEEKLY_PULLS = 24;
+import { harvestClient } from "./pipeline.js";
+import { planHarvest, previewHarvest, type HarvestCursor } from "./harvest/index.js";
+import { propose } from "../knowledge/gate.js";
+import { snapshotNotes } from "../knowledge/personal-store.js";
+import type { BatchContext } from "../record/jobs.js";
+import { noteKey } from "./coverage.js";
+import { forgetObservations } from "./observations.js";
+import { LEARNED_TRIAL_LABEL } from "./trial-outcomes.js";
+import { sourceDigest } from "./source.js";
 
 export class RefreshDeferred extends Error {}
 
@@ -35,24 +48,54 @@ export async function weeklySources(client: ForgeClient, schedule: WeeklySchedul
   return { tree, team };
 }
 
-export async function quoteRefresh(client: ForgeClient, schedule: WeeklySchedule, tree: PinnedTree, now: number): Promise<LearningPlan> {
-  const bounds = reviewWindow(new Date(now));
-  const window = { since: new Date(Math.max(Date.parse(bounds.since), Math.min(Date.parse(schedule.since), now - 1))).toISOString(), until: bounds.until };
-  const inventory = await hosts[schedule.origin.host].inventory(client, window, MAX_WEEKLY_PULLS);
-  if (!isDeepStrictEqual(inventory.source, schedule.source) || inventory.visibility !== schedule.visibility) {
-    throw new RefreshDeferred("Source access changed. Run `mex learn` to review a new quote before weekly learning continues.");
+export async function planWeekly(client: ForgeClient, schedule: WeeklySchedule, tree: PinnedTree, now: number,
+  cursor: HarvestCursor | undefined, issues: boolean): Promise<LearningPlan> {
+  const access = await hosts[schedule.origin.host].access(client);
+  if (!isDeepStrictEqual(access.source, schedule.source) || access.visibility !== schedule.visibility) {
+    throw new RefreshDeferred("Source access changed. Run mex learn to review a new quote before weekly learning continues.");
   }
-  const changes = schedule.head === tree.head ? "" : await command(schedule.checkout, "git", ["diff", "--name-only", "--no-renames", "-z", schedule.head, tree.head, "--"], undefined, 512 << 10);
-  const changed = changes === undefined ? undefined : new Set(changes.split("\0"));
-  const docs = tree.docs().filter(path => !changed || changed.has(path));
-  const gaps = [
-    ...(inventory.more ? ["Some merged changes were outside the weekly scan limit."] : []),
-    ...(docs.length > MAX_DOCS ? ["Some docs were outside the weekly scan limit."] : []),
-  ];
-  const estimate = quoteTokens(inventory.pulls.length, Math.min(docs.length, MAX_DOCS), schedule.agent, schedule.setup);
+  const bounds = reviewWindow(new Date(now));
+  const start = Math.min(Date.parse(schedule.since), Date.parse(cursor?.weekly?.window.since ?? schedule.since), now - 1);
+  const window = { since: new Date(Math.max(Date.parse(bounds.since), start)).toISOString(), until: bounds.until };
+  const deps = { client: harvestClient(client, schedule.source), tree };
+  const inventory = await planHarvest({ checkout: schedule.checkout, head: tree.head, defaultHead: tree.head, source: schedule.source,
+    agent: schedule.agent, ...window, mode: "weekly", issues }, deps, cursor);
+  const harvest = await previewHarvest(inventory, deps, cursor);
   return Plan.parse({ checkout: schedule.checkout, origin: schedule.origin, source: schedule.source, visibility: schedule.visibility,
-    agent: schedule.agent, setup: schedule.setup, preferred: schedule.preferred, head: tree.head, ...window, pulls: inventory.pulls,
-    docs: docs.slice(0, MAX_DOCS), gaps, estimate, ceiling: quoteCeiling(estimate) });
+    agent: schedule.agent, setup: schedule.setup, preferred: schedule.preferred, head: tree.head, ...window,
+    pulls: [], docs: [], gaps: harvest.gaps.slice(0, 12), estimate: Math.max(1, harvest.estimate), ceiling: Math.max(1, harvest.ceiling), harvest });
+}
+
+/**
+ * Retire the person's copies of rules the team retired on the default branch: by id, by the stable source both were
+ * learned from, or by claim (the team may have deleted the rule before manifests existed).
+ */
+export async function sweepWeeklyRetirements({ writer, job }: BatchContext, plan: LearningPlan, team: TeamCoverage): Promise<void> {
+  if (!team.retired.size && !team.retiredIds.size && !team.retiredEvidence.size) return;
+  const swept = new Set<string>();
+  const notes = snapshotNotes(writer, job.project_id!).files;
+  await propose([], {
+    projectPath: plan.checkout, home: writer.location.home,
+    sweep: { producer: "learn-deeper",
+      includes(entry) {
+        const retired = teamRetired(team, entry, notes.get(entry.mex.id), writer.setting(job.project_id!, noteKey(entry.mex.id)));
+        if (retired) swept.add(entry.mex.id);
+        return retired;
+      },
+      tombstone: { reason: "The matching rule was retired on the default branch.", by: "mex learn" },
+    },
+    validate(gate) {
+      const live = gate.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
+      if (live?.owner !== job.owner || live?.state !== "running") throw new Error("Learning lost its job before saving.");
+    },
+    onAccepted(gate) {
+      const remove = gate.db.prepare("DELETE FROM settings WHERE scope=? AND key=?");
+      for (const id of swept) {
+        remove.run(job.project_id!, noteKey(id));
+        forgetObservations(gate.db, job.project_id!, id);
+      }
+    },
+  });
 }
 
 export async function queuePatternRecount(writer: RecordWriter, project: string, checkout: string, team?: TeamCoverage): Promise<void> {
@@ -62,4 +105,44 @@ export async function queuePatternRecount(writer: RecordWriter, project: string,
   const personal = [...snapshotNotes(writer, project).files.values()].map(parseEntry).filter(entry => entry.mex.status === "active");
   registerPatterns(writer.location.directory, project, [...(team?.entries ?? []), ...personal]);
   if (readPatterns(indexDirectory(writer.location.directory, project)).length) enqueueJob(writer, { kind: "file-index", projectId: project, params: { checkout, full: true } });
+}
+
+/** Ask about old unanchored trials that could have reached an agent. */
+export async function sweepExpiredTrials({ writer, job }: BatchContext, plan: LearningPlan, now: number): Promise<void> {
+  const project = job.project_id!;
+  const checkout = plan.checkout;
+  const broadScope = learnedScopeClassifier({ checkout, projectId: project, recordDirectory: writer.location.directory });
+  const hooks = openHooksReadOnly({ home: writer.location.home });
+  try {
+    if (hooks?.diagnostic) return;
+    writer.db.exec("BEGIN IMMEDIATE");
+    try {
+      const live = writer.db.prepare("SELECT owner,state FROM jobs WHERE id=?").get(job.id);
+      if (live?.owner !== job.owner || live?.state !== "running") throw new Error("Learning lost its job before saving.");
+      const alwaysOn = writer.setting(project, LEARNED_ALWAYS_ON_SETTING) === "true";
+      const expired: Array<{ id: string; created: string; entryHash: string }> = [];
+      try {
+        for (const raw of snapshotNotes(writer, project).files.values()) {
+          const entry = parseEntry(raw), { id, created, status, source, scope, when } = entry.mex;
+          if (status !== "active" || !isLearnedEntry(entry.mex) || !source.label?.startsWith(LEARNED_TRIAL_LABEL)
+            || now - Date.parse(created) < UNANCHORED_MAX_MS || !unanchored(entry) || tombstone(writer, project, id)) continue;
+          if (!alwaysOn && !when?.length && broadScope(scope)) continue;
+          if (hooks?.get("SELECT 1 FROM deliveries WHERE project_id=? AND entry_id=? AND action='given' LIMIT 1", project, id)) continue;
+          expired.push({ id, created, entryHash: sourceDigest(raw) });
+        }
+      } catch {
+        // An incomplete scan cannot establish that a trial went undelivered.
+        writer.db.exec("ROLLBACK");
+        return;
+      }
+      for (const { id, created, entryHash } of expired) {
+        const path = join(writer.location.home, "projects", project, "notes", `${id}.md`);
+        stageAgeReview(writer, project, { checkout, id, path, level: "personal", entryHash }, created, now);
+      }
+      writer.db.exec("COMMIT");
+    } catch (error) {
+      writer.db.exec("ROLLBACK");
+      throw error;
+    }
+  } finally { hooks?.close(); }
 }

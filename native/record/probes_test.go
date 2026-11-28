@@ -112,6 +112,103 @@ func TestExplicitProbeRefusesAmbiguousContexts(t *testing.T) {
 	}
 }
 
+func TestAgentRuleReportAttribution(t *testing.T) {
+	location := testLocation(t)
+	h, err := openHooks(location, testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	req := deliveryRequest()
+	req.Now = time.Now()
+	req.Session.Agent = "codex"
+	req.Candidates[0].Moment = "bump"
+	first, err := h.CheckAndMark(req)
+	if err != nil || len(first.Receipts) != 1 {
+		t.Fatal(first, err)
+	}
+	entry, project, checkout := req.Candidates[0].EntryID, req.Session.ProjectID, req.Session.Checkout
+	if err := SaveAgentRuleReport(location, entry, "", project, checkout, "first", "one stop", req.Now); err != nil {
+		t.Fatal(err)
+	}
+	req.Session.SessionID = "second"
+	second, err := h.CheckAndMark(req)
+	if err != nil || len(second.Receipts) != 1 {
+		t.Fatal(second, err)
+	}
+	if err := SaveAgentRuleReport(location, entry, "second", project, checkout, "second", "named session", req.Now); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAgentRuleReport(location, entry, "", project, checkout, "third", "ambiguous", req.Now); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ detail, receipt, moment, action string }{
+		{"one stop", first.Receipts[0].ID, "bump", "given"},
+		{"named session", second.Receipts[0].ID, "bump", "given"},
+		{"ambiguous", "", "agent-report", "control"},
+	} {
+		var id, moment, action string
+		err := h.db.QueryRow(`SELECT d.id,d.moment,d.action FROM followups f JOIN deliveries d ON f.delivery_id=d.id WHERE f.detail=?`, want.detail).
+			Scan(&id, &moment, &action)
+		if err != nil || (want.receipt != "" && id != want.receipt) || moment != want.moment || action != want.action {
+			t.Fatalf("%s: %s %s %s: %v", want.detail, id, moment, action, err)
+		}
+	}
+}
+
+func TestAgentRuleReportWaitsForWriter(t *testing.T) {
+	location := testLocation(t)
+	h, err := openHooks(location, testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	locker, err := openDatabase(location.Hooks, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	if _, err := locker.Exec("BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	time.AfterFunc(650*time.Millisecond, func() {
+		_, err := locker.Exec("ROLLBACK")
+		released <- err
+	})
+	err = SaveAgentRuleReport(location, "mx_abcdef", "", "project", "/repo", "lock", "report after contention", time.Now())
+	if releaseErr := <-released; releaseErr != nil {
+		t.Fatal(releaseErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := h.db.QueryRow("SELECT count(*) FROM followups WHERE detail='report after contention'").Scan(&count); err != nil || count != 1 {
+		t.Fatal(count, err)
+	}
+}
+
+func TestAgentRuleReportRollsBackItsControlReceipt(t *testing.T) {
+	location := testLocation(t)
+	h, err := openHooks(location, testBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if _, err = h.db.Exec(`CREATE TRIGGER reject_report BEFORE INSERT ON followups
+	WHEN NEW.kind='wrong' BEGIN SELECT RAISE(ABORT,'fixture refusal'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err = SaveAgentRuleReport(location, "mx_abcdef", "", "project", "/repo", "failed", "report", time.Now()); err == nil {
+		t.Fatal("the rejected write returned success")
+	}
+	var count int
+	if err = h.db.QueryRow("SELECT (SELECT count(*) FROM sessions)+(SELECT count(*) FROM deliveries)+(SELECT count(*) FROM followups)").Scan(&count); err != nil || count != 0 {
+		t.Fatal(count, err)
+	}
+}
+
 func TestProbeDeduplicationIsolationAndCounts(t *testing.T) {
 	h, err := openHooks(testLocation(t), testBudget)
 	if err != nil {

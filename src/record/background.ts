@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION } from "../version.js";
-import { openRecord, type RecordWriter } from "./index.js";
+import { openRecord, type RecordReader, type RecordWriter } from "./index.js";
 import { recordLocation, type LocationOptions } from "./location.js";
 import { enqueueJob, hasPendingWork, ownerId, processAlive, recoverInterruptedJobs, requeueReadyJobs, runOneBatch, type EnqueueOptions, type EnqueueResult } from "./jobs.js";
+import { checkpointLearningRows } from "./learning-rows.js";
 import "./job-kinds.js";
 import { sendUsageReports } from "../telemetry/reporting.js";
 import { indexPending, queueBehindHead, queuePendingRefreshes } from "../file-index/pending.js";
@@ -19,6 +20,7 @@ import { BackgroundGraph } from "../graph/background-warm.js";
 import { compactReviewNeeded, reviewManagedCompaction } from "../compaction/control.js";
 import { compactOffersPending, publishCompactOffers } from "../compaction/notices.js";
 import { ledgerPending, settlePendingLedger } from "../ledger/background.js";
+import { queueStopChecks, stopChecksPending } from "../learn-deeper/stop-check.js";
 import { queueDueWeekly, weeklyWakeDue } from "../learn-deeper/weekly-schedule.js";
 
 /**
@@ -49,10 +51,11 @@ function envNumber(name: string): number | undefined {
   const value = Number(process.env[name]);
   return process.env[name] !== undefined && Number.isFinite(value) && value > 0 ? value : undefined;
 }
-function setting(writer: RecordWriter, key: string): string | undefined { return writer.setting("background", key); }
+type SettingsReader = Pick<RecordReader, "setting">;
+function setting(reader: SettingsReader, key: string): string | undefined { return reader.setting("background", key); }
 
 /** Settings live in record.db (scope `background`); MEX_BACKGROUND_* variables override them for tests. */
-export function backgroundSettings(writer?: RecordWriter): BackgroundSettings {
+export function backgroundSettings(writer?: SettingsReader): BackgroundSettings {
   const minutes = writer ? Number(setting(writer, "idle_minutes")) : NaN;
   const memory = writer ? Number(setting(writer, "memory_mb")) : NaN;
   return {
@@ -66,15 +69,16 @@ export function backgroundSettings(writer?: RecordWriter): BackgroundSettings {
 }
 
 /** Global/terminal off and the separate background setting all hold automatic work. */
-export function backgroundEnabled(writer?: RecordWriter): boolean {
+export function backgroundEnabled(writer?: SettingsReader): boolean {
   if (process.env.MEX_OFF === "1" || process.env.MEX_BACKGROUND === "0") return false;
   return !writer || (setting(writer, "enabled") !== "false" && writer.setting("global", "enabled") !== "false");
 }
 /** True inside MEX's own background process (and the agent runs it starts): never trigger MEX from there. */
 export function insideBackground(): boolean { return process.env.MEX_BACKGROUND === "1"; }
 
+const LEASE_QUERY = "SELECT owner,pid,version,started_at,heartbeat_at,request,hub_until FROM background WHERE id=1";
 function lease(writer: RecordWriter): LeaseRow {
-  return writer.db.prepare("SELECT owner,pid,version,started_at,heartbeat_at,request,hub_until FROM background WHERE id=1").get() as unknown as LeaseRow;
+  return writer.db.prepare(LEASE_QUERY).get() as unknown as LeaseRow;
 }
 export function leaseLive(row: LeaseRow, settings: Pick<BackgroundSettings, "leaseMs">, at = Date.now(), alive = processAlive): boolean {
   if (!row.owner || !row.heartbeat_at) return false;
@@ -83,10 +87,11 @@ export function leaseLive(row: LeaseRow, settings: Pick<BackgroundSettings, "lea
 }
 
 export interface BackgroundStatus { running: boolean; pid?: number; version?: string; startedAt?: string; enabled: boolean; }
-export function backgroundStatus(writer: RecordWriter): BackgroundStatus {
-  const row = lease(writer);
-  const running = leaseLive(row, backgroundSettings(writer));
-  return { running, enabled: backgroundEnabled(writer), ...(running ? { pid: row.pid ?? undefined, version: row.version ?? undefined, startedAt: row.started_at ?? undefined } : {}) };
+export function backgroundStatus(reader: RecordWriter | Pick<RecordReader, "get" | "setting">): BackgroundStatus {
+  const row = "get" in reader ? reader.get<LeaseRow>(LEASE_QUERY) : lease(reader);
+  const enabled = backgroundEnabled(reader);
+  if (!row || !leaseLive(row, backgroundSettings(reader))) return { running: false, enabled };
+  return { running: true, enabled, pid: row.pid ?? undefined, version: row.version ?? undefined, startedAt: row.started_at ?? undefined };
 }
 
 // ── The marker the CLI checks cheaply ──
@@ -142,7 +147,7 @@ export function ensureBackground(options: EnsureOptions = {}): EnsureResult {
     const live = leaseLive(row, settings);
     if (live && row.version === VERSION) return { started: false, reason: "running" };
     if (!options.force && !hasPendingWork({ all: (sql, ...args) => writer!.db.prepare(sql).all(...args) as never }) &&
-      !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !filterPending(writer.location.directory, writer) &&
+      !indexPending(writer.location.directory) && !judgePending(writer.location.directory) && !stopChecksPending(writer.location.directory) && !filterPending(writer.location.directory, writer) &&
       !workingSetPending(writer.location.directory) && !nativePending(writer.location.directory) && !setupRefreshPending(writer.location.directory) &&
       !ledgerPending(writer.location.directory) &&
       !compactReviewNeeded(writer) && !compactOffersPending(writer.location.directory) && !weeklyWakeDue(writer.location.home)) {
@@ -258,8 +263,9 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
     log(`started pid ${process.pid}, version ${VERSION}`);
     heartbeat = setInterval(() => { try { if (!beat()) held = false; } catch { /* next beat */ } }, settings.heartbeatMs);
     heartbeat.unref();
-    const recovered = recoverInterruptedJobs(writer, self);
-    if (recovered) log(`resumed ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
+    const recovered = recoverInterruptedJobs(writer, self, processAlive, true);
+    checkpointLearningRows(writer.db, true);
+    if (recovered) log(`recovered ${recovered} interrupted job${recovered === 1 ? "" : "s"}`);
     graph = new BackgroundGraph(writer, queueJob, log);
     let lastWork = clock();
     let lastTelemetry = -Infinity;
@@ -280,6 +286,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       queuePendingRefreshes(writer);
       try { await graph.run(clock()); } catch (error) { log(`graph: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`); }
       // Hooks request work with bounded files; only Node owns model jobs.
+      try { queueStopChecks(writer, queueJob, clock()); } catch { /* a later pass retries */ }
       try { queuePendingJudgements(writer, queueJob, clock()); } catch { /* a later pass retries */ }
       try { queuePendingFilters(writer, queueJob); } catch { /* a later pass retries */ }
       // MEX's rule files carry a note the code changed: rebuild them between sessions.
@@ -289,6 +296,7 @@ export async function runBackground(options: RunOptions = {}): Promise<ExitReaso
       // Code facts follow new commits: re-read a project's history once its HEAD has moved.
       if (clock() - lastFreshness >= 60_000) {
         lastFreshness = clock();
+        checkpointLearningRows(writer.db, true);
         try { queueStaleCodeFacts(writer, queueJob, clock()); } catch { /* a missed pass waits for the next one */ }
         // Commands that failed and then passed in a session become recipes.
         try { queuePendingFailPass(writer, queueJob); } catch { /* a missed pass waits for the next one */ }
@@ -336,6 +344,7 @@ export async function runPendingInForeground(writer: RecordWriter, budgetMs = 60
   let batches = 0;
   while (Date.now() < end) {
     // The same durable requests work when the detached process cannot start.
+    queueStopChecks(writer, queueJob);
     queuePendingJudgements(writer, queueJob);
     queuePendingFilters(writer, queueJob);
     queuePendingNative(writer);

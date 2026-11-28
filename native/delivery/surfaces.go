@@ -103,6 +103,10 @@ func toolKey(tool contract.Tool) string {
 func surfaceTargets(plan []planned, vs []toolView, cs []record.DeliveryCandidate) {
 	for i := range cs {
 		e := plan[i].item.Entry
+		if plan[i].moment == momentCreate && e.Kind == "procedure" && e.Learned() && e.Evidence == "mined" {
+			cs[i].Target = procedureReceiptTarget(plan[i])
+			continue
+		}
 		t := record.SurfaceTarget{Scopes: append([]string{}, e.Scope...)}
 		if len(plan[i].anchorPaths) > 0 {
 			cs[i].Target = record.SurfaceTarget{Paths: plan[i].anchorPaths}

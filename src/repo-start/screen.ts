@@ -1,5 +1,5 @@
 /**
- * The first screen: one header line with the measured time and the cost, one
+ * The first screen: one header line, one
  * line per finding, then short notes. Lines with nothing found are left out by
  * the caller, not here.
  *
@@ -15,7 +15,7 @@ export interface ScreenModel {
   name: string;
   /** Measured from command start to the screen. */
   ms: number;
-  /** Always zero here; the screen shows it so the cost is never a guess. */
+  /** Cost of the free setup. */
   costUsd: number;
   /** True only when MEX's block is in the exclude file, so nothing it wrote shows in `git status`. */
   hidden: boolean;
@@ -24,7 +24,7 @@ export interface ScreenModel {
 }
 export interface ScreenMode { plain: boolean; ascii: boolean; color: boolean; width: number | undefined; }
 
-export const PLAIN_BELOW_COLUMNS = 60;
+export const PLAIN_BELOW_COLUMNS = 72;
 
 export interface ScreenModeInput {
   env?: NodeJS.ProcessEnv;
@@ -110,16 +110,10 @@ function wrapHeader(parts: readonly string[], dot: string, width: number | undef
     : wrap(text.slice(CONTINUATION_INDENT), width - CONTINUATION_INDENT, 0).map(part => pad + part));
 }
 
-/**
- * The header: "MEX · name · 0.4 s · $0 · nothing added to git". In colour, MEX and the name stand
- * out. Without `ms` it leaves the time out: when `mex` goes on to finish its work, the closing
- * "Done in" line gives the one time that matters.
- */
-export function renderHeader(model: Pick<ScreenModel, "name" | "costUsd" | "hidden"> & { ms?: number }, mode: ScreenMode): string[] {
+/** The header names the repository. */
+export function renderHeader(model: Pick<ScreenModel, "name"> & Partial<Pick<ScreenModel, "ms" | "costUsd" | "hidden">>, mode: ScreenMode): string[] {
   const dot = mode.ascii ? " - " : " · ";
-  const parts = ["MEX", model.name, ...(model.ms === undefined ? [] : [formatSeconds(model.ms)]), `$${model.costUsd.toFixed(model.costUsd === 0 ? 0 : 2)}`]
-    .concat(model.hidden ? ["nothing added to git"] : []);
-  const lines = wrapHeader(parts, dot, mode.width);
+  const lines = wrapHeader(["MEX", model.name], dot, mode.width);
   if (!mode.color) return lines;
   return lines.map((line, index) => {
     if (index > 0 || !line.startsWith(`MEX${dot}${model.name}`)) return paint.dim(line);
@@ -167,15 +161,23 @@ export function renderDone(ms: number, mode: ScreenMode): string[] {
  * literal in every shell, cmd.exe included.
  */
 export const NOTE_EXAMPLE = 'mex note "<something your agents keep getting wrong here, and why>"';
+export const STATEMENTS_ON = "mex config set learning.statements on";
+export const STATEMENTS_OFF = "mex config set learning.statements off";
+export const STATEMENTS_INTRO = 'MEX can also learn from what you tell your agents, like "we use pnpm here".';
+export const STATEMENTS_USAGE = "it uses your agent's smallest model, within 3% of your plan.";
+export const UNDO_LINE = "To undo: mex off turns MEX off in this repo · mex uninstall removes MEX from this computer.";
 
-export function renderNext(options: { short: boolean; learning?: string; agents?: readonly string[]; hooksOff?: boolean }, mode: ScreenMode): string[] {
+export function renderNext(options: { short: boolean; learning?: string; agents?: readonly string[]; hooksOff?: boolean; summary?: readonly string[] }, mode: ScreenMode): string[] {
   // Without the native hook nothing reaches an agent, so nothing here may promise it.
-  if (options.hooksOff) return renderNotes(["Nothing reaches your agents yet: MEX's native hook is missing. Reinstall MEX, then run mex install."], mode);
+  if (options.hooksOff) return renderNotes([
+    "Nothing reaches your agents yet: MEX's native hook is missing. Reinstall MEX, then run mex install.",
+    ...(options.summary ? ["", ...options.summary, "", UNDO_LINE] : []),
+  ], mode);
   if (options.short) return renderNotes(['Saved notes reach new sessions; mex note "<fact>" adds one.'], mode);
   // Learning from typed statements is opt-in; anything but "on" is off.
   const learning = options.learning === "on"
-    ? "Learning from what you type runs in the background with your agent's smallest model, at most 3% of your usage. Off: mex config set learning.statements off"
-    : 'Save a note with mex note, or type "mex note: …" in a session. Learning from everything you type is off until you turn it on: mex config set learning.statements on';
+    ? `${STATEMENTS_INTRO} It's on now: ${STATEMENTS_USAGE} Turn it off with ${STATEMENTS_OFF}.`
+    : `${STATEMENTS_INTRO} It's off now. Turn it on with ${STATEMENTS_ON}: ${STATEMENTS_USAGE}`;
   const agents = options.agents?.length ? options.agents : ["Claude Code", "Codex"];
   const names = (last: string) => agents.length <= 1 ? agents.join("") : `${agents.slice(0, -1).join(", ")} ${last} ${agents.at(-1)}`;
   return renderNotes([
@@ -183,7 +185,7 @@ export function renderNext(options: { short: boolean; learning?: string; agents?
     "· Notes you save reach every new session. A note the code has made false is held back.", `· ${learning}`,
     "", "Try it", `  ${NOTE_EXAMPLE}`,
     `  Then start a new ${names("or")} session and ask about it.`,
-    "", "Undo: mex off (this repo) · mex uninstall (everything)",
+    ...(options.summary ? ["", ...options.summary] : []), "", UNDO_LINE,
   ].map(line => mode.ascii ? line.replace(/·/gu, "-").replace(/…/gu, "...") : line), mode);
 }
 

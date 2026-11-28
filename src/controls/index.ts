@@ -1,3 +1,4 @@
+import { clearObservations } from "../learn-deeper/observations.js";
 import { randomBytes } from "node:crypto";
 import type { CheckoutRow, RecordWriter } from "../record/index.js";
 import { writeHookCheckout } from "../record/hook-checkouts.js";
@@ -24,6 +25,7 @@ export function setCheckoutEnabled(writer: RecordWriter, directory: string, enab
     if (!previous) throw new Error("MEX is not registered here. Run `mex` first.");
     const next: CheckoutRow = { ...previous, state: enabled ? "on" : until ? "off until" : "off", off_until: until };
     writer.db.prepare("UPDATE checkouts SET state=?,off_until=? WHERE path=?").run(next.state, next.off_until, next.path);
+    if (!enabled && !automaticWorkEnabled(writer, next.project_id)) clearObservations(writer.db, next.project_id);
     writeHookCheckout(next, writer.location.directory);
     writer.db.exec("COMMIT");
     return next;
@@ -88,12 +90,13 @@ export function setLedgerHoldout(writer: RecordWriter, enabled: boolean): void {
     enabled ? (previous && /^[0-9a-f]{32}$/u.test(previous) ? previous : randomBytes(16).toString("hex")) : "");
 }
 
-function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string | ((previous: string | undefined) => string)): void {
+export function setPolicy(writer: RecordWriter, scope: string, key: string, enabled: boolean | string | ((previous: string | undefined) => string)): void {
   writer.db.exec("BEGIN IMMEDIATE");
   try {
     const value = typeof enabled === "function" ? enabled(writer.setting(scope, key)) : String(enabled);
     writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
       .run(scope, key, value);
+    if (scope === "global" && key === "enabled" && value === "false") clearObservations(writer.db);
     publishControlMirrors(writer.db, writer.location, scope);
     writer.db.exec("COMMIT");
   } catch (error) {

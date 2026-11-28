@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentStatuses } from "../agents.js";
+import { installAgents } from "../index.js";
+import { detectAgents, runnableAgents } from "../../model-runner/agents.js";
 import { OPENCODE_PLUGIN_MARKER } from "../opencode-plugin.js";
 
 const temps: string[] = [];
@@ -12,6 +14,23 @@ function setup() {
   const user = mkdtempSync(join(tmpdir(), "mex-agents-")); temps.push(user);
   return { user, userHome: user, home: join(user, ".mex"), env: {} as NodeJS.ProcessEnv };
 }
+
+it("ignores the VS Code Copilot launcher for both installation and runner selection", async () => {
+  const f = setup();
+  const shim = join(f.user, "editor", "bin", "copilot-shim");
+  const real = join(f.user, "tools");
+  put(join(shim, "copilot.exe"), "Editor launcher fixture");
+  put(join(real, "copilot.exe"), "Standalone CLI fixture");
+  const options = { ...f, platform: "win32" as const, includeSessions: false, env: { Path: shim, PATHEXT: ".exe" } };
+
+  expect(detectAgents(options).find(agent => agent.id === "copilot")).toMatchObject({
+    installed: false, cli: null, runner: { ok: false },
+  });
+  expect((await installAgents(options)).agents).toEqual([]);
+
+  options.env.Path = `${shim};${real}`;
+  expect(runnableAgents(detectAgents(options))).toMatchObject([{ id: "copilot", cli: join(real, "copilot.exe") }]);
+});
 
 describe("agent status for mex doctor", () => {
   it("notices an agent installed after MEX and asks to add MEX", () => {

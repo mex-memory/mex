@@ -6,13 +6,14 @@ import { randomUUID } from "node:crypto";
 import crossSpawn from "cross-spawn";
 import { DatabaseSync } from "node:sqlite";
 import { openRecord, projectIdentity, migrateRecord, schemaVersion, type RecordWriter } from "../../record/index.js";
-import { recordMigrations } from "../../record/schema.js";
+import { RECORD_SCHEMA_VERSION, recordMigrations } from "../../record/schema.js";
 import { recordModelCall } from "../../record/usage.js";
 import { enqueueJob, registerJobKind, requeueReadyJobs, runOneBatch, type JobRow } from "../../record/jobs.js";
 import { runModel } from "../index.js";
 import { acquireModelAdmission, cancelModelBatch, claimModelBatch, enqueueModelBatch, modelBudgetSnapshot, recoverModelBatches, settleModelBatch, type BatchRequest, type ModelBatchRow } from "../budget-queue.js";
 import { modelWeights, REFERENCE_BATCH, REFERENCE_BATCH_UNITS } from "../budget-prices.js";
 import { weightedTokens } from "../budget-policy.js";
+import { recordedModelSpend } from "../consent.js";
 
 let root: string, writer: RecordWriter, projectId: string;
 const NOW = Date.parse("2026-11-14T12:00:00.000Z");
@@ -34,6 +35,36 @@ beforeEach(() => {
 afterEach(() => { writer.close(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
 describe("durable model admissions", () => {
+  it("holds a consented call before spawning and retains overspend if the usage row could not be saved", async () => {
+    registerJobKind({ name: "spend-fixture", label: "Spend fixture", scope: "project", sideEffects: "idempotent", runBatch: () => ({ done: true, checkpoint: null }) });
+    const { job } = enqueueJob(writer, { kind: "spend-fixture", projectId });
+    const jobContext = { jobId: job.id, batch: 0, projectId };
+    const consent = (input: number) => ({ automatic: undefined, job: jobContext,
+      consented: { ceiling: 200, estimate: { input, output: 0, cache_read: 0, cache_write: 0 } } });
+    await expect(acquireModelAdmission(request(consent(201)))).rejects.toMatchObject({ reason: "cap" });
+    expect(writer.db.prepare("SELECT admitted_at FROM model_batches").get()?.admitted_at).toBeNull();
+    const batch = enqueueModelBatch(writer, request(consent(100)), NOW);
+    expect(claimModelBatch(writer, batch, NOW)).toBeUndefined();
+    settleModelBatch(writer, batch, usage({ input: 150, output: 0, cache_read: 0, cache_write: 0 }), false);
+    expect(recordedModelSpend(writer, job.id)).toBe(150);
+    expect(claimModelBatch(writer, enqueueModelBatch(writer, request(consent(51)), NOW), NOW)).toBe("cap");
+  });
+
+  it("holds an estimate outside the measured allowance and charges the full over-settlement", () => {
+    setting("own-usage", "status.claude", JSON.stringify({ agent: "claude", status: "readable" }));
+    writer.db.prepare("INSERT INTO own_usage VALUES(?,?,?,?,?,?,0)").run("2026-11-14", "claude", 10_000, 0, 0, 0);
+    const automatic = (input: number) => request({ automatic: { estimate: { input, output: 0, cache_read: 0, cache_write: 0 }, measuredUsageOnly: true } });
+    const tooLarge = enqueueModelBatch(writer, automatic(301), NOW);
+    expect(claimModelBatch(writer, tooLarge, NOW)).toBe("cap");
+    cancelModelBatch(writer, tooLarge);
+    const admitted = enqueueModelBatch(writer, automatic(100), NOW);
+    expect(claimModelBatch(writer, admitted, NOW)).toBeUndefined();
+    const measured = usage({ input: 250, output: 0, cache_read: 0, cache_write: 0 });
+    settleModelBatch(writer, admitted, measured);
+    expect(modelBudgetSnapshot(reader(), NOW).spentUnits).toBe(weightedTokens(measured, modelWeights("opus", measured)));
+    expect(claimModelBatch(writer, enqueueModelBatch(writer, automatic(51), NOW), NOW)).toBe("cap");
+  });
+
   it("adds migration four without losing existing calls or partially applying failed SQL", () => {
     const directory = mkdtempSync(join(root, "old-record-"));
     const db = new DatabaseSync(join(directory, "record.db"));
@@ -45,7 +76,7 @@ describe("durable model admissions", () => {
     db.close();
     const upgraded = openRecord({ home: directory, isNetwork: () => false });
     try {
-      expect(schemaVersion(upgraded.db)).toBe(6);
+      expect(schemaVersion(upgraded.db)).toBe(RECORD_SCHEMA_VERSION);
       expect(upgraded.setting("global", "kept")).toBe("yes");
       expect(upgraded.db.prepare("SELECT input,cache_write,cache_read,output,batch_id FROM model_calls").get()).toMatchObject({ input: 1, cache_write: 2, cache_read: 3, output: 4, batch_id: null });
     } finally { upgraded.close(); }

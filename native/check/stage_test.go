@@ -209,3 +209,25 @@ func TestEntryCache(t *testing.T) {
 		t.Fatalf("racy entry served from the cache: %+v", l)
 	}
 }
+
+// A check someone asked for must not report a verdict on evidence it couldn't
+// read; a live hook must not fail on it.
+func TestExplicitCheckFailsOnAnUnreadableRecord(t *testing.T) {
+	root, home, records := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(records, "record.db"), []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := StageOptions{Checkout: root, ProjectID: "g-project", MexHome: home, RecordDirectory: records, Force: true}
+	if _, err := RunStage(opts); err != nil {
+		t.Fatalf("a live hook's stage failed on an unreadable record: %v", err)
+	}
+	opts.Explicit = true
+	if _, err := RunStage(opts); err == nil || !strings.Contains(err.Error(), "rule-change evidence") {
+		t.Fatalf("an explicit check passed over a record it couldn't read: %v", err)
+	}
+	// No record at all is not a failure: MEX may not be set up here.
+	opts.RecordDirectory = t.TempDir()
+	if _, err := RunStage(opts); err != nil {
+		t.Fatalf("an explicit check without a record failed: %v", err)
+	}
+}

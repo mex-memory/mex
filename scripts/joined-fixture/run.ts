@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { propose, type Proposal } from "../../src/knowledge/gate.js";
+import { sourceDigest } from "../../src/learn-deeper/source.js";
+import { LEARNED_TRIAL_LABEL } from "../../src/learn-deeper/trial-outcomes.js";
 import { openHooksReadOnly, openRecordReadOnly } from "../../src/record/index.js";
 import { checkAccepted, checkCard as cardCheck, checkKept, checkProbe, checkReceipt, checkSetupJobs, requireJoin, type Receipt, type SetupJob } from "./joins.js";
 
@@ -109,10 +111,14 @@ function searchPayload(agent: Agent, session: string, noisy = false) {
       tool_input: { command: `rg -n "function ${symbol}" src` }, tool_response: result };
 }
 
-function hook(agent: Agent, event: string, payload: object, capture = false) {
+function hookReply(agent: Agent, event: string, payload: object, capture = false) {
   const reply = JSON.parse(run(binary, [agent, event], { payload, capture }));
   requireJoin(reply !== null && typeof reply === "object" && !Array.isArray(reply), `${agent} returned an invalid hook reply`);
-  return reply.hookSpecificOutput?.additionalContext ?? "";
+  return reply.hookSpecificOutput;
+}
+
+function hook(agent: Agent, event: string, payload: object, capture = false) {
+  return hookReply(agent, event, payload, capture)?.additionalContext ?? "";
 }
 
 function replay(agent: Agent, session: string, capture = false, noisy = false): string {
@@ -273,6 +279,53 @@ async function main() {
       checkout: registered, project_id: project, mex_home: home, record_directory: home, entries: [factId],
     } }));
     checkProbe(probe, factId, fact, "after a shell command changed its symbol");
+  });
+
+  const learned = await step("join learned rule: matching edit stops with the team's fix", async () => {
+    const learnedClaim = "Use Math.trunc to discard the fractional part of a widget ID.";
+    const anti = "Math.round(";
+    const rejected = "return Math.round(470.5);";
+    const fixed = "return Math.trunc(470.5);";
+    writeFileSync(join(checkout, file), source(fixed));
+    run("git", ["add", "--", file]);
+    run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Truncate widget IDs"]);
+    const commit = run("git", ["rev-parse", "HEAD"]).trim();
+    json("index", "--json");
+    const region = (text: string) => ({ start: 2, end: 2, text, hash: sourceDigest(text) });
+    const [result] = await propose([{
+      producer: "learn-deeper", key: "joined-widget-id", kind: "rule", text: learnedClaim,
+      source: { type: "review", ref: "https://github.com/acme/widgets/pull/1", text: learnedClaim, quote: learnedClaim },
+      evidenceClass: "review", model: "none", label: LEARNED_TRIAL_LABEL + "Fixture",
+      anchors: { scope: [file], when: [{ type: "anti", match: "literal", pattern: anti }] },
+      fix: { snippet: fixed, path: file, commit, lines: "2-2" },
+      checks: [
+        { kind: "fixture", role: "complete", target: { pairs: [{ path: file, commit, before: region(rejected), after: region(fixed) }], proves: [0] } },
+        { kind: "pattern", role: "complete", target: { scope: file, match: "literal", pattern: "Math.trunc(", expect: "present" } },
+      ],
+    }], { projectPath: checkout, home });
+    const id = checkAccepted(result, "learned rule");
+    const verdict = () => json("check", "--json").entries?.find((row: { id: string; verdict: string }) => row.id === id)?.verdict;
+    requireJoin(verdict() === "held", `learned rule ${id} did not pass its contrast and target checks`);
+
+    const edit = (session: string, current: string) => {
+      const common = { session_id: session, cwd: checkout };
+      hook("claude-code", "SessionStart", { ...common, hook_event_name: "SessionStart", source: "startup" });
+      return hookReply("claude-code", "PreToolUse", { ...common, hook_event_name: "PreToolUse", tool_name: "Edit",
+        tool_input: { file_path: join(checkout, file), old_string: current, new_string: rejected } });
+    };
+    const denied = edit("joined-learned-fresh", fixed);
+    requireJoin(denied?.permissionDecision === "deny" && denied.permissionDecisionReason?.includes(fixed),
+      `learned rule ${id} did not stop the edit with the team's fix`);
+
+    return { id, fixed, edit, verdict };
+  });
+
+  await step("join learned rule: removing the fix target withholds the rule", () => {
+    change(newBody);
+    const stale = learned.edit("joined-learned-stale", newBody);
+    requireJoin(stale?.permissionDecision !== "deny" && !stale?.permissionDecisionReason?.includes(learned.fixed),
+      `learned rule ${learned.id} still stopped the edit or offered its old fix`);
+    requireJoin(learned.verdict() === "broken", `learned rule ${learned.id} was not broken after its fix target disappeared`);
   });
 }
 

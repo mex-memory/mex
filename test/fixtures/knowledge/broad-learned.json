@@ -1,0 +1,81 @@
+[
+  {"name":"explicit whole repo","scopes":["**","docs/guide.md"],"paths":["src/a.ts"],"broad":true},
+  {"name":"Go at the share cutoff","scopes":["**/*.go"],"paths":[
+    "main.go", "internal/a.go", "internal/b.go", "internal/c.go", "internal/d.go", "internal/e.go", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts", "README.md",
+    "go.mod"
+  ],"broad":true},
+  {"name":"Go below the share cutoff","scopes":["**/*.go"],"paths":[
+    "main.go", "internal/a.go", "internal/b.go", "internal/c.go", "internal/d.go", "internal/e.go", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts", "web/15.ts"
+  ],"broad":false},
+  {"name":"overlapping scopes count once","scopes":["lib/*.go","lib/**"],"paths":[
+    "lib/1.go", "lib/2.go", "lib/3.go", "lib/4.go", "lib/5.go", "web/1.ts", "web/2.ts",
+    "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts", "web/9.ts",
+    "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts", "web/15.ts"
+  ],"broad":false},
+  {"name":"separate folders can cover the repo together","scopes":["lib/**","client/**"],"paths":[
+    "lib/1.go", "lib/2.go", "lib/3.go", "lib/4.go", "lib/5.go", "client/a.ts", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts"
+  ],"broad":true},
+  {"name":"a mixed scope includes literal paths in the share","scopes":["lib/**","client/a.ts"],"paths":[
+    "lib/1.go", "lib/2.go", "lib/3.go", "lib/4.go", "lib/5.go", "client/a.ts", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts"
+  ],"broad":true},
+  {"name":"directory pattern can be broad","scopes":["src/{api,web}/**"],"paths":[
+    "src/api/a.ts", "src/api/b.ts", "src/api/c.ts", "src/web/a.tsx", "src/web/b.tsx", "src/web/c.tsx", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts"
+  ],"broad":true},
+  {"name":"root filename glob stays anchored","scopes":["*.ts"],"paths":[
+    "foo.ts", "web/1.ts", "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts",
+    "web/7.ts", "web/8.ts", "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts",
+    "web/14.ts", "web/15.ts", "web/16.ts", "web/17.ts", "web/18.ts", "web/19.ts"
+  ],"broad":false},
+  {"name":"recursive brace suffix","scopes":["**/*.{ts,tsx}"],"paths":[
+    "lib/1.go", "lib/2.go", "lib/3.go", "lib/4.go", "lib/5.go", "lib/6.go", "lib/7.go",
+    "lib/8.go", "lib/9.go", "lib/10.go", "lib/11.go", "lib/12.go", "lib/13.go", "lib/14.go",
+    "ui/a.ts", "ui/b.ts", "ui/c.ts", "ui/a.tsx", "ui/b.tsx", "ui/c.tsx"
+  ],"broad":true},
+  {"name":"only docs in the index invokes fallback","scopes":["**/*.go"],"paths":["README.md","docs/b.md"],"broad":true},
+  {"name":"root glob without an index","scopes":["*.ts"],"paths":[],"broad":true},
+  {"name":"all filenames without an index","scopes":["**/*"],"paths":[],"broad":true},
+  {"name":"brace suffix without an index","scopes":["**/*.{ts,tsx}"],"paths":[],"broad":true},
+  {"name":"directory without an index","scopes":["src/**"],"paths":[],"broad":false},
+  {"name":"exact root file without an index","scopes":["main.go"],"paths":[],"broad":false},
+  {"name":"exact file in a 3-source-file checkout","scopes":["src/changed.ts"],"paths":["src/changed.ts","tools/a.py","web/a.ts"],"broad":false},
+  {"name":"exact paths stay scoped even at 30 percent","scopes":["main.go","internal/a.go","internal/b.go","internal/c.go","internal/d.go","internal/e.go"],"paths":[
+    "main.go", "internal/a.go", "internal/b.go", "internal/c.go", "internal/d.go", "internal/e.go", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts"
+  ],"broad":false},
+  {"name":"directory glob below the source file floor","scopes":["lib/**"],"paths":[
+    "lib/1.go", "lib/2.go", "lib/3.go", "lib/4.go", "lib/5.go", "lib/6.go", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "README.md"
+  ],"broad":false},
+  {"name":"same directory glob at the source file floor","scopes":["lib/**"],"paths":[
+    "lib/1.go", "lib/2.go", "lib/3.go", "lib/4.go", "lib/5.go", "lib/6.go", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts"
+  ],"broad":true},
+  {"name":"same directory glob above the source file floor","scopes":["lib/**"],"paths":[
+    "lib/1.go", "lib/2.go", "lib/3.go", "lib/4.go", "lib/5.go", "lib/6.go", "lib/7.go",
+    "web/1.ts", "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts",
+    "web/8.ts", "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts"
+  ],"broad":true},
+  {"name":"filename glob below the floor uses the fallback","scopes":["**/*.go"],"paths":[
+    "main.go", "web/1.ts", "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts",
+    "web/7.ts", "web/8.ts", "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts",
+    "web/14.ts", "web/15.ts", "web/16.ts", "web/17.ts", "web/18.ts"
+  ],"broad":true},
+  {"name":"recursive filename with a literal basename can be broad","scopes":["**/config.ts"],"paths":[
+    "pkg1/config.ts", "pkg2/config.ts", "pkg3/config.ts", "pkg4/config.ts", "pkg5/config.ts", "pkg6/config.ts", "web/1.ts",
+    "web/2.ts", "web/3.ts", "web/4.ts", "web/5.ts", "web/6.ts", "web/7.ts", "web/8.ts",
+    "web/9.ts", "web/10.ts", "web/11.ts", "web/12.ts", "web/13.ts", "web/14.ts"
+  ],"broad":true}
+]

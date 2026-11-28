@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { prices } from "../../scripts/delivery-replay/cost.mjs";
 import { exportReplay } from "./export-replay.mjs";
 import { readSession, requireAdapter, runTurn, versionOf } from "./lib/agents.mjs";
-import { checkBaseline, checkedRun, clearCredentials, copyCredential, exposeMex, isolatedPath, makeArm, platformPin, preflightMex, useOAuthToken } from "./lib/arms.mjs";
+import { checkBaseline, checkedRun, checkNoLearned, clearCredentials, copyCredential, exposeMex, isolatedPath, makeArm, platformPin, preflightMex, readLearned, seedLearned, useOAuthToken } from "./lib/arms.mjs";
 import { grade } from "./lib/grader.mjs";
 import { buildReport, renderReport } from "./lib/report.mjs";
 import { startSampler } from "./lib/resources.mjs";
@@ -26,7 +26,7 @@ function taskBases(suite, subjectRoot) {
 }
 
 export async function runChain(options) {
-  const { agent, pin, command, suiteFile, subjectRoot, output, cli, depsDir, credentialFile, tokenFile,
+  const { agent, pin, command, suiteFile, subjectRoot, output, cli, depsDir, credentialFile, tokenFile, learnedDir,
     timeoutMs = 300000, sampleMs = 1000, fixtures = false } = options;
   const adapter = requireAdapter(agent);
   if (!pin || ![pin.model, pin.effort, pin.version, pin.mexVersion].every(value => typeof value === "string" && value)
@@ -38,6 +38,9 @@ export async function runChain(options) {
   if (tokenFile && (agent !== "claude" || credentialFile)) throw new Error("A token file is for Claude Code, in place of a credential file");
   if (!fixtures && !credentialFile && !tokenFile) throw new Error("A file credential or a Claude Code token file is required for a real chain");
   const suite = loadSuite(suiteFile);
+  // With learned entries, both arms run MEX and only "mex" holds them.
+  const learned = learnedDir ? readLearned(learnedDir) : undefined;
+  const runsMex = arm => arm === "mex" || learned !== undefined;
   const tasks = taskBases(suite, subjectRoot);
   const setupBase = suite.setupBase ? resolveCommit(subjectRoot, suite.setupBase) : tasks[0].base;
   const forbidden = tasks.map(task => task.hiddenTests.fromCommit).filter(Boolean);
@@ -56,6 +59,8 @@ export async function runChain(options) {
     ...platformPin(), mexCommit: pin.mexCommit, mexVersion: pin.mexVersion, fixtures,
     mexCliSha256: createHash("sha256").update(readFileSync(cli)).digest("hex"),
     prices: { profile: prices.profile, date: prices.date, source: prices.source },
+    contrast: learned ? "learned-rules" : "mex",
+    ...(learned ? { learned: learned.map(({ name, bytes }) => ({ name, sha256: createHash("sha256").update(bytes).digest("hex") })) } : {}),
     order: tasks.map((task, index) => ({ task: task.id, arms: armOrder(index) })),
     sessions: [],
   };
@@ -75,7 +80,7 @@ export async function runChain(options) {
       adapter.configure(profile, pin);
       const version = await versionOf(command, profile, pin);
       manifest.agentVersion = version;
-      if (arm === "baseline") {
+      if (!runsMex(arm)) {
         checkBaseline(profile);
       } else {
         const actual = await checkedRun(process.execPath, [cli, "--version"], { cwd: root, env, timeoutMs }, "MEX version check");
@@ -86,22 +91,33 @@ export async function runChain(options) {
       }
     }
     const mex = profiles[1];
-    createWorkspace({ subjectRoot, workspace: mex.workspace, base: setupBase, forbidden, depsDir });
-    await checkedRun(process.execPath, [cli], { cwd: mex.workspace, env: mex.env, timeoutMs }, "MEX repository setup");
-    unlinkDependencies(mex.workspace);
-    renameSync(mex.workspace, join(completed, "mex-setup"));
-    const setup = readModelCalls(mex);
-    let cursor = setup.at(-1)?.id ?? 0;
+    const setup = [];
+    const cursors = {};
+    for (const profile of profiles.filter(item => runsMex(item.arm))) {
+      createWorkspace({ subjectRoot, workspace: profile.workspace, base: setupBase, forbidden, depsDir });
+      await checkedRun(process.execPath, [cli], { cwd: profile.workspace, env: profile.env, timeoutMs }, "MEX repository setup");
+      if (learned && profile.arm === "mex") {
+        seedLearned(profile, learned);
+        // The entries get their verdicts the way a person's would after learning.
+        await checkedRun(process.execPath, [cli, "check", "--json"], { cwd: profile.workspace, env: profile.env, timeoutMs }, "MEX check of the learned entries");
+      }
+      unlinkDependencies(profile.workspace);
+      renameSync(profile.workspace, join(completed, (learned ? profile.arm + "-" : "") + "mex-setup"));
+      const calls = readModelCalls(profile);
+      setup.push(...calls);
+      cursors[profile.arm] = calls.at(-1)?.id ?? 0;
+    }
 
     for (const [index, task] of tasks.entries()) {
       for (const arm of armOrder(index)) {
         const profile = profiles.find(item => item.arm === arm);
         const { workspace } = profile;
         createWorkspace({ subjectRoot, workspace, base: task.base, forbidden: task.hiddenTests.fromCommit ? [task.hiddenTests.fromCommit] : [], depsDir });
-        if (arm === "baseline") checkBaseline(profile);
+        if (!runsMex(arm)) checkBaseline(profile);
+        else if (learned && arm === "baseline") checkNoLearned(profile, learned);
         const stem = [agent, arm, task.id].join("-");
         const sampler = sampleMs > 0 ? startSampler({ path: workspace, csv: join(output, stem + ".csv"),
-          record: arm === "mex" ? recordPath(profile) : "", intervalMs: sampleMs }) : null;
+          record: runsMex(arm) ? recordPath(profile) : "", intervalMs: sampleMs }) : null;
         let native;
         let resources;
         let wallMs;
@@ -123,14 +139,16 @@ export async function runChain(options) {
 
         const gradeResult = await grade({ task, profile, subjectRoot, path, transcript: join(recordings, file), timeoutMs });
         json(join(output, stem + ".grade.json"), gradeResult);
-        const mexCalls = readModelCalls(profile, cursor);
-        if (arm === "mex") cursor = mexCalls.at(-1)?.id ?? cursor;
+        const mexCalls = runsMex(arm) ? readModelCalls(profile, cursors[arm]) : [];
+        if (runsMex(arm)) cursors[arm] = mexCalls.at(-1)?.id ?? cursors[arm];
         unlinkDependencies(workspace);
         renameSync(workspace, join(completed, stem));
         rows.push({ task: task.id, arm, accepted: gradeResult.accepted, agentUsage: native.usage, mexCalls, turns: task.reviewerNotes === undefined ? 1 : 2, wallMs, resources });
       }
     }
-    rows.findLast(row => row.arm === "mex").mexCalls.push(...readModelCalls(mex, cursor));
+    for (const profile of profiles.filter(item => runsMex(item.arm))) {
+      rows.findLast(row => row.arm === profile.arm).mexCalls.push(...readModelCalls(profile, cursors[profile.arm]));
+    }
     const report = buildReport(rows, setup);
     const reportText = renderReport(report, manifest);
     const manifestPath = join(output, "run-manifest.json");
@@ -153,6 +171,7 @@ export async function main(argv) {
     agent: { type: "string" }, suite: { type: "string" }, subject: { type: "string" }, output: { type: "string" },
     pin: { type: "string" }, cli: { type: "string" }, deps: { type: "string" }, credentials: { type: "string" },
     "sample-ms": { type: "string" }, "timeout-ms": { type: "string" }, "oauth-token-file": { type: "string" },
+    learned: { type: "string" },
   } });
   if (!values.agent || !values.suite || !values.subject || !values.output || !values.pin) {
     throw new Error("Usage: node evaluate/arm/index.mjs --agent <claude|codex> --suite <json> --subject <repo> --output <new-directory> --pin <json>");
@@ -166,6 +185,7 @@ export async function main(argv) {
     depsDir: values.deps && resolve(values.deps),
     credentialFile: values.credentials && resolve(values.credentials),
     tokenFile: values["oauth-token-file"] && resolve(values["oauth-token-file"]),
+    learnedDir: values.learned && resolve(values.learned),
     pin, command: pin.command ?? [adapter.executable], sampleMs: values["sample-ms"] === undefined ? undefined : Number(values["sample-ms"]),
     timeoutMs: values["timeout-ms"] === undefined ? undefined : Number(values["timeout-ms"]),
   });

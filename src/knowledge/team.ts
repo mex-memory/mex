@@ -7,7 +7,7 @@ import { atomicCreateArtifact, atomicReplaceArtifact } from "../team/artifacts/f
 import { revisionOf } from "../team/artifacts/revision.js";
 import { canonicalFileDiff } from "../team/artifacts/unified-diff.js";
 import type { RepoRelativePath } from "../team/contracts/shared.js";
-import { ENTRY_KINDS, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, assertPersonQuote, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
+import { ENTRY_KINDS, EntryIdSchema, KNOWLEDGE_LIMITS, KnowledgeError, assertPersonQuote, isLearnedEntry, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile } from "./files.js";
 import { gateEntry, sanitizeText, assertNoSecrets } from "./gates.js";
 import { entryLabel } from "./labels.js";
@@ -117,9 +117,17 @@ export function teamClaims(root: string): { entries: KnowledgeEntry[]; invalid: 
 /**
  * Tracked team files leave out producer, model and label. They are local
  * provenance, and readers with the older strict schema refuse unknown fields.
+ * A learned entry's kept quote is personal too: teammates get the source link
+ * and its hash, never the quoted text. Every team write goes through here.
  */
 export function teamEntry(input: KnowledgeEntry): KnowledgeEntry {
   const { producer: _producer, model: _model, label: _label, ...source } = input.mex.source;
+  if (isLearnedEntry(input.mex)) {
+    if (source.type === "person") {
+      throw new KnowledgeError("TEAM_EVIDENCE", "A rule learned from your own typed text stays personal: its quote can't be shared.");
+    }
+    delete source.quote;
+  }
   return { ...input, mex: { ...input.mex, source } };
 }
 

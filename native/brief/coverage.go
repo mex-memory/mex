@@ -166,11 +166,18 @@ func readCoverage(root, home *os.Root, opts Options, cache ruleCache) Coverage {
 		file string
 	}{{root, ".mex/native.json"}, {home, "projects/" + opts.ProjectID + "/native-local.json"}} {
 		var manifest struct {
-			Version int               `json:"version"`
-			Files   map[string]string `json:"files"`
+			Version   int                          `json:"version"`
+			Files     map[string]string            `json:"files"`
+			Checkouts map[string]map[string]string `json:"checkouts"`
 		}
 		data, err := readFile(source.root, source.file, 128<<10)
-		if err != nil || json.Unmarshal(data, &manifest) != nil || manifest.Version != 1 || len(manifest.Files) > maxFiles {
+		if err != nil || json.Unmarshal(data, &manifest) != nil || manifest.Version != 1 {
+			continue
+		}
+		if files, ok := manifest.Checkouts[opts.Checkout]; source.root == home && ok {
+			manifest.Files = files
+		}
+		if len(manifest.Files) > maxFiles {
 			continue
 		}
 		for name, want := range manifest.Files {
@@ -182,6 +189,9 @@ func readCoverage(root, home *os.Root, opts Options, cache ruleCache) Coverage {
 			switch {
 			case path.Base(name) == "AGENTS.md":
 				f.Agents = nativeAgents(root, name, []string{"codex", "claude-code"})
+				if path.Dir(name) == "." {
+					f.Agents = append(f.Agents, "copilot")
+				}
 				area := path.Dir(name)
 				f.Scope = []string{"**"}
 				if area != "." {
@@ -199,6 +209,15 @@ func readCoverage(root, home *os.Root, opts Options, cache ruleCache) Coverage {
 					}
 					f.Scope = front.Paths
 				}
+			case strings.HasPrefix(name, ".github/instructions/") && strings.HasSuffix(name, ".instructions.md"):
+				head, _, ok := strings.Cut(strings.TrimPrefix(string(body), "---\n"), "\n---\n")
+				var front struct {
+					ApplyTo string `yaml:"applyTo"`
+				}
+				if !ok || yaml.Unmarshal([]byte(head), &front) != nil || front.ApplyTo == "" {
+					continue
+				}
+				f.Agents, f.Scope = []string{"copilot"}, []string{front.ApplyTo}
 			default:
 				continue
 			}

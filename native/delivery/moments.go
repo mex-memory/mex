@@ -34,6 +34,7 @@ const (
 	momentRejected = "rejected"
 	momentCreate   = "create"
 	momentPrompt   = "prompt"
+	momentAnchor   = "anchor-touch"
 )
 
 // toolView is one tool call reduced to what moments need, with the repo
@@ -78,22 +79,38 @@ type Resolver func(path string, isFile bool) (project, checkout string)
 func slash(p string) string { return strings.ReplaceAll(p, "\\", "/") }
 
 // relTo resolves OS aliases and links before comparing containment, including
-// a prospective file whose parent exists. Checkout mirrors use real paths.
+// a prospective file whose parent exists. Checkout mirrors use real paths. The
+// result keeps the file system's own spelling, as git and entry scopes write
+// it: a record path is lower-cased on Windows, and a scope is not.
 func relTo(checkout, p string) (string, bool) {
 	if checkout == "" || p == "" {
 		return "", false
 	}
 	// Checkout mirrors use real paths; payloads can use an OS alias such as
 	// /var on macOS. Resolve the same anchor before comparing containment.
+	root := checkout
 	if real, err := place.RealPath(checkout); err == nil {
-		checkout = real
+		root = real
+	}
+	if rel, ok := place.RelativeToCheckout(root, p); ok {
+		return rel, true
+	}
+	// A file the call is about to create: its folder has the real spelling.
+	if parent, err := place.RealPath(filepath.Dir(p)); err == nil {
+		if parent == root {
+			if _, err := os.Lstat(filepath.FromSlash(p)); os.IsNotExist(err) {
+				return filepath.Base(filepath.FromSlash(p)), true
+			}
+		} else if rel, ok := place.RelativeToCheckout(root, filepath.Dir(p)); ok {
+			return path.Join(rel, filepath.Base(filepath.FromSlash(p))), true
+		}
 	}
 	if real, err := place.RealPath(p); err == nil {
 		p = real
 	} else if parent, err := place.RealPath(filepath.Dir(p)); err == nil {
 		p = filepath.Join(parent, filepath.Base(p))
 	}
-	return plainRel(checkout, p)
+	return plainRel(root, p)
 }
 
 func plainRel(checkout, p string) (string, bool) {
@@ -325,7 +342,7 @@ func backticked(s string) []string {
 var promptWordRE = lazy(`(?i)\b(test|tests|testing|build|lint|typecheck|type-check|format|migrate|deploy|bench|benchmark)\b`)
 
 // moments finds the candidates for one tool call in one snapshot.
-func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool) []candidate {
+func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool, suppressed func(string, string) bool, broadLearned func(*entries.Entry) bool) []candidate {
 	var out []candidate
 	readText := ""
 	if v.name == contract.ToolRead && v.output != nil {
@@ -346,6 +363,22 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 		e := it.Entry
 		add := func(moment string, tier int, exempt, reserve bool) {
 			out = append(out, candidate{item: it, moment: moment, tier: tier, exempt: exempt, reserve: reserve, rel: v.rel})
+		}
+		if e.Learned() {
+			prose := false
+			if learnedProse(e) && v.rel != "" && ((v.name == contract.ToolRead && !v.failed) || isEdit(v)) && inScope(it, v.rel) {
+				prose = (len(e.When) == 0 || suppressed(v.project, e.ID)) && !broadLearned(e)
+			}
+			if prose {
+				out = append(out, candidate{item: it, moment: momentAnchor, tier: scopeTier(it, v.rel), rel: v.rel,
+					exempt: true, anchorRelease: true, anchorPaths: []string{v.rel}})
+			}
+			// Past this point a learned entry reaches only the edit moments that carry its own proof: a decision's
+			// rejected pattern coming back, or a procedure's `creates` role. One delivered as prose (no pattern, or a
+			// pattern silenced as noisy) is done here.
+			if prose || e.Kind != "decision" && e.Kind != "procedure" || !isEdit(v) {
+				continue
+			}
 		}
 		switch v.name {
 		case contract.ToolRead:
@@ -376,7 +409,7 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 			case "procedure":
 				if v.created && createsMatch(it, v.rel) {
 					add(momentCreate, tierFile, false, false)
-				} else if momentRecipe(it, v.rel) {
+				} else if momentRecipe(it, v.rel) && !broadLearned(e) {
 					// A co-change or generator rule, at the first edit in its
 					// area: "after changes in internal/ls, run ...".
 					out = append(out, candidate{item: it, moment: momentEdit, tier: scopeTier(it, v.rel), rel: v.rel, lineOnly: true})
@@ -415,8 +448,20 @@ func moments(v toolView, snap *entries.Snapshot, hintOK func(*entries.Item) bool
 	return out
 }
 
-// promptMoments: a typed prompt that names a rejected option brings its
-// decision; one that asks to test or build brings the matching recipe.
+func learnedProse(e *entries.Entry) bool {
+	if e.Status != "active" {
+		return false
+	}
+	switch e.Kind {
+	case "rule", "decision", "pitfall", "procedure":
+		return true
+	default:
+		return false
+	}
+}
+
+// A typed prompt that names a rejected option brings its decision; one that
+// asks to test or build brings the matching recipe.
 func promptMoments(text string, snap *entries.Snapshot) []candidate {
 	var out []candidate
 	if len(text) > 32*1024 {
@@ -428,7 +473,7 @@ func promptMoments(text string, snap *entries.Snapshot) []candidate {
 	}
 	for i := range snap.Items {
 		it := &snap.Items[i]
-		if it.NeedsHintGate {
+		if it.NeedsHintGate || it.Entry.Learned() {
 			continue
 		}
 		switch it.Entry.Kind {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openRecord, openRecordReadOnly, schemaVersion, migrateRecord, type RecordWriter } from "../index.js";
-import { recordMigrations } from "../schema.js";
+import { RECORD_SCHEMA_VERSION, recordMigrations } from "../schema.js";
 import { createCallUsage, modelCallTotals, recordModelCall } from "../usage.js";
 import { ownUsageStatus, ownUsageTotals, refreshOwnUsage as refreshAt, usageWindows, type OwnUsageOptions } from "../own-usage.js";
 
@@ -285,7 +285,7 @@ describe("MEX call accounting", () => {
       INSERT INTO own_usage VALUES('2026-01-01','claude',5,6,7,8,0)`); db.close();
     const upgraded = openRecord({ home: directory, isNetwork: () => false });
     try {
-      expect(schemaVersion(upgraded.db)).toBe(6); expect(upgraded.setting("global", "kept")).toBe("yes");
+      expect(schemaVersion(upgraded.db)).toBe(RECORD_SCHEMA_VERSION); expect(upgraded.setting("global", "kept")).toBe("yes");
       expect(upgraded.project("fixture")).toBeDefined();
       expect(upgraded.db.prepare("SELECT output FROM model_calls").get()!.output).toBe(4);
       expect(upgraded.db.prepare("SELECT output FROM own_usage").get()!.output).toBe(8);

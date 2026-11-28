@@ -12,10 +12,14 @@ import type { RuleScan } from "../knowledge/rule-files.js";
 import type { RecipesFile } from "./recipes/index.js";
 import type { CodeFactsFile } from "./history/job.js";
 import { readKey } from "./keys.js";
-import type { Rich } from "./rich.js";
+import { MARGIN, type Rich, wrapText } from "./rich.js";
+import { select, TerminalBlock } from "./select.js";
+import { DETACH_HINT, renderAnalysisActivity, WATCH_HINT } from "./analysis-screen.js";
+import { readActivity, type DeepActivity } from "../learn-deeper/activity.js";
 import type { ScreenMode } from "./screen.js";
-import { renderFindings, renderNotes } from "./screen.js";
-import { readSetupSteps, type SetupStep } from "./steps.js";
+import { renderFindings, renderNotes, wrap } from "./screen.js";
+import { readSetupSteps, stepFromRow, type SetupStep } from "./steps.js";
+import type { JobRow } from "../record/jobs.js";
 import type { AskQuestion, QuestionOutcome } from "./questions/index.js";
 import type { Gap } from "./questions/gaps.js";
 
@@ -35,46 +39,21 @@ export interface DeeperContext {
 }
 
 /** The learn-deeper step's row now, if this project has one. */
-export async function learnDeeperStep(projectId: string): Promise<SetupStep | undefined> {
+export async function learnDeeperStep(projectId: string, location?: RecordLocation, jobId?: string): Promise<SetupStep | undefined> {
   const { openRecordReadOnly } = await import("../record/index.js");
-  const reader = openRecordReadOnly();
-  try { return reader ? readSetupSteps(reader, projectId).find(step => step.kind === "learn-deeper") : undefined; }
+  const reader = openRecordReadOnly(location && { home: location.home });
+  try {
+    if (!reader) return undefined;
+    if (!jobId) return readSetupSteps(reader, projectId).find(step => step.kind === "learn-deeper");
+    const row = reader.get<JobRow>("SELECT * FROM jobs WHERE id=? AND project_id=? AND kind='learn-deeper'", jobId, projectId);
+    return row && stepFromRow(reader, row);
+  }
   catch { return undefined; }
   finally { reader?.close(); }
 }
 
 const ACTIVE = new Set(["queued", "running", "waiting"]);
-
-/** The offer in the screen's style: the estimate first, Enter starts it, s skips it. */
-function richConfirm(rich: Rich, write: Print): Confirm {
-  return async (lines, details) => {
-    const [question, ...rest] = lines;
-    for (const line of rich.section("LEARN DEEPER", "on by default · runs in the background through your agent")) write(line);
-    for (const line of rich.text([question ?? ""])) write(line);
-    for (const line of rich.text(rest, true)) write(line);
-    for (;;) {
-      write(rich.keys([["Enter", "start"], ["s", "skip"], ...(details.length ? [["d", "details"] as const] : [])]));
-      const key = await readKey();
-      if (key === "enter") return true;
-      if (key === "d" && details.length) { for (const line of rich.text(details, true)) write(line); continue; }
-      return false;
-    }
-  };
-}
-
-/** The plain screen's offer: the same lines and the same keys as the rich one, in plain text. */
-function plainConfirm(write: Print): Confirm {
-  return async (lines, details) => {
-    for (const line of lines) write(line);
-    for (;;) {
-      write(`Enter = start, s = skip${details.length ? ", d = details" : ""}`);
-      const key = await readKey();
-      if (key === "enter") return true;
-      if (key === "d" && details.length) { for (const line of details) write(line); continue; }
-      return false;
-    }
-  };
-}
+export const isAnalysisActive = (step: SetupStep): boolean => ACTIVE.has(step.state);
 
 /**
  * Offer learn deeper once, after the free results. With no GitHub or GitLab remote there is
@@ -82,45 +61,105 @@ function plainConfirm(write: Print): Confirm {
  * offered again.
  */
 export async function offerLearnDeeper(context: DeeperContext, confirm?: Confirm): Promise<SetupStep | undefined> {
-  const { origin } = await import("../learn-deeper/git.js");
-  // Rich: each of the offer's lines is a "Learn deeper" row, like every other step.
+  const { origin, command, revision, PinnedTree } = await import("../learn-deeper/git.js");
   const quiet = context.rich ? (line: string) => {
-    const state = /^Learn deeper (?:queued|is already)/u.test(line) ? "ok" : /^Learn deeper later/u.test(line) ? "attention" : "background";
+    if (line.startsWith("Deep analysis not started")) {
+      for (const out of context.rich!.text([context.rich!.commands(line)])) context.write(out);
+      return;
+    }
+    const state = /^Deep analysis:? (?:started|queued|is already)/u.test(line) ? "ok" : /^Deep analysis later/u.test(line) ? "attention" : "background";
     for (const out of context.rich!.rows([{ state, text: line }])) context.write(out);
   } : context.write;
   if (!await origin(context.root).catch(() => undefined)) {
-    // Only a person reads it; agents and scripts see nothing about a paid step.
-    if (context.interactive) quiet("Learn deeper: no reviews to learn from (no GitHub or GitLab remote) · $0, nothing started");
+    const { docKind, documentPathKind } = await import("../learn-deeper/harvest/documents.js");
+    const head = await revision(context.root);
+    const [count, revertCount, tree] = head ? await Promise.all([
+      command(context.root, "git", ["rev-list", "--count", head]),
+      command(context.root, "git", ["rev-list", "--count", "--regexp-ignore-case", "--grep=^Revert \"", "--grep=This reverts commit ", head]),
+      PinnedTree.open(context.root, head),
+    ]) : [await command(context.root, "git", ["rev-list", "--count", "--all"]), undefined, undefined] as const;
+    const commits = count === undefined ? undefined : Number(count.trim());
+    const reverts = revertCount === undefined ? commits === 0 ? 0 : undefined : Number(revertCount.trim());
+    let docs: number | undefined = commits === 0 ? 0 : undefined;
+    if (tree) {
+      docs = 0;
+      // Ambiguous Markdown needs a heading check. Keep the free setup read bounded.
+      let remaining = 32;
+      for (const path of tree.paths()) {
+        const kind = documentPathKind(path);
+        if (kind === "doc" || kind === "adr") { docs++; continue; }
+        if (kind !== "heading") continue;
+        if (!remaining--) { if (!docs) docs = undefined; break; }
+        if (docKind(path, await tree.read(path))) docs++;
+      }
+    }
+    const empty = reverts === 0 && docs === 0;
+    const details = [
+      "no GitHub or GitLab remote, so no pull requests or reviews",
+      ...(reverts === 0 ? [commits === 1 ? "1 commit, so no reverted fixes" : commits === 0 ? "no commits, so no reverted fixes"
+        : commits === undefined ? "no reverted fixes found" : `${commits.toLocaleString("en-US")} commits, with no reverted fixes`] : []),
+      ...(docs === 0 ? ["no contributor docs (CONTRIBUTING.md, docs/, decision records)"] : []),
+    ];
+    const intro = "Deep analysis learns your team's rules from pull-request reviews and discussions, PR descriptions, reverted fixes and contributor docs.";
+    const next = "Once it's on GitHub or GitLab with some history, run `mex learn`. Nothing was spent.";
+    const rich = context.rich;
+    quiet(`Deep analysis: ${empty ? "nothing to analyse in this repo yet" : "needs a GitHub or GitLab remote"}`);
+    if (rich) {
+      const indent = `${MARGIN}${" ".repeat(17)}`;
+      const width = Math.max(30, Math.min(100, context.mode.width ?? 100) - indent.length - 1);
+      for (const line of wrapText(`${intro}${empty ? " This repo has none of them:" : ""}`, width)) context.write(indent + rich.dim(line));
+      for (const line of details) context.write(`${indent}${rich.paint("bad", "✗")} ${rich.dim(line)}`);
+      for (const line of wrapText(rich.commands(next), width)) context.write(indent + line);
+    } else {
+      const width = context.mode.width;
+      for (const line of wrap(`${intro}${empty ? " This repo has none of them:" : ""}`, width, 2)) context.write(line);
+      for (const detail of details) context.write(`  - ${detail}`);
+      for (const line of wrap(next, width, 2)) context.write(line);
+    }
     return undefined;
   }
-  const before = await learnDeeperStep(context.projectId);
+  const before = await learnDeeperStep(context.projectId, context.location);
+  if (before && isAnalysisActive(before)) {
+    quiet(`Deep analysis: ${stepLine(before)} · run \`mex\` in this repo to watch it`);
+    return before;
+  }
   const { offerLearning } = await import("../learn-deeper/offer.js");
-  // Both screens ask with the same keys, and both say so when the person skips.
-  const ask = confirm ?? (context.interactive ? (context.rich ? richConfirm(context.rich, context.write) : plainConfirm(context.write)) : undefined);
-  let skipped = false;
   await offerLearning({
     root: context.root, projectId: context.projectId, write: quiet, interactive: context.interactive,
-    confirm: ask && (async (lines, details) => { const start = await ask(lines, details); skipped = !start; return start; }),
+    screenWrite: context.write, rich: context.rich, confirm: context.interactive ? confirm : undefined,
   });
-  if (skipped) quiet("Learn deeper skipped · $0 · start it any time with `mex learn`");
-  const after = await learnDeeperStep(context.projectId);
-  return after && ACTIVE.has(after.state) && (after.jobId !== before?.jobId || ACTIVE.has(before.state)) ? after : undefined;
+  const after = await learnDeeperStep(context.projectId, context.location);
+  return after && (after.jobId !== before?.jobId || isAnalysisActive(after)) ? after : undefined;
 }
 
 /** The terminal asker for setup questions: one key per question. */
 export function terminalAsker(context: Pick<DeeperContext, "write" | "rich" | "mode">): AskQuestion {
   return async (gap, index, total) => {
-    if (context.rich) for (const line of context.rich.question({ index, total, text: gap.question, choices: gap.choices, suggested: gap.suggested })) context.write(line);
-    else {
-      context.write(`Question ${index + 1} of ${total}: ${gap.question}`);
-      context.write(`  ${gap.choices.map(choice => `${choice.key} = ${choice.label}`).join(", ")}; Enter = ${gap.suggested ?? "skip"}, s = skip, S = skip all`);
-    }
-    const key = await readKey();
-    if (key === "quit" || key === "S") return "skip-all";
-    if (key === "enter") return gap.suggested ?? "skip";
-    if (gap.choices.some(choice => choice.key === key)) return key;
-    return "skip";
+    const rich = context.rich;
+    const choices = gap.choices.map(choice => ({
+      value: choice.key, label: rich?.codeTint(choice.label) ?? choice.label,
+      ...(choice.key === gap.suggested ? { note: "suggested" } : {}),
+    }));
+    const body = [...gap.details, ...(gap.title && gap.type !== "rule-conflict" ? [gap.question] : [])];
+    const indent = `${MARGIN}      `;
+    const text = rich
+      ? body.flatMap(line => wrapText(rich.codeTint(line), Math.max(20, (context.mode.width ?? 100) - indent.length - 1)).map(part => indent + part))
+      : body.map(line => `  ${line}`);
+    return await select([
+      ...choices,
+      { value: "skip", label: "Skip this question" },
+      ...(index + 1 < total ? [{ value: "skip-all", label: "Skip the rest" }] : []),
+    ], {
+      rich: rich ?? null, focus: gap.suggested ? choices.findIndex(c => c.value === gap.suggested) : choices.length,
+      title: [questionTitle(gap, index, total, rich), ...text, ""],
+    }) ?? "skip";
   };
+}
+
+function questionTitle(gap: Gap, index: number, total: number, rich?: Rich): string {
+  const count = `${index + 1} of ${total}`;
+  const title = gap.title ?? gap.question;
+  return rich ? `${MARGIN}${rich.cmd(count)}  ${rich.bold(rich.codeTint(title))}` : `${count}  ${title}`;
 }
 
 export interface QuestionsStepInput extends DeeperContext {
@@ -133,7 +172,7 @@ export interface QuestionsStepInput extends DeeperContext {
   /** Learn deeper is running, so the section says the questions are asked meanwhile. */
   learning: boolean;
 }
-export interface QuestionsStepResult { asked: number; saved: number; waiting: number; }
+export interface QuestionsStepResult { asked: number; saved: number; waiting: number; resolvedConflicts?: string[]; }
 
 /**
  * The setup questions: asked only of a person, only for real gaps, at most five. For anyone
@@ -147,18 +186,32 @@ export async function questionsStep(input: QuestionsStepInput): Promise<Question
   if (!input.interactive && !input.ask) return { asked: 0, saved: 0, waiting: gaps.length };
   const { write, rich } = input;
   const title = `${gaps.length === 1 ? "1 QUICK QUESTION" : `${gaps.length} QUICK QUESTIONS`}`;
-  if (rich) for (const line of rich.section(title, input.learning ? "asked while learn deeper runs · only you can answer these" : "only you can answer these")) write(line);
-  else write(`${gaps.length === 1 ? "1 question" : `${gaps.length} questions`} only you can answer${input.learning ? " (learn deeper runs meanwhile)" : ""}:`);
-  const show = (outcome: QuestionOutcome) => {
-    const text = outcome.status === "skipped" ? "Skipped" : outcome.line;
+  if (rich) for (const line of rich.section(title, input.learning ? "deep analysis keeps running meanwhile" : undefined)) write(line);
+  else write(`${gaps.length === 1 ? "1 quick question" : `${gaps.length} quick questions`}${input.learning ? " (deep analysis keeps running meanwhile)" : ""}`);
+  const ask = input.ask ?? terminalAsker(input);
+  let skippedRestAt: number | undefined;
+  const show = (outcome: QuestionOutcome, index: number) => {
+    if (skippedRestAt !== undefined && index > skippedRestAt) return;
+    const text = outcome.status === "skipped" ? skippedRestAt === index ? "skipped the rest" : "skipped · asked again only if the files change" : outcome.line;
     const state = outcome.status === "saved" || outcome.status === "noted" ? "ok" : outcome.status === "skipped" ? "skipped" : "attention";
-    if (rich) write(rich.answered(state, text));
+    if (rich) {
+      write(questionTitle(outcome.gap, index, gaps.length, rich));
+      write(`      ${rich.answered(state, rich.codeTint(text))}`);
+    }
     else for (const line of renderFindings([{ state: state === "skipped" ? "background" : state, text }], input.mode)) write(line);
+    write("");
   };
   const result = await runSetupQuestions({
-    ...input, ask: input.ask ?? terminalAsker(input), onOutcome: show,
+    ...input,
+    ask: async (gap, index, total) => {
+      const answer = await ask(gap, index, total);
+      if (answer === "skip-all") skippedRestAt = index;
+      return answer;
+    },
+    onOutcome: show,
   });
-  return { asked: result.asked, saved: result.outcomes.filter(outcome => outcome.status === "saved").length, waiting: 0 };
+  const resolvedConflicts = result.outcomes.flatMap(outcome => outcome.gap.type === "rule-conflict" && outcome.status === "saved" ? [outcome.gap.subject] : []);
+  return { asked: result.asked, saved: result.outcomes.filter(outcome => outcome.status === "saved").length, waiting: 0, ...(resolvedConflicts.length ? { resolvedConflicts } : {}) };
 }
 
 /** What the live view shows for a step: its progress, or why it waits. */
@@ -172,32 +225,52 @@ export function stepLine(step: SetupStep): string {
  * The live view of learn deeper, for a person at a rich terminal: progress until it ends, or
  * until any key leaves it running in the background (closing the terminal does the same).
  */
-export async function watchLearnDeeper(context: DeeperContext, jobId: string, options: { pollMs?: number; capMs?: number } = {}): Promise<SetupStep | undefined> {
+export async function watchLearnDeeper(context: DeeperContext, jobId: string, options: {
+  pollMs?: number; capMs?: number;
+  activity?: (location: RecordLocation, id: string) => DeepActivity | null;
+} = {}): Promise<SetupStep | undefined> {
   const { rich, write } = context;
-  if (!rich || !context.interactive || !process.stdin.isTTY) return undefined;
-  const { LiveLine } = await import("./screen.js");
-  const live = new LiveLine(context.mode);
+  if (!context.interactive || !process.stdin.isTTY) return undefined;
+  await import("../record/job-kinds.js");
+  const read = options.activity ?? readActivity;
+  const live = rich ? new TerminalBlock() : undefined;
   let left = false;
+  let previous: string | undefined;
   const stop = new AbortController();
   const leave = readKey(process.stdin, stop.signal).then(() => { left = true; });
   const started = Date.now();
   let step: SetupStep | undefined;
-  live.start("Learn deeper");
   try {
     for (;;) {
-      step = (await learnDeeperStep(context.projectId));
-      if (!step || step.jobId !== jobId || !ACTIVE.has(step.state)) break;
-      const done = step.progress?.done, total = step.progress?.total;
-      live.update(`${stepLine(step)} · any key leaves it running`, done !== undefined && total ? done / total : undefined);
+      step = await learnDeeperStep(context.projectId, context.location, jobId);
+      if (!step || !isAnalysisActive(step)) break;
+      const line = stepLine(step);
+      const activity = step.state === "queued" ? null : read(context.location, jobId);
+      const status = step.state === "waiting" ? line : undefined;
+      const stage = activity ? `${activity.stage}:${status ?? ""}` : `${step.state}:${step.progress?.message.replace(/\d[\d,]*/gu, "") ?? ""}`;
+      const lines = activity ? [...(rich ? [""] : []), ...renderAnalysisActivity(context.root, activity, { rich, status })]
+        : rich ? [...rich.section("DEEP ANALYSIS"), ...rich.text([line, rich.commands(WATCH_HINT)])] : [`Deep analysis · ${line}`];
+      if (live) live.draw(lines);
+      else if (previous !== stage) {
+        for (const line of lines.flatMap(line => wrap(line, context.mode.width, 2))) write(line);
+        if (previous === undefined) write(WATCH_HINT);
+        previous = stage;
+      }
       await Promise.race([new Promise(resolve => setTimeout(resolve, options.pollMs ?? 500)), leave]);
       if (left || Date.now() - started > (options.capMs ?? 60 * 60_000)) break;
     }
-  } finally { stop.abort(); live.stop(); }
-  if (!step || ACTIVE.has(step.state)) {
-    for (const line of rich.text(["Learn deeper keeps running in the background. `mex jobs` shows it; `mex` here shows it live again."], true)) write(line);
+  } finally { stop.abort(); live?.clear(); await leave; }
+  if (rich) write("");
+  if (!step || isAnalysisActive(step)) {
+    const status = "Deep analysis keeps running in the background";
+    if (rich) {
+      for (const line of rich.rows([{ state: "background", text: status }])) write(line);
+      write(`${MARGIN}${" ".repeat(17)}${rich.commands(DETACH_HINT)}`);
+    } else { write(status); write(DETACH_HINT); }
   } else {
     const ok = step.state === "done" || step.state === "done with gaps";
-    for (const line of rich.rows([{ state: ok && step.state === "done" ? "ok" : "attention", text: `Learn deeper ${step.state}${step.summary ? `: ${step.summary}` : step.error ? `: ${step.error}` : ""}` }])) write(line);
+    const finding = { state: ok ? "ok" as const : "attention" as const, text: `Deep analysis: ${ok && step.summary ? step.summary : step.error ?? step.state}` };
+    for (const line of rich ? rich.rows([finding]) : renderFindings([finding], context.mode)) write(line);
   }
   return step;
 }

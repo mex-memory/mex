@@ -38,7 +38,7 @@ describe("the first screen", () => {
   it("renders the rich form at 120 columns", () => {
     const lines = renderScreen(model, screenMode({ stdoutTTY: true, columns: 120, env: {}, platform: "darwin" }));
     expect(lines.map(line => line.replace(/\x1b\[[0-9;]*m/gu, ""))).toEqual([
-      "MEX · novu · 2.4 s · $0 · nothing added to git",
+      "MEX · novu",
       "",
       "  ✓ Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on",
       "  ✓ 21 notes from your Claude and Codex memory",
@@ -50,7 +50,7 @@ describe("the first screen", () => {
 
   it("renders plain ASCII lines with no colour when there is no terminal", () => {
     expect(renderScreen(model, screenMode({ stdoutTTY: false, env: {}, platform: "darwin" }))).toEqual([
-      "MEX - novu - 2.4 s - $0 - nothing added to git",
+      "MEX - novu",
       "ok Test and build commands for 12 packages (build @novu/dal first) · your agents get these from now on",
       "ok 21 notes from your Claude and Codex memory",
       ".. The file index: in the background (`mex jobs`)",
@@ -70,7 +70,7 @@ describe("the first screen", () => {
 
   it("breaks the header only between its parts and indents what runs on, like notes", () => {
     const lines = renderScreen(model, screenMode({ stdoutTTY: true, columns: 40, env: {}, platform: "darwin" }));
-    expect(lines.slice(0, 2)).toEqual(["MEX - novu - 2.4 s - $0", "    nothing added to git"]);
+    expect(lines[0]).toBe("MEX - novu");
     const note = lines.findIndex(line => line.startsWith("Hooks:"));
     expect(lines.slice(note)).toEqual(["Hooks: Claude Code and Codex, in your", "    user settings."]);
     const long = renderScreen({ ...model, name: "n".repeat(60) }, screenMode({ stdoutTTY: true, columns: 40, env: {}, platform: "darwin" }));
@@ -86,9 +86,9 @@ describe("the first screen", () => {
     }
   });
 
-  it("claims nothing was added to git only when the block is in place", () => {
+  it("names the repo when the block isn't in place either", () => {
     const [header] = renderScreen({ ...model, hidden: false }, screenMode({ stdoutTTY: false, env: {} }));
-    expect(header).toBe("MEX - novu - 2.4 s - $0");
+    expect(header).toBe("MEX - novu");
   });
 
   it("draws a live progress line with a bar that never wraps, ASCII in a legacy console", () => {
@@ -150,12 +150,12 @@ describe("what happens next", () => {
   });
   it("defaults learning to off and explains how to turn it on and how to undo", () => {
     const text = renderNext({ short: false }, plain).join("\n");
-    expect(text).toContain("Learning from everything you type is off until you turn it on: mex config set learning.statements on");
-    expect(text).toContain("Undo: mex off (this repo) - mex uninstall (everything)");
+    expect(text).toContain("It's off now. Turn it on with mex config set learning.statements on");
+    expect(text).toContain("To undo: mex off turns MEX off in this repo - mex uninstall removes MEX from this computer.");
     expect(renderNext({ short: false, learning: "off" }, plain).join("\n")).toBe(text);
   });
   it("discloses the background model and its cap once learning is on", () => {
-    expect(renderNext({ short: false, learning: "on" }, plain).join("\n")).toContain("at most 3% of your usage. Off: mex config set learning.statements off");
+    expect(renderNext({ short: false, learning: "on" }, plain).join("\n")).toContain("within 3% of your plan. Turn it off with mex config set learning.statements off.");
   });
   it.each([40, 80])("wraps instructions and inline details at %i columns", columns => {
     const mode = screenMode({ stdoutTTY: true, columns, env: {}, platform: "darwin" });

@@ -1,7 +1,10 @@
 import { registerJobKind, type BatchContext, type JobKind, type JobRow } from "../record/jobs.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import { automaticWorkEnabled } from "../controls/index.js";
+import { globToRegExp } from "../file-index/glob.js";
 import { nativeBinary, type NativeReport } from "../knowledge/check.js";
+import { isLearnedEntry, validateEntry, type EntryCheck } from "../knowledge/entry.js";
+import { recordVerified } from "../knowledge/gate.js";
 import { assertNoSecrets, hasSecret } from "../knowledge/gates.js";
 import { runModel, ModelRunError, ModelWaitError, type ModelRequest, type ModelResult } from "../model-runner/index.js";
 import { JUDGE_LIMITS, hash, readCandidate, entryFiles, readSource, distance, orderCandidates, nextBatch, evidence, position, samePosition, unchanged, coherent, type Candidate, type Evidence, type Position } from "./evidence.js";
@@ -42,6 +45,7 @@ function save(writer: RecordWriter, projectId: string, results: Judgement[], job
         .run(projectId, result.id, result.inputs_hash, result.result, result.at);
       writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
         .run(projectId, resultKey(result.checkout, result.id), JSON.stringify(result));
+      if (result.result === "still-true") recordVerified(writer, projectId, result.id, "judge", new Date(result.at));
     }
     stageFixes(writer, job, results, batch, params, sessionId);
     writer.db.exec("COMMIT");
@@ -50,6 +54,106 @@ function save(writer: RecordWriter, projectId: string, results: Judgement[], job
 }
 function checkHash(candidate: Candidate): string { return hash(JSON.stringify({ verdict: candidate.item.verdict, checks: candidate.checks, inputs: candidate.inputs,
   ...(candidate.item.rule_evidence?.length ? { rule_evidence: candidate.item.rule_evidence } : {}) })); }
+
+type Relink = { file: string; symbol: string };
+
+function proposeRelink(candidate: Candidate) {
+  const { entry } = candidate;
+  const moves = new Map<string, Relink>();
+  const renew: number[] = [];
+  const checks = entry.mex.checks.map((c, i): EntryCheck => {
+    if (c.kind !== "symbol") return c;
+    const observed = candidate.checks.find(check => check.index === i && check.status === "pass") as { relink?: Relink } | undefined;
+    const relink = observed?.relink;
+    if (typeof relink?.file !== "string" || typeof relink?.symbol !== "string" || relink.file === c.target.file) return c;
+    moves.set(c.target.file, relink);
+    renew.push(i);
+    return { ...c, target: relink };
+  });
+  if (!moves.size) return undefined;
+  const scope = new Map<string, string>(entry.mex.scope.map(glob => [glob, moves.get(glob)?.file ?? glob]));
+  for (const [i, check] of checks.entries()) {
+    if (check.kind === "scope") {
+      const { glob } = check.target;
+      const match = globToRegExp(glob);
+      const applicable = [...moves].find(([from, to]) => match.test(from) && !match.test(to.file));
+      const to = moves.get(glob) ?? (candidate.checks.some(obs => obs.index === i && obs.status === "gone") ? applicable?.[1] : undefined);
+      if (to) {
+        scope.set(glob, to.file);
+        checks[i] = { ...check, target: { glob: to.file } };
+        renew.push(i);
+      }
+    }
+  }
+  for (const [i, check] of checks.entries()) {
+    if (check.kind !== "pattern") continue;
+    const to = scope.get(check.target.scope);
+    if (to && to !== check.target.scope) {
+      checks[i] = { ...check, target: { ...check.target, scope: to } };
+      renew.push(i);
+    }
+  }
+  for (const [from, to] of moves) {
+    if (![...scope.values()].some(glob => globToRegExp(glob).test(to.file))
+      && entry.mex.scope.some(glob => globToRegExp(glob).test(from))) scope.set(to.file, to.file);
+  }
+  try {
+    const rewrite = validateEntry({ ...entry, mex: { ...entry.mex, scope: [...new Set(scope.values())], checks } });
+    assertNoSecrets(rewrite);
+    return { rewrite, renew };
+  } catch { return undefined; }
+}
+
+/** A structural move can be repaired before the job asks for model allowance. */
+function stageRelinks(writer: RecordWriter, projectId: string, job: JobRow, params: JudgeParams, at: Position,
+  report: NativeReport, sessionId?: string): boolean {
+  const out: Judgement[] = [], candidates: Candidate[] = [], renew = new Map<string, number[]>();
+  const counts = new Map<string, number>();
+  const observations = new Map(report.results?.map(result => [result.entry_id, result]));
+  for (const item of report.items ?? []) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+  for (const item of report.items ?? []) {
+    if (out.length === 5) break;
+    const observation = observations.get(item.id);
+    if (item.status !== "active" || item.level === "hint" || counts.get(item.id) !== 1 || !observation?.evaluation_hash
+      || !observation.inputs || !observation.checks.some(check => "relink" in check)
+      || writer.setting(projectId, `knowledge.retired.${item.id}`)) continue;
+    const found = readCandidate(item, params.checkout, writer.location.home, projectId);
+    if (!found || hash(found.content) !== item.entry_hash || !isLearnedEntry(found.entry.mex) || found.entry.mex.source.type === "person") continue;
+    const files = Object.keys(observation.inputs).sort();
+    if (files.length > JUDGE_LIMITS.files) continue;
+    const bindings: Judgement["files"] = [];
+    try {
+      for (const path of files) {
+        const body = readSource(params.checkout, path), source = body === null ? null : hash(body);
+        if ((source ?? "missing") !== observation.inputs[path]) break;
+        bindings.push({ path, hash: source });
+      }
+    } catch { continue; }
+    if (bindings.length !== files.length) continue;
+    const candidate = { ...found, item, files, spare: false, distance: 0, checks: observation.checks,
+      inputs: observation.inputs, evaluationHash: observation.evaluation_hash };
+    const move = proposeRelink(candidate);
+    if (!move) continue;
+    const value: Judgement = { version: 1, id: item.id, inputs_hash: "", checkout: params.checkout, position: at,
+      entry_hash: item.entry_hash, checks_hash: checkHash(candidate), evaluation_hash: observation.evaluation_hash, files: bindings,
+      result: "rewritten", label: "checked by model", model: "file-index", at: new Date().toISOString(), rewrite: move.rewrite };
+    value.inputs_hash = judgementInputsHash(value);
+    if (!needsRouting(writer, projectId, value)) continue;
+    out.push(value);
+    candidates.push(candidate);
+    renew.set(item.id, move.renew);
+  }
+  if (!out.length) return false;
+  writer.db.exec("BEGIN IMMEDIATE");
+  try {
+    const current = writer.db.prepare("SELECT state,owner,request FROM jobs WHERE id=?").get(job.id);
+    const allowed = current?.state === "running" && current.owner === job.owner && current.request === null;
+    if (allowed) stageFixes(writer, job, out, candidates, params, sessionId, renew);
+    writer.db.exec("COMMIT");
+    return allowed;
+  } catch (error) { writer.db.exec("ROLLBACK"); throw error; }
+}
+
 export function judgeCandidates(report: NativeReport, params: JudgeParams, home: string, projectId: string, writer: Pick<RecordWriter, "setting">): Candidate[] {
   if ((report.items?.length ?? 0) > JUDGE_LIMITS.entries) throw new Error("The judge's entry limit was reached.");
   const out: Candidate[] = [], ids = new Set<string>(), duplicates = new Set<string>();
@@ -69,7 +173,8 @@ export function judgeCandidates(report: NativeReport, params: JudgeParams, home:
     // Native acceptance already re-proved this exact model confirmation. It
     // needs no second paid check merely because complete checks also passed.
     if (spare && item.label === "checked by model") continue;
-    if (spare && !found.entry.mex.checks.some(c => c.role === "complete" && Object.entries(c.files).some(([file, baseline]) => {
+    if (spare && !found.entry.mex.checks.some(c => c.role === "complete"
+      && !(c.kind === "quote" && isLearnedEntry(found.entry.mex)) && Object.entries(c.files).some(([file, baseline]) => {
       try { const current = readSource(params.checkout, file); return current === null || hash(current) !== baseline; } catch { return false; }
     }))) continue;
     out.push({ item, ...found, files, spare, distance: distance(files, params.near), checks: observation?.checks ?? [], inputs: observation?.inputs, evaluationHash: observation?.evaluation_hash });
@@ -114,6 +219,11 @@ function idle(writer: RecordWriter, params: JudgeParams, immediate = false): boo
 export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind<JudgeParams, JudgeCheckpoint> {
   return {
     name: "judge", label: "Knowledge judge", scope: "project", sideEffects: "idempotent",
+    joins(open, params) {
+      if (!params.report) return true;
+      const saved = JSON.parse(open.params) as JudgeParams;
+      return saved.checkout === params.checkout && open.state !== "running";
+    },
     async runBatch({ params, checkpoint, writer, job, progress, immediate }: BatchContext<JudgeParams, JudgeCheckpoint>) {
       const projectId = job.project_id!;
       if (!allowed(writer, params, projectId)) return { checkpoint: checkpoint ?? { position: await position(params.checkout), skipped: [], gaps: false }, wait: "Waiting: MEX is off here" };
@@ -155,6 +265,9 @@ export function createJudgeKind(deps: JudgeDependencies = dependencies): JobKind
         if (hooks && !hooks.diagnostic && sessionId) near = [...new Set([...near, ...hooks.all<{ path: string }>(
           "SELECT path FROM epoch_files WHERE project_id=? AND checkout=? AND session_id=? ORDER BY epoch DESC,rowid DESC LIMIT 128", projectId, params.checkout, sessionId).map(r => r.path)])];
       } finally { hooks?.close(); }
+      if (stageRelinks(writer, projectId, job, params, at, report, sessionId)) {
+        return { checkpoint: state, summary: "Preparing updates for moved symbols" };
+      }
       const all = judgeCandidates(report, { ...params, near }, writer.location.home, projectId, writer);
       // Slice-1 results survive an upgrade or a lost checkpoint. Route them
       // without paying for another judgment of the same exact inputs.

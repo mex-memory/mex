@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -48,6 +49,26 @@ export function fixtureOptions(root, agent, mode = "ok", sampleMs = 0, { token =
 }
 
 const packageFile = readFileSync(new URL("../../../package.json", import.meta.url), "utf8");
+
+// One personal entry, written by the built CLI on a clone of the subject, to
+// seed as the learned rules of a learned-rules contrast.
+export function learnedFixture(root, subjectRoot) {
+  const clone = join(root, "learn-source");
+  git(root, ["clone", "-q", subjectRoot, clone]);
+  const home = join(root, "learn-home");
+  mkdirSync(home, { mode: 0o700 });
+  const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, MEX_HOME: home, MEX_TELEMETRY: "0", MEX_INSTALL_AUTO: "0",
+    MEX_SETUP_BACKGROUND_AGENTS: "0", MEX_OFFLINE: "1", GIT_CONFIG_NOSYSTEM: "1" };
+  execFileSync(process.execPath, [cli], { cwd: clone, env, stdio: "ignore" });
+  execFileSync(process.execPath, [cli, "note", "first() returns 0 because the hidden check expects it.", "--scope", "subject.mjs"],
+    { cwd: clone, env, stdio: "ignore" });
+  const projects = join(home, ".mex", "projects");
+  const [project] = readdirSync(projects);
+  const learned = join(root, "learned");
+  mkdirSync(learned);
+  for (const name of readdirSync(join(projects, project, "notes"))) copyFileSync(join(projects, project, "notes", name), join(learned, name));
+  return learned;
+}
 
 export const built = existsSync(cli);
 

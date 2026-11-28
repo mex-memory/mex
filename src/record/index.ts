@@ -140,6 +140,11 @@ export class RecordWriter {
       this.db.prepare(`UPDATE ${table} SET project_id=? WHERE project_id=?`).run(project.id, oldId);
     }
     this.db.prepare("UPDATE checkouts SET project_id=?,provisional=NULL WHERE project_id=?").run(project.id, oldId);
+    this.db.prepare(`INSERT INTO learning_observations SELECT ?,id,at,payload,norm_id,forgotten
+      FROM learning_observations WHERE project_id=? AND true
+      ON CONFLICT(project_id,id) DO UPDATE SET forgotten=max(excluded.forgotten,learning_observations.forgotten),
+      norm_id=coalesce(learning_observations.norm_id,excluded.norm_id)`).run(project.id, oldId);
+    this.db.prepare("DELETE FROM learning_observations WHERE project_id=?").run(oldId);
     // Preserve colliding records under the retired id, linked by the alias below.
     this.db.prepare(`INSERT OR IGNORE INTO judgements SELECT ?,entry_id,inputs_hash,result,at FROM judgements WHERE project_id=?`).run(project.id, oldId);
     this.db.prepare(`DELETE FROM judgements WHERE project_id=? AND EXISTS
@@ -190,7 +195,8 @@ export function openRecord(options: LocationOptions & { projectPath?: string; gi
     db.exec(`PRAGMA busy_timeout=${timeout}`);
     if (schemaVersion(db) > RECORD_SCHEMA_VERSION) throw newer("record.db", schemaVersion(db));
     // NORMAL sync in WAL: a crash loses nothing; a power loss can drop the last commits, and a job then redoes one batch.
-    db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON");
+    // Learning rows may be overwritten or deleted by any record writer.
+    db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
     migrateRecord(db);
     const writer = new RecordWriter(db, location);
     if (options.projectPath) {

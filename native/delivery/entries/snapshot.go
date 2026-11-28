@@ -374,6 +374,9 @@ func Label(e *Entry, level string) string {
 			return "[repo, from " + e.Source.Ref + "]"
 		}
 		if (e.Source.Type == "review" || e.Source.Type == "docs" || e.Source.Type == "person") && learnedID().MatchString(e.ID) {
+			if strings.HasPrefix(e.Source.Label, "Learned, trial. ") {
+				return "[learned, trial]"
+			}
 			return "[learned, not shared]"
 		}
 		if e.Source.Type != "person" {

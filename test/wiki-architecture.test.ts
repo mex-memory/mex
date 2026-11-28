@@ -786,6 +786,8 @@ describe("no unscoped scaffold writes", () => {
     const FD_WRITE_CALLS = /\b(writeSync|ftruncateSync)\s*\(/g;
     const KNOWN: Readonly<Record<string, string>> = {
       "src/agent-prompt.ts": "writes and removes one private prompt file for an oversized agent brief (interactive setup, sync)",
+      "src/model-runner/command.ts": "exclusively creates a content-addressed copy of the fixed model instructions in the OS temp directory for isolated Codex calls",
+      "src/model-runner/index.ts": "writes and removes one private temp folder per model call holding a child-only agent settings file and its prompt (Gemini CLI, Copilot CLI)",
       "src/agent-skills/installer.ts": "atomically installs fixed packaged skill trees and marker-scoped root instructions",
       "src/compaction/notices.ts": "consumes offer requests and publishes bounded notice markers inside the machine record directory",
       "src/ledger/background.ts": "claims and removes bounded session-ledger requests inside the contained machine record directory",
@@ -802,7 +804,7 @@ describe("no unscoped scaffold writes", () => {
       "src/graph/runtime.ts": "edits existing .mex Markdown; bypasses the pipeline (recorded D9 exception)",
       "src/graph/storage.ts": "writes only the disposable graph index, its pointer and temporary databases under the project index folder in the MEX home, never scaffold files",
       "src/hooks/shim/launcher.ts": "writes only the hook launcher file under the machine MEX home bin folder, and only when that home exists; never a repo file",
-      "src/install/files.ts": "atomically restores or installs only recorded, byte-rechecked regular settings/runtime files; tracked settings and redirected paths are refused",
+      "src/install/files.ts": "atomically writes byte-rechecked regular files from install, setup and generated-rule journals; callers check ownership and redirected paths are refused",
       "src/install/index.ts": "purges only the resolved machine record/home trees after settings restoration, stopped-background checks and a complete link/junction inspection; never Wiki content",
       "src/hub/setup/commit.ts": "manages temporary and preserved Git indexes for explicit revision-reviewed setup commits; never edits Wiki content",
       "src/config.ts": "writes config.json",
@@ -812,8 +814,8 @@ describe("no unscoped scaffold writes", () => {
       "src/knowledge/personal-store.ts": "copies and swaps only the bounded personal notes directory under the contained MEX project-data home; recovers through a writer-locked receipt and removes only proved flat saved copies; never a repository file",
       "src/learn-deeper/git.ts": "stages bounded, checked-in files from an approved commit in an owned directory under the MEX home for native checks, and removes that directory after the checks; never writes the checkout",
       "src/learn-deeper/weekly-schedule.ts": "publishes a timestamp-only wake marker in the machine MEX home through an exclusive temporary file",
+      "src/learn-deeper/stop-check.ts": "consumes bounded Stop-check requests and publishes a one-time rule pointer per checkout inside the machine record directory, through an exclusive temporary file; never an entry or repo file",
       "src/review/daily-receipt.ts": "claims one private UTC-day receipt per project in existing local record storage; prunes only bounded, proved regular receipts; never writes repository files or opens a record writer",
-      "src/knowledge/native-write.ts": "writes and removes only MEX-generated agent rule files (marked generated, hash-checked against its manifest, never a person's file or CLAUDE.md), its .mex/native.json manifest, and its own block in git's exclude file",
       "src/knowledge/native-pending.ts": "removes only the hook's bounded rule-file rebuild requests under the record directory's native-pending folder after queueing them; never a repository file",
       "src/repo-start/refresh.ts": "removes only the hook's bounded refresh requests under the record directory's refresh-pending folder and writes empty per-checkout stamp files under refresh-stamps; never a repository file",
       "src/knowledge/share.ts": "writes team entries, .mex/config.json, .mex/sources.json and rule files only inside its own temporary share worktree, and on discard deletes only the files it wrote there; never your branch or working tree",

@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { parseEntry, serializeEntry } from "../entry.js";
+import * as checks from "../check.js";
 import { KnowledgeError } from "../contract.js";
 import { prepareShare } from "../share-plan.js";
 import { pendingShare } from "../share.js";
@@ -30,6 +32,31 @@ function setup() {
 const code = (fn: () => unknown) => { try { fn(); } catch (e) { return (e as KnowledgeError).code; } return "none"; };
 
 describe("mex share", () => {
+  it("shares a learned fix and checks without publishing its private source quote", () => {
+    const { root, git } = shareRepo();
+    const options = { projectPath: root };
+    const project = knowledgeProject(options);
+    const fixture = (name: string) => parseEntry(readFileSync(
+      new URL(`../../../native/delivery/entries/testdata/learn-deeper/${name}.md`, import.meta.url), "utf8"));
+    const entry = fixture("source-quote");
+    entry.mex.fix = fixture("fix").mex.fix;
+    entry.mex.when = fixture("fixture").mex.when;
+    entry.mex.checks = ["fixture", "scope", "quote", "until", "pattern-expect"].flatMap(name => fixture(name).mex.checks);
+    const notes = join(project.location.home, "projects", project.projectId, "notes");
+    mkdirSync(notes, { recursive: true });
+    writeFileSync(join(notes, `${entry.mex.id}.md`), serializeEntry(entry));
+    const verdicts = vi.spyOn(checks, "currentVerdicts").mockReturnValue(new Map([[`personal/${entry.mex.id}`, "held"]]));
+    try {
+      const plan = prepareShare(options, { now });
+      const result = runShare(options, plan.revision, { now });
+      const shared = parseEntry(git("show", `${result.branch}:.mex/learned/${entry.mex.id}.md`));
+      expect(shared.mex.source.quote).toBeUndefined();
+      expect(shared.mex.fix).toEqual(entry.mex.fix);
+      expect(shared.mex.checks).toEqual(entry.mex.checks);
+      expect(parseEntry(readFileSync(join(notes, `${entry.mex.id}.md`), "utf8")).mex.source.quote).toBe(entry.mex.source.quote);
+    } finally { verdicts.mockRestore(); }
+  });
+
   it("recovers a kill after commit but before recording the committed step", () => {
     const { root, git } = setup();
     const plan = prepareShare({ projectPath: root }, { now });

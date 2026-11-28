@@ -10,6 +10,7 @@ import "../repo-start/history/job.js";
 import "../judge/job.js";
 import "../filter/job.js";
 import "../learn-deeper/job.js";
+import "../learn-deeper/network.js";
 import "../knowledge/fail-pass-job.js";
 import "../repo-start/refresh.js";
 import { SESSION_LEARN_KIND } from "../knowledge/session-learning.js";

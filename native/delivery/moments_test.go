@@ -58,6 +58,7 @@ type spec struct {
 	level                                    string // team (default), personal, hint
 	source                                   string // source type, default person
 	ref                                      string
+	producer, label, fix                     string
 }
 
 func (f *fixture) entry(s spec) {
@@ -81,6 +82,15 @@ func (f *fixture) entry(s spec) {
 	fmt.Fprintf(&b, "---\nmex:\n  id: %s\n  kind: %s\n  scope:\n    - %q\n  source:\n    type: %s\n    ref: %q\n", s.id, s.kind, s.scope, s.source, s.ref)
 	if s.source == "person" {
 		fmt.Fprintf(&b, "    quote: %q\n", s.oneLine)
+	}
+	if s.producer != "" {
+		fmt.Fprintf(&b, "    producer: %q\n", s.producer)
+	}
+	if s.label != "" {
+		fmt.Fprintf(&b, "    label: %q\n", s.label)
+	}
+	if s.fix != "" {
+		fmt.Fprintf(&b, "  fix:\n    snippet: %q\n    path: src/example.ts\n    commit: '%s'\n    lines: '4-8'\n", s.fix, strings.Repeat("a", 40))
 	}
 	fmt.Fprintf(&b, "  evidence: %s\n  one_line: %q\n", s.evidence, s.oneLine)
 	if len(s.when) > 0 {
@@ -842,4 +852,26 @@ func TestNoChannelSendsAndRecordsNothing(t *testing.T) {
 	}
 	ctx := f.send(f.event(contract.PostToolBatch, read(p, "export const pool = 1")))
 	mustHave(t, ctx, "never close it here")
+}
+
+// Entry scopes are written the way git lists a file. On Windows the record
+// lower-cases paths, and a rule for UserPage.tsx matched nothing.
+func TestRelToKeepsTheFileSystemsSpelling(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src", "UserPages"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"CONTRIBUTING.md", "src/UserPages/List.tsx", "src/plain.ts"} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(name)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"CONTRIBUTING.md", "src/UserPages/List.tsx", "src/plain.ts", "src/UserPages/NotYet.tsx", "NotYet.md"} {
+		if got, ok := relTo(root, filepath.Join(root, filepath.FromSlash(name))); !ok || got != name {
+			t.Errorf("%s became %q (%v)", name, got, ok)
+		}
+	}
+	if got, ok := relTo(root, filepath.Join(filepath.Dir(root), "Outside.ts")); ok {
+		t.Errorf("a file outside the checkout became %q", got)
+	}
 }

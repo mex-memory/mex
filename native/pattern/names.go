@@ -138,13 +138,167 @@ func nameCheck(p, code string) string {
 	if len(own) == 0 {
 		return "it names no word of its own, only keywords and short names"
 	}
+	// A plain word is evidence only when the reviewed code declares it as a
+	// function, type or import. A local the change made for itself is not.
+	if word, plain := plainWord(p); plain && namedSymbol(word, code) {
+		return ""
+	}
 	local := declaredNames(code)
 	for _, w := range own {
 		if !local[w] {
+			if _, plain := plainWord(p); plain && len(own) == 1 {
+				return "it is only the word " + own[0] + ", not a symbol declared in the reviewed code"
+			}
 			return ""
 		}
 	}
 	return "it names only " + strings.Join(own, ", ") + ", declared in the reviewed code itself"
+}
+
+// plainWord is one word of letters with no inner capital. A dot, underscore,
+// parenthesis, digit or camelCase hump is a code shape and stays eligible.
+func plainWord(p string) (string, bool) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", false
+	}
+	for i, r := range p {
+		if r < 'A' || (r > 'Z' && r < 'a') || r > 'z' {
+			return "", false
+		}
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			return "", false
+		}
+	}
+	return p, true
+}
+
+var (
+	declaredSymbol = regexp.MustCompile(`(?m)(?:\bfunc\s+(?:\([^)\n]*\)\s*)?|\b(?:function|fn|def|class|struct|interface|trait|enum)\s+|\btype\s+)([A-Za-z_][A-Za-z0-9_]*)`)
+	importDefault  = regexp.MustCompile(`(?m)\bimport\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\b`)
+	importNamed    = regexp.MustCompile(`\bimport\s*(?:type\s*)?\{([^}]*)\}`)
+	importPython   = regexp.MustCompile(`(?m)^\s*(?:import|from\s+\S+\s+import)\s+([^\n#]+)`)
+)
+
+func namedSymbol(name, code string) bool {
+	for _, m := range declaredSymbol.FindAllStringSubmatch(code, -1) {
+		if m[1] == name {
+			return true
+		}
+	}
+	for _, m := range importDefault.FindAllStringSubmatch(code, -1) {
+		if m[1] == name {
+			return true
+		}
+	}
+	for _, m := range importNamed.FindAllStringSubmatch(code, -1) {
+		if binding(m[1])[name] {
+			return true
+		}
+	}
+	for _, m := range importPython.FindAllStringSubmatch(code, -1) {
+		if binding(m[1])[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// binding is the name a list actually introduces: `format as fmt` binds fmt.
+func binding(list string) map[string]bool {
+	out := map[string]bool{}
+	for _, part := range strings.Split(list, ",") {
+		part = strings.TrimSpace(part)
+		if i := strings.LastIndex(part, " as "); i >= 0 {
+			part = strings.TrimSpace(part[i+4:])
+		}
+		if w := wordRun.FindString(part); w != "" {
+			out[w] = true
+		}
+	}
+	return out
+}
+
+var scopedCall = regexp.MustCompile(`(?:^|\s)(?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*\s*\(`)
+var namedCall = regexp.MustCompile(`^[A-Za-z_$][\w$]{2,}\s*\(`)
+
+func preciseCodeShape(p string) bool {
+	p = strings.TrimSpace(p)
+	switch p {
+	case "<=", ">=", "==", "!=", "===", "!==":
+		return true
+	}
+	if scopedCall.MatchString(p) {
+		return true
+	}
+	words := patternWords(p)
+	return len(words) > 0 && namedCall.MatchString(p) && !keywords[words[0]]
+}
+
+func matchesAnchor(before, after, anchor string, spans [][2]int) bool {
+	regions := anchorRegions(before, anchor)
+	if regions == nil || overlaps(spans, regions) {
+		return true
+	}
+	// A review can point at the context directly beside the fix. Require
+	// that context to survive, so a separate change on the anchor cannot
+	// make a neighboring match look like the reviewed change.
+	for _, r := range regions {
+		line := before[r[0]:r[1]]
+		left := strings.LastIndexByte(strings.TrimSuffix(before[:r[0]], "\n"), '\n') + 1
+		right := min(r[1]+1, len(before))
+		if end := strings.IndexByte(before[right:], '\n'); end >= 0 {
+			right += end
+		} else {
+			right = len(before)
+		}
+		for _, nearby := range [][2]int{{left, r[0]}, {min(r[1]+1, right), right}} {
+			if !overlaps(spans, [][2]int{nearby}) {
+				continue
+			}
+			if len(anchorRegions(after, line)) > 0 {
+				return true
+			}
+			// An adjacent declaration can be precisely what the review
+			// objects to when the commented line uses its binding.
+			adjacent := strings.TrimSpace(before[nearby[0]:nearby[1]])
+			if !strings.HasPrefix(adjacent, "if ") && !strings.HasPrefix(adjacent, "for ") {
+				continue
+			}
+			locals := declaredNames(adjacent)
+			for _, word := range patternWords(line) {
+				if distinctive(word) && locals[word] {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func codeLiteralSpans(p, code string) [][2]int {
+	if !strings.Contains(code, p) {
+		return nil
+	}
+	toks, offsets := tokenizeAt(code)
+	raw := Spans("literal", p, code)
+	start, end := len(p)-len(strings.TrimLeft(p, " \t\r\n")), len(strings.TrimRight(p, " \t\r\n"))
+	var matched [][2]int
+	for i, j, k := 0, 0, 0; i < len(raw); i++ {
+		lo, hi := raw[i][0]+start, raw[i][0]+end
+		for j < len(offsets) && offsets[j] < lo {
+			j++
+		}
+		if j == len(offsets) || offsets[j] != lo {
+			continue
+		}
+		for k = max(k, j); k < len(offsets) && offsets[k]+len(toks[k]) < hi; k++ {
+		}
+		if k < len(offsets) && offsets[k]+len(toks[k]) == hi {
+			matched = append(matched, raw[i])
+		}
+	}
+	return matched
 }
 
 // anchorRegions are the byte ranges of code's lines that the review comment
@@ -236,7 +390,7 @@ func Spans(match, p, code string) [][2]int {
 func overlaps(spans, regions [][2]int) bool {
 	for _, s := range spans {
 		for _, r := range regions {
-			if s[0] <= r[1] && r[0] <= s[1] {
+			if s[0] < r[1] && r[0] < s[1] {
 				return true
 			}
 		}

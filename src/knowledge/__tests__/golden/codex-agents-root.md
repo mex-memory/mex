@@ -2,5 +2,6 @@
 # MEX rules
 
 Existing code takes precedence over these notes.
+Report a wrong rule with `mex wrong <id> "<reason>"`.
 
 - Use date-fns, not moment, because moment is unmaintained. <!-- mex:mx_root01 -->

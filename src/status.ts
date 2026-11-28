@@ -22,6 +22,8 @@ import { knowledgeProject, type KnowledgeOptions } from "./knowledge/context.js"
 import { KNOWLEDGE_LIMITS, parseEntry } from "./knowledge/entry.js";
 import { containedDirectory, readEntryFile } from "./knowledge/files.js";
 import { hintStatus } from "./knowledge/hints.js";
+import { DEFAULTS_REPORT, DEFAULTS_SETTING, defaultsScope, defaultsSummary, parseDefaultsReport, type DefaultsReport } from "./knowledge/agent-defaults.js";
+import { relativeTime } from "./shared/relative-time.js";
 
 type Switch = "on" | "off" | "unknown";
 export interface AgentStatus { agent: Agent; installed: boolean | null; events: number | null; lastCall?: string; }
@@ -29,6 +31,8 @@ export interface KnowledgeStatus { personal: number; team: number; hints: number
 export interface StatusView {
   version: string;
   outputLevers?: "on" | "off";
+  agentDefaults?: "on" | "off";
+  defaultsReport?: DefaultsReport;
   repository: { state: Switch; capture: Switch } | null;
   agents: AgentStatus[];
   binary: { state: "native" | "missing" | "unknown"; version?: string };
@@ -130,6 +134,8 @@ export function readStatus(options: StatusOptions = {}): StatusView {
       return result.ok ? { state: "native" as const, version: result.version } : { state: "unknown" as const };
     }) ?? { state: "unknown" };
     if (root) {
+      view.agentDefaults = root.row && reader?.setting(root.row.project_id, DEFAULTS_SETTING) === "off" ? "off" : "on";
+      view.defaultsReport = parseDefaultsReport(reader?.setting(defaultsScope(root.root), DEFAULTS_REPORT));
       view.repository = attempt(() => {
         // A missing record is a known unregistered checkout. An unreadable record is unknown.
         if (!reader && location && existsSync(location.record)) throw new Error("Unknown controls");
@@ -204,13 +210,15 @@ function hookErrorDate(at: string): string {
 }
 
 function ago(at: string, now: number): string {
-  const minutes = Math.max(0, Math.floor((now - Date.parse(at)) / 60_000));
-  return minutes < 1 ? "less than 1 min ago" : minutes < 60 ? `${minutes} min ago` : minutes < 1440 ? `${Math.floor(minutes / 60)} h ago` : `${Math.floor(minutes / 1440)} d ago`;
+  return relativeTime(at, now) ?? "earlier";
 }
 export function formatStatus(view: StatusView, options: { doctor?: boolean; now?: number; ascii?: boolean } = {}): string {
   const now = options.now ?? Date.now(), lines: string[] = [];
   if (view.repository) lines.push(`MEX ${view.version} · ${view.repository.state} in this repo · capture ${view.repository.capture}`, "");
   lines.push(view.outputLevers === "on" ? "Output levers on" : "Output levers off; turn on: mex config set levers.output on", "");
+  if (view.agentDefaults) lines.push(
+    `Agent defaults ${view.agentDefaults}. Change with mex config set agent.defaults ${view.agentDefaults === "on" ? "off" : "on"}.`,
+    ...(view.repository?.state === "on" && view.defaultsReport?.enabled ? [defaultsSummary(view.defaultsReport)] : []), "");
   lines.push("Agents");
   for (const agent of view.agents) lines.push(`  ${agent.installed ? "✓" : "!"} ${NAMES[agent.agent]}: ${agent.installed === null ? "unknown" : agent.installed ? `hooks installed (${agent.events} events)` : `hooks not installed or incomplete (${agent.events} events)`}${agent.lastCall ? ` · last call ${ago(agent.lastCall, now)}` : ""}${agent.agent === "codex" && agent.installed ? " · trust them once in Codex (/hooks, or Review hooks in the app)" : ""}`);
   lines.push(`  ${view.binary.state === "native" ? "✓" : "!"} Hook binary ${view.binary.state === "native" ? `${view.binary.version || "unknown version"} (native)` : view.binary.state}`);

@@ -1,5 +1,5 @@
 /** Node alone owns these numbered, forward-only record.db migrations. */
-export const RECORD_SCHEMA_VERSION = 6;
+export const RECORD_SCHEMA_VERSION = 7;
 /** The hooks.db migrations are owned by Go. */
 export const HOOKS_SCHEMA_VERSION = 15;
 export const LEDGER_REPORT_SCHEMA_VERSION = 13;
@@ -168,4 +168,13 @@ CREATE TABLE build_usage (
 CREATE INDEX build_usage_project ON build_usage(project_id,kind,ts);
 CREATE INDEX build_usage_ts ON build_usage(ts);
 CREATE UNIQUE INDEX build_usage_warm_minute ON build_usage(project_id,checkout,ts) WHERE kind='warm';
+` }, { version: 7, sql: `
+CREATE TABLE learning_observations (
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ id TEXT NOT NULL, at TEXT NOT NULL, payload TEXT NOT NULL,
+ norm_id TEXT, forgotten INTEGER NOT NULL DEFAULT 0 CHECK(forgotten IN (0,1)),
+ PRIMARY KEY(project_id,id)
+);
+CREATE INDEX learning_observations_at ON learning_observations(project_id,at DESC,id);
+CREATE INDEX learning_observations_norm ON learning_observations(project_id,norm_id);
 ` }];

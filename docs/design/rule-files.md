@@ -59,14 +59,49 @@ only pull.
 
 ## Which entries (layer A)
 
-An entry goes into rule files when it is active; a rule, decision, pitfall,
-procedure or recipe; backed by a person, docs, CI or review; scoped to the
-whole repo or a folder (`**` or `dir/**`, not a file pattern); not broken or
-changed; at most 600 characters; and not itself read from a rule file. Team
-entries go into shared files; personal notes into local files.
+Rule files take active rules, decisions, pitfalls, procedures and recipes
+backed by a person, docs, CI or review. They take whole-repo and folder scopes
+(`**` or `dir/**`), with the coverage rule below for learned entries. A rule file
+entry must be at most 600 characters, have no broken or changed verdict, and
+come from another source. Team entries go into shared files and personal notes
+go into local files.
 Entries with checks need a held result from the current native evaluator;
 cached verdicts do not authorize publication after the source changes. If
 current checks are unavailable, checked entries are left out.
+
+A learned rule scoped only to exact file paths stays scoped to those files.
+A `**` scope always counts as repository-wide. With at least 20 indexed source
+files, a rule with a glob counts as repository-wide if its scopes together
+match at least 30% of those files, counting each file once. Below 20 indexed
+source files, filename globs with no directory restriction, such as `**/*.go`,
+also count as repository-wide.
+
+Repository-wide learned prose is available through `mex recall` and the review
+list. It loads into rule files only when the person turns on
+`learning.alwaysOn` for the project (`mex config set learning.alwaysOn on --project`).
+A learned rule with a proven `when:` still fires at its matching edit.
+In the fresh-repo test of learn deeper on 10 repos (measured), one learned rule scoped to `**/*.go`
+accounted for 74% of one grader's wrong learned deliveries. The setting
+defaults to off.
+
+When it is on, those rules go into that person's local files only, so shared
+files stay the same for everyone. They share a 450 estimated token budget
+across team and personal entries. This is about one MEX default rules pack.
+Each whole bullet costs its UTF-8 byte length divided by four and rounded up,
+including the entry ID comment and line break.
+
+A held, complete quote check establishes a written project policy. These
+rules rank first, followed by rules from multiple distinct PRs, rules with
+a complete fixture, and rules from a single PR. Ties use the distinct PR
+count, then kind (rule, decision, pitfall, procedure, recipe), then ID.
+If both stores have the same ID and rank, the team copy goes first.
+When a rule exceeds the space left, the selector tries the next rule.
+
+Repository-wide learned rules deliver the stored claim when it matches the
+body or has a sentence boundary where the body continues. The 600-character
+limit applies to the delivered form. The full entry and any rules that miss
+the budget remain available through `mex recall`. Folder rules use path
+delivery.
 
 ## Which files (who loads what)
 

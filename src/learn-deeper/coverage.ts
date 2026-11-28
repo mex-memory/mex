@@ -23,13 +23,25 @@ export function sourceRef(source: LearningSource): SourceRef {
   return source.kind === "docs" ? { id, hash, link, coverage: source.coverage } : { id, hash, link };
 }
 const ForgeSource = SourceRef.refine(source => {
-  const url = /^https:\/\/(github\.com|gitlab\.com)\/([^?#\s]+?)(?:\/-)?\/(?:blob\/|pull\/|merge_requests\/)[^?\s]+$/u.exec(source.link);
-  return !!url && !!repository(url[1]!, url[2]!) && (source.id.startsWith("doc:") ? repoPath(source.id.slice(4))
-    : /^(?:github:[a-z_-]+:\d+|gitlab:(?:note|description):\d+)$/u.test(source.id));
+  const url = /^https:\/\/(github\.com|gitlab\.com)\/([^?#\s]+?)(?:\/-)?\/(?:blob\/|pull\/|issues\/|merge_requests\/)[^?\s]+$/u.exec(source.link);
+  return !!url && !!repository(url[1]!, url[2]!) && (source.id.startsWith("doc:") ? repoPath(source.id.slice(4).split("#", 1)[0]!)
+    : /^(?:github:[a-z_-]+:\d+|gitlab:(?:note|description):\d+)$/u.test(source.id)
+      || url[1] === "github.com" && /^gh:(?:(?:pr|closed|issue):[1-9]\d*|(?:thread|conversation|review-summary):[A-Za-z0-9_+/=-]{1,200})$/u.test(source.id));
 });
 const Shared = z.object({ id: EntryIdSchema, claim: hash, sources: z.array(ForgeSource).max(8) }).strict();
 export type SharedCoverage = z.infer<typeof Shared>;
-const manifest = z.object({ version: z.literal(1), rule_files: z.array(z.unknown()).max(10_000), learn_deeper: z.array(Shared).max(2048).optional() }).passthrough();
+const portableNetwork = z.object({
+  id: EntryIdSchema,
+  url: z.string().max(2048),
+  hash,
+  nodes: z.array(z.string().regex(/^[A-Za-z0-9_+/=-]{1,200}$/u)).max(64),
+  commentHashes: z.record(z.string().regex(/^[A-Za-z0-9_+/=-]{1,200}$/u), hash).optional(),
+}).strict();
+const manifest = z.object({
+  version: z.literal(1), rule_files: z.array(z.unknown()).max(10_000),
+  learn_deeper: z.array(Shared).max(2048).optional(),
+  learn_deeper_network: z.array(portableNetwork).max(2048).optional(),
+}).passthrough();
 
 export function parseManifest(raw: string | undefined): z.infer<typeof manifest> | undefined {
   if (raw === undefined) return undefined;
@@ -41,8 +53,16 @@ export function parseManifest(raw: string | undefined): z.infer<typeof manifest>
   } catch { throw new KnowledgeError("LEARN_SOURCES", "The team's .mex/sources.json could not be read safely."); }
 }
 
+const LessonSupport = z.object({
+  pulls: z.array(z.number().int().positive()).max(256),
+  commits: z.array(z.string().regex(gitHash)).max(256),
+  reviewers: z.array(z.string().min(1).max(128)).max(256),
+}).strict();
+export type LessonSupport = z.infer<typeof LessonSupport>;
+
 const NoteProof = z.object({ origin: repositorySchema.optional(), source: repositorySchema, visibility: z.enum(["public", "private"]),
   hash, sources: z.array(ForgeSource).max(8).default([]),
+  support: LessonSupport.optional(),
   evidenceDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).optional() }).strict();
 export const noteKey = (id: string) => `learning.deep.note.${id}`;
 
@@ -60,9 +80,9 @@ export function learningProof(plan: LearningPlan, raw: string, value: string | u
     && (!proof.origin || isDeepStrictEqual(proof.origin, plan.origin)) ? proof : undefined;
 }
 
-export function makeNoteProof(plan: LearningPlan, raw: string, sources: SourceRef[], evidenceDay?: string): string {
+export function makeNoteProof(plan: LearningPlan, raw: string, sources: SourceRef[], evidenceDay?: string, support?: LessonSupport): string {
   return JSON.stringify({ origin: plan.origin, source: plan.source, visibility: plan.visibility, hash: sourceDigest(raw),
-    sources: sources.filter(source => ForgeSource.safeParse(source).success), evidenceDay });
+    sources: sources.filter(source => ForgeSource.safeParse(source).success), evidenceDay, support });
 }
 
 export function approvedCoverage(entry: KnowledgeEntry, raw: string, value: string | undefined, origin?: Repository): SharedCoverage {
@@ -85,10 +105,12 @@ export function sourceRead(store: Pick<RecordReader, "setting">, project: string
   return store.setting(project, localKey(plan, source)) === recordedSource(source);
 }
 
-export function saveSourceReads(writer: RecordWriter, project: string, plan: LearningPlan, sources: SourceRef[]): void {
+export function saveSourceReads(writer: RecordWriter, project: string, plan: LearningPlan, sources: SourceRef[], remember?: (key: string, value: string) => void): void {
   const set = writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value");
-  for (const source of sources) if (source.id.startsWith("doc:") || source.id.startsWith("github:") || source.id.startsWith("gitlab:")) {
-    set.run(project, localKey(plan, source), recordedSource(source));
+  for (const source of sources) if (source.id.startsWith("doc:") || source.id.startsWith("gh:") || source.id.startsWith("github:") || source.id.startsWith("gitlab:")) {
+    const key = localKey(plan, source), value = recordedSource(source);
+    remember?.(key, value);
+    set.run(project, key, value);
   }
 }
 
@@ -101,7 +123,29 @@ export interface TeamCoverage {
   entries: KnowledgeEntry[];
   claimed: Set<string>;
   retired: Set<string>;
+  retiredIds: Set<string>;
+  retiredEvidence: Set<string>;
   read: Set<string>;
+}
+
+function sourceIdentity(sources: SourceRef[]): string | undefined {
+  // A PR description or doc alone may supply many unrelated lessons. An
+  // exact set containing a stable comment/thread identity is more specific.
+  const specific = sources.some(source => /^(?:gh:thread:|github:(?:issuecomment-?|discussion_r|pullrequestreview|comment):|gitlab:note:)/u.test(source.id));
+  if (!specific) return undefined;
+  return JSON.stringify([...new Set(sources.map(source => {
+    const url = new URL(source.link);
+    const repository = url.pathname.split("/").slice(1, url.hostname === "github.com" ? 3 : url.pathname.split("/-/")[0]!.split("/").length).join("/");
+    return `${url.hostname}/${repository.toLowerCase()}\n${source.id}`;
+  }))].sort());
+}
+
+export function teamRetired(team: TeamCoverage, entry: KnowledgeEntry, raw?: string, proofValue?: string): boolean {
+  if (team.entries.some(active => active.mex.id === entry.mex.id)) return false;
+  if (team.retiredIds.has(entry.mex.id) || team.retired.has(claimHash(entry.text))) return true;
+  const proof = raw && readProof(proofValue, raw);
+  const identity = proof && sourceIdentity(proof.sources);
+  return !!identity && team.retiredEvidence.has(identity);
 }
 
 /** The hosted default branch supplies the exact commit. The working tree is never consulted. */
@@ -130,10 +174,10 @@ export async function readTeamCoverage(root: string, head: string, since: string
     return raw;
   };
   const saved = parseManifest(manifestOid && await blob(manifestOid, MANIFEST_BYTES))?.learn_deeper ?? [];
-  const result: TeamCoverage = { entries: [], claimed: new Set(), retired: new Set(), read: new Set() };
+  const result: TeamCoverage = { entries: [], claimed: new Set(), retired: new Set(), retiredIds: new Set(), retiredEvidence: new Set(), read: new Set() };
   for (const record of saved) {
     for (const source of record.sources) result.read.add(coverageKey(source));
-    if (!active.has(record.id)) result.retired.add(record.claim);
+    if (!active.has(record.id)) { result.retired.add(record.claim); result.retiredIds.add(record.id); }
   }
   const add = async (files: Array<[string, string]>, deleted: boolean) => {
     for (let offset = 0; offset < files.length; offset += 8) {
@@ -144,7 +188,7 @@ export async function readTeamCoverage(root: string, head: string, since: string
       }));
       for (const entry of chunk) {
         const claim = claimHash(entry.text);
-        if (deleted || entry.mex.status === "retired") result.retired.add(claim);
+        if (deleted || entry.mex.status === "retired") { result.retired.add(claim); result.retiredIds.add(entry.mex.id); }
         else if (entry.mex.status === "active") { result.entries.push(entry); result.claimed.add(claim); }
       }
     }
@@ -152,18 +196,40 @@ export async function readTeamCoverage(root: string, head: string, since: string
   await add([...active], false);
   // Older team entries can predate the manifest. Use the old blob of a deletion
   // on the first-parent history so a fresh machine can still see the tombstone.
-  const history = await command(root, "git", ["log", "--first-parent", "--diff-merges=first-parent", "--diff-filter=D", "--no-renames", "--format=",
+  const history = await command(root, "git", ["log", "--first-parent", "--diff-merges=first-parent", "--diff-filter=D", "--no-renames", "--format=%x00parent:%P%x00",
     "--no-abbrev", "--raw", "-z", `--since=${since}`, "-n", "128", head, "--", ".mex/learned"], undefined, 512 << 10);
   if (history === undefined) throw failure();
   const deleted = new Map<string, [string, string]>();
+  const manifests = new Map<string, Set<string>>();
+  const savedIds = new Set(saved.map(record => record.id));
   const pieces = history.split("\0");
-  for (let i = 0; i + 1 < pieces.length; i += 2) {
-    const id = entryId(pieces[i + 1]!);
-    const oid = /^\s*:100(?:644|755) 000000 ([a-f0-9]+) 0+ D$/u.exec(pieces[i]!)?.[1];
+  let parent = "";
+  for (let i = 0; i + 1 < pieces.length; i++) {
+    const token = pieces[i]!;
+    const marker = /^\s*parent:([a-f0-9]+)(?:\s|$)/u.exec(token)?.[1];
+    if (marker) { parent = gitHash.test(marker) ? marker : ""; continue; }
+    const oid = /^\s*:100(?:644|755) 000000 ([a-f0-9]+) 0+ D$/u.exec(token)?.[1];
+    if (!oid) continue;
+    const id = entryId(pieces[++i]!);
     if (!id || !oid || !gitHash.test(oid) || active.has(id)) continue;
     if (deleted.size >= MAX_TEAM_FILES) throw failure();
     deleted.set(oid, [id, oid]);
+    if (parent && !savedIds.has(id) && (manifests.has(parent) || manifests.size < 8)) {
+      const ids = manifests.get(parent) ?? new Set<string>();
+      ids.add(id);
+      manifests.set(parent, ids);
+    }
   }
   await add([...deleted.values()], true);
+  const current = new Set(saved.filter(record => !result.retiredIds.has(record.id)).map(record => sourceIdentity(record.sources)));
+  const addSources = (record: SharedCoverage) => {
+    const identity = sourceIdentity(record.sources);
+    if (identity && !current.has(identity)) result.retiredEvidence.add(identity);
+  };
+  for (const record of saved) if (result.retiredIds.has(record.id)) addSources(record);
+  for (const [parent, ids] of manifests) {
+    const raw = await command(root, "git", ["show", `${parent}:${MANIFEST_PATH}`], undefined, MANIFEST_BYTES);
+    for (const record of parseManifest(raw)?.learn_deeper ?? []) if (ids.has(record.id)) addSources(record);
+  }
   return result;
 }

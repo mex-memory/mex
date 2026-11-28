@@ -83,7 +83,9 @@ describe("the setup screen's states", () => {
     const { text, steps } = await setup(FIXTURES.small!(), { answer: enter });
     expect(steps.map(step => [step.kind, step.state])).toEqual([["file-index", "done"], ["code-facts", "done"], ["graph-build", "done"]]);
     expect(text).toContain("Code map built:");
-    expect(text).toContain("Learn deeper: no reviews to learn from (no GitHub or GitLab remote) · $0, nothing started");
+    expect(text).toContain("no GitHub or GitLab remote, so no pull requests or reviews");
+    expect(text).toContain("1 commit, so no reverted fixes");
+    expect(text).toContain("Nothing was spent.");
     // No gap, no question.
     expect(text).not.toMatch(/QUESTION|Question \d/u);
   }, 60_000);
@@ -99,17 +101,58 @@ describe("the setup screen's states", () => {
     const folder = join(base, "fixtures", "plain-folder"); mkdirSync(folder, { recursive: true }); writeFileSync(join(folder, "notes.txt"), "hi\n");
     const { text, steps } = await setup(folder, { folder: true, answer: enter });
     expect(steps.map(step => step.kind)).toEqual(["file-index"]);
-    expect(text).not.toMatch(/Code map|Learn deeper|QUESTION/u);
+    expect(text).not.toMatch(/Code map|Deep analysis|QUESTION/u);
   }, 60_000);
 
   it("monorepo: asks about the one import that breaks a layer rule, and saves the answer", async () => {
     const asked: string[] = [];
-    const { text, answers, notes } = await setup(FIXTURES.monorepo!(), { forceRich: true, answer: async gap => { asked.push(gap.question); return gap.suggested ?? "skip"; } });
+    const { text, answers, notes } = await setup(FIXTURES.monorepo!(), { forceRich: true, answer: async gap => { asked.push(...gap.details); return gap.suggested ?? "skip"; } });
     expect(asked).toEqual([expect.stringContaining("`packages/db` imports `@acme/ui` in 1 place")]);
     expect(text).toMatch(/1 QUICK QUESTION/u);
     expect(text).toMatch(/your agents get it as "you said"|Not saved/u);
     if (existsSync(hook)) expect(notes.map(([, raw]) => raw).join("\n")).toContain("must not import `@acme/ui`");
     expect(answers.map(answer => [answer.type, answer.choice])).toEqual([["layer-exception", "1"]]);
+  }, 60_000);
+});
+
+describe("the end of setup", () => {
+  it.each([false, true])("puts review before the mascot, and leaves both out when detached (%s)", async detached => {
+    const screen = await import("../src/repo-start/deeper-steps.js");
+    const review = await import("../src/repo-start/review-list.js");
+    const running = {
+      kind: "learn-deeper", jobId: "test-run", label: "Deep analysis", scope: null, state: "running",
+      cost: { uncachedInput: 0, cacheWrite: 0, cacheRead: 0, output: 0 }, startedAt: "2026-01-01T00:00:00Z", finishedAt: null,
+    } as const;
+    const offer = vi.spyOn(screen, "offerLearnDeeper").mockImplementation(async context => {
+      context.write("fixture: offer accepted");
+      return running;
+    });
+    const watch = vi.spyOn(screen, "watchLearnDeeper").mockImplementation(async context => {
+      context.write(detached ? "fixture: detached" : "fixture: analysis finished");
+      return detached ? running : { ...running, state: "done" };
+    });
+    const showReview = vi.spyOn(review, "reviewLearned").mockImplementation(async context => {
+      context.write("fixture: review saved");
+      return { kept: 2, trials: 0, waiting: 0, dropped: 0 };
+    });
+    const stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    try {
+      const { text } = await setup(FIXTURES.conflict!(), { wait: false, answer: enter, forceRich: true });
+      expect(text).toMatch(/fixture: offer accepted[\s\S]+QUICK QUESTION[\s\S]+fixture:/u);
+      if (detached) {
+        expect(text).toContain("fixture: detached");
+        expect(text).not.toMatch(/fixture: review saved|FROM NOW ON|TRY IT|To undo/u);
+      } else {
+        expect(text).toMatch(/fixture: analysis finished[\s\S]+fixture: review saved[\s\S]+FROM NOW ON[\s\S]+TRY IT[\s\S]+learned 2 team rules/u);
+      }
+    } finally {
+      if (stdinTTY) Object.defineProperty(process.stdin, "isTTY", stdinTTY);
+      else Reflect.deleteProperty(process.stdin, "isTTY");
+      offer.mockRestore();
+      watch.mockRestore();
+      showReview.mockRestore();
+    }
   }, 60_000);
 });
 
@@ -128,7 +171,7 @@ describe("learn deeper is never offered to an agent, a script or CI", () => {
         expect(answer).not.toHaveBeenCalled();
         expect(fetch).not.toHaveBeenCalled();
         expect(steps.some(step => step.kind === "learn-deeper")).toBe(false);
-        expect(text).not.toContain("LEARN DEEPER");
+        expect(text).not.toContain("DEEP ANALYSIS");
       } finally { vi.unstubAllGlobals(); }
     }, 60_000);
   }

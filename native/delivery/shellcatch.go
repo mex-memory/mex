@@ -117,7 +117,7 @@ func shellCaught(v toolView, env Environment, snap *entries.Snapshot) []candidat
 // shell command changed: a generator, `sed -i` or `>>` edits files as surely
 // as the Edit tool does. The moment is the same as an Edit's, so the ledger
 // gives it once per epoch whichever way the files changed.
-func shellProcedures(v toolView, env Environment, snap *entries.Snapshot) []candidate {
+func shellProcedures(v toolView, env Environment, snap *entries.Snapshot, broadLearned func(*entries.Entry) bool) []candidate {
 	if v.name != contract.ToolShell || v.checkout == "" || v.project == "" || v.command == "" || readsOrSearches(v.command) || snap == nil {
 		return nil
 	}
@@ -159,7 +159,7 @@ func shellProcedures(v toolView, env Environment, snap *entries.Snapshot) []cand
 					_, was = changedFile(idx, v.checkout, rel, since)
 					changed[rel] = was
 				}
-				if was && momentRecipe(it, rel) {
+				if was && momentRecipe(it, rel) && !broadLearned(it.Entry) {
 					out = append(out, candidate{item: it, moment: momentEdit, tier: scopeTier(it, rel), rel: rel, lineOnly: true})
 					break scopes
 				}

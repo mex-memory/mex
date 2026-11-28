@@ -31,7 +31,7 @@ function write(path: string, text: string) {
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "mex-producer-gate-"));
   context = { projectPath: join(base, "repo"), home: join(base, "home"), isNetwork: () => false, now,
-    observeChecks: checks => checks.map(request => ({ check: { ...request, saw: observed.saw, files: {} } as EntryCheck })) };
+    observeChecks: checks => checks.map(request => ({ check: { ...request, saw: request.kind === "scope" ? { count: 1 } : observed.saw, files: {} } as EntryCheck })) };
   mkdirSync(root());
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
@@ -51,10 +51,24 @@ describe("producer validation", () => {
     expect(listProducers().filter(p => !p.active).map(p => p.id)).toEqual(["session-import", "session-ongoing"]);
   });
 
+  it("spends a publication slot only after checks hold", async () => {
+    const proposals = [
+      fact({ key: "unchecked", text: "Load lint configuration from the package.", checks: [check] }),
+      fact({ key: "allowed", text: "Run migrations before starting the worker." }),
+      fact({ key: "over-quota", text: "Rebuild the command index before packaging." }),
+    ];
+    const results = await propose(proposals, { ...context, maxAccepted: 1, observeChecks: () => [{ reason: "No matching symbol." }] });
+    expect(results.map(result => result.status === "dropped" ? result.reason : result.status))
+      .toEqual(["check-fails", "accepted", "quota"]);
+    expect(expandPersonal(producerEntryId("code-facts", "allowed"), context).entry.text)
+      .toBe("Run migrations before starting the worker.");
+  });
+
   it("lets only a learned doc or review rule, decision or procedure go repo-wide without an anchor", async () => {
     const body = "Bug fixes need a regression test in the same pull request.";
     const learned = (over: Partial<Proposal>): Proposal => ({
       producer: "learn-deeper", kind: "rule", text: "Add a regression test with every bug fix.", anchors: { scope: ["**"] },
+      checks: [{ kind: "scope", role: "complete", target: { glob: "**" } }],
       source: { type: "docs", ref: "CONTRIBUTING.md", quote: body, text: body }, evidenceClass: "docs",
       model: { id: "fixture", version: "fixture-1" }, ...over,
     });
@@ -72,6 +86,25 @@ describe("producer validation", () => {
     expect(results.map(item => item.status === "dropped" ? item.reason : item.status))
       .toEqual(["accepted", "accepted", "accepted", "no-anchor", "no-anchor", "no-anchor", "no-anchor"]);
     expect(expandPersonal(producerEntryId("learn-deeper", "rule-docs"), context).entry.mex.scope).toEqual(["**"]);
+    expect(expandPersonal(producerEntryId("learn-deeper", "rule-docs"), context).entry.mex.source.quote).toBe(body);
+    expect(await save(learned({ key: "unchecked", checks: [] }))).toMatchObject({ reason: "no-anchor" });
+  });
+
+  it("keeps only short, verbatim, secret-free learned quotes", async () => {
+    const learned = (quote: string, text: string): Proposal => ({
+      ...fact(), producer: "learn-deeper", kind: "rule", source: { type: "docs", ref: "README.md", quote, text },
+      checks: [{ kind: "scope", role: "complete", target: { glob: "src/**" } }],
+    });
+    const long = Array.from({ length: 26 }, () => "word").join(" ");
+    expect(await save(learned(long, long))).toMatchObject({ reason: "invalid" });
+    expect(await save(learned("Use checks.", "Use  checks."))).toMatchObject({ reason: "quote-not-found" });
+    // A quote naming a command nobody can verify is left out. The lesson was proven without it.
+    const named = "Run `npm run absent` first.";
+    const saved = await save(learned(named, named));
+    if (saved.status !== "accepted") throw new Error(JSON.stringify(saved));
+    expect(expandPersonal(saved.entryId, context).entry.mex.source.quote).toBeUndefined();
+    const secret = "password=abcdefgh12345678";
+    expect(await save(learned(secret, secret))).toMatchObject({ reason: "secret" });
   });
 
   it("sanitizes a note and verifies inert environment prefixes", async () => {

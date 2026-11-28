@@ -70,6 +70,72 @@ async function staged(level: "team" | "personal" = "team", outcome: "rewritten" 
 }
 
 describe("where judge fixes land", () => {
+  it.each(["confirmation", "personal move", "team move"] as const)("routes a learned %s through fresh observations", async mode => {
+    const learnedId = `mx_deep${"b".repeat(32)}`;
+    const level = mode === "team move" ? "team" : "personal";
+    const move = mode !== "confirmation";
+    const target = { file: "api.ts", symbol: "load" };
+    const oldCheck: EntryCheck = move
+      ? { kind: "symbol", role: "supporting", target, saw: { fingerprint: "fixture-fingerprint" }, files: { "api.ts": hash(oldCode) } }
+      : { ...check(oldCode), role: "supporting" };
+    const untouched: EntryCheck = { kind: "scope", role: "complete", target: { glob: "api.ts" }, saw: { count: 1 }, files: {} };
+    const beforeEntry = entry(learnedId, { kind: "rule", scope: ["api.ts"], source: { type: "docs", ref: "api.ts" }, evidence: "docs",
+      checks: [oldCheck, untouched] }, "Read through the checked loader.");
+    const path = level === "team" ? join(root, ".mex/learned", `${learnedId}.md`) : join(home, "projects", projectId, "notes", `${learnedId}.md`);
+    const before = serializeEntry(beforeEntry);
+    write(path, before);
+    if (level === "team") {
+      git("add", ".mex");
+      git("commit", "-qm", "Add the loader rule");
+    }
+    const at = await position(root);
+    const newTarget = { ...target, file: "new-api.ts" };
+    const renewed: EntryCheck = move ? {
+      kind: "symbol", role: "supporting", target: newTarget, saw: { fingerprint: "fixture-fingerprint" }, files: { "new-api.ts": hash(newCode) },
+    } : { ...check(newCode), role: "supporting" };
+    const moveScope = { ...untouched, target: { glob: "new-api.ts" } };
+    if (move) write(join(root, "new-api.ts"), newCode);
+    const rewrite = { ...beforeEntry, mex: { ...beforeEntry.mex, ...(move ? { scope: ["new-api.ts"] } : {}),
+      checks: move ? [renewed, moveScope] : [oldCheck, untouched] } };
+    const item = { id: learnedId, path, level: level as "team" | "personal", status: "active", kind: "rule",
+      verdict: move ? "held" as const : "changed" as const, entry_hash: hash(before) };
+    const observed = { entry_id: learnedId, verdict: item.verdict,
+      checks: [{ index: 0, kind: oldCheck.kind, role: oldCheck.role, status: move ? "pass" as const : "fail" as const }],
+      inputs: { "api.ts": hash(newCode) } };
+    const report: NativeReport = { ok: true, stored: false, items: [item], results: [observed], problems: [] };
+    const judgement: Judgement = { version: 1, id: learnedId, inputs_hash: hash(before), checkout: root, position: at,
+      entry_hash: hash(before), files: [{ path: "api.ts", hash: hash(newCode) }],
+      checks_hash: hash(JSON.stringify({ verdict: item.verdict, checks: observed.checks, inputs: observed.inputs })),
+      result: move ? "rewritten" : "still-true", at: new Date().toISOString(), label: "checked by model", model: "fixture", rewrite };
+    const queued = enqueueJob(writer, { kind: "judge", projectId, params: {} }).job;
+    writer.db.prepare("UPDATE jobs SET state='running',owner='fixture' WHERE id=?").run(queued.id);
+    const job = writer.db.prepare("SELECT * FROM jobs WHERE id=?").get(queued.id) as unknown as JobRow;
+    stageFixes(writer, job, [judgement], [{ item, entry: beforeEntry, content: before, files: ["api.ts"], checks: observed.checks, spare: false, distance: 0 }],
+      { checkout: root, agent: "claude", near: ["api.ts"] }, "session", move ? new Map([[learnedId, [0, 1]]]) : undefined);
+    if (level === "team") {
+      write(join(writer.location.directory, "judge-edits", `${shortHash(root)}.json`), JSON.stringify({
+        version: 1, project_id: projectId, checkout: root, agent: "claude-code", session_id: "session", position: at,
+        edits: [{ path: "api.ts", before: hash(oldCode), after: hash(newCode) }],
+      }));
+    }
+    const observe: ObserveChecks = checks => checks.map(c => ({ check: c.kind === "scope" ? moveScope : renewed }));
+    const result = await routeFixes(writer, job, report, observe);
+    if (level === "team") {
+      expect(result).toEqual({ waiting: true, gaps: false });
+      expect(readFileSync(path, "utf8")).toBe(before);
+      const notice = writer.db.prepare("SELECT text FROM notices WHERE kind LIKE 'judge-preview.%'").get();
+      expect(JSON.parse(notice!.text as string).text).toContain("new-api.ts");
+      expect(JSON.parse(notice!.text as string).text).toContain("symbol moved");
+    } else {
+      expect(result).toEqual({ waiting: false, gaps: false });
+      const after = parseEntry(readFileSync(path, "utf8"));
+      expect(after.mex.checks).toEqual(move ? [renewed, moveScope] : [renewed, untouched]);
+      expect(after.mex.scope).toEqual(move ? ["new-api.ts"] : ["api.ts"]);
+      expect(after.text).toBe(beforeEntry.text);
+      expect(after.mex.source.producer).toBe("judge");
+    }
+  });
+
   it("shows the exact team diff before changing tracked bytes, then updates this working tree once", async () => {
     const f = await staged(); f.proof();
     expect(await route(writer, f.job, f.report)).toEqual({ waiting: true, gaps: false });

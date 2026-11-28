@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/mex-memory/mex/native/index"
 	"github.com/mex-memory/mex/native/internal/judgement"
 	"github.com/mex-memory/mex/native/internal/rulechange"
+	pathscope "github.com/mex-memory/mex/native/internal/scope"
 	localrecord "github.com/mex-memory/mex/native/record"
 )
 
@@ -25,6 +27,9 @@ type VerdictStore interface {
 
 // StageOptions say what the free stage looks at.
 type StageOptions struct {
+	// Explicit is a check someone asked for, not a live hook: it waits longer for
+	// the record, and fails rather than call evidence it couldn't read absent.
+	Explicit        bool
 	Checkout        string
 	ProjectID       string
 	MexHome         string
@@ -75,6 +80,7 @@ type StageItem struct {
 	RuleEvidence        []string `json:"rule_evidence,omitempty"`
 	RuleEvidencePending bool     `json:"rule_evidence_pending,omitempty"`
 	Label               string   `json:"label,omitempty"`
+	Learned             bool     `json:"learned,omitempty"`
 }
 
 // StageProblem is an entry file that couldn't be read as an entry.
@@ -108,6 +114,8 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		return report, err
 	}
 	defer ev.Close()
+	closeRecords, urlFailed := ev.useURLRecords(opts.RecordDirectory, opts.ProjectID, opts.Explicit)
+	defer closeRecords()
 	asOf := ""
 	if opts.RecordDirectory != "" && opts.ProjectID != "" {
 		if ix, err := index.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout); err == nil {
@@ -136,7 +144,14 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		now = time.Now()
 	}
 	checkedAt := now.UTC().Format(time.RFC3339)
-	ruleChanges := rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+	var ruleChanges *rulechange.Snapshot
+	if opts.Explicit {
+		if ruleChanges, err = rulechange.ReadForEvaluation(opts.RecordDirectory, opts.ProjectID, opts.Checkout); err != nil {
+			return report, fmt.Errorf("read rule-change evidence: %w", err)
+		}
+	} else {
+		ruleChanges = rulechange.Read(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+	}
 	var judged *judgement.Reader
 	judgedTried := opts.TeamOnly
 	defer func() { judged.Close() }()
@@ -151,7 +166,8 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		}
 		report.Entries++
 		valid = append(valid, l.Entry.ID)
-		item := StageItem{ID: l.Entry.ID, Level: l.Level, Path: l.Path, Kind: l.Entry.Kind, Status: l.Entry.Status, EntryHash: l.Hash}
+		item := StageItem{ID: l.Entry.ID, Level: l.Level, Path: l.Path, Kind: l.Entry.Kind, Status: l.Entry.Status, EntryHash: l.Hash,
+			Learned: l.Entry.Source.Learned(l.Entry.ID)}
 		keep := func() {
 			if v, ok := cached[l.Entry.ID]; ok {
 				item.Verdict = v.Verdict
@@ -178,24 +194,18 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		}
 		inputs := ev.inputsHash(l, asOf)
 		var signal *rulechange.Signal
-		if l.Level == "team" && (l.Entry.Kind == "rule" || l.Entry.Kind == "decision" || l.Entry.Kind == "pitfall") {
+		learned := item.Learned
+		if l.Level != Hint {
 			signal = ruleChanges.For(l.Entry.ID, l.Hash)
 			if signal != nil {
 				item.RuleEvidence = signal.Reasons
 				item.RuleEvidencePending = signal.Pending
 			}
 		}
-		if signal != nil {
-			raw, _ := json.Marshal(signal)
-			if signal.Pending {
-				raw = append(raw, []byte(" pending")...)
-			}
-			sum := sha256.Sum256([]byte(inputs + string(raw)))
-			inputs = "sha256:" + hex.EncodeToString(sum[:])
-		}
+		inputs = withRuleSignal(inputs, signal)
 		evaluationHash := inputs
 		modelHeld := false
-		eligible := l.Entry.Kind == "fact" && l.Entry.Status == "active"
+		eligible := (l.Entry.Kind == "fact" || learned) && l.Entry.Status == "active"
 		for _, c := range l.Entry.Checks {
 			if c.Kind == "legacy-grounding" {
 				eligible = false
@@ -204,7 +214,13 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		if eligible {
 			if !judgedTried {
 				judgedTried = true
-				judged = judgement.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+				if opts.Explicit {
+					if judged, err = judgement.OpenForEvaluation(opts.RecordDirectory, opts.ProjectID, opts.Checkout); err != nil {
+						return report, fmt.Errorf("read judge confirmations: %w", err)
+					}
+				} else {
+					judged = judgement.Open(opts.RecordDirectory, opts.ProjectID, opts.Checkout)
+				}
 			}
 			inputs, modelHeld = judged.CacheKey(l.Entry.ID, l.Hash, evaluationHash)
 		}
@@ -230,7 +246,7 @@ func RunStage(opts StageOptions) (StageReport, error) {
 		}
 		readable := true
 		for _, c := range res.Checks {
-			if c.Status == Floor || c.Status == Gone {
+			if (c.Status == Floor || c.Status == Gone) && !(learned && c.Role == Supporting) {
 				readable = false
 			}
 		}
@@ -249,6 +265,9 @@ func RunStage(opts StageOptions) (StageReport, error) {
 			report.Flipped = append(report.Flipped, l.Entry.ID)
 		}
 	}
+	if err := urlFailed(); err != nil {
+		return report, fmt.Errorf("read linked-source observations: %w", err)
+	}
 	if opts.Store == nil {
 		return report, nil
 	}
@@ -265,8 +284,27 @@ func RunStage(opts StageOptions) (StageReport, error) {
 	return report, nil
 }
 
+func policySignal(kind, level string, learned bool) bool {
+	policy := kind == "rule" || kind == "decision" || kind == "pitfall"
+	return level == Team && policy || learned && level != Hint && (policy || kind == "procedure")
+}
+
+func withRuleSignal(inputs string, signal *rulechange.Signal) string {
+	if signal == nil {
+		return inputs
+	}
+	raw, _ := json.Marshal(signal)
+	if signal.Pending {
+		raw = append(raw, []byte(" pending")...)
+	}
+	return hashBytes(append([]byte(inputs), raw...))
+}
+
 // targetFiles lists the repository files a check reads.
 func targetFiles(c Check) []string {
+	if c.Kind == "fixture" {
+		return nil
+	}
 	files := make([]string, 0, len(c.Files)+1)
 	for p := range c.Files {
 		files = append(files, p)
@@ -340,10 +378,14 @@ func touches(l Loaded, checkout string, changed map[string]bool) bool {
 		return true
 	}
 	for _, c := range l.Entry.Checks {
-		if c.Kind == "pattern" || c.Kind == "symbol" {
+		if c.Kind == "pattern" || c.Kind == "symbol" || c.Kind == "scope" {
 			// A pattern's scope or a moved symbol can involve any file.
+			scope := str(c.Target, "scope")
+			if c.Kind == "scope" {
+				scope = str(c.Target, "glob")
+			}
 			for p := range changed {
-				if c.Kind == "symbol" || matchScope(str(c.Target, "scope"), p) {
+				if c.Kind == "symbol" || matchScope(scope, p) {
 					return true
 				}
 			}
@@ -359,11 +401,7 @@ func touches(l Loaded, checkout string, changed map[string]bool) bool {
 
 // matchScope is a cheap prefix test for "does this edit fall in scope".
 func matchScope(scope, path string) bool {
-	prefix := scope
-	if i := strings.IndexAny(prefix, "*?[{"); i >= 0 {
-		prefix = prefix[:i]
-	}
-	return strings.HasPrefix(path, prefix)
+	return strings.HasPrefix(path, pathscope.Prefix(scope))
 }
 
 // inputsHash fingerprints everything an entry's verdict depends on: its own
@@ -375,7 +413,7 @@ func (ev *Evaluator) inputsHash(l Loaded, asOf string) string {
 		for _, f := range targetFiles(c) {
 			lines = append(lines, "file "+f+" "+inputState(ev.files.read(f)))
 		}
-		if c.Kind == "symbol" || c.Kind == "pattern" || c.Kind == "relation" {
+		if c.Kind == "symbol" || c.Kind == "pattern" || c.Kind == "relation" || c.Kind == "scope" {
 			lines = append(lines, "index "+asOf)
 		}
 		if c.Kind == "relation" && str(c.Target, "query") == "calls" && ev.graph != nil {
@@ -384,6 +422,18 @@ func (ev *Evaluator) inputsHash(l Loaded, asOf string) string {
 		// A folder count read while the index is behind HEAD is re-read once it catches up.
 		if c.Kind == "pattern" && exactPatternFile(c.Target) == "" && ev.indexBehindHead() {
 			lines = append(lines, "index behind HEAD")
+		}
+		if c.Kind == "scope" && ev.indexBehindHead() {
+			lines = append(lines, "index behind HEAD")
+		}
+		if url := str(c.Target, "url"); c.Kind == "source" && url != "" && ev.urlSource != nil {
+			captured := str(c.Saw, "hash")
+			row, _ := ev.urlSource(url, captured)
+			lines = append(lines, "url "+url+" "+captured+" "+row.State)
+			if row.State == "edited" {
+				// Another observation may be a different edit to the same baseline.
+				lines = append(lines, "url observed "+row.At)
+			}
 		}
 	}
 	sort.Strings(lines)

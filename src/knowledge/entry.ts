@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseDocument, stringify } from "yaml";
+import { Document, parseDocument, visit as visitYaml } from "yaml";
 import { ENTRY_KINDS, KNOWLEDGE_LIMITS, KnowledgeError } from "./contract.js";
 import { PRODUCER_IDS } from "./producers.js";
 export { ENTRY_KINDS, KNOWLEDGE_LIMITS, KnowledgeError } from "./contract.js";
@@ -40,6 +40,26 @@ const unique = (list: string[]) => new Set(list.map(s => s.toLowerCase())).size 
 const aliases = z.array(phrase(KNOWLEDGE_LIMITS.aliasCharacters)).max(KNOWLEDGE_LIMITS.aliases).refine(unique, "Duplicate alias");
 const asks = z.array(phrase(KNOWLEDGE_LIMITS.askCharacters)).max(KNOWLEDGE_LIMITS.asks).refine(unique, "Duplicate ask");
 const sha = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
+const positiveLine = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const code = (lines: number) => z.string().min(1).refine(s =>
+  !s.includes("\0") && s.replace(/(?:\r\n?|\n)$/u, "").split(/\r\n?|\n/u).length <= lines);
+const fix = z.object({
+  snippet: code(KNOWLEDGE_LIMITS.fixLines).refine(s => s.length <= KNOWLEDGE_LIMITS.fixCharacters),
+  path: file, commit: sha,
+  lines: z.string().regex(/^[1-9]\d{0,15}-[1-9]\d{0,15}$/u).refine(s => {
+    const [start, end] = s.split("-").map(Number);
+    return Number.isSafeInteger(start) && Number.isSafeInteger(end) && end >= start && end - start < KNOWLEDGE_LIMITS.fixLines;
+  }),
+}).strict();
+const region = z.object({ start: positiveLine, end: positiveLine, text: code(KNOWLEDGE_LIMITS.fixtureLines), hash })
+  .strict().refine(r => r.end >= r.start && r.end - r.start < KNOWLEDGE_LIMITS.fixtureLines);
+const version = z.string().max(128).regex(/^v?\d+(?:\.\d+)*(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u);
+export const sourceQuoteWordCount = (s: string): number => s.trim().split(/\s+/u).filter(Boolean).length;
+export const isLearnedEntry = ({ id, source }: { id: string; source: { producer?: string; type: string } }): boolean =>
+  source.producer === "learn-deeper" || (source.type !== "person" &&
+    (source.producer === "judge" || source.producer === undefined) && /^mx_deep[a-f0-9]{32}$/u.test(id));
+const fixtureSize = (pairs: Array<{ before: { text: string }; after: { text: string } }>) =>
+  pairs.reduce((n, pair) => n + Buffer.byteLength(pair.before.text) + Buffer.byteLength(pair.after.text), 0);
 /** The commit a decision cites. Patch id, subject and files let a squash or rebase copy match it. */
 const commit = z.object({
   sha, patch_id: sha.optional(), subject: phrase(512).optional(),
@@ -67,8 +87,20 @@ export const CheckSchema = z.discriminatedUnion("kind", [
     saw: z.object({ fingerprint: line.refine(s => /^(?:[mM][hH]:\d+:(?:[0-9a-fA-F]{2})+|mh2:\d+:[A-Za-z0-9_-]+)$/u.test(s)), bodyHash: line.optional(), codeHash: line.optional() }).strict(),
     files: z.object({}).strict(),
   }).strict(),
-  z.object({ ...checkBase, kind: z.literal("pattern"), target: z.object({ scope, pattern: line, match: match.optional() }).strict(), saw: count }).strict(),
+  z.object({ ...checkBase, kind: z.literal("pattern"), target: z.object({ scope, pattern: line, match: match.optional(),
+    expect: z.enum(["exact", "at-most", "present"]).optional() }).strict(), saw: count }).strict(),
   z.object({ ...checkBase, kind: z.literal("relation"), target: z.object({ query: line, from: scope, to: scope }).strict(), saw: count }).strict(),
+  z.object({ ...checkBase, kind: z.literal("fixture"), target: z.object({
+    pairs: z.array(z.object({ path: file, commit: sha, before: region, after: region }).strict()).min(1).max(KNOWLEDGE_LIMITS.fixturePairs),
+    proves: z.array(z.number().int().min(0).max(31)).min(1).max(32).refine(xs => new Set(xs).size === xs.length),
+  }).strict().refine(t => fixtureSize(t.pairs) <= KNOWLEDGE_LIMITS.fixtureBytes), saw: z.object({ ok: z.literal(true) }).strict() }).strict(),
+  z.object({ ...checkBase, kind: z.literal("scope"), target: z.object({ glob: scope }).strict(), saw: count }).strict(),
+  z.object({ ...checkBase, kind: z.literal("quote"), target: z.object({
+    file, exact: z.string().min(1).max(4096).refine(s => !!s.trim() && !s.includes("\0")),
+    prefix: z.string().max(128), suffix: z.string().max(128), heading: line.optional(),
+  }).strict(), saw: z.object({ hash }).strict() }).strict(),
+  z.object({ ...checkBase, kind: z.literal("until"), target: z.object({ file, pointer, version }).strict(),
+    saw: z.object({ value: version }).strict() }).strict(),
 ]).refine(check => check.kind !== "key" || check.target.member === undefined || check.saw.value === true, "Membership checks must record declared presence as true");
 const metadata = z.object({
   id: EntryIdSchema, kind: z.enum(ENTRY_KINDS), scope: z.array(scope).min(1).max(32),
@@ -83,13 +115,22 @@ const metadata = z.object({
   one_line: line.refine(s => s.length <= KNOWLEDGE_LIMITS.oneLineCharacters, "One-line claim is too long"),
   when: z.array(z.object({ type: z.enum(["anti", "required", "rejected", "creates"]), match, pattern: line }).strict()).max(32).optional(),
   checks: z.array(CheckSchema).max(32), companions: z.array(EntryIdSchema).max(32).optional(),
-  aliases: aliases.optional(), asks: asks.optional(), commit: commit.optional(),
+  aliases: aliases.optional(), asks: asks.optional(), commit: commit.optional(), fix: fix.optional(),
   supersedes: z.array(EntryIdSchema).max(KNOWLEDGE_LIMITS.supersedes).optional(),
   // proposed: written by an agent and not yet in force; never delivered as accepted knowledge.
   status: z.enum(["active", "proposed", "retired"]),
   retired: z.object({ reason: line, by: line, at: date }).strict().optional(), created: date,
 }).strict().superRefine((m, ctx) => {
   if (m.source.type === "person" && !m.source.quote) ctx.addIssue({ code: "custom", path: ["source", "quote"], message: "A person source requires the exact typed quote" });
+  if (m.source.type !== "person" && m.source.quote !== undefined && isLearnedEntry(m)
+    && (sourceQuoteWordCount(m.source.quote) === 0 || sourceQuoteWordCount(m.source.quote) > KNOWLEDGE_LIMITS.sourceQuoteWords)) {
+    ctx.addIssue({ code: "custom", path: ["source", "quote"], message: "Expected a source quote of at most 25 words" });
+  }
+  if (m.fix && !["rule", "pitfall", "decision"].includes(m.kind)) {
+    ctx.addIssue({ code: "custom", path: ["fix"], message: "Only rules, pitfalls and decisions can carry a fix" });
+  }
+  const bytes = m.checks.reduce((n, check) => n + (check.kind === "fixture" ? fixtureSize(check.target.pairs) : 0), 0);
+  if (bytes > KNOWLEDGE_LIMITS.fixtureBytes) ctx.addIssue({ code: "custom", path: ["checks"], message: "Fixture text exceeds 12 KiB" });
   if ((m.status === "retired") !== (m.retired !== undefined)) ctx.addIssue({ code: "custom", path: ["retired"], message: "A retirement record is required exactly when retired" });
 });
 export const EntrySchema = z.object({
@@ -113,9 +154,17 @@ export function assertPersonQuote(entry: KnowledgeEntry, typedText: string): voi
     throw new KnowledgeError("UNVERIFIED_SOURCE", "The person quote was not found in the supplied typed text.");
   }
 }
+// The native parser takes no block that begins with a tab (any function body in a tab-indented repository), and reads
+// a Unicode line break as a new line. Both are written as one quoted line.
+const QUOTED = /^\s*\t|[\u0085\u2028\u2029\ufeff]/u;
+function frontmatter(mex: KnowledgeEntry["mex"]): string {
+  const document = new Document({ mex }, { aliasDuplicateObjects: false });
+  visitYaml(document, { Scalar(_key, node) { if (typeof node.value === "string" && QUOTED.test(node.value)) node.type = "QUOTE_DOUBLE"; } });
+  return document.toString({ lineWidth: 0 });
+}
 export function serializeEntry(input: KnowledgeEntry): string {
   const entry = validateEntry(input);
-  const content = `---\n${stringify({ mex: entry.mex }, { lineWidth: 0, aliasDuplicateObjects: false })}---\n${entry.text.trim()}\n`;
+  const content = `---\n${frontmatter(entry.mex)}---\n${entry.text.trim()}\n`;
   if (Buffer.byteLength(content, "utf8") > KNOWLEDGE_LIMITS.entryBytes) throw new KnowledgeError("ENTRY_TOO_LARGE", "Entry exceeds the file size limit.");
   return content;
 }
@@ -124,13 +173,13 @@ export function parseEntry(content: string): KnowledgeEntry {
   const normalized = content.replace(/\r\n/g, "\n");
   const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/u.exec(normalized);
   if (!match) throw new KnowledgeError("INVALID_ENTRY", "Entry requires one YAML frontmatter block and its text.");
-  let frontmatter: unknown;
+  let parsed: unknown;
   try {
     const document = parseDocument(match[1], { uniqueKeys: true, strict: true });
     if (document.errors.length || document.warnings.length) throw new Error("Invalid YAML");
-    frontmatter = document.toJS({ maxAliasCount: 0 });
+    parsed = document.toJS({ maxAliasCount: 0 });
   } catch { throw new KnowledgeError("INVALID_ENTRY", "Entry frontmatter must be valid YAML without aliases or custom tags."); }
-  const envelope = z.object({ mex: metadata }).strict().safeParse(frontmatter);
+  const envelope = z.object({ mex: metadata }).strict().safeParse(parsed);
   if (!envelope.success) throw new KnowledgeError("INVALID_ENTRY", "Entry frontmatter contains invalid or unsupported fields.");
   return validateEntry({ ...envelope.data, text: match[2].trim() });
 }

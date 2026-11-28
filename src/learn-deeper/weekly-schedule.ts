@@ -7,9 +7,10 @@ import { containedDirectory } from "../knowledge/files.js";
 import { openHooksReadOnly, type RecordWriter } from "../record/index.js";
 import type { EnqueueOptions, EnqueueResult } from "../record/jobs.js";
 import { LEARN_KIND, Plan, type LearningPlan } from "./plan.js";
+import { NETWORK_KIND, networkProofPrefix } from "./network-proof.js";
 
 export const WEEKLY_KIND = "learn-deeper-weekly";
-const SCHEDULE = "learning.deep.weekly";
+export const SCHEDULE = "learning.deep.weekly";
 const WAKE = "learning-refresh-due";
 export const DAY_MS = 86_400_000;
 const SESSION_IDLE_MS = 10 * 60_000;
@@ -69,7 +70,7 @@ export function sessionsActive(writer: RecordWriter, now: number): boolean {
   finally { hooks?.close(); }
 }
 
-function dueRows(writer: RecordWriter, until: number): Array<{ scope: string; value: string; due: number }> {
+function dueRows(writer: Pick<RecordWriter, "db">, until: number): Array<{ scope: string; value: string; due: number }> {
   return writer.db.prepare(`SELECT scope,value,json_extract(value,'$.due') due FROM settings
     WHERE key=? AND CASE WHEN json_valid(value) THEN json_type(value,'$.due')='integer' AND due BETWEEN 1 AND ? ELSE 0 END ORDER BY due LIMIT 32`)
     .all(SCHEDULE, until) as unknown as Array<{ scope: string; value: string; due: number }>;
@@ -81,7 +82,7 @@ export function weeklyWakeDue(home: string, now = Date.now()): boolean {
   catch { return false; }
 }
 
-export function publishWeeklyWake(writer: RecordWriter, earliest = 0): void {
+export function publishWeeklyWake(writer: { db: RecordWriter["db"]; location: Pick<RecordWriter["location"], "home"> }, earliest = 0): void {
   const path = join(writer.location.home, WAKE);
   const due = dueRows(writer, 8.64e15)[0]?.due;
   if (!due) { try { unlinkSync(path); } catch { /* no mirror yet */ } return; }
@@ -106,6 +107,14 @@ export function queueDueWeekly(writer: RecordWriter, queue: (writer: RecordWrite
     const checkout = writer.checkout(parsed.data.checkout);
     if (checkout?.path !== parsed.data.checkout || checkout.project_id !== row.scope || !checkoutOn(checkout, now)
       || !automaticWorkEnabled(writer, row.scope, now)) continue;
+    const networkDue = "learning.deep.network.queued";
+    if (parsed.data.origin.host === "github.com" && writer.setting(row.scope, networkDue) !== String(row.due)
+      && writer.db.prepare("SELECT 1 FROM settings WHERE scope=? AND key GLOB ? LIMIT 1").get(row.scope, `${networkProofPrefix}*`)
+      && weeklySchedule(writer, row.scope) === row.value) {
+      queue(writer, { kind: NETWORK_KIND, projectId: row.scope, params: parsed.data });
+      writer.db.prepare("INSERT INTO settings VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+        .run(row.scope, networkDue, String(row.due));
+    }
     if (writer.db.prepare("SELECT 1 FROM jobs WHERE project_id=? AND kind IN (?,?) AND state NOT IN ('done','done with gaps','failed','cancelled') LIMIT 1")
       .get(row.scope, LEARN_KIND, WEEKLY_KIND)) continue;
     // If a worker finished between the scan and enqueue, let the new schedule win.

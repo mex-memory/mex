@@ -15,7 +15,7 @@ export const RESERVED_SETUP_KINDS = ["session-learn"] as const;
 
 /** Plain words for each step, when the job kind isn't registered in this process. */
 const LABELS: Record<SetupStepKind, string> = {
-  "file-index": "File index", "code-facts": "Code facts", "graph-build": "Code map", "learn-deeper": "Learn deeper",
+  "file-index": "File index", "code-facts": "Code facts", "graph-build": "Code map", "learn-deeper": "Deep analysis",
 };
 
 export interface StepProgress { done?: number; total?: number; unit?: string; message: string; }
@@ -73,11 +73,13 @@ export function stepFromRow(reader: Reader, row: JobRow): SetupStep {
   let scope: string | null = null;
   try { scope = (JSON.parse(row.params || "{}") as { checkout?: string }).checkout ?? null; } catch { /* no scope */ }
   const terminal = TERMINAL_STATES.includes(row.state);
-  const summary = lastSummary(reader, row.id);
+  let summary: string | undefined;
+  try { summary = jobKind(row.kind)?.display?.(row, reader)?.summary; } catch { /* old jobs may not have a display record */ }
+  summary ??= lastSummary(reader, row.id);
   const estimate = row.tokens_estimate ? { tokens: row.tokens_estimate, seconds: Math.max(1, Math.ceil(row.tokens_estimate / QUOTE_TOKENS_PER_MINUTE)) * 60 } : undefined;
   const progress = terminal ? undefined : parseProgress(row.progress);
   return {
-    kind, jobId: row.id, label: jobKind(row.kind)?.label ?? LABELS[kind] ?? row.kind, scope, state: row.state,
+    kind, jobId: row.id, label: kind === "learn-deeper" ? LABELS[kind] : jobKind(row.kind)?.label ?? LABELS[kind] ?? row.kind, scope, state: row.state,
     ...(estimate ? { estimate } : {}), ...(progress ? { progress } : {}), ...(summary ? { summary } : {}),
     cost: costOf(reader, row.id), startedAt: row.created_at, finishedAt: row.finished_at,
     ...(row.reason && (row.state === "failed" || row.state === "waiting" || row.state === "cancelled") ? { error: row.reason } : {}),

@@ -80,7 +80,7 @@ func mergedCards(cards []answerCard, plan []planned, receipts []record.Receipt) 
 		text, notes := card.text, 0
 		for _, p := range plan {
 			id := p.item.Entry.ID
-			if notes >= mergedNotes || p.correction || folded[id] || !given[id] || !aboutSymbol(p.item.Entry, card.symPath, card.symName) {
+			if notes >= mergedNotes || p.correction || p.action == "replaced" || folded[id] || !given[id] || !aboutSymbol(p.item.Entry, card.symPath, card.symName) {
 				continue
 			}
 			line := "Note: " + strings.TrimSpace(p.item.Entry.OneLine) + idSuffix(p.pointer, id)

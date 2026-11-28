@@ -49,7 +49,7 @@ func Probe(env Environment, project, checkout string, ids []string) ([]ProbeResu
 			r.Verdict = s.verdict
 			switch {
 			case s.action == "withheld":
-			case s.action == "replaced" && it.Entry.Kind == "fact":
+			case s.action == "replaced" && (it.Entry.Kind == "fact" || it.Entry.Learned()):
 				r.Form, r.Text = "pointer", strings.TrimSpace(s.full)
 			default:
 				r.Form, r.Text = "full", strings.TrimSpace(s.full)

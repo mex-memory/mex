@@ -10,6 +10,12 @@ export function buildReviewCommand(): Command {
       if (opts.json) { console.log(JSON.stringify({ ok: true, ...result })); return; }
       if (!result.items.length) { console.log("No rules waiting for Review."); return; }
       for (const [index, card] of result.items.entries()) {
+        if (card.upkeep) {
+          const action = card.upkeep === "noise" ? `\nRestore: mex review restore ${card.entry.mex.id}`
+            : card.upkeep === "age" ? `\nVerify: mex review verify ${card.entry.mex.id}` : "";
+          console.log(`${index + 1}. ${card.entry.mex.one_line}\n${card.reason}${action}\n`);
+          continue;
+        }
         if (card.conflictsWith) {
           console.log(`${index + 1}. ${card.entry.text}\nContradicts ${card.conflictsWith.join(", ")}.\nKeep current: mex review keep ${card.id}\nUse proposal: mex review use ${card.id}\n`);
           continue;
@@ -36,6 +42,19 @@ export function buildReviewCommand(): Command {
     };
     if (action === "edit") child.action((card, text, opts) => perform(card, text, opts));
     else child.action((card, opts) => perform(card, undefined, opts));
+  }
+  for (const action of ["restore", "verify"] as const) {
+    command.command(action).description(action === "restore" ? "Restore a learned rule's speed bump" : "Confirm a learned rule still holds")
+      .argument("<id>", "Stable entry id")
+      .action(async (id: string, _opts, child: Command) => {
+        const { json } = child.optsWithGlobals();
+        await run(json, async () => {
+          const { upkeepAction } = await import("../knowledge/upkeep.js");
+          upkeepAction(action, id, { projectPath: process.cwd() });
+          if (json) console.log(JSON.stringify({ ok: true, id }));
+          else console.log(action === "restore" ? "Restored the speed bump and restarted its count." : "Recorded your verification.");
+        });
+      });
   }
   return command;
 }

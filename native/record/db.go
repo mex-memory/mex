@@ -22,7 +22,7 @@ const SchemaVersion = 15
 
 // Node's additive migrations (model admission, alias verdicts, the build usage
 // log) do not change the tables read here.
-const RecordSchemaVersion = 6
+const RecordSchemaVersion = 7
 const ReaderBusyTimeoutMS = 10
 const WriterBusyTimeoutMS = 200
 const WriterOperationTimeout = 250 * time.Millisecond
@@ -239,13 +239,14 @@ func openCounterReader(path string) (*sql.DB, error) {
 }
 
 type Hooks struct {
-	directory     string
-	newID         func() (string, error)      // deterministic receipt identities in fixtures
-	Trace         func(string, time.Duration) // explicit diagnostics only
-	db            *sql.DB
-	budget        budget
-	counterOnly   bool
-	counterReader *sql.DB
+	directory        string
+	newID            func() (string, error)      // deterministic receipt identities in fixtures
+	Trace            func(string, time.Duration) // explicit diagnostics only
+	db               *sql.DB
+	budget           budget
+	connectionBusyMS int
+	counterOnly      bool
+	counterReader    *sql.DB
 }
 
 func OpenHooks(location Location) (*Hooks, error) {
@@ -272,19 +273,23 @@ func openHooks(location Location, limits budget) (*Hooks, error) {
 }
 
 func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hooks, error) {
-	if location.Directory == "" {
-		location.Directory = filepath.Dir(location.Hooks)
-	}
 	busyTimeout := WriterBusyTimeoutMS
 	if counterOnly {
 		busyTimeout = 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limits.writer)
+	defer cancel()
+	return openHookDatabaseWithin(ctx, location, limits, counterOnly, busyTimeout)
+}
+
+func openHookDatabaseWithin(ctx context.Context, location Location, limits budget, counterOnly bool, busyTimeout int) (*Hooks, error) {
+	if location.Directory == "" {
+		location.Directory = filepath.Dir(location.Hooks)
 	}
 	db, err := openDatabaseWithBusyTimeout(location.Hooks, false, busyTimeout)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), limits.writer)
-	defer cancel()
 	var counterReader *sql.DB
 	if counterOnly {
 		// Keep sidecars across short-lived counter writers.
@@ -358,7 +363,7 @@ func openHookDatabase(location Location, limits budget, counterOnly bool) (*Hook
 		}
 		return nil, err
 	}
-	return &Hooks{directory: location.Directory, db: db, budget: limits, counterOnly: counterOnly, counterReader: counterReader}, nil
+	return &Hooks{directory: location.Directory, db: db, budget: limits, connectionBusyMS: busyTimeout, counterOnly: counterOnly, counterReader: counterReader}, nil
 }
 
 func (hooks *Hooks) Close() error {
@@ -370,10 +375,7 @@ func (hooks *Hooks) Close() error {
 }
 
 func (hooks *Hooks) busyTimeout() int {
-	if hooks.counterOnly {
-		return 1
-	}
-	return WriterBusyTimeoutMS
+	return hooks.connectionBusyMS
 }
 
 type Session struct {
@@ -487,6 +489,16 @@ type Project struct {
 
 // Missing/busy/incompatible files return errors quickly; callers ignore them and allow the call.
 func OpenRecord(location Location) (*Reader, error) { return openRecord(location, hookBudget) }
+
+// evaluationReader is the read budget of a check someone asked for: long
+// enough to open and read the record on a loaded machine.
+const evaluationReader = 2 * time.Second
+
+// OpenEvaluationRecord opens the record for an explicit check. Live hooks use
+// OpenRecord, whose budget keeps an agent's tool call fast.
+func OpenEvaluationRecord(location Location) (*Reader, error) {
+	return openRecord(location, budget{reader: evaluationReader})
+}
 
 func openRecord(location Location, limits budget) (*Reader, error) {
 	if _, err := os.Stat(location.Record); err != nil {

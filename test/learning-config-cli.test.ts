@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
-import { openRecordReadOnly } from "../src/record/index.js";
+import { openRecord, openRecordReadOnly } from "../src/record/index.js";
 
 it("accepts the learning command printed by the first screen in global scope", () => {
   const base = mkdtempSync(join(tmpdir(), "mex-config-cli-"));
@@ -34,3 +34,34 @@ it("refuses learning from past sessions while this version has no producer for i
   const again = openRecordReadOnly({ home: join(env.MEX_HOME, ".mex") });
   try { expect(again?.setting("global", "learning.sessions")).toBe("off"); } finally { again?.close(); }
 });
+
+it("sets each learning trial only for the registered project", () => {
+  const base = mkdtempSync(join(tmpdir(), "mex-learning-project-config-"));
+  const cwd = join(base, "checkout"), home = join(base, ".mex");
+  mkdirSync(cwd);
+  const writer = openRecord({ home, projectPath: cwd, isNetwork: () => false });
+  const project = writer.checkout(cwd)!.project_id;
+  const mirror = join(writer.location.directory, "hook-delivery", `${project}.json`);
+  writer.close();
+  const env = { ...process.env, MEX_HOME: base, MEX_TELEMETRY: "0", MEX_BACKGROUND: "0", MEX_INSTALL_AUTO: "0" };
+  const run = (...args: string[]) => spawnSync(process.execPath, [resolve("dist/cli.js"), "config", "set", ...args], { env, cwd, encoding: "utf8", timeout: 15_000 });
+  for (const [key, text] of [["learning.stopCheck", "3% automatic allowance"], ["learning.procedures", "up to five cheap calls"],
+    ["learning.prDecisions", "adds no model call"], ["learning.deep.issues", "estimated budget"]]) {
+    expect(run(key!, "on").stderr).toContain("Use --project");
+    expect(run(key!, "maybe", "--project").stderr).toContain("Use on or off");
+    const result = run(key!, "on", "--project");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(text);
+    const record = openRecordReadOnly({ home })!;
+    try {
+      expect(record.setting(project, key!)).toBe("true");
+      expect(record.setting("global", key!)).toBeUndefined();
+    } finally { record.close(); }
+    if (key === "learning.stopCheck") expect(JSON.parse(readFileSync(mirror, "utf8")).stop_check).toBe(true);
+    expect(run(key!, "off", "--project").status).toBe(0);
+    const after = openRecordReadOnly({ home })!;
+    try { expect(after.setting(project, key!)).toBe("false"); } finally { after.close(); }
+    if (key === "learning.stopCheck") expect(JSON.parse(readFileSync(mirror, "utf8")).stop_check).toBeUndefined();
+  }
+  expect(run("unknown", "on").stderr).toContain("learning.stopCheck, learning.procedures, learning.prDecisions, learning.alwaysOn, learning.deep.issues");
+}, 60_000);

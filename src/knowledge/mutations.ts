@@ -1,13 +1,73 @@
 import { join } from "node:path";
 import { openRecord, type RecordWriter } from "../record/index.js";
-import { assertPersonQuote, EntryIdSchema, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
+import { assertPersonQuote, EntryIdSchema, isLearnedEntry, KNOWLEDGE_LIMITS, KnowledgeError, parseEntry, serializeEntry, type KnowledgeEntry } from "./entry.js";
 import { containedDirectory, readEntryFile, replaceEntryFile } from "./files.js";
 import { personalSnapshot, type KnowledgeOptions, type NoteInput, type PersonalEntry } from "./store.js";
 import { references } from "./references.js";
 import { gateEntry, sanitizeText, stripHidden, hasSecret } from "./gates.js";
 import { knowledgeProject } from "./context.js";
-import { saveTombstone, tombstone, type Tombstone } from "./state.js";
+import { claimHash, saveTombstone, tombstone, type Retirement, type Tombstone } from "./state.js";
 import { entryLabel } from "./labels.js";
+import { recordVerified } from "./gate.js";
+import { publishNotes, snapshotNotes } from "./personal-store.js";
+import { noteKey } from "../learn-deeper/coverage.js";
+import { LEARNED_TRIAL_LABEL } from "../learn-deeper/trial-outcomes.js";
+import { forgetObservations } from "../learn-deeper/observations.js";
+import { sourceDigest } from "../learn-deeper/source.js";
+
+export const learnedRefusalKey = (id: string) => `learning.deep.refused.${id}`;
+export const learnedWaitingKey = (id: string) => `learning.deep.waiting.${id}`;
+export const learnedReviewedKey = (jobId: string) => `learning.deep.reviewed.${jobId}`;
+
+function recordRefusal(writer: RecordWriter, project: string, entry: KnowledgeEntry): void {
+  putSetting(writer, project, learnedRefusalKey(entry.mex.id), JSON.stringify([claimHash(entry.text), claimHash(entry.mex.one_line)]));
+}
+
+function putSetting(writer: RecordWriter, project: string, key: string, value: string): void {
+  writer.db.prepare("INSERT INTO settings(scope,key,value) VALUES(?,?,?) ON CONFLICT(scope,key) DO UPDATE SET value=excluded.value")
+    .run(project, key, value);
+}
+
+function retiredEntry(entry: KnowledgeEntry, retired: Retirement): string {
+  return serializeEntry({ ...entry, mex: { ...entry.mex, status: "retired", retired } });
+}
+
+function retireNote(writer: RecordWriter, project: string, entry: KnowledgeEntry, retired: Retirement): Tombstone {
+  const marker = saveTombstone(writer, project, entry, retired);
+  if (isLearnedEntry(entry.mex)) {
+    recordRefusal(writer, project, entry);
+    forgetObservations(writer.db, project, entry.mex.id);
+  }
+  return marker;
+}
+
+function noteReceipt(writer: RecordWriter, project: string, id: string): { hash?: unknown } | null {
+  const value = writer.setting(project, noteKey(id));
+  if (!value || Buffer.byteLength(value) > 20_000) return null;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+/** Older unticks changed only the file status, leaving the receipt for the active revision. */
+export function learnedRefused(writer: RecordWriter, project: string, entry: KnowledgeEntry, raw: string): boolean {
+  if (writer.setting(project, learnedRefusalKey(entry.mex.id))) return true;
+  if (entry.mex.status !== "proposed") return false;
+  const proof = noteReceipt(writer, project, entry.mex.id);
+  return !!proof && proof.hash !== sourceDigest(raw) && proof.hash === sourceDigest(serializeEntry({ ...entry, mex: { ...entry.mex, status: "active" } }));
+}
+
+function recordStatusChange(writer: RecordWriter, project: string, entry: KnowledgeEntry,
+  before: string, after: string, status: "active" | "proposed", now: Date): void {
+  const id = entry.mex.id;
+  if (status === "active") {
+    recordVerified(writer, project, id, "person", now);
+    putSetting(writer, project, "learning.deep.trial." + id, "permanent");
+    writer.db.prepare("DELETE FROM settings WHERE scope=? AND key IN (?,?)").run(project, learnedRefusalKey(id), learnedWaitingKey(id));
+  } else recordRefusal(writer, project, entry);
+  // A status-only change does not invalidate the source receipt. Only renew it
+  // if it attested to the exact revision the person saw.
+  const proof = noteReceipt(writer, project, id);
+  if (proof?.hash === sourceDigest(before)) putSetting(writer, project, noteKey(id), JSON.stringify({ ...proof, hash: sourceDigest(after) }));
+}
 
 function assertId(id: string): void {
   if (!EntryIdSchema.safeParse(id).success) throw new KnowledgeError("INVALID_ID", "Expected a stable entry id such as mx_7f3k2a.");
@@ -91,13 +151,24 @@ export function forget(id: string, reason: string, options: KnowledgeOptions, no
   reason = stripHidden(reason);
   if (hasSecret(reason)) throw new KnowledgeError("SECRET_FOUND", "The retirement reason contains a possible secret.");
   const retired = { reason, by: `mex ${action}`, at: now.toISOString().slice(0, 10) };
-  serializeEntry({ ...before.entry, mex: { ...before.entry.mex, status: "retired", retired } });
+  retiredEntry(before.entry, retired);
   const writer = openRecord(options);
   try {
     writer.db.exec("BEGIN IMMEDIATE");
     const found = current(writer, options, id, ["active", "proposed"]);
-    const marker = saveTombstone(writer, found.projectId, found.entry, retired);
-    writer.db.exec("COMMIT");
+    if (!isLearnedEntry(found.entry.mex)) {
+      const marker = retireNote(writer, found.projectId, found.entry, retired);
+      writer.db.exec("COMMIT");
+      return marker;
+    }
+    // Native delivery reads the entry file, so publish its retirement together
+    // with the durable tombstone used by learn deeper and recall.
+    const notes = snapshotNotes(writer, found.projectId);
+    if (notes.files.get(id) !== found.content) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again.");
+    const files = new Map(notes.files).set(id, retiredEntry(found.entry, retired));
+    let marker!: Tombstone;
+    publishNotes(writer, found.projectId, notes, files,
+      () => { marker = retireNote(writer, found.projectId, found.entry, retired); }, { locked: true });
     return marker;
   } finally {
     try { writer.db.exec("ROLLBACK"); } catch { /* already committed, or preserve the original failure */ }
@@ -107,4 +178,124 @@ export function forget(id: string, reason: string, options: KnowledgeOptions, no
 
 export function wrong(id: string, reason: string, options: KnowledgeOptions, now = new Date()): Tombstone {
   return forget(id, reason, options, now, "wrong");
+}
+
+function reviewedStatus(entry: KnowledgeEntry, status: "active" | "proposed"): KnowledgeEntry {
+  const label = entry.mex.source.label?.replace(LEARNED_TRIAL_LABEL, "");
+  return { ...entry, mex: { ...entry.mex, status, source: { ...entry.mex.source, label } } };
+}
+
+/**
+ * A person's tick on the learn-deeper review list: a learned rule that waited for it comes into force,
+ * and the tick is recorded as its verification. Only learned rules wait for a tick; nothing else changes.
+ */
+export function tickLearned(id: string, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+  return setLearnedStatus(id, options, "active", now);
+}
+
+/** A person unticks a learned rule on the review list: it waits again and isn't delivered. */
+export function untickLearned(id: string, options: KnowledgeOptions, now = new Date()): PersonalEntry {
+  return setLearnedStatus(id, options, "proposed", now);
+}
+
+function setLearnedStatus(id: string, options: KnowledgeOptions, to: "active" | "proposed", now: Date): PersonalEntry {
+  assertId(id);
+  const writer = openRecord(options);
+  try {
+    writer.db.exec("BEGIN IMMEDIATE");
+    const from = to === "active" ? ["proposed", "active"] as const : ["active"] as const;
+    const found = current(writer, options, id, from);
+    if (!isLearnedEntry(found.entry.mex) || (to === "active" && found.entry.mex.status === "active"
+      && !found.entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL))) {
+      throw new KnowledgeError("INVALID_CHANGE", "Only a learned rule can be ticked or unticked on the review list.");
+    }
+    const changed = reviewedStatus(found.entry, to);
+    const before = snapshotNotes(writer, found.projectId);
+    if (before.files.get(id) !== found.content) throw new KnowledgeError("STALE_ENTRY", "The entry changed; read it again.");
+    const after = serializeEntry(changed);
+    const files = new Map(before.files).set(id, after);
+    publishNotes(writer, found.projectId, before, files,
+      () => recordStatusChange(writer, found.projectId, found.entry, found.content, after, to, now), { locked: true });
+    return { level: "personal", label: entryLabel(changed, "personal"), entry: changed };
+  } finally {
+    try { writer.db.exec("ROLLBACK"); } catch { /* already committed, or preserve the original failure */ }
+    writer.close();
+  }
+}
+
+export interface LearnedReviewDecision {
+  id: string;
+  raw: string;
+  decision: "keep" | "trial" | "wait" | "drop";
+  support: number;
+  /** A verify rewrite the producer gate already accepted. Saved as waiting, not as an edit command. */
+  rewrite?: string;
+}
+
+/** Apply the whole review or leave it pending if any entry changed while it was open. */
+export function finishLearnedReview(jobId: string, project: string, decisions: readonly LearnedReviewDecision[],
+  options: KnowledgeOptions, now = new Date()): { kept: number; trials: number; waiting: number; dropped: number } {
+  const writer = openRecord(options);
+  try {
+    writer.db.exec("BEGIN IMMEDIATE");
+    const stale = () => new KnowledgeError("STALE_ENTRY", "The learned rules changed. Open the review again.");
+    if (writer.checkout(options.projectPath)?.project_id !== project || writer.setting(project, learnedReviewedKey(jobId))) throw stale();
+    const before = snapshotNotes(writer, project);
+    const files = new Map(before.files);
+    const metadata: Array<() => void> = [];
+    const outcome = { kept: 0, trials: 0, waiting: 0, dropped: 0 };
+    for (const { id, raw, decision, rewrite } of decisions) {
+      if (before.files.get(id) !== raw || tombstone(writer, project, id)) throw stale();
+      const entry = parseEntry(raw);
+      if (entry.mex.id !== id || !isLearnedEntry(entry.mex) || entry.mex.status === "retired" || learnedRefused(writer, project, entry, raw)) throw stale();
+      if (decision === "trial") {
+        if (entry.mex.status !== "active" || !entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL)) throw stale();
+        outcome.trials++;
+        continue;
+      }
+      if (decision === "wait" && rewrite) {
+        const text = rewrite.trim().replace(/\s+/gu, " ");
+        const changed: KnowledgeEntry = { ...entry, text, mex: { ...entry.mex, one_line: text.slice(0, KNOWLEDGE_LIMITS.oneLineCharacters), status: "proposed" } };
+        const gated = gateEntry(changed, references(options.projectPath));
+        const after = serializeEntry(gated);
+        outcome.waiting++;
+        files.set(id, after);
+        metadata.push(() => {
+          putSetting(writer, project, learnedWaitingKey(id), "true");
+          const proof = noteReceipt(writer, project, id);
+          if (proof?.hash === sourceDigest(raw)) putSetting(writer, project, noteKey(id), JSON.stringify({ ...proof, hash: sourceDigest(after) }));
+        });
+        continue;
+      }
+      if (decision === "drop") {
+        const retired = { reason: "Dropped on the learn-deeper review list", by: "mex forget", at: now.toISOString().slice(0, 10) };
+        outcome.dropped++;
+        files.set(id, retiredEntry(entry, retired));
+        metadata.push(() => retireNote(writer, project, entry, retired));
+        continue;
+      }
+      const status = decision === "keep" ? "active" : "proposed";
+      if (decision === "keep") outcome.kept++;
+      else outcome.waiting++;
+      if (entry.mex.status !== status || decision === "keep" && entry.mex.source.label?.startsWith(LEARNED_TRIAL_LABEL)) {
+        const after = serializeEntry(reviewedStatus(entry, status));
+        files.set(id, after);
+        metadata.push(() => recordStatusChange(writer, project, entry, raw, after, status, now));
+      } else if (decision === "wait") {
+        // Any support count. A later weekly run must not switch this on without a tick.
+        metadata.push(() => putSetting(writer, project, learnedWaitingKey(id), "true"));
+      }
+    }
+    const record = () => {
+      for (const apply of metadata) apply();
+      putSetting(writer, project, learnedReviewedKey(jobId), now.toISOString());
+    };
+    if ([...files].some(([id, raw]) => before.files.get(id) !== raw)) {
+      publishNotes(writer, project, before, files, record, { locked: true });
+    } else { record(); writer.db.exec("COMMIT"); }
+    return outcome;
+  } finally {
+    try { writer.db.exec("ROLLBACK"); } catch { /* The transaction may already have ended. */ }
+    writer.close();
+  }
 }

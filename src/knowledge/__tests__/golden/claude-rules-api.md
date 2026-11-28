@@ -6,6 +6,7 @@ paths:
 # MEX rules for apps/api
 
 Existing code takes precedence over these notes.
+Report a wrong rule with `mex wrong <id> "<reason>"`.
 
 - Validate request bodies with zod, because handlers trust their input. <!-- mex:mx_api001 -->
 - API errors go through AppError, so clients get one error shape. <!-- mex:mx_api002 -->
